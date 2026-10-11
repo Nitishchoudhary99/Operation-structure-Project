@@ -1,5 +1,9 @@
 # Operation-structure-Project
 
+## New: SmartTrader Cloud ERP
+
+The cloud edition lives in [`cloud-erp/`](cloud-erp/README.md). It runs on Cloudflare Workers + D1 and deploys from GitHub, and it covers procurement, inventory across multiple godowns, sales, GST, double-entry finance and a Khatabook-style credit book. Competitor and market research is in [`cloud-erp/docs/COMPETITORS.md`](cloud-erp/docs/COMPETITORS.md).
+
 ## SmartTrader ERP: a complete ERP for small traders that runs in Excel
 
 The workbook covers the full cycle: **Procure → Stock → Sell → Deliver → Collect → Report**. Inventory, sales, purchases, cash and bank, receivables and payables, GST and profit all sit in one workbook. You record each transaction once, and every report updates.

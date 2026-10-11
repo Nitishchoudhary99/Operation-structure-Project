@@ -1,0 +1,46 @@
+# Tests the cloud ERP on every push, and deploys it to Cloudflare from main
+# once the repository has a CLOUDFLARE_API_TOKEN secret (Settings > Secrets and variables > Actions).
+name: Cloud ERP
+on:
+  push:
+    paths: ['cloud-erp/**', '.github/workflows/cloud-erp.yml']
+  pull_request:
+    paths: ['cloud-erp/**']
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    defaults: { run: { working-directory: cloud-erp } }
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 22, cache: npm, cache-dependency-path: cloud-erp/package-lock.json }
+      - run: npm ci
+      - name: Start the worker locally (local D1 database)
+        run: |
+          npx wrangler dev --port 8787 > wrangler.log 2>&1 &
+          for i in $(seq 1 60); do curl -sf localhost:8787/api/health && break; sleep 1; done
+      - name: End-to-end business test
+        run: node test/run.mjs http://localhost:8787
+      - if: failure()
+        run: cat wrangler.log
+
+  deploy:
+    needs: test
+    if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    defaults: { run: { working-directory: cloud-erp } }
+    env:
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 22, cache: npm, cache-dependency-path: cloud-erp/package-lock.json }
+      - run: npm ci
+      - name: Deploy to Cloudflare Workers
+        if: env.CLOUDFLARE_API_TOKEN != ''
+        run: npx wrangler deploy
+      - if: env.CLOUDFLARE_API_TOKEN == ''
+        run: echo "::notice::Skipped deploy - add the CLOUDFLARE_API_TOKEN repository secret to enable it."

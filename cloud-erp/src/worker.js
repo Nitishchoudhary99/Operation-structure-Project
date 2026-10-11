@@ -1,0 +1,443 @@
+/* SmartTrader Cloud ERP - Cloudflare Worker.
+   /api/*  -> JSON API (this file)
+   anything else -> the web app in /public (Workers static assets, single-page app) */
+import { migrate, DEFAULT_ACCOUNTS } from './schema.js';
+import {
+  HttpError, bad, notFound, forbidden, json, readJson, str, reqStr, num, int, date, nowIso, oneOf, toPaise, Router, GST_RATES, today,
+} from './lib.js';
+import {
+  hashPassword, randomHex, sameText, passwordProblem, issueSession, sessionCookie, clearCookie, currentUser, ROLES, can, requireCan, rateLimit,
+} from './auth.js';
+import {
+  DOC_TYPES, loadSys, createDoc, cancelDoc, createPayment, voidPayment, stockAdjust, stockTransfer, createExpense, createJournal, partyOpening,
+  auditStatement, cashAccount,
+} from './engine.js';
+import * as rep from './reports.js';
+
+const R = (p) => Math.round(p) / 100;
+const router = new Router();
+let migrated = false;
+
+/* ======================================================================= auth */
+router.add('POST', '/api/auth/signup', async (c) => {
+  const b = c.body;
+  const ip = c.request.headers.get('CF-Connecting-IP') || 'local';
+  await rateLimit(c.env, 'signup:' + ip, 5, 3600);
+  const business = reqStr(b.business, 'Business name', 120);
+  const name = reqStr(b.name, 'Your name', 80);
+  const email = reqStr(b.email, 'Email', 120).toLowerCase();
+  if (!/^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(email)) throw bad('Please enter a valid email address.');
+  const prob = passwordProblem(b.password);
+  if (prob) throw bad(prob);
+  if (await c.db.prepare(`SELECT 1 FROM users WHERE email = ?`).bind(email).first()) throw bad('An account with this email already exists. Sign in instead.');
+  const salt = randomHex(16), hash = await hashPassword(b.password, salt), now = nowIso(), otx = crypto.randomUUID();
+  const db = c.db;
+  const st = [
+    db.prepare(`INSERT INTO orgs (name, gstin, state, phone, address, created_at) VALUES (?, ?, ?, ?, ?, ?)`)
+      .bind(business, str(b.gstin, 15).toUpperCase(), str(b.state, 60), str(b.phone, 20), str(b.address, 300), otx),
+    db.prepare(`INSERT INTO users (org_id, email, name, role, pw_hash, salt, pw_changed_at, created_at)
+                VALUES ((SELECT id FROM orgs WHERE created_at = ?), ?, ?, 'owner', ?, ?, ?, ?)`).bind(otx, email, name, hash, salt, Date.now(), now),
+    ...DEFAULT_ACCOUNTS.map(([code, nm, type, sys, isCash]) => db.prepare(`INSERT INTO accounts (org_id, code, name, type, sys, is_cash)
+                VALUES ((SELECT id FROM orgs WHERE created_at = ?), ?, ?, ?, ?, ?)`).bind(otx, code, nm, type, sys, isCash)),
+    db.prepare(`INSERT INTO warehouses (org_id, name) VALUES ((SELECT id FROM orgs WHERE created_at = ?), 'Main Store')`).bind(otx),
+    db.prepare(`INSERT INTO parties (org_id, name, kind, state, created_at) VALUES ((SELECT id FROM orgs WHERE created_at = ?), 'Walk-in Customer', 'customer', ?, ?)`)
+      .bind(otx, str(b.state, 60), now),
+    db.prepare(`UPDATE orgs SET created_at = ? WHERE created_at = ?`).bind(now, otx),
+  ];
+  await db.batch(st);
+  const user = await db.prepare(`SELECT * FROM users WHERE email = ?`).bind(email).first();
+  const token = await issueSession(c.env, user);
+  return json({ ok: true, user: publicUser(user) }, 200, { 'Set-Cookie': sessionCookie(token, c.request) });
+}, { public: true });
+
+router.add('POST', '/api/auth/login', async (c) => {
+  const email = str(c.body.email, 120).toLowerCase();
+  await rateLimit(c.env, 'login:' + email, 10, 900);
+  const user = await c.db.prepare(`SELECT * FROM users WHERE email = ?`).bind(email).first();
+  const hash = await hashPassword(c.body.password || '', user ? user.salt : 'no-such-user-salt');
+  if (!user || !user.active || !sameText(hash, user.pw_hash)) throw new HttpError(401, 'Incorrect email or password.');
+  const token = await issueSession(c.env, user);
+  return json({ ok: true, user: publicUser(user) }, 200, { 'Set-Cookie': sessionCookie(token, c.request) });
+}, { public: true });
+
+router.add('POST', '/api/auth/logout', async () => json({ ok: true }, 200, { 'Set-Cookie': clearCookie() }), { public: true });
+
+router.add('GET', '/api/me', async (c) => json({
+  user: publicUser(c.user), org: c.org,
+  can: Object.fromEntries(['settings', 'users', 'items', 'purchase', 'sales', 'stock', 'finance', 'khata'].map((a) => [a, can(c.user, a)])),
+  doc_types: Object.fromEntries(Object.entries(DOC_TYPES).map(([k, v]) => [k, { label: v.label, side: v.side, from: v.from, prefix: v.prefix }])),
+  gst_rates: GST_RATES, today: today(),
+}));
+
+router.add('POST', '/api/me/password', async (c) => {
+  const u = await c.db.prepare(`SELECT * FROM users WHERE id = ?`).bind(c.user.id).first();
+  if (!sameText(await hashPassword(c.body.current || '', u.salt), u.pw_hash)) throw bad('Your current password is not correct.');
+  const prob = passwordProblem(c.body.password);
+  if (prob) throw bad(prob);
+  const salt = randomHex(16), now = Date.now();
+  await c.db.prepare(`UPDATE users SET pw_hash = ?, salt = ?, pw_changed_at = ? WHERE id = ?`).bind(await hashPassword(c.body.password, salt), salt, now, u.id).run();
+  const token = await issueSession(c.env, { ...u, pw_changed_at: now });
+  return json({ ok: true }, 200, { 'Set-Cookie': sessionCookie(token, c.request) });
+});
+
+const publicUser = (u) => ({ id: u.id, email: u.email, name: u.name, role: u.role });
+
+/* ======================================================================= business settings & users */
+router.add('PUT', '/api/org', async (c) => {
+  requireCan(c.user, 'settings');
+  const b = c.body;
+  await c.db.prepare(`UPDATE orgs SET name = ?, gstin = ?, state = ?, address = ?, phone = ?, upi_id = ?, fy_start = ? WHERE id = ?`)
+    .bind(reqStr(b.name, 'Business name', 120), str(b.gstin, 15).toUpperCase(), str(b.state, 60), str(b.address, 300), str(b.phone, 20),
+      str(b.upi_id, 60), /^\d{2}-\d{2}$/.test(b.fy_start || '') ? b.fy_start : c.org.fy_start, c.org.id).run();
+  return json({ ok: true });
+});
+
+router.add('GET', '/api/users', async (c) => {
+  requireCan(c.user, 'users');
+  const { results } = await c.db.prepare(`SELECT id, email, name, role, active, created_at FROM users WHERE org_id = ? ORDER BY id`).bind(c.org.id).all();
+  return json({ rows: results, roles: ROLES });
+});
+router.add('POST', '/api/users', async (c) => {
+  requireCan(c.user, 'users');
+  const email = reqStr(c.body.email, 'Email', 120).toLowerCase();
+  const role = oneOf(c.body.role, ROLES.filter((r) => r !== 'owner'), 'Role');
+  const prob = passwordProblem(c.body.password);
+  if (prob) throw bad(prob);
+  if (await c.db.prepare(`SELECT 1 FROM users WHERE email = ?`).bind(email).first()) throw bad('This email is already in use.');
+  const salt = randomHex(16);
+  await c.db.batch([c.db.prepare(`INSERT INTO users (org_id, email, name, role, pw_hash, salt, pw_changed_at, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`)
+    .bind(c.org.id, email, reqStr(c.body.name, 'Name', 80), role, await hashPassword(c.body.password, salt), salt, Date.now(), nowIso()),
+  auditStatement(c, 'add user', `${email} ${role}`)]);
+  return json({ ok: true });
+});
+router.add('PUT', '/api/users/:id', async (c) => {
+  requireCan(c.user, 'users');
+  const u = await c.db.prepare(`SELECT * FROM users WHERE id = ? AND org_id = ?`).bind(+c.params.id, c.org.id).first();
+  if (!u) throw notFound('User not found.');
+  if (u.role === 'owner') throw bad('The owner cannot be changed here.');
+  const role = c.body.role ? oneOf(c.body.role, ROLES.filter((r) => r !== 'owner'), 'Role') : u.role;
+  const active = c.body.active === undefined ? u.active : (c.body.active ? 1 : 0);
+  await c.db.prepare(`UPDATE users SET role = ?, active = ?, pw_changed_at = CASE WHEN ? != active THEN ? ELSE pw_changed_at END WHERE id = ?`)
+    .bind(role, active, active, Date.now(), u.id).run();
+  return json({ ok: true });
+});
+
+/* ======================================================================= parties */
+const partyFields = (b) => ({
+  name: reqStr(b.name, 'Name', 120), kind: oneOf(b.kind || 'customer', ['customer', 'supplier', 'both'], 'Type'),
+  phone: str(b.phone, 20), email: str(b.email, 120), gstin: str(b.gstin, 15).toUpperCase(), state: str(b.state, 60), address: str(b.address, 300),
+  credit_limit: toPaise(num(b.credit_limit, 'Credit limit', { min: 0, def: 0 })), credit_days: int(b.credit_days, 'Credit days', { min: 0, max: 365, def: 0 }),
+});
+router.add('GET', '/api/parties', async (c) => {
+  const q = c.url.searchParams;
+  const kind = q.get('kind');
+  const { results } = await c.db.prepare(`SELECT * FROM parties WHERE org_id = ? ${kind === 'customer' ? "AND kind IN ('customer','both')" : kind === 'supplier' ? "AND kind IN ('supplier','both')" : ''}
+      AND (? = '' OR name LIKE ? OR phone LIKE ?) ORDER BY name LIMIT 1000`).bind(c.org.id, q.get('q') || '', `%${q.get('q') || ''}%`, `%${q.get('q') || ''}%`).all();
+  const bal = await rep.partyBalances(c.db, c.org.id);
+  return json({ rows: results.map((p) => {
+    const b = bal[p.id] || 0;
+    return { ...p, credit_limit: R(p.credit_limit), balance: R(b), over_limit: p.credit_limit > 0 && b > p.credit_limit };
+  }) });
+});
+router.add('POST', '/api/parties', async (c) => {
+  requireCan(c.user, 'masters');
+  const f = partyFields(c.body);
+  if (await c.db.prepare(`SELECT 1 FROM parties WHERE org_id = ? AND name = ?`).bind(c.org.id, f.name).first()) throw bad(`A party called ${f.name} already exists.`);
+  const r = await c.db.prepare(`INSERT INTO parties (org_id, name, kind, phone, email, gstin, state, address, credit_limit, credit_days, created_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING *`).bind(c.org.id, f.name, f.kind, f.phone, f.email, f.gstin, f.state, f.address, f.credit_limit, f.credit_days, nowIso()).first();
+  return json({ ...r, credit_limit: R(r.credit_limit) });
+});
+router.add('PUT', '/api/parties/:id', async (c) => {
+  requireCan(c.user, 'masters');
+  const f = partyFields(c.body);
+  const dup = await c.db.prepare(`SELECT id FROM parties WHERE org_id = ? AND name = ? AND id != ?`).bind(c.org.id, f.name, +c.params.id).first();
+  if (dup) throw bad(`A party called ${f.name} already exists.`);
+  const r = await c.db.prepare(`UPDATE parties SET name = ?, kind = ?, phone = ?, email = ?, gstin = ?, state = ?, address = ?, credit_limit = ?, credit_days = ?
+      WHERE id = ? AND org_id = ?`).bind(f.name, f.kind, f.phone, f.email, f.gstin, f.state, f.address, f.credit_limit, f.credit_days, +c.params.id, c.org.id).run();
+  if (!r.meta.changes) throw notFound('Party not found.');
+  return json({ ok: true });
+});
+router.add('DELETE', '/api/parties/:id', async (c) => {
+  requireCan(c.user, 'masters');
+  const id = +c.params.id;
+  const used = await c.db.prepare(`SELECT (SELECT COUNT(*) FROM docs WHERE party_id = ?) + (SELECT COUNT(*) FROM journal_lines WHERE party_id = ?)
+      + (SELECT COUNT(*) FROM khata WHERE party_id = ?) + (SELECT COUNT(*) FROM payments WHERE party_id = ?) AS n`).bind(id, id, id, id).first();
+  if (used.n) throw bad('This party has transactions and cannot be deleted.');
+  await c.db.prepare(`DELETE FROM parties WHERE id = ? AND org_id = ?`).bind(id, c.org.id).run();
+  return json({ ok: true });
+});
+router.add('POST', '/api/parties/:id/opening', async (c) => json(await partyOpening(c, +c.params.id, c.body)));
+router.add('GET', '/api/parties/:id/ledger', async (c) => json(await rep.partyLedger(c.db, c.org, +c.params.id, c.url.searchParams)));
+
+/* ======================================================================= items & warehouses */
+const itemFields = (b) => ({
+  name: reqStr(b.name, 'Item name', 120), sku: str(b.sku, 40), category: str(b.category, 60), unit: str(b.unit, 12) || 'Pcs', hsn: str(b.hsn, 10),
+  gst_rate: num(b.gst_rate, 'GST rate', { min: 0, max: 100, def: 0 }),
+  purchase_price: toPaise(num(b.purchase_price, 'Purchase price', { min: 0, def: 0 })), sale_price: toPaise(num(b.sale_price, 'Sale price', { min: 0, def: 0 })),
+  reorder_level: num(b.reorder_level, 'Reorder level', { min: 0, def: 0 }), is_service: b.is_service ? 1 : 0,
+});
+const itemOut = (i) => ({ ...i, purchase_price: R(i.purchase_price), sale_price: R(i.sale_price), avg_cost: R(i.avg_cost), stock_value: R(Math.max(0, i.qty_on_hand) * i.avg_cost) });
+router.add('GET', '/api/items', async (c) => {
+  const q = c.url.searchParams.get('q') || '';
+  const { results } = await c.db.prepare(`SELECT * FROM items WHERE org_id = ? AND (? = '' OR name LIKE ? OR sku LIKE ?) ORDER BY name LIMIT 2000`)
+    .bind(c.org.id, q, `%${q}%`, `%${q}%`).all();
+  return json({ rows: results.map(itemOut) });
+});
+router.add('POST', '/api/items', async (c) => {
+  requireCan(c.user, 'items');
+  const f = itemFields(c.body);
+  if (await c.db.prepare(`SELECT 1 FROM items WHERE org_id = ? AND name = ?`).bind(c.org.id, f.name).first()) throw bad(`An item called ${f.name} already exists.`);
+  const r = await c.db.prepare(`INSERT INTO items (org_id, sku, name, category, unit, hsn, gst_rate, purchase_price, sale_price, reorder_level, is_service, avg_cost, created_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING *`)
+    .bind(c.org.id, f.sku, f.name, f.category, f.unit, f.hsn, f.gst_rate, f.purchase_price, f.sale_price, f.reorder_level, f.is_service, f.purchase_price, nowIso()).first();
+  if (c.body.opening_qty && +c.body.opening_qty > 0 && !f.is_service) {
+    await stockAdjust(c, { item_id: r.id, qty: c.body.opening_qty, rate: c.body.opening_rate ?? R(f.purchase_price), reason: 'opening', warehouse_id: c.body.warehouse_id });
+  }
+  return json(itemOut(await c.db.prepare(`SELECT * FROM items WHERE id = ?`).bind(r.id).first()));
+});
+router.add('PUT', '/api/items/:id', async (c) => {
+  requireCan(c.user, 'items');
+  const f = itemFields(c.body);
+  const dup = await c.db.prepare(`SELECT id FROM items WHERE org_id = ? AND name = ? AND id != ?`).bind(c.org.id, f.name, +c.params.id).first();
+  if (dup) throw bad(`An item called ${f.name} already exists.`);
+  const r = await c.db.prepare(`UPDATE items SET sku = ?, name = ?, category = ?, unit = ?, hsn = ?, gst_rate = ?, purchase_price = ?, sale_price = ?, reorder_level = ?
+      WHERE id = ? AND org_id = ?`).bind(f.sku, f.name, f.category, f.unit, f.hsn, f.gst_rate, f.purchase_price, f.sale_price, f.reorder_level, +c.params.id, c.org.id).run();
+  if (!r.meta.changes) throw notFound('Item not found.');
+  return json({ ok: true });
+});
+router.add('DELETE', '/api/items/:id', async (c) => {
+  requireCan(c.user, 'items');
+  const id = +c.params.id;
+  const used = await c.db.prepare(`SELECT (SELECT COUNT(*) FROM doc_lines WHERE item_id = ?) + (SELECT COUNT(*) FROM stock_moves WHERE item_id = ?) AS n`).bind(id, id).first();
+  if (used.n) throw bad('This item has transactions and cannot be deleted.');
+  await c.db.prepare(`DELETE FROM items WHERE id = ? AND org_id = ?`).bind(id, c.org.id).run();
+  return json({ ok: true });
+});
+router.add('GET', '/api/items/:id/moves', async (c) => json({ rows: await rep.itemMoves(c.db, c.org, +c.params.id) }));
+
+router.add('GET', '/api/warehouses', async (c) => {
+  const { results } = await c.db.prepare(`SELECT w.*, COALESCE((SELECT SUM(s.qty * i.avg_cost) FROM stock s JOIN items i ON i.id = s.item_id WHERE s.warehouse_id = w.id AND s.qty > 0), 0) AS value
+      FROM warehouses w WHERE w.org_id = ? ORDER BY w.id`).bind(c.org.id).all();
+  return json({ rows: results.map((w) => ({ ...w, value: R(w.value) })) });
+});
+router.add('POST', '/api/warehouses', async (c) => {
+  requireCan(c.user, 'stock');
+  const name = reqStr(c.body.name, 'Warehouse name', 80);
+  if (await c.db.prepare(`SELECT 1 FROM warehouses WHERE org_id = ? AND name = ?`).bind(c.org.id, name).first()) throw bad('That warehouse already exists.');
+  return json(await c.db.prepare(`INSERT INTO warehouses (org_id, name) VALUES (?, ?) RETURNING *`).bind(c.org.id, name).first());
+});
+
+/* ======================================================================= accounts */
+router.add('GET', '/api/accounts', async (c) => {
+  const { results } = await c.db.prepare(`SELECT a.*, COALESCE(SUM(jl.debit - jl.credit), 0) AS bal FROM accounts a
+      LEFT JOIN journal_lines jl ON jl.account_id = a.id WHERE a.org_id = ? GROUP BY a.id ORDER BY a.code`).bind(c.org.id).all();
+  return json({ rows: results.map((a) => ({ ...a, balance: R(['asset', 'expense'].includes(a.type) ? a.bal : -a.bal) })) });
+});
+router.add('POST', '/api/accounts', async (c) => {
+  requireCan(c.user, 'finance');
+  const code = reqStr(c.body.code, 'Code', 10), name = reqStr(c.body.name, 'Name', 80);
+  const type = oneOf(c.body.type, ['asset', 'liability', 'equity', 'income', 'expense'], 'Type');
+  if (await c.db.prepare(`SELECT 1 FROM accounts WHERE org_id = ? AND code = ?`).bind(c.org.id, code).first()) throw bad('That account code is in use.');
+  return json(await c.db.prepare(`INSERT INTO accounts (org_id, code, name, type, is_cash) VALUES (?, ?, ?, ?, ?) RETURNING *`)
+    .bind(c.org.id, code, name, type, type === 'asset' && c.body.is_cash ? 1 : 0).first());
+});
+router.add('GET', '/api/accounts/:id/ledger', async (c) => json(await rep.accountLedger(c.db, c.org, +c.params.id, c.url.searchParams)));
+
+/* ======================================================================= documents */
+router.add('GET', '/api/docs', async (c) => {
+  const q = c.url.searchParams;
+  const where = ['d.org_id = ?'], args = [c.org.id];
+  if (q.get('type')) { where.push('d.type = ?'); args.push(q.get('type').toUpperCase()); }
+  if (q.get('status')) { where.push('d.status = ?'); args.push(q.get('status')); }
+  if (q.get('party_id')) { where.push('d.party_id = ?'); args.push(+q.get('party_id')); }
+  if (q.get('from')) { where.push('d.date >= ?'); args.push(date(q.get('from'))); }
+  if (q.get('to')) { where.push('d.date <= ?'); args.push(date(q.get('to'))); }
+  if (q.get('q')) { where.push('(d.number LIKE ? OR p.name LIKE ?)'); args.push(`%${q.get('q')}%`, `%${q.get('q')}%`); }
+  const limit = Math.min(500, +q.get('limit') || 100), offset = Math.max(0, +q.get('offset') || 0);
+  const { results } = await c.db.prepare(`SELECT d.id, d.type, d.number, d.date, d.due_date, d.status, d.total, d.paid, d.taxable, d.ref_id, p.name AS party
+      FROM docs d LEFT JOIN parties p ON p.id = d.party_id WHERE ${where.join(' AND ')} ORDER BY d.date DESC, d.id DESC LIMIT ? OFFSET ?`)
+    .bind(...args, limit, offset).all();
+  return json({ rows: results.map((r) => ({ ...r, total: R(r.total), paid: R(r.paid), taxable: R(r.taxable), balance: R(r.total - r.paid) })) });
+});
+
+async function docDetail(c, id) {
+  const d = await c.db.prepare(`SELECT d.*, w.name AS warehouse FROM docs d LEFT JOIN warehouses w ON w.id = d.warehouse_id WHERE d.id = ? AND d.org_id = ?`).bind(id, c.org.id).first();
+  if (!d) throw notFound('Document not found.');
+  const [lines, party, children, parent, pays] = await Promise.all([
+    c.db.prepare(`SELECT l.*, i.name AS item, i.unit, i.hsn FROM doc_lines l LEFT JOIN items i ON i.id = l.item_id WHERE l.doc_id = ? ORDER BY l.id`).bind(id).all(),
+    c.db.prepare(`SELECT * FROM parties WHERE id = ?`).bind(d.party_id).first(),
+    c.db.prepare(`SELECT id, type, number, date, status, total FROM docs WHERE ref_id = ? ORDER BY id`).bind(id).all(),
+    d.ref_id ? c.db.prepare(`SELECT id, type, number, date, status FROM docs WHERE id = ?`).bind(d.ref_id).first() : null,
+    c.db.prepare(`SELECT pa.amount, pa.note_id, p.id, p.number, p.date, p.kind, n.number AS note_number FROM payment_allocs pa
+        LEFT JOIN payments p ON p.id = pa.payment_id LEFT JOIN docs n ON n.id = pa.note_id WHERE pa.doc_id = ?`).bind(id).all(),
+  ]);
+  const money = (x) => R(x);
+  return {
+    ...d, taxable: money(d.taxable), cgst: money(d.cgst), sgst: money(d.sgst), igst: money(d.igst), round_off: money(d.round_off),
+    total: money(d.total), paid: money(d.paid), balance: money(d.total - d.paid), label: DOC_TYPES[d.type].label,
+    party, parent, children: children.results.map((x) => ({ ...x, total: money(x.total) })),
+    settlements: pays.results.map((p) => ({ ...p, amount: money(p.amount), number: p.number || p.note_number })),
+    lines: lines.results.map((l) => ({ ...l, rate: money(l.rate), taxable: money(l.taxable), cgst: money(l.cgst), sgst: money(l.sgst), igst: money(l.igst),
+      total: money(l.total), cost: money(l.cost), remaining: Math.round((l.qty - l.done_qty) * 1000) / 1000 })),
+    org: c.org,
+  };
+}
+router.add('GET', '/api/docs/:id', async (c) => json(await docDetail(c, +c.params.id)));
+router.add('POST', '/api/docs', async (c) => json(await docDetail(c, (await createDoc(c, c.body)).id)));
+router.add('POST', '/api/docs/:id/cancel', async (c) => { await cancelDoc(c, +c.params.id); return json(await docDetail(c, +c.params.id)); });
+
+/* A ready-to-post draft of the next document in the chain, with the quantities still open. */
+router.add('GET', '/api/docs/:id/convert', async (c) => {
+  const src = await docDetail(c, +c.params.id);
+  const to = (c.url.searchParams.get('to') || '').toUpperCase();
+  const T = DOC_TYPES[to];
+  if (!T || !T.from.includes(src.type)) throw bad(`Cannot make a ${to} from a ${src.type}.`);
+  const lines = src.lines.filter((l) => l.remaining > 0.0005).map((l) => ({
+    item_id: l.item_id, item: l.item, unit: l.unit, description: l.description, qty: l.remaining, rate: l.rate,
+    discount_pct: l.discount_pct, gst_rate: l.gst_rate, src_line_id: l.id,
+  }));
+  if (!lines.length) throw bad(`Nothing left to ${['SRET', 'PRET'].includes(to) ? 'return' : 'process'} on ${src.number}.`);
+  return json({ type: to, party_id: src.party_id, ref_id: src.id, ref_number: src.number, warehouse_id: src.warehouse_id, date: today(), lines });
+});
+
+/* ======================================================================= payments, expenses, journals */
+router.add('GET', '/api/payments', async (c) => {
+  const q = c.url.searchParams;
+  const { results } = await c.db.prepare(`SELECT p.*, pt.name AS party, a.name AS account FROM payments p JOIN parties pt ON pt.id = p.party_id
+      JOIN accounts a ON a.id = p.account_id WHERE p.org_id = ? AND (? = '' OR p.kind = ?) ORDER BY p.date DESC, p.id DESC LIMIT 300`)
+    .bind(c.org.id, q.get('kind') || '', q.get('kind') || '').all();
+  return json({ rows: results.map((p) => ({ ...p, amount: R(p.amount), void: (p.notes || '').startsWith('[void]') })) });
+});
+router.add('GET', '/api/payments/open', async (c) => {
+  const q = c.url.searchParams;
+  const { results } = await c.db.prepare(`SELECT id, number, date, due_date, total, paid FROM docs WHERE org_id = ? AND party_id = ? AND type = ?
+      AND status IN ('unpaid','partial') ORDER BY due_date, id`).bind(c.org.id, +q.get('party_id') || 0, q.get('kind') === 'payment' ? 'BILL' : 'INV').all();
+  return json({ rows: results.map((d) => ({ ...d, total: R(d.total), balance: R(d.total - d.paid) })) });
+});
+router.add('POST', '/api/payments', async (c) => json(await createPayment(c, c.body)));
+router.add('POST', '/api/payments/:id/void', async (c) => { await voidPayment(c, +c.params.id); return json({ ok: true }); });
+router.add('POST', '/api/expenses', async (c) => json(await createExpense(c, c.body)));
+router.add('POST', '/api/journals', async (c) => json(await createJournal(c, c.body)));
+router.add('POST', '/api/stock/adjust', async (c) => json(await stockAdjust(c, c.body)));
+router.add('POST', '/api/stock/transfer', async (c) => json(await stockTransfer(c, c.body)));
+
+/* ======================================================================= khata (Khatabook-style credit book) */
+router.add('GET', '/api/khata', async (c) => {
+  const { results } = await c.db.prepare(`SELECT p.id, p.name, p.phone, p.kind,
+        COALESCE(SUM(CASE WHEN k.kind = 'gave' THEN k.amount ELSE -k.amount END), 0) AS balance, MAX(k.date) AS last_date, COUNT(k.id) AS entries
+      FROM parties p LEFT JOIN khata k ON k.party_id = p.id WHERE p.org_id = ? GROUP BY p.id
+      HAVING entries > 0 OR ? = '1' ORDER BY last_date DESC, p.name`).bind(c.org.id, c.url.searchParams.get('all') ? '1' : '0').all();
+  const get = results.filter((r) => r.balance > 0).reduce((s, r) => s + r.balance, 0);
+  const give = results.filter((r) => r.balance < 0).reduce((s, r) => s - r.balance, 0);
+  return json({ rows: results.map((r) => ({ ...r, balance: R(r.balance) })), you_will_get: R(get), you_will_give: R(give) });
+});
+router.add('POST', '/api/khata', async (c) => {
+  requireCan(c.user, 'khata');
+  const b = c.body;
+  let partyId = +b.party_id || 0;
+  if (!partyId) {                                     // quick add a new contact from the khata screen
+    const name = reqStr(b.name, 'Name', 120);
+    const ex = await c.db.prepare(`SELECT id FROM parties WHERE org_id = ? AND name = ?`).bind(c.org.id, name).first();
+    partyId = ex ? ex.id : (await c.db.prepare(`INSERT INTO parties (org_id, name, kind, phone, created_at) VALUES (?, ?, 'customer', ?, ?) RETURNING id`)
+      .bind(c.org.id, name, str(b.phone, 20), nowIso()).first()).id;
+  } else if (!(await c.db.prepare(`SELECT 1 FROM parties WHERE id = ? AND org_id = ?`).bind(partyId, c.org.id).first())) throw bad('Unknown contact.');
+  const kind = oneOf(b.kind, ['gave', 'got'], 'Entry type');
+  const amount = toPaise(num(b.amount, 'Amount', { min: 0.01 }));
+  await c.db.prepare(`INSERT INTO khata (org_id, party_id, date, kind, amount, note, created_by, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`)
+    .bind(c.org.id, partyId, date(b.date), kind, amount, str(b.note, 200), c.user.id, nowIso()).run();
+  return json({ ok: true, party_id: partyId });
+});
+router.add('GET', '/api/khata/:party', async (c) => {
+  const p = await c.db.prepare(`SELECT id, name, phone FROM parties WHERE id = ? AND org_id = ?`).bind(+c.params.party, c.org.id).first();
+  if (!p) throw notFound('Contact not found.');
+  const { results } = await c.db.prepare(`SELECT id, date, kind, amount, note FROM khata WHERE org_id = ? AND party_id = ? ORDER BY date, id`).bind(c.org.id, p.id).all();
+  let bal = 0;
+  const rows = results.map((r) => ({ ...r, amount: R(r.amount), balance: R(bal += r.kind === 'gave' ? r.amount : -r.amount) }));
+  return json({ party: p, rows: rows.reverse(), balance: R(bal) });
+});
+router.add('DELETE', '/api/khata/entries/:id', async (c) => {
+  requireCan(c.user, 'khata');
+  const r = await c.db.prepare(`DELETE FROM khata WHERE id = ? AND org_id = ?`).bind(+c.params.id, c.org.id).run();
+  if (!r.meta.changes) throw notFound('Entry not found.');
+  return json({ ok: true });
+});
+router.add('GET', '/api/khata/:party/reminder', async (c) => {
+  const p = await c.db.prepare(`SELECT id, name, phone FROM parties WHERE id = ? AND org_id = ?`).bind(+c.params.party, c.org.id).first();
+  if (!p) throw notFound('Contact not found.');
+  const b = await c.db.prepare(`SELECT COALESCE(SUM(CASE WHEN kind = 'gave' THEN amount ELSE -amount END), 0) AS b FROM khata WHERE party_id = ?`).bind(p.id).first();
+  const amt = R(b.b);
+  const upi = c.org.upi_id && amt > 0 ? `upi://pay?pa=${encodeURIComponent(c.org.upi_id)}&pn=${encodeURIComponent(c.org.name)}&am=${amt.toFixed(2)}&cu=INR` : '';
+  const text = amt > 0
+    ? `Namaste ${p.name}, your balance with ${c.org.name} is Rs ${amt.toLocaleString('en-IN', { minimumFractionDigits: 2 })}. Kindly pay at the earliest.${upi ? ' Pay by UPI: ' + upi : ''} Thank you.`
+    : `Namaste ${p.name}, your account with ${c.org.name} is settled. Thank you!`;
+  const phone = (p.phone || '').replace(/\D/g, '');
+  const wa = 'https://wa.me/' + (phone.length === 10 ? '91' + phone : phone) + '?text=' + encodeURIComponent(text);
+  return json({ text, whatsapp_url: wa, upi_url: upi, sms_url: phone ? `sms:${phone}?body=${encodeURIComponent(text)}` : '' });
+});
+
+/* ======================================================================= reports */
+const REPORTS = {
+  dashboard: (c) => rep.dashboard(c.db, c.org),
+  'trial-balance': (c) => rep.trialBalance(c.db, c.org, c.url.searchParams),
+  pnl: (c) => rep.profitLoss(c.db, c.org, c.url.searchParams),
+  'balance-sheet': (c) => rep.balanceSheet(c.db, c.org, c.url.searchParams),
+  gst: (c) => rep.gstSummary(c.db, c.org, c.url.searchParams),
+  ageing: (c) => rep.ageing(c.db, c.org, c.url.searchParams),
+  stock: (c) => rep.stockReport(c.db, c.org),
+  daybook: (c) => rep.dayBook(c.db, c.org, c.url.searchParams),
+  register: (c) => rep.register(c.db, c.org, c.url.searchParams),
+};
+router.add('GET', '/api/reports/:name', async (c) => {
+  const fn = REPORTS[c.params.name];
+  if (!fn) throw notFound('Unknown report.');
+  return json(await fn(c));
+});
+router.add('GET', '/api/audit', async (c) => {
+  requireCan(c.user, 'users');
+  const { results } = await c.db.prepare(`SELECT a.at, a.action, a.detail, u.name AS user FROM audit a LEFT JOIN users u ON u.id = a.user_id
+      WHERE a.org_id = ? ORDER BY a.id DESC LIMIT 300`).bind(c.org.id).all();
+  return json({ rows: results });
+});
+router.add('GET', '/api/health', async (c) => json({ ok: true, db: !!c.env.DB, time: nowIso() }), { public: true });
+
+/* ======================================================================= entry point */
+async function handleApi(request, env) {
+  const url = new URL(request.url);
+  if (!env.DB) throw new HttpError(500, 'Database not connected: bind a D1 database as DB in wrangler.toml.');
+  if (!migrated) { await migrate(env.DB); migrated = true; }
+  const m = router.match(request.method, url.pathname);
+  if (!m) throw notFound('Unknown API route.');
+  if (m.methodNotAllowed) throw new HttpError(405, 'Method not allowed.');
+  if (request.method !== 'GET') {
+    // custom header + same origin: a page on another site cannot make these requests with your cookie
+    if (request.headers.get('X-Requested-With') !== 'SmartTrader') throw forbidden('Missing request header.');
+    const origin = request.headers.get('Origin');
+    if (origin && origin !== url.origin) throw forbidden('Cross-site request blocked.');
+  }
+  const c = { env, db: env.DB, request, url, params: m.params, body: request.method === 'GET' ? {} : await readJson(request) };
+  if (!m.route.opts.public) {
+    c.user = await currentUser(env, request);
+    if (!c.user) throw new HttpError(401, 'Please sign in.');
+    c.org = await env.DB.prepare(`SELECT * FROM orgs WHERE id = ?`).bind(c.user.org_id).first();
+    c.sys = await loadSys(env.DB, c.org.id);
+  }
+  return m.route.handler(c);
+}
+
+export default {
+  async fetch(request, env) {
+    const url = new URL(request.url);
+    if (!url.pathname.startsWith('/api/')) {
+      return env.ASSETS ? env.ASSETS.fetch(request) : new Response('Not found', { status: 404 });
+    }
+    try {
+      const res = await handleApi(request, env);
+      res.headers.set('X-Content-Type-Options', 'nosniff');
+      return res;
+    } catch (e) {
+      if (e instanceof HttpError) return json({ error: e.message, ...(e.extra || {}) }, e.status);
+      console.error(e && e.stack || e);
+      return json({ error: 'Something went wrong on the server. Please try again.' }, 500);
+    }
+  },
+};

@@ -1,0 +1,15 @@
+{
+  "name": "smarttrader-cloud-erp",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Cloud ERP for Indian small businesses on Cloudflare Workers + D1: inventory, procurement, sales, GST, double-entry finance and khata.",
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "test": "node test/run.mjs"
+  },
+  "devDependencies": {
+    "wrangler": "^4.40.0"
+  }
+}

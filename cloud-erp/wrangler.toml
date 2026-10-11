@@ -1,0 +1,24 @@
+# SmartTrader Cloud ERP - Cloudflare Worker + D1 + static web app.
+# Secrets never go in this file (the repository is public). Set them with
+#   npx wrangler secret put SESSION_SECRET
+name = "smarttrader-erp"
+main = "src/worker.js"
+compatibility_date = "2025-09-01"
+
+# The web app. API calls (/api/*) run the worker first; everything else is a static file,
+# and unknown paths fall back to index.html so the single-page app can route them.
+[assets]
+directory = "./public"
+binding = "ASSETS"
+not_found_handling = "single-page-application"
+run_worker_first = ["/api/*"]
+
+# Create once with:  npx wrangler d1 create smarttrader-erp
+# then paste the database_id it prints below. Tables are created automatically on first request.
+[[d1_databases]]
+binding = "DB"
+database_name = "smarttrader-erp"
+database_id = "00000000-0000-0000-0000-000000000000"
+
+[observability]
+enabled = true
