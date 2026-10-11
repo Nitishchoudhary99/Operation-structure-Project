@@ -167,3 +167,51 @@ input[type=checkbox] { width: auto; }
   .doc-paper .parties, .doc-paper .hdr, .doc-paper .foot { grid-template-columns: 1fr; flex-direction: column; }
   .hide-sm { display: none; }
 }
+
+/* POS */
+.posgrid { display: grid; grid-template-columns: minmax(0, 1fr) 330px; gap: 16px; align-items: start; }
+.pos-pay { position: sticky; top: 70px; display: grid; gap: 12px; }
+input.scan { font-size: 18px; padding: 12px 14px; }
+.seg { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
+.seg button { font: inherit; padding: 9px; border: 1px solid var(--line); border-radius: 8px; background: var(--panel); color: var(--ink); cursor: pointer; }
+.seg button.on { background: var(--brand-soft); border-color: var(--brand); color: var(--brand); font-weight: 700; }
+.btn.big { justify-content: center; padding: 14px; font-size: 17px; }
+.qr { display: flex; gap: 12px; align-items: center; font-size: 12px; }
+.qr svg { width: 120px; height: 120px; background: #fff; border-radius: 6px; flex: none; }
+#upiqr .qr svg { width: 104px; height: 104px; }
+.receipt { display: none; }
+
+/* plans */
+.plans { display: grid; grid-template-columns: repeat(auto-fit, minmax(210px, 1fr)); gap: 14px; margin-bottom: 16px; }
+.plan { background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); padding: 18px; display: flex; flex-direction: column; gap: 8px; box-shadow: var(--shadow); }
+.plan.pop { border-color: var(--brand); }
+.plan.cur { outline: 2px solid var(--brand); }
+.plan .price { font-size: 26px; font-weight: 800; }
+.plan .price span { font-size: 12px; font-weight: 400; color: var(--muted); margin-left: 4px; }
+.plan ul { padding-left: 18px; margin: 4px 0 8px; color: var(--muted); flex: 1; }
+.plan .badge { align-self: flex-start; }
+
+/* barcode labels: 3 per row on A4 (about 63 x 34 mm) */
+.labels { display: grid; grid-template-columns: repeat(auto-fill, minmax(190px, 1fr)); gap: 8px; }
+.label { background: #fff; color: #000; border: 1px dashed #bbb; border-radius: 4px; padding: 6px; text-align: center; overflow: hidden; }
+.label .ln { font-size: 12px; font-weight: 700; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.label .lp { font-size: 12px; font-weight: 700; }
+.label svg { max-width: 100%; height: auto; }
+
+@media print {
+  .labels { grid-template-columns: repeat(3, 63mm); gap: 2mm; }
+  .label { height: 34mm; border: 0; break-inside: avoid; }
+  body.print-receipt #app, body.print-receipt #toast { display: none !important; }
+  body.print-receipt .receipt { display: block; }
+  .receipt { width: 72mm; font: 12px/1.35 monospace; color: #000; }
+  .receipt .c { text-align: center; margin: 4px 0 6px; }
+  .receipt table { width: 100%; border-collapse: collapse; border-top: 1px dashed #000; margin: 4px 0; }
+  .receipt td { padding: 1px 0; }
+  .receipt .r { text-align: right; }
+  .receipt .g td { font-weight: 700; font-size: 14px; border-top: 1px dashed #000; }
+  @page { margin: 6mm; }
+}
+@media (max-width: 860px) {
+  .posgrid { grid-template-columns: 1fr; }
+  .pos-pay { position: static; }
+}

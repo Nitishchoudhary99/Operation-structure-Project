@@ -160,5 +160,60 @@ const peek = await api('GET', `/api/docs/${inv.id}`, null, true);
 check('another business cannot see this invoice', peek.status === 404);
 cookie = ownerCookie;
 
+/* --- plans, barcode, GST portal files, Tally, admin --- */
+const raw = (path, headers = {}) => fetch(BASE + path, { headers: { Cookie: cookie, ...headers } });
+const meNow = await api('GET', '/api/me');
+check('new business starts on a Growth trial', meNow.plan.key === 'growth' && meNow.plan.until > meNow.today, JSON.stringify(meNow.plan));
+await api('PUT', `/api/items/${rice.id}`, { ...rice, barcode: '8901234567890' });
+const look = await api('GET', '/api/items/lookup?code=8901234567890');
+check('barcode lookup finds the item', look.id === rice.id);
+check('label code ST<id> lookup', (await api('GET', `/api/items/lookup?code=ST${oil.id}`)).id === oil.id);
+const dupBc = await api('POST', '/api/items', { name: 'Other rice', barcode: '8901234567890' }, true);
+check('duplicate barcode rejected', dupBc.status === 400);
+await api('PUT', '/api/org', { ...meNow.org, address: '12 Mandi Road', city: 'Jaipur', pincode: '302001' });
+await api('PUT', `/api/parties/${cust.id}`, { ...cust, gstin: '08AAACM1234A1Z2', pincode: '302012', address: 'Shop 4, MI Road', city: 'Jaipur' });
+const ein = await raw(`/api/docs/${inv.id}/einvoice`);
+const einJ = await ein.json();
+check('e-invoice JSON in NIC format', ein.ok && einJ[0].Version === '1.1' && einJ[0].SellerDtls.Stcd === '08' && einJ[0].ValDtls.TotInvVal === inv.total, JSON.stringify(einJ).slice(0, 200));
+const lineSum = einJ[0].ItemList.reduce((t, l) => t + l.AssAmt, 0);
+check('e-invoice item values add up', eq(lineSum, einJ[0].ValDtls.AssVal));
+const ewNo = await raw(`/api/docs/${inv.id}/ewaybill?distance=0`);
+check('e-way bill asks for distance', ewNo.status === 400);
+const ew = await (await raw(`/api/docs/${inv.id}/ewaybill?distance=12&vehicle_no=RJ14 AB 1234`)).json();
+check('e-way bill JSON', ew.billLists[0].vehicleNo === 'RJ14AB1234' && ew.billLists[0].fromPincode === 302001, JSON.stringify(ew).slice(0, 160));
+await api('PUT', `/api/docs/${inv.id}/gst-refs`, { irn: 'a'.repeat(64), ack_no: '112410000000001', ewb_no: '321000000001' });
+check('IRN saved on invoice', (await api('GET', `/api/docs/${inv.id}`)).irn.length === 64);
+const tx = await raw('/api/export/tally');
+const xml = await tx.text();
+check('Tally XML export', tx.ok && xml.includes('<VOUCHER VCHTYPE="Sales"') && xml.includes('<PARENT>Sundry Debtors</PARENT>') && xml.includes('Mehta Stores'));
+let bal = 0;
+for (const m of xml.matchAll(/<AMOUNT>(-?[\d.]+)<\/AMOUNT>/g)) bal += Math.round(+m[1] * 100);
+check('Tally vouchers balance', bal === 0, String(bal));
+// admin & activation codes (needs ADMIN_KEY in .dev.vars for local runs)
+const ADMIN = process.env.ADMIN_KEY || 'local-test-admin-key-0001';
+const adm = (m, path, body) => fetch(BASE + path, { method: m, headers: { 'Content-Type': 'application/json', 'X-Requested-With': 'SmartTrader', 'X-Admin-Key': ADMIN }, body: body && JSON.stringify(body) });
+const bad = await fetch(BASE + '/api/admin/orgs', { headers: { 'X-Admin-Key': 'wrong-key-wrong-key' } });
+check('admin rejects a wrong key', bad.status === 401 || bad.status === 404);
+const orgsRes = await adm('GET', '/api/admin/orgs');
+if (orgsRes.status === 404) console.log('SKIP  admin tests (no ADMIN_KEY configured)');
+else {
+  const orgs = await orgsRes.json();
+  check('admin lists businesses', orgs.rows.some((o) => o.name === 'Sharma Traders'));
+  const mine = orgs.rows.find((o) => o.name === 'Sharma Traders');
+  await adm('POST', `/api/admin/orgs/${mine.id}/plan`, { plan: 'free', months: 1 });
+  const capped = await api('POST', '/api/warehouses', { name: 'Godown 3' }, true);
+  check('free plan blocks extra godowns (402)', capped.status === 402 && capped.upgrade, JSON.stringify(capped));
+  const tallyFree = await raw('/api/export/tally');
+  check('free plan has no Tally export', tallyFree.status === 402);
+  const { codes } = await (await adm('POST', '/api/admin/codes', { plan: 'business', months: 12, count: 2 })).json();
+  check('codes generated', codes.length === 2 && /^ST-BUSINESS-12-/.test(codes[0]), codes[0]);
+  const act = await api('POST', '/api/plan/activate', { code: codes[0] });
+  check('activation code upgrades plan', act.plan === 'business' && (await api('GET', '/api/me')).plan.key === 'business');
+  const again = await api('POST', '/api/plan/activate', { code: codes[0] }, true);
+  check('code works only once', again.status === 400);
+  const forged = await api('POST', '/api/plan/activate', { code: codes[1].slice(0, -1) + (codes[1].endsWith('0') ? '1' : '0') }, true);
+  check('tampered code rejected', forged.status === 400);
+}
+
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

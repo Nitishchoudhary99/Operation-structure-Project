@@ -12,6 +12,12 @@ const fdate = (d) => d ? new Date(d + 'T00:00:00').toLocaleDateString('en-IN', {
 const badge = (s) => `<span class="badge b-${esc(s)}">${esc(s)}</span>`;
 const r2 = (x) => Math.round(x * 100) / 100;
 
+const STATES = ['Andaman and Nicobar Islands', 'Andhra Pradesh', 'Arunachal Pradesh', 'Assam', 'Bihar', 'Chandigarh', 'Chhattisgarh',
+  'Dadra and Nagar Haveli and Daman and Diu', 'Delhi', 'Goa', 'Gujarat', 'Haryana', 'Himachal Pradesh', 'Jammu and Kashmir', 'Jharkhand', 'Karnataka',
+  'Kerala', 'Ladakh', 'Lakshadweep', 'Madhya Pradesh', 'Maharashtra', 'Manipur', 'Meghalaya', 'Mizoram', 'Nagaland', 'Odisha', 'Puducherry', 'Punjab',
+  'Rajasthan', 'Sikkim', 'Tamil Nadu', 'Telangana', 'Tripura', 'Uttar Pradesh', 'Uttarakhand', 'West Bengal', 'Other Territory'];
+document.body.insertAdjacentHTML('beforeend', `<datalist id="states">${STATES.map((x) => `<option value="${x}">`).join('')}</datalist>`);
+
 let ME = null;                  // { user, org, can, doc_types, gst_rates, today }
 const cache = {};               // masters used by forms; cleared after writes
 
@@ -70,7 +76,7 @@ function modal(title, fields, onSubmit, { submit = 'Save', intro = '' } = {}) {
     if (f.type === 'select') return `<select name="${f.k}">${f.options.map((o) => `<option value="${esc(o.v)}" ${String(o.v) === String(v) ? 'selected' : ''}>${esc(o.t)}</option>`).join('')}</select>`;
     if (f.type === 'textarea') return `<textarea name="${f.k}" rows="3">${esc(v)}</textarea>`;
     if (f.type === 'checkbox') return `<input type="checkbox" name="${f.k}" ${v ? 'checked' : ''}>`;
-    return `<input name="${f.k}" type="${f.type || 'text'}" value="${esc(v)}" ${f.step ? `step="${f.step}"` : f.type === 'number' ? 'step="any"' : ''} ${f.required ? 'required' : ''} ${f.placeholder ? `placeholder="${esc(f.placeholder)}"` : ''}>`;
+    return `<input name="${f.k}" type="${f.type || 'text'}" value="${esc(v)}" ${f.list ? `list="${f.list}" autocomplete="off"` : ''} ${f.step ? `step="${f.step}"` : f.type === 'number' ? 'step="any"' : ''} ${f.required ? 'required' : ''} ${f.placeholder ? `placeholder="${esc(f.placeholder)}"` : ''}>`;
   };
   root.innerHTML = `<div class="modal-bg"><form class="modal" novalidate>
       <h2>${esc(title)}</h2>${intro}<div class="err" hidden></div>
@@ -133,7 +139,7 @@ function renderAuth(mode = 'login') {
       ${mode === 'signup' ? `
         <label class="f">Business name<input name="business" required></label>
         <label class="f">Your name<input name="name" required></label>
-        <div class="row"><label class="f grow">State<input name="state" placeholder="e.g. Rajasthan"></label>
+        <div class="row"><label class="f grow">State<input name="state" list="states" autocomplete="off" placeholder="e.g. Rajasthan" required></label>
         <label class="f grow">GSTIN (optional)<input name="gstin" maxlength="15"></label></div>` : ''}
       <label class="f">Email<input name="email" type="email" autocomplete="email" required></label>
       <label class="f">Password<input name="password" type="password" autocomplete="${mode === 'login' ? 'current-password' : 'new-password'}" required minlength="8"></label>
@@ -155,13 +161,13 @@ function renderAuth(mode = 'login') {
 /* ======================================================================= shell & router */
 const NAV = [
   ['', [['dashboard', 'Dashboard']]],
-  ['Sales', [['sales/INV', 'Invoices'], ['sales/SO', 'Sales Orders'], ['sales/DN', 'Delivery Notes'], ['sales/QUOTE', 'Quotations'], ['sales/SRET', 'Sales Returns'], ['receipts', 'Receipts']]],
+  ['Sales', [['pos', 'Quick Bill (POS)'], ['sales/INV', 'Invoices'], ['sales/SO', 'Sales Orders'], ['sales/DN', 'Delivery Notes'], ['sales/QUOTE', 'Quotations'], ['sales/SRET', 'Sales Returns'], ['receipts', 'Receipts']]],
   ['Purchase', [['purchase/PO', 'Purchase Orders'], ['purchase/GRN', 'Goods Receipts'], ['purchase/BILL', 'Purchase Bills'], ['purchase/PRET', 'Purchase Returns'], ['payments', 'Payments']]],
   ['Inventory', [['items', 'Items'], ['stock', 'Stock & Godowns']]],
   ['Contacts', [['parties', 'Customers & Suppliers'], ['khata', 'Khata Book']]],
   ['Accounts', [['expenses', 'Expenses'], ['accounts', 'Chart of Accounts'], ['journal', 'Journal Voucher'], ['daybook', 'Day Book']]],
-  ['Reports', [['reports/pnl', 'Profit & Loss'], ['reports/balance-sheet', 'Balance Sheet'], ['reports/trial-balance', 'Trial Balance'], ['reports/gst', 'GST Summary'], ['reports/ageing', 'Outstanding (Ageing)'], ['reports/register', 'Registers']]],
-  ['Settings', [['settings', 'Business & Users']]],
+  ['Reports', [['reports/pnl', 'Profit & Loss'], ['reports/balance-sheet', 'Balance Sheet'], ['reports/trial-balance', 'Trial Balance'], ['reports/gst', 'GST Summary'], ['reports/ageing', 'Outstanding (Ageing)'], ['reports/register', 'Registers'], ['tally', 'Tally Export']]],
+  ['Settings', [['settings', 'Business & Users'], ['plan', 'Plan & Billing']]],
 ];
 
 function shell() {
@@ -175,6 +181,7 @@ function shell() {
         <button class="btn sm burger" id="burger" aria-label="Menu">&#9776;</button>
         <strong>${esc(ME.org.name)}</strong><span class="spacer" style="flex:1"></span>
         <span class="who hide-sm">${esc(ME.user.name)} &middot; ${esc(ME.user.role)}</span>
+        <button class="btn sm" id="install" hidden>Install app</button>
         <button class="btn sm" id="logout">Sign out</button>
       </header>
       <main class="page" id="page"></main>
@@ -387,6 +394,9 @@ route(/^doc\/(\d+)$/, async (el, m) => {
     for (const [k, v] of next) if (hasOpen) actions.push(`<a class="btn" href="#/new/${k}?from=${d.id}">${['SRET', 'PRET'].includes(k) ? 'Return' : 'Make ' + esc(v.label)}</a>`);
     if (['INV', 'BILL'].includes(d.type) && d.balance > 0) actions.push(`<button class="btn" id="pay">${d.type === 'INV' ? 'Receive payment' : 'Record payment'}</button>`);
     if (d.type === 'INV' && p.phone) actions.push(`<button class="btn" id="wa">WhatsApp</button>`);
+    if (['INV', 'SRET'].includes(d.type)) actions.push(`<a class="btn" href="/api/docs/${d.id}/einvoice" id="einv">E-invoice JSON</a>`);
+    if (['INV', 'DN'].includes(d.type)) actions.push(`<button class="btn" id="ewb">E-way bill</button>`);
+    if (['INV', 'SRET', 'DN'].includes(d.type)) actions.push(`<button class="btn" id="refs">${d.irn || d.ewb_no ? 'Edit' : 'Add'} IRN / EWB no.</button>`);
     actions.push(`<button class="btn danger" id="cancel">Cancel</button>`);
   }
   actions.push(`<button class="btn primary" onclick="print()">Print / PDF</button>`);
@@ -415,8 +425,23 @@ route(/^doc\/(\d+)$/, async (el, m) => {
         <div class="totals"><div><span>Taxable</span><span>${inr(d.taxable)}</span></div>
           ${inter ? `<div><span>IGST</span><span>${inr(d.igst)}</span></div>` : `<div><span>CGST</span><span>${inr(d.cgst)}</span></div><div><span>SGST</span><span>${inr(d.sgst)}</span></div>`}
           ${d.round_off ? `<div><span>Round off</span><span>${inr(d.round_off)}</span></div>` : ''}<div class="grand"><span>Total</span><span>${inr(d.total)}</span></div></div></div>
-      <div class="sign">For ${esc(o.name)}<br><br><br>Authorised signatory</div>
+      ${d.irn || d.ewb_no ? `<div style="margin-top:12px;font-size:12px">${d.irn ? `IRN: <b>${esc(d.irn)}</b>${d.ack_no ? ` &middot; Ack No: ${esc(d.ack_no)}` : ''}${d.ack_date ? ` &middot; Ack Date: ${esc(d.ack_date)}` : ''}<br>` : ''}${d.ewb_no ? `E-way bill: <b>${esc(d.ewb_no)}</b>${d.ewb_date ? ` &middot; ${esc(d.ewb_date)}` : ''}` : ''}</div>` : ''}
+      <div class="foot"><div id="upiqr"></div><div class="sign">For ${esc(o.name)}<br><br><br>Authorised signatory</div></div>
     </div>`;
+  if (d.type === 'INV' && o.upi_id && d.balance > 0) upiQr($('#upiqr'), o, d.balance, d.number, 'Scan to pay with any UPI app');
+  if ($('#einv')) $('#einv').onclick = (e) => { e.preventDefault(); fileDownload(`/api/docs/${d.id}/einvoice`); };
+  if ($('#ewb')) $('#ewb').onclick = () => modal('E-way bill (bulk upload JSON)', [
+    { k: 'distance', label: 'Distance (km)', type: 'number', required: true }, { k: 'vehicle_no', label: 'Vehicle number', placeholder: 'RJ14AB1234' },
+    { k: 'mode', label: 'Mode', type: 'select', options: [{ v: '1', t: 'Road' }, { v: '2', t: 'Rail' }, { v: '3', t: 'Air' }, { v: '4', t: 'Ship' }] },
+    { k: 'transporter_id', label: 'Transporter ID (GSTIN/TRANSIN)' }, { k: 'transporter_name', label: 'Transporter name' },
+    { k: 'trans_doc_no', label: 'LR / RR number' }, { k: 'trans_doc_date', label: 'LR date', type: 'date' }],
+  async (v) => fileDownload(`/api/docs/${d.id}/ewaybill?${new URLSearchParams(v)}`), { submit: 'Download JSON',
+    intro: '<p class="muted">Upload the file at ewaybillgst.gov.in → e-Waybill → Generate Bulk. Then save the e-way bill number here with “Add IRN / EWB no.”</p>' });
+  if ($('#refs')) $('#refs').onclick = () => modal('GST portal numbers', [
+    { k: 'irn', label: 'IRN (e-invoice)', value: d.irn, wide: true }, { k: 'ack_no', label: 'Ack No', value: d.ack_no }, { k: 'ack_date', label: 'Ack date', value: d.ack_date },
+    { k: 'ewb_no', label: 'E-way bill no.', value: d.ewb_no }, { k: 'ewb_date', label: 'E-way bill date', value: d.ewb_date }],
+  async (v) => { await api('PUT', `/api/docs/${d.id}/gst-refs`, v); toast('Saved'); render(); },
+  { intro: '<p class="muted">Upload the e-invoice JSON on einvoice1.gst.gov.in (or through your GSP), then paste the IRN and Ack details here. They print on the invoice.</p>' });
   const c = $('#cancel');
   if (c) c.onclick = async () => {
     if (!confirm(`Cancel ${d.number}? Its stock and accounting entries will be reversed.`)) return;
@@ -470,7 +495,8 @@ function partyForm(p = {}, after) {
     { k: 'name', label: 'Name', value: p.name, required: true },
     { k: 'kind', label: 'Type', type: 'select', options: [{ v: 'customer', t: 'Customer' }, { v: 'supplier', t: 'Supplier' }, { v: 'both', t: 'Both' }], value: p.kind || 'customer' },
     { k: 'phone', label: 'Mobile', value: p.phone, type: 'tel' }, { k: 'email', label: 'Email', value: p.email, type: 'email' },
-    { k: 'gstin', label: 'GSTIN', value: p.gstin }, { k: 'state', label: 'State', value: p.state ?? ME.org.state },
+    { k: 'gstin', label: 'GSTIN', value: p.gstin }, { k: 'state', label: 'State', value: p.state ?? ME.org.state, list: 'states' },
+    { k: 'city', label: 'City', value: p.city }, { k: 'pincode', label: 'PIN code', value: p.pincode, placeholder: 'needed for e-invoice / e-way bill' },
     { k: 'credit_days', label: 'Credit days', type: 'number', value: p.credit_days ?? 0 }, { k: 'credit_limit', label: 'Credit limit (₹)', type: 'number', value: p.credit_limit ?? 0 },
     { k: 'address', label: 'Address', type: 'textarea', value: p.address, wide: true },
   ], async (v) => {
@@ -518,6 +544,7 @@ function itemForm(i = {}) {
     { k: 'hsn', label: 'HSN / SAC', value: i.hsn }, { k: 'gst_rate', label: 'GST rate', type: 'select', options: ME.gst_rates.map((g) => ({ v: g, t: g + '%' })), value: i.gst_rate ?? 18 },
     { k: 'purchase_price', label: 'Purchase price (₹)', type: 'number', value: i.purchase_price }, { k: 'sale_price', label: 'Sale price (₹)', type: 'number', value: i.sale_price },
     { k: 'reorder_level', label: 'Reorder level', type: 'number', value: i.reorder_level ?? 0 },
+    { k: 'barcode', label: 'Barcode (scan or leave blank)', value: i.barcode, placeholder: 'blank = auto label code' },
     ...(i.id ? [] : [{ k: 'is_service', label: 'Service (no stock)', type: 'checkbox' }, { k: 'opening_qty', label: 'Opening stock qty', type: 'number' }, { k: 'opening_rate', label: 'Opening rate (₹)', type: 'number' }]),
   ], async (v) => {
     if (i.id) await api('PUT', '/api/items/' + i.id, v); else await POST('/api/items', v);
@@ -543,7 +570,7 @@ route(/^item\/(\d+)$/, async (el, m) => {
   const it = (await master('items')).find((x) => x.id === +m[1]);
   if (!it) throw new Error('Item not found.');
   const { rows } = await GET(`/api/items/${it.id}/moves`);
-  el.innerHTML = head(esc(it.name), `<button class="btn" id="edit">Edit</button><button class="btn danger" id="del">Delete</button>`) + `
+  el.innerHTML = head(esc(it.name), `${it.is_service ? '' : `<a class="btn" href="#/labels/${it.id}">Print barcode labels</a>`}<button class="btn" id="edit">Edit</button><button class="btn danger" id="del">Delete</button>`) + `
     <div class="kpis"><div class="kpi"><div class="l">In stock</div><div class="v">${qtyf(it.qty_on_hand)} ${esc(it.unit)}</div></div>
       <div class="kpi"><div class="l">Average cost</div><div class="v">${inr(it.avg_cost)}</div></div><div class="kpi"><div class="l">Stock value</div><div class="v">${inr(it.stock_value)}</div></div>
       <div class="kpi"><div class="l">Sale price</div><div class="v">${inr(it.sale_price)}</div><div class="s">GST ${it.gst_rate}% &middot; HSN ${esc(it.hsn)}</div></div></div>
@@ -741,7 +768,9 @@ route(/^settings$/, async (el) => {
   el.innerHTML = head('Business & Users') + `
     <form class="panel" id="org"><h2>Business profile</h2><div class="err" hidden></div><div class="form">
       <label class="f">Business name<input name="name" value="${esc(o.name)}"></label><label class="f">GSTIN<input name="gstin" value="${esc(o.gstin)}" maxlength="15"></label>
-      <label class="f">State<input name="state" value="${esc(o.state)}"></label><label class="f">Phone<input name="phone" value="${esc(o.phone)}"></label>
+      <label class="f">State<input name="state" list="states" autocomplete="off" value="${esc(o.state)}"></label>
+      <label class="f">City<input name="city" value="${esc(o.city || '')}"></label><label class="f">PIN code<input name="pincode" value="${esc(o.pincode || '')}" maxlength="6" inputmode="numeric"></label>
+      <label class="f">Business email<input name="email" type="email" value="${esc(o.email || '')}"></label><label class="f">Phone<input name="phone" value="${esc(o.phone)}"></label>
       <label class="f">UPI ID (for payment links)<input name="upi_id" value="${esc(o.upi_id)}" placeholder="shop@okhdfcbank"></label>
       <label class="f">Financial year starts (MM-DD)<input name="fy_start" value="${esc(o.fy_start)}"></label>
       <label class="f wide">Address (printed on invoices)<textarea name="address" rows="2">${esc(o.address)}</textarea></label></div>
@@ -752,9 +781,10 @@ route(/^settings$/, async (el) => {
       <div class="muted" style="padding:10px 16px">Roles: <b>admin</b> everything · <b>accountant</b> money, bills, reports · <b>store</b> stock, items, purchase · <b>sales</b> quotes, orders, invoices, khata.</div></div>` : ''}
     <form class="panel" id="pw"><h2>Change your password</h2><div class="err" hidden></div><div class="form"><label class="f">Current password<input type="password" name="current" autocomplete="current-password"></label>
       <label class="f">New password<input type="password" name="password" autocomplete="new-password" minlength="8"></label></div><div class="row" style="margin-top:12px"><span class="spacer"></span><button class="btn">Change password</button></div></form>
+    <p class="muted">Selling SmartTrader to other businesses? <a href="#/admin">Open the admin panel</a> (needs the ADMIN_KEY secret).</p>
     ${canUsers ? `<div class="panel flush"><div style="padding:14px 16px 0"><h3>Audit trail</h3></div>${table([{ h: 'When', f: (a) => new Date(a.at).toLocaleString('en-IN') }, { h: 'User', k: 'user' }, { h: 'Action', k: 'action' }, { h: 'Detail', k: 'detail', cls: 'hide-sm' }], audit.slice(0, 100))}</div>` : ''}`;
   const sub = (id, fn) => { $(id).onsubmit = async (e) => { e.preventDefault(); const b = $('.err', e.target); b.hidden = true; try { await fn(Object.fromEntries(new FormData(e.target))); } catch (err) { b.hidden = false; b.textContent = err.message; } }; };
-  sub('#org', async (v) => { await api('PUT', '/api/org', v); ME = await GET('/api/me'); shell(); toast('Profile saved'); render(); });
+  sub('#org', async (v) => { await api('PUT', '/api/org', v); ME = await GET('/api/me'); shell(); wireInstall(); toast('Profile saved'); render(); });
   sub('#pw', async (v) => { await POST('/api/me/password', v); toast('Password changed'); $('#pw').reset(); });
   if ($('#adduser')) $('#adduser').onclick = () => modal('Add user', [{ k: 'name', label: 'Name' }, { k: 'email', label: 'Email', type: 'email' },
     { k: 'role', label: 'Role', type: 'select', options: users.roles.filter((r) => r !== 'owner').map((r) => ({ v: r, t: r })) }, { k: 'password', label: 'Temporary password (8+ chars)', type: 'password' }],
@@ -762,10 +792,311 @@ route(/^settings$/, async (el) => {
   $$('[data-u]', el).forEach((b) => b.onclick = async () => { await api('PUT', '/api/users/' + b.dataset.u, { active: b.dataset.a !== '1' }); render(); });
 });
 
+/* ======================================================================= shared: downloads, UPI QR, scripts */
+async function fileDownload(url) {
+  const res = await fetch(url, { credentials: 'same-origin' });
+  if (!res.ok) {
+    let msg = `Download failed (${res.status})`;
+    try { msg = (await res.json()).error || msg; } catch (e) { /* not json */ }
+    if (res.status === 402 && confirm(msg + '\n\nOpen Plan & Billing now?')) go('plan'); else if (res.status !== 402) alert(msg);
+    return;
+  }
+  const name = ((res.headers.get('Content-Disposition') || '').match(/filename="([^"]+)"/) || [])[1] || 'download';
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(await res.blob()); a.download = name; a.click();
+  setTimeout(() => URL.revokeObjectURL(a.href), 2000);
+  toast('Downloaded ' + name);
+}
+const upiLink = (vpa, name, amount, note) => `upi://pay?pa=${encodeURIComponent(vpa)}&pn=${encodeURIComponent(name)}${amount ? `&am=${(+amount).toFixed(2)}` : ''}&cu=INR${note ? `&tn=${encodeURIComponent(note)}` : ''}`;
+async function upiQr(el, org, amount, note, caption = '') {
+  if (!el || !org.upi_id) return;
+  try {
+    const { default: qrcode } = await import('/vendor/qrcode.mjs');
+    const qr = qrcode(0, 'M'); qr.addData(upiLink(org.upi_id, org.name, amount, note)); qr.make();
+    el.innerHTML = `<div class="qr">${qr.createSvgTag({ cellSize: 3, margin: 2, scalable: true })}<div>${esc(caption)}<br><b>${amount ? inr(amount) : ''}</b> &middot; ${esc(org.upi_id)}</div></div>`;
+  } catch (e) { el.innerHTML = ''; }
+}
+const scripts = {};
+const loadScript = (src) => scripts[src] || (scripts[src] = new Promise((ok, fail) => {
+  const s = document.createElement('script'); s.src = src; s.onload = ok; s.onerror = () => fail(new Error('Could not load ' + src)); document.head.appendChild(s);
+}));
+const labelCode = (it) => it.barcode || it.sku || 'ST' + it.id;
+
+/* ======================================================================= POS / quick bill with barcode scanning */
+route(/^pos$/, async (el) => {
+  dirty('items', 'accounts');
+  const [items, parties, whs, accts] = await Promise.all([master('items'), master('parties'), master('warehouses'), master('accounts')]);
+  const customers = parties.filter((p) => p.kind !== 'supplier');
+  const walkin = customers.find((p) => p.name === 'Walk-in Customer') || customers[0];
+  const acc = (sys) => (accts.find((a) => a.sys === sys) || accts.find((a) => a.is_cash) || {}).id;
+  const cart = [];
+  let method = 'cash';
+  el.innerHTML = head('Quick Bill', `<a class="btn" href="#/sales/INV">All invoices</a>`) + `
+    <div class="posgrid">
+      <div>
+        <div class="panel"><div class="row">
+          <label class="f grow">Customer<select id="cust">${customers.map((p) => `<option value="${p.id}" ${p.id === (walkin && walkin.id) ? 'selected' : ''}>${esc(p.name)}</option>`).join('')}</select></label>
+          <label class="f">Godown<select id="wh">${whs.map((w) => `<option value="${w.id}">${esc(w.name)}</option>`).join('')}</select></label></div>
+          <div class="row" style="margin-top:10px"><input id="scan" class="grow scan" list="pos-items" placeholder="Scan barcode or type item name, then Enter" autocomplete="off" autofocus>
+            ${'BarcodeDetector' in window ? '<button class="btn" id="cam" title="Scan with camera">📷 Camera</button>' : ''}</div>
+          <datalist id="pos-items">${items.map((i) => `<option value="${esc(i.name)}">${esc(labelCode(i))} · ${inr(i.sale_price)}</option>`).join('')}</datalist></div>
+        <div class="panel flush" id="cart"></div>
+      </div>
+      <div class="panel pos-pay">
+        <div class="totals" id="ptot" style="width:100%"></div>
+        <div class="seg" id="method">${[['cash', 'Cash'], ['upi', 'UPI'], ['bank', 'Card / Bank'], ['credit', 'Credit (udhaar)']].map(([k, t]) => `<button type="button" data-m="${k}" class="${k === method ? 'on' : ''}">${t}</button>`).join('')}</div>
+        <label class="f" id="recvw">Amount received (₹)<input id="recv" type="number" step="any" min="0"></label>
+        <div id="change" class="muted"></div><div id="posqr"></div>
+        <button class="btn primary big" id="done">Complete sale <span class="hide-sm">(F9)</span></button>
+        <div class="err" id="perr" hidden></div>
+      </div>
+    </div>
+`;
+  const totals = () => {
+    let taxable = 0, tax = 0;
+    for (const l of cart) { const t = r2(l.qty * l.rate); taxable += t; tax += r2(t * l.gst_rate / 100); }
+    return { taxable, tax, total: Math.round(taxable + tax) };
+  };
+  const draw = () => {
+    $('#cart').innerHTML = cart.length ? `<table class="t lines"><thead><tr><th>Item</th><th>Qty</th><th class="num">Rate</th><th class="num">Amount</th><th></th></tr></thead><tbody>${cart.map((l, i) => `<tr>
+        <td><b>${esc(l.name)}</b><div class="muted">${esc(l.code)} · GST ${l.gst_rate}% · stock ${qtyf(l.stock)}</div></td>
+        <td class="c-n"><input type="number" step="any" min="0" value="${l.qty}" data-q="${i}"></td>
+        <td class="num"><input type="number" step="any" min="0" value="${l.rate}" data-r="${i}" style="width:90px"></td>
+        <td class="num">${inr(r2(l.qty * l.rate * (1 + l.gst_rate / 100)))}</td><td><button class="btn sm danger" data-x="${i}">&times;</button></td></tr>`).join('')}</tbody></table>`
+      : '<div class="empty">Scan an item to start the bill.</div>';
+    const t = totals();
+    $('#ptot').innerHTML = `<div><span>Items</span><span>${cart.reduce((s, l) => s + l.qty, 0)}</span></div><div><span>Taxable</span><span>${inr(t.taxable)}</span></div>
+      <div><span>GST</span><span>${inr(t.tax)}</span></div><div class="grand"><span>Total</span><span>${inr(t.total)}</span></div>`;
+    const recv = $('#recv');
+    if (document.activeElement !== recv) recv.value = method === 'credit' ? '' : t.total || '';
+    $('#recvw').hidden = method === 'credit';
+    const ch = (+recv.value || 0) - t.total;
+    $('#change').textContent = method === 'cash' && ch > 0 ? `Return change: ${inr(ch)}` : method === 'credit' ? 'The full amount goes to the customer’s account.' : '';
+    if (method === 'upi' && t.total) upiQr($('#posqr'), ME.org, t.total, 'Bill', 'Customer scans to pay'); else $('#posqr').innerHTML = method === 'upi' ? '<p class="muted">Add your UPI ID in Settings to show a QR here.</p>' : '';
+    if (method === 'upi' && !ME.org.upi_id) $('#posqr').innerHTML = '<p class="muted">Add your UPI ID in Settings to show a QR here.</p>';
+  };
+  const add = async (code) => {
+    code = code.trim();
+    if (!code) return;
+    const lc = code.toLowerCase();
+    let it = items.find((i) => i.name.toLowerCase() === lc || (i.barcode && i.barcode === code) || (i.sku && i.sku.toLowerCase() === lc) || ('st' + i.id) === lc);
+    if (!it) { try { it = await GET('/api/items/lookup?code=' + encodeURIComponent(code)); } catch (e) { toast(e.message); beep(false); return; } }
+    const line = cart.find((l) => l.item_id === it.id);
+    if (line) line.qty = r2(line.qty + 1);
+    else cart.push({ item_id: it.id, name: it.name, code: labelCode(it), qty: 1, rate: it.sale_price, gst_rate: it.gst_rate, stock: it.qty_on_hand, unit: it.unit });
+    beep(true); draw();
+  };
+  const scan = $('#scan');
+  scan.addEventListener('keydown', async (e) => { if (e.key === 'Enter') { e.preventDefault(); const v = scan.value; scan.value = ''; await add(v); scan.focus(); } });
+  scan.addEventListener('change', async () => { if (items.some((i) => i.name === scan.value)) { const v = scan.value; scan.value = ''; await add(v); } });
+  $('#cart').addEventListener('input', (e) => {
+    const q = e.target.dataset.q, r = e.target.dataset.r;
+    if (q !== undefined) cart[+q].qty = +e.target.value || 0;
+    if (r !== undefined) cart[+r].rate = +e.target.value || 0;
+    const t = totals(); $('#ptot .grand span:last-child').textContent = inr(t.total);
+  });
+  $('#cart').addEventListener('change', draw);
+  $('#cart').addEventListener('click', (e) => { if (e.target.dataset.x !== undefined) { cart.splice(+e.target.dataset.x, 1); draw(); } });
+  $('#method').onclick = (e) => { const m = e.target.dataset.m; if (!m) return; method = m; $$('#method button').forEach((b) => b.classList.toggle('on', b.dataset.m === m)); draw(); };
+  $('#recv').oninput = draw;
+  if ($('#cam')) $('#cam').onclick = () => cameraScan(add);
+  const complete = async () => {
+    const lines = cart.filter((l) => l.qty > 0);
+    if (!lines.length) return toast('The bill is empty.');
+    const t = totals(), btn = $('#done'); btn.disabled = true; $('#perr').hidden = true;
+    const body = { type: 'INV', party_id: +$('#cust').value, warehouse_id: +$('#wh').value, date: ME.today, notes: 'POS sale',
+      lines: lines.map((l) => ({ item_id: l.item_id, qty: l.qty, rate: l.rate, gst_rate: l.gst_rate })) };
+    if (method !== 'credit') body.payment = { amount: Math.min(+$('#recv').value || t.total, t.total), account_id: acc(method === 'upi' ? 'upi' : method === 'bank' ? 'bank' : 'cash') };
+    try {
+      const d = await POST('/api/docs', body);
+      dirty('items', 'accounts', 'parties');
+      printReceipt(d, method, +$('#recv').value || 0);
+      cart.length = 0; draw(); scan.focus(); toast(`${d.number} saved`);
+    } catch (err) { $('#perr').hidden = false; $('#perr').textContent = err.message; } finally { btn.disabled = false; }
+  };
+  $('#done').onclick = complete;
+  const keys = (e) => { if (e.key === 'F9') { e.preventDefault(); complete(); } };
+  document.addEventListener('keydown', keys);
+  window.addEventListener('hashchange', () => document.removeEventListener('keydown', keys), { once: true });
+  draw(); scan.focus();
+});
+function beep(ok) {
+  try {
+    const a = new (window.AudioContext || window.webkitAudioContext)(), o = a.createOscillator();
+    o.frequency.value = ok ? 1400 : 300; o.connect(a.destination); o.start(); o.stop(a.currentTime + (ok ? 0.07 : 0.25));
+    if (navigator.vibrate) navigator.vibrate(ok ? 40 : [80, 40, 80]);
+  } catch (e) { /* no audio */ }
+}
+async function cameraScan(onCode) {
+  const root = $('#modal-root');
+  root.innerHTML = `<div class="modal-bg"><div class="modal"><h2>Point the camera at a barcode</h2><video id="cv" playsinline muted style="width:100%;border-radius:8px;background:#000"></video>
+    <div class="actions"><button class="btn" id="cx">Done</button></div></div></div>`;
+  let stream, stop = false, last = '', lastAt = 0;
+  const close = () => { stop = true; if (stream) stream.getTracks().forEach((t) => t.stop()); root.innerHTML = ''; };
+  $('#cx').onclick = close;
+  try {
+    stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'environment' } });
+    const v = $('#cv'); v.srcObject = stream; await v.play();
+    const det = new window.BarcodeDetector();
+    const tick = async () => {
+      if (stop) return;
+      try {
+        const codes = await det.detect(v);
+        if (codes.length && (codes[0].rawValue !== last || Date.now() - lastAt > 1500)) { last = codes[0].rawValue; lastAt = Date.now(); await onCode(last); }
+      } catch (e) { /* frame not ready */ }
+      setTimeout(tick, 250);
+    };
+    tick();
+  } catch (e) { close(); alert('Camera not available: ' + e.message); }
+}
+function printReceipt(d, method, received) {
+  const o = d.org;
+  let r = $('#receipt');
+  if (!r) { r = document.createElement('div'); r.id = 'receipt'; r.className = 'receipt'; document.body.appendChild(r); }
+  r.innerHTML = `<div class="c"><b>${esc(o.name)}</b><br>${esc(o.address || '')}${o.gstin ? `<br>GSTIN ${esc(o.gstin)}` : ''}${o.phone ? `<br>${esc(o.phone)}` : ''}</div>
+    <div class="c">${o.gstin ? 'TAX INVOICE' : 'BILL'}<br>${esc(d.number)} &middot; ${fdate(d.date)}</div>
+    <table>${d.lines.map((l) => `<tr><td colspan="3">${esc(l.item || l.description)}</td></tr><tr><td>${qtyf(l.qty)} x ${inr(l.rate)}</td><td>${l.gst_rate}%</td><td class="r">${inr(l.total)}</td></tr>`).join('')}</table>
+    <table><tr><td>Taxable</td><td class="r">${inr(d.taxable)}</td></tr>${d.igst ? `<tr><td>IGST</td><td class="r">${inr(d.igst)}</td></tr>` : `<tr><td>CGST</td><td class="r">${inr(d.cgst)}</td></tr><tr><td>SGST</td><td class="r">${inr(d.sgst)}</td></tr>`}
+    ${d.round_off ? `<tr><td>Round off</td><td class="r">${inr(d.round_off)}</td></tr>` : ''}<tr class="g"><td>TOTAL</td><td class="r">${inr(d.total)}</td></tr>
+    <tr><td>Paid (${esc(method)})</td><td class="r">${inr(d.paid)}</td></tr>${method === 'cash' && received > d.total ? `<tr><td>Change</td><td class="r">${inr(received - d.total)}</td></tr>` : ''}
+    ${d.balance > 0 ? `<tr><td>Balance due</td><td class="r">${inr(d.balance)}</td></tr>` : ''}</table>
+    <div class="c">Thank you! Visit again.</div>`;
+  document.body.classList.add('print-receipt');
+  setTimeout(() => { print(); document.body.classList.remove('print-receipt'); }, 50);
+}
+
+/* ======================================================================= barcode labels */
+route(/^labels\/(\d+)$/, async (el, m, q) => {
+  dirty('items');
+  const it = (await master('items')).find((x) => x.id === +m[1]);
+  if (!it) throw new Error('Item not found.');
+  const n = Math.min(200, Math.max(1, +q.get('n') || 24)), code = labelCode(it);
+  el.innerHTML = head(`Labels: ${esc(it.name)}`, `<form class="row" id="lf"><input name="n" type="number" min="1" max="200" value="${n}" style="width:90px"><button class="btn">Update</button></form><button class="btn primary" onclick="print()">Print labels</button>`) +
+    `<p class="muted no-print">Code <b>${esc(code)}</b>. ${it.barcode || it.sku ? '' : 'This item has no barcode, so the label uses its built-in code; the POS screen recognises it.'} Use A4 label sheets or a label printer.</p>
+    <div class="labels">${Array.from({ length: n }, () => `<div class="label"><div class="ln">${esc(it.name)}</div><svg class="bc"></svg><div class="lp">MRP ${inr(it.sale_price)}</div></div>`).join('')}</div>`;
+  $('#lf').onsubmit = (e) => { e.preventDefault(); go(`labels/${it.id}?n=${e.target.n.value}`); };
+  await loadScript('/vendor/JsBarcode.all.min.js');
+  window.JsBarcode('.labels .bc', code, { format: 'CODE128', width: 1.3, height: 34, fontSize: 11, margin: 0, textMargin: 1 });
+});
+
+/* ======================================================================= Tally export */
+route(/^tally$/, async (el) => {
+  const fy = ME.today.slice(5) >= (ME.org.fy_start || '04-01') ? ME.today.slice(0, 4) : String(+ME.today.slice(0, 4) - 1);
+  el.innerHTML = head('Export to Tally') + `<div class="panel"><p>Download every voucher (sales, purchases, returns, receipts, payments, expenses, journals) with the ledgers they use, as a Tally XML file.</p>
+    <form class="row" id="tf"><label class="f">From<input type="date" name="from" value="${fy}-${ME.org.fy_start || '04-01'}"></label><label class="f">To<input type="date" name="to" value="${ME.today}"></label>
+    <label class="f">&nbsp;<button class="btn primary">Download Tally XML</button></label></form></div>
+    <div class="panel"><h2>Import in Tally Prime</h2><ol><li>Open your company in Tally.</li><li><b>Gateway of Tally → Import → Masters</b>: choose the file (creates the ledgers).</li>
+    <li><b>Import → Transactions</b>: choose the same file (creates the vouchers).</li><li>Check the Trial Balance: it matches the one here.</li></ol>
+    <p class="muted">Vouchers come in as accounting vouchers (no item-wise stock), so Tally's figures match this ERP exactly. Included in Starter plan and above.</p></div>`;
+  $('#tf').onsubmit = (e) => { e.preventDefault(); fileDownload('/api/export/tally?' + new URLSearchParams(new FormData(e.target))); };
+});
+
+/* ======================================================================= plan & billing */
+route(/^plan$/, async (el) => {
+  const P = await GET('/api/plan'), cur = P.plan, u = P.usage;
+  const lim = (n) => n === null ? 'Unlimited' : n;
+  el.innerHTML = head('Plan & Billing') + `
+    <div class="kpis"><div class="kpi"><div class="l">Current plan</div><div class="v">${esc(cur.label)}</div><div class="s">${cur.until ? 'Valid till ' + fdate(cur.until) : 'Free forever'}</div></div>
+      <div class="kpi"><div class="l">Invoices this month</div><div class="v">${u.invoices_this_month}</div><div class="s">of ${lim(cur.invoices_per_month)}</div></div>
+      <div class="kpi"><div class="l">Active users</div><div class="v">${u.users}</div><div class="s">of ${lim(cur.users)}</div></div>
+      <div class="kpi"><div class="l">Godowns</div><div class="v">${u.warehouses}</div><div class="s">of ${lim(cur.warehouses)}</div></div></div>
+    <div class="plans">${P.plans.map((p) => `<div class="plan ${p.key === cur.key ? 'cur' : ''} ${p.key === 'growth' ? 'pop' : ''}">
+      ${p.key === 'growth' ? '<div class="badge b-open">Most popular</div>' : ''}<h2>${esc(p.label)}</h2>
+      <div class="price">${p.price ? '₹' + p.price.toLocaleString('en-IN') + '<span>/year + GST</span>' : '₹0'}</div>
+      <ul><li>${lim(p.invoices_per_month)} invoices / month</li><li>${lim(p.users)} user${p.users === 1 ? '' : 's'}</li><li>${lim(p.warehouses)} godown${p.warehouses === 1 ? '' : 's'}</li>
+      <li>Inventory, purchase, sales, GST, accounts</li><li>Khata with WhatsApp reminders</li><li>POS & barcode billing</li>
+      ${p.features.includes('tally') ? '<li>Tally export</li>' : ''}${p.features.includes('einvoice') ? '<li>E-invoice & e-way bill JSON</li>' : ''}${p.features.includes('priority') ? '<li>Priority support</li>' : ''}</ul>
+      ${p.key === cur.key ? '<div class="muted">Your plan</div>' : p.price ? `<button class="btn primary" data-buy="${p.key}">Choose ${esc(p.label)}</button>` : ''}</div>`).join('')}</div>
+    <div class="grid g2">
+      <div class="panel" id="paybox"><h2>How to upgrade</h2>${P.pay_upi ? `<p>Pay by UPI to <b>${esc(P.pay_upi)}</b>, then send the payment screenshot with your login email${P.support_whatsapp ? ' on WhatsApp' : ''}. You will get an activation code.</p><div id="payqr"></div>
+        ${P.support_whatsapp ? `<a class="btn" target="_blank" rel="noopener" href="https://wa.me/${esc(P.support_whatsapp.replace(/\D/g, ''))}?text=${encodeURIComponent(`Hi, I want to upgrade SmartTrader ERP. Business: ${ME.org.name}, login: ${ME.user.email}`)}">WhatsApp us</a>` : ''}`
+        : '<p>Contact the person who gave you SmartTrader to buy a plan. You will get an activation code.</p>'}</div>
+      <form class="panel" id="act"><h2>Have an activation code?</h2><div class="err" hidden></div><label class="f">Code<input name="code" placeholder="ST-GROWTH-12-…" autocomplete="off"></label>
+        <div class="row" style="margin-top:12px"><span class="spacer"></span><button class="btn primary">Activate</button></div></form>
+    </div>`;
+  $$('[data-buy]', el).forEach((b) => b.onclick = () => {
+    const p = P.plans.find((x) => x.key === b.dataset.buy), gross = Math.round(p.price * 1.18);
+    if (P.pay_upi) upiQr($('#payqr'), { upi_id: P.pay_upi, name: P.pay_name }, gross, `SmartTrader ${p.label} ${ME.user.email}`, `${p.label} plan, 1 year incl. 18% GST`);
+    $('#paybox').scrollIntoView({ behavior: 'smooth' });
+  });
+  $('#act').onsubmit = async (e) => {
+    e.preventDefault();
+    const b = $('.err', e.target); b.hidden = true;
+    try { const r = await POST('/api/plan/activate', { code: e.target.code.value }); ME = await GET('/api/me'); toast(`${r.plan} plan activated`); render(); }
+    catch (err) { b.hidden = false; b.textContent = err.message; }
+  };
+});
+
+/* ======================================================================= admin (owner of this deployment) */
+route(/^admin$/, async (el) => {
+  let key = '';
+  try { key = sessionStorage.getItem('st-admin') || ''; } catch (e) { /* storage blocked */ }
+  const call = async (method, path, body) => {
+    const res = await fetch(path, { method, headers: { 'Content-Type': 'application/json', 'X-Requested-With': 'SmartTrader', 'X-Admin-Key': key }, body: body ? JSON.stringify(body) : undefined });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new ApiError(data.error || 'Failed', res.status);
+    return data;
+  };
+  const ask = () => modal('Admin key', [{ k: 'key', label: 'ADMIN_KEY (from the worker secrets)', type: 'password', wide: true }], async (v) => {
+    key = v.key; try { sessionStorage.setItem('st-admin', key); } catch (e) { /* ignore */ }
+    render();
+  });
+  if (!key) { el.innerHTML = head('Admin') + '<div class="panel">Enter your admin key to manage businesses and plans.</div>'; ask(); return; }
+  let data;
+  try { data = await call('GET', '/api/admin/orgs'); } catch (e) {
+    try { sessionStorage.removeItem('st-admin'); } catch (x) { /* ignore */ }
+    el.innerHTML = head('Admin') + `<div class="err">${esc(e.message)}</div>`; if (e.status === 401) ask(); return;
+  }
+  el.innerHTML = head('Admin: businesses', `<button class="btn" id="codes">Generate activation codes</button><button class="btn" id="lock">Lock</button>`) + `
+    <div class="kpis"><div class="kpi"><div class="l">Businesses</div><div class="v">${data.rows.length}</div></div>
+      ${['free', 'starter', 'growth', 'business'].map((k) => `<div class="kpi"><div class="l">${k}</div><div class="v">${data.rows.filter((o) => o.effective === k).length}</div></div>`).join('')}</div>
+    <div class="panel flush">${table([{ h: 'Business', f: (o) => `<b>${esc(o.name)}</b><div class="muted">${esc(o.owner || '')} ${esc(o.phone || '')}</div>` },
+      { h: 'Plan', f: (o) => `${badge(o.effective)}${o.plan_until ? `<div class="muted">till ${fdate(o.plan_until)}</div>` : ''}` }, { h: 'Users', k: 'users', num: 1 }, { h: 'Invoices', k: 'invoices', num: 1 },
+      { h: 'Joined', f: (o) => fdate(o.created_at.slice(0, 10)), cls: 'hide-sm' }, { h: 'Last active', f: (o) => o.last_active ? fdate(o.last_active.slice(0, 10)) : '', cls: 'hide-sm' },
+      { h: '', f: (o) => `<button class="btn sm" data-o="${o.id}">Set plan</button>` }], data.rows, { empty: 'No businesses yet.' })}</div>`;
+  const planOpts = data.plans.map((p) => ({ v: p, t: p }));
+  $$('[data-o]', el).forEach((b) => b.onclick = () => modal('Set plan', [{ k: 'plan', label: 'Plan', type: 'select', options: planOpts, value: 'growth' },
+    { k: 'months', label: 'Months (1200 = lifetime)', type: 'number', value: 12 }], async (v) => { await call('POST', `/api/admin/orgs/${b.dataset.o}/plan`, v); toast('Plan updated'); render(); }));
+  $('#lock').onclick = () => { try { sessionStorage.removeItem('st-admin'); } catch (e) { /* ignore */ } go('dashboard'); };
+  $('#codes').onclick = () => modal('Activation codes', [{ k: 'plan', label: 'Plan', type: 'select', options: planOpts.filter((o) => o.v !== 'free'), value: 'growth' },
+    { k: 'months', label: 'Months', type: 'number', value: 12 }, { k: 'count', label: 'How many', type: 'number', value: 1 }], async (v) => {
+    const r = await call('POST', '/api/admin/codes', v);
+    setTimeout(() => modal(`${r.codes.length} code(s): ${r.plan}, ${r.months} months`, [{ k: 'c', label: 'Each code works once. Copy and send to the customer.', type: 'textarea', value: r.codes.join('\n'), wide: true }], async () => {}, { submit: 'Done' }), 0);
+  });
+});
+
+/* ======================================================================= PWA: service worker + install button */
+let installEvt = null;
+window.addEventListener('beforeinstallprompt', (e) => { e.preventDefault(); installEvt = e; const b = $('#install'); if (b) b.hidden = false; });
+window.addEventListener('appinstalled', () => { installEvt = null; const b = $('#install'); if (b) b.hidden = true; toast('SmartTrader installed'); });
+function wireInstall() {
+  const b = $('#install');
+  if (!b) return;
+  const standalone = matchMedia('(display-mode: standalone)').matches || navigator.standalone;
+  const ios = /iphone|ipad|ipod/i.test(navigator.userAgent);
+  b.hidden = standalone || !(installEvt || ios);
+  b.onclick = async () => {
+    if (installEvt) { installEvt.prompt(); await installEvt.userChoice; installEvt = null; b.hidden = true; }
+    else alert('On iPhone/iPad: tap the Share button in Safari, then "Add to Home Screen".');
+  };
+}
+if ('serviceWorker' in navigator) window.addEventListener('load', () => navigator.serviceWorker.register('/sw.js').catch(() => {}));
+window.addEventListener('offline', () => toast('You are offline. Saved screens still open; changes need internet.'));
+window.addEventListener('online', () => toast('Back online'));
+
 /* ======================================================================= boot */
 async function boot() {
-  try { ME = await GET('/api/me'); } catch (e) { if (e.status !== 401) $('#app').innerHTML = `<div class="boot err">${esc(e.message)}</div>`; return; }
+  try { ME = await GET('/api/me'); } catch (e) {
+    if (e.status === 401) return;
+    const off = !navigator.onLine || e instanceof TypeError;
+    $('#app').innerHTML = `<div class="boot"><h2>${off ? 'You are offline' : 'Could not load SmartTrader'}</h2>
+      <p class="muted">${off ? 'Your business data lives safely in the cloud. Connect to the internet to continue.' : esc(e.message)}</p>
+      <button class="btn primary" onclick="location.reload()">Try again</button></div>`;
+    if (off) window.addEventListener('online', () => location.reload(), { once: true });
+    return;
+  }
   shell();
+  wireInstall();
   await render();
 }
 window.addEventListener('hashchange', render);

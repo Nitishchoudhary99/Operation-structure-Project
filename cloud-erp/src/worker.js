@@ -13,6 +13,9 @@ import {
   auditStatement, cashAccount,
 } from './engine.js';
 import * as rep from './reports.js';
+import { PLANS, planOut, usage, checkCount, requireFeature, redeemCode, makeCode, extendPlan, adminKey, trialUntil } from './saas.js';
+import { STATES, einvoiceJson, ewaybillJson } from './gst.js';
+import { tallyXml } from './tally.js';
 
 const R = (p) => Math.round(p) / 100;
 const router = new Router();
@@ -33,8 +36,8 @@ router.add('POST', '/api/auth/signup', async (c) => {
   const salt = randomHex(16), hash = await hashPassword(b.password, salt), now = nowIso(), otx = crypto.randomUUID();
   const db = c.db;
   const st = [
-    db.prepare(`INSERT INTO orgs (name, gstin, state, phone, address, created_at) VALUES (?, ?, ?, ?, ?, ?)`)
-      .bind(business, str(b.gstin, 15).toUpperCase(), str(b.state, 60), str(b.phone, 20), str(b.address, 300), otx),
+    db.prepare(`INSERT INTO orgs (name, gstin, state, phone, address, email, plan, plan_until, created_at) VALUES (?, ?, ?, ?, ?, ?, 'growth', ?, ?)`)
+      .bind(business, str(b.gstin, 15).toUpperCase(), str(b.state, 60), str(b.phone, 20), str(b.address, 300), email, trialUntil(), otx),
     db.prepare(`INSERT INTO users (org_id, email, name, role, pw_hash, salt, pw_changed_at, created_at)
                 VALUES ((SELECT id FROM orgs WHERE created_at = ?), ?, ?, 'owner', ?, ?, ?, ?)`).bind(otx, email, name, hash, salt, Date.now(), now),
     ...DEFAULT_ACCOUNTS.map(([code, nm, type, sys, isCash]) => db.prepare(`INSERT INTO accounts (org_id, code, name, type, sys, is_cash)
@@ -66,7 +69,7 @@ router.add('GET', '/api/me', async (c) => json({
   user: publicUser(c.user), org: c.org,
   can: Object.fromEntries(['settings', 'users', 'items', 'purchase', 'sales', 'stock', 'finance', 'khata'].map((a) => [a, can(c.user, a)])),
   doc_types: Object.fromEntries(Object.entries(DOC_TYPES).map(([k, v]) => [k, { label: v.label, side: v.side, from: v.from, prefix: v.prefix }])),
-  gst_rates: GST_RATES, today: today(),
+  gst_rates: GST_RATES, today: today(), states: STATES.map(([, n]) => n), plan: planOut(c.org),
 }));
 
 router.add('POST', '/api/me/password', async (c) => {
@@ -86,9 +89,10 @@ const publicUser = (u) => ({ id: u.id, email: u.email, name: u.name, role: u.rol
 router.add('PUT', '/api/org', async (c) => {
   requireCan(c.user, 'settings');
   const b = c.body;
-  await c.db.prepare(`UPDATE orgs SET name = ?, gstin = ?, state = ?, address = ?, phone = ?, upi_id = ?, fy_start = ? WHERE id = ?`)
+  await c.db.prepare(`UPDATE orgs SET name = ?, gstin = ?, state = ?, address = ?, phone = ?, upi_id = ?, fy_start = ?, city = ?, pincode = ?, email = ? WHERE id = ?`)
     .bind(reqStr(b.name, 'Business name', 120), str(b.gstin, 15).toUpperCase(), str(b.state, 60), str(b.address, 300), str(b.phone, 20),
-      str(b.upi_id, 60), /^\d{2}-\d{2}$/.test(b.fy_start || '') ? b.fy_start : c.org.fy_start, c.org.id).run();
+      str(b.upi_id, 60), /^\d{2}-\d{2}$/.test(b.fy_start || '') ? b.fy_start : c.org.fy_start, str(b.city, 60), str(b.pincode, 6).replace(/\D/g, ''),
+      str(b.email, 120), c.org.id).run();
   return json({ ok: true });
 });
 
@@ -104,6 +108,7 @@ router.add('POST', '/api/users', async (c) => {
   const prob = passwordProblem(c.body.password);
   if (prob) throw bad(prob);
   if (await c.db.prepare(`SELECT 1 FROM users WHERE email = ?`).bind(email).first()) throw bad('This email is already in use.');
+  await checkCount(c.db, c.org, 'users');
   const salt = randomHex(16);
   await c.db.batch([c.db.prepare(`INSERT INTO users (org_id, email, name, role, pw_hash, salt, pw_changed_at, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`)
     .bind(c.org.id, email, reqStr(c.body.name, 'Name', 80), role, await hashPassword(c.body.password, salt), salt, Date.now(), nowIso()),
@@ -117,6 +122,7 @@ router.add('PUT', '/api/users/:id', async (c) => {
   if (u.role === 'owner') throw bad('The owner cannot be changed here.');
   const role = c.body.role ? oneOf(c.body.role, ROLES.filter((r) => r !== 'owner'), 'Role') : u.role;
   const active = c.body.active === undefined ? u.active : (c.body.active ? 1 : 0);
+  if (active && !u.active) await checkCount(c.db, c.org, 'users');
   await c.db.prepare(`UPDATE users SET role = ?, active = ?, pw_changed_at = CASE WHEN ? != active THEN ? ELSE pw_changed_at END WHERE id = ?`)
     .bind(role, active, active, Date.now(), u.id).run();
   return json({ ok: true });
@@ -127,6 +133,7 @@ const partyFields = (b) => ({
   name: reqStr(b.name, 'Name', 120), kind: oneOf(b.kind || 'customer', ['customer', 'supplier', 'both'], 'Type'),
   phone: str(b.phone, 20), email: str(b.email, 120), gstin: str(b.gstin, 15).toUpperCase(), state: str(b.state, 60), address: str(b.address, 300),
   credit_limit: toPaise(num(b.credit_limit, 'Credit limit', { min: 0, def: 0 })), credit_days: int(b.credit_days, 'Credit days', { min: 0, max: 365, def: 0 }),
+  city: str(b.city, 60), pincode: str(b.pincode, 6).replace(/\D/g, ''),
 });
 router.add('GET', '/api/parties', async (c) => {
   const q = c.url.searchParams;
@@ -143,8 +150,8 @@ router.add('POST', '/api/parties', async (c) => {
   requireCan(c.user, 'masters');
   const f = partyFields(c.body);
   if (await c.db.prepare(`SELECT 1 FROM parties WHERE org_id = ? AND name = ?`).bind(c.org.id, f.name).first()) throw bad(`A party called ${f.name} already exists.`);
-  const r = await c.db.prepare(`INSERT INTO parties (org_id, name, kind, phone, email, gstin, state, address, credit_limit, credit_days, created_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING *`).bind(c.org.id, f.name, f.kind, f.phone, f.email, f.gstin, f.state, f.address, f.credit_limit, f.credit_days, nowIso()).first();
+  const r = await c.db.prepare(`INSERT INTO parties (org_id, name, kind, phone, email, gstin, state, address, credit_limit, credit_days, city, pincode, created_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING *`).bind(c.org.id, f.name, f.kind, f.phone, f.email, f.gstin, f.state, f.address, f.credit_limit, f.credit_days, f.city, f.pincode, nowIso()).first();
   return json({ ...r, credit_limit: R(r.credit_limit) });
 });
 router.add('PUT', '/api/parties/:id', async (c) => {
@@ -152,8 +159,8 @@ router.add('PUT', '/api/parties/:id', async (c) => {
   const f = partyFields(c.body);
   const dup = await c.db.prepare(`SELECT id FROM parties WHERE org_id = ? AND name = ? AND id != ?`).bind(c.org.id, f.name, +c.params.id).first();
   if (dup) throw bad(`A party called ${f.name} already exists.`);
-  const r = await c.db.prepare(`UPDATE parties SET name = ?, kind = ?, phone = ?, email = ?, gstin = ?, state = ?, address = ?, credit_limit = ?, credit_days = ?
-      WHERE id = ? AND org_id = ?`).bind(f.name, f.kind, f.phone, f.email, f.gstin, f.state, f.address, f.credit_limit, f.credit_days, +c.params.id, c.org.id).run();
+  const r = await c.db.prepare(`UPDATE parties SET name = ?, kind = ?, phone = ?, email = ?, gstin = ?, state = ?, address = ?, credit_limit = ?, credit_days = ?, city = ?, pincode = ?
+      WHERE id = ? AND org_id = ?`).bind(f.name, f.kind, f.phone, f.email, f.gstin, f.state, f.address, f.credit_limit, f.credit_days, f.city, f.pincode, +c.params.id, c.org.id).run();
   if (!r.meta.changes) throw notFound('Party not found.');
   return json({ ok: true });
 });
@@ -175,7 +182,13 @@ const itemFields = (b) => ({
   gst_rate: num(b.gst_rate, 'GST rate', { min: 0, max: 100, def: 0 }),
   purchase_price: toPaise(num(b.purchase_price, 'Purchase price', { min: 0, def: 0 })), sale_price: toPaise(num(b.sale_price, 'Sale price', { min: 0, def: 0 })),
   reorder_level: num(b.reorder_level, 'Reorder level', { min: 0, def: 0 }), is_service: b.is_service ? 1 : 0,
+  barcode: str(b.barcode, 48).replace(/\s+/g, ''),
 });
+async function barcodeTaken(c, code, exceptId = 0) {
+  if (!code) return;
+  const hit = await c.db.prepare(`SELECT name FROM items WHERE org_id = ? AND id != ? AND (barcode = ? OR (sku != '' AND sku = ?))`).bind(c.org.id, exceptId, code, code).first();
+  if (hit) throw bad(`Barcode ${code} is already used by ${hit.name}.`);
+}
 const itemOut = (i) => ({ ...i, purchase_price: R(i.purchase_price), sale_price: R(i.sale_price), avg_cost: R(i.avg_cost), stock_value: R(Math.max(0, i.qty_on_hand) * i.avg_cost) });
 router.add('GET', '/api/items', async (c) => {
   const q = c.url.searchParams.get('q') || '';
@@ -187,9 +200,10 @@ router.add('POST', '/api/items', async (c) => {
   requireCan(c.user, 'items');
   const f = itemFields(c.body);
   if (await c.db.prepare(`SELECT 1 FROM items WHERE org_id = ? AND name = ?`).bind(c.org.id, f.name).first()) throw bad(`An item called ${f.name} already exists.`);
-  const r = await c.db.prepare(`INSERT INTO items (org_id, sku, name, category, unit, hsn, gst_rate, purchase_price, sale_price, reorder_level, is_service, avg_cost, created_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING *`)
-    .bind(c.org.id, f.sku, f.name, f.category, f.unit, f.hsn, f.gst_rate, f.purchase_price, f.sale_price, f.reorder_level, f.is_service, f.purchase_price, nowIso()).first();
+  await barcodeTaken(c, f.barcode);
+  const r = await c.db.prepare(`INSERT INTO items (org_id, sku, name, category, unit, hsn, gst_rate, purchase_price, sale_price, reorder_level, is_service, avg_cost, barcode, created_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING *`)
+    .bind(c.org.id, f.sku, f.name, f.category, f.unit, f.hsn, f.gst_rate, f.purchase_price, f.sale_price, f.reorder_level, f.is_service, f.purchase_price, f.barcode, nowIso()).first();
   if (c.body.opening_qty && +c.body.opening_qty > 0 && !f.is_service) {
     await stockAdjust(c, { item_id: r.id, qty: c.body.opening_qty, rate: c.body.opening_rate ?? R(f.purchase_price), reason: 'opening', warehouse_id: c.body.warehouse_id });
   }
@@ -200,8 +214,9 @@ router.add('PUT', '/api/items/:id', async (c) => {
   const f = itemFields(c.body);
   const dup = await c.db.prepare(`SELECT id FROM items WHERE org_id = ? AND name = ? AND id != ?`).bind(c.org.id, f.name, +c.params.id).first();
   if (dup) throw bad(`An item called ${f.name} already exists.`);
-  const r = await c.db.prepare(`UPDATE items SET sku = ?, name = ?, category = ?, unit = ?, hsn = ?, gst_rate = ?, purchase_price = ?, sale_price = ?, reorder_level = ?
-      WHERE id = ? AND org_id = ?`).bind(f.sku, f.name, f.category, f.unit, f.hsn, f.gst_rate, f.purchase_price, f.sale_price, f.reorder_level, +c.params.id, c.org.id).run();
+  await barcodeTaken(c, f.barcode, +c.params.id);
+  const r = await c.db.prepare(`UPDATE items SET sku = ?, name = ?, category = ?, unit = ?, hsn = ?, gst_rate = ?, purchase_price = ?, sale_price = ?, reorder_level = ?, barcode = ?
+      WHERE id = ? AND org_id = ?`).bind(f.sku, f.name, f.category, f.unit, f.hsn, f.gst_rate, f.purchase_price, f.sale_price, f.reorder_level, f.barcode, +c.params.id, c.org.id).run();
   if (!r.meta.changes) throw notFound('Item not found.');
   return json({ ok: true });
 });
@@ -212,6 +227,16 @@ router.add('DELETE', '/api/items/:id', async (c) => {
   if (used.n) throw bad('This item has transactions and cannot be deleted.');
   await c.db.prepare(`DELETE FROM items WHERE id = ? AND org_id = ?`).bind(id, c.org.id).run();
   return json({ ok: true });
+});
+/* Scanner lookup: barcode, SKU, or the printed label code ST<id> */
+router.add('GET', '/api/items/lookup', async (c) => {
+  const code = str(c.url.searchParams.get('code'), 60).replace(/\s+/g, '');
+  if (!code) throw bad('Scan or type a code.');
+  const m = code.toUpperCase().match(/^ST(\d+)$/);
+  const it = await c.db.prepare(`SELECT * FROM items WHERE org_id = ? AND (barcode = ? OR (sku != '' AND sku = ?) OR id = ?) ORDER BY barcode = ? DESC LIMIT 1`)
+    .bind(c.org.id, code, code, m ? +m[1] : -1, code).first();
+  if (!it) throw notFound(`No item with code ${code}.`);
+  return json(itemOut(it));
 });
 router.add('GET', '/api/items/:id/moves', async (c) => json({ rows: await rep.itemMoves(c.db, c.org, +c.params.id) }));
 
@@ -224,6 +249,7 @@ router.add('POST', '/api/warehouses', async (c) => {
   requireCan(c.user, 'stock');
   const name = reqStr(c.body.name, 'Warehouse name', 80);
   if (await c.db.prepare(`SELECT 1 FROM warehouses WHERE org_id = ? AND name = ?`).bind(c.org.id, name).first()) throw bad('That warehouse already exists.');
+  await checkCount(c.db, c.org, 'warehouses');
   return json(await c.db.prepare(`INSERT INTO warehouses (org_id, name) VALUES (?, ?) RETURNING *`).bind(c.org.id, name).first());
 });
 
@@ -264,7 +290,7 @@ async function docDetail(c, id) {
   const d = await c.db.prepare(`SELECT d.*, w.name AS warehouse FROM docs d LEFT JOIN warehouses w ON w.id = d.warehouse_id WHERE d.id = ? AND d.org_id = ?`).bind(id, c.org.id).first();
   if (!d) throw notFound('Document not found.');
   const [lines, party, children, parent, pays] = await Promise.all([
-    c.db.prepare(`SELECT l.*, i.name AS item, i.unit, i.hsn FROM doc_lines l LEFT JOIN items i ON i.id = l.item_id WHERE l.doc_id = ? ORDER BY l.id`).bind(id).all(),
+    c.db.prepare(`SELECT l.*, i.name AS item, i.unit, i.hsn, i.is_service FROM doc_lines l LEFT JOIN items i ON i.id = l.item_id WHERE l.doc_id = ? ORDER BY l.id`).bind(id).all(),
     c.db.prepare(`SELECT * FROM parties WHERE id = ?`).bind(d.party_id).first(),
     c.db.prepare(`SELECT id, type, number, date, status, total FROM docs WHERE ref_id = ? ORDER BY id`).bind(id).all(),
     d.ref_id ? c.db.prepare(`SELECT id, type, number, date, status FROM docs WHERE id = ?`).bind(d.ref_id).first() : null,
@@ -299,6 +325,82 @@ router.add('GET', '/api/docs/:id/convert', async (c) => {
   if (!lines.length) throw bad(`Nothing left to ${['SRET', 'PRET'].includes(to) ? 'return' : 'process'} on ${src.number}.`);
   return json({ type: to, party_id: src.party_id, ref_id: src.id, ref_number: src.number, warehouse_id: src.warehouse_id, date: today(), lines });
 });
+
+/* GST portal files: e-invoice (IRP) and e-way bill JSON, and the numbers the portal gives back */
+const download = (name, body, type = 'application/json') => new Response(body, { headers: {
+  'Content-Type': type + '; charset=utf-8', 'Content-Disposition': `attachment; filename="${name}"`, 'Cache-Control': 'no-store' } });
+router.add('GET', '/api/docs/:id/einvoice', async (c) => {
+  requireFeature(c.org, 'einvoice');
+  const d = await docDetail(c, +c.params.id);
+  return download(`einvoice-${d.number}.json`, JSON.stringify([einvoiceJson(d)], null, 2));
+});
+router.add('GET', '/api/docs/:id/ewaybill', async (c) => {
+  requireFeature(c.org, 'einvoice');
+  const d = await docDetail(c, +c.params.id);
+  return download(`ewaybill-${d.number}.json`, JSON.stringify(ewaybillJson(d, Object.fromEntries(c.url.searchParams)), null, 2));
+});
+router.add('PUT', '/api/docs/:id/gst-refs', async (c) => {
+  requireCan(c.user, 'sales');
+  const b = c.body;
+  const r = await c.db.prepare(`UPDATE docs SET irn = ?, ack_no = ?, ack_date = ?, ewb_no = ?, ewb_date = ? WHERE id = ? AND org_id = ?`)
+    .bind(str(b.irn, 64), str(b.ack_no, 20), str(b.ack_date, 30), str(b.ewb_no, 20), str(b.ewb_date, 30), +c.params.id, c.org.id).run();
+  if (!r.meta.changes) throw notFound('Document not found.');
+  return json({ ok: true });
+});
+router.add('GET', '/api/export/tally', async (c) => {
+  requireFeature(c.org, 'tally');
+  const t = await tallyXml(c.db, c.org, c.url.searchParams);
+  return download(`tally-${t.from}-to-${t.to}.xml`, t.xml, 'application/xml');
+});
+
+/* ======================================================================= plan & billing (SaaS) */
+router.add('GET', '/api/plan', async (c) => json({
+  plan: planOut(c.org), usage: await usage(c.db, c.org),
+  plans: Object.entries(PLANS).map(([k, p]) => ({ key: k, ...p, invoices_per_month: p.invoices_per_month === Infinity ? null : p.invoices_per_month,
+    users: p.users === Infinity ? null : p.users, warehouses: p.warehouses === Infinity ? null : p.warehouses })),
+  pay_upi: c.env.PAY_UPI || '', pay_name: c.env.PAY_NAME || 'SmartTrader', support_whatsapp: c.env.SUPPORT_WHATSAPP || '',
+}));
+router.add('POST', '/api/plan/activate', async (c) => {
+  requireCan(c.user, 'settings');
+  await rateLimit(c.env, 'code:' + c.org.id, 10, 3600);
+  const r = await redeemCode(c.env, c.db, c.org, c.body.code);
+  await c.db.batch([auditStatement(c, 'activate plan', `${r.plan} ${r.months} months`)]);
+  return json({ ok: true, ...r });
+});
+
+/* Admin (the person who runs this deployment): header X-Admin-Key must equal the ADMIN_KEY secret. */
+async function requireAdmin(c) {
+  const key = adminKey(c.env);
+  if (!key) throw new HttpError(404, 'Admin is switched off. Add an ADMIN_KEY secret (16+ characters) to the worker to use it.');
+  await rateLimit(c.env, 'admin:' + (c.request.headers.get('CF-Connecting-IP') || 'local'), 60, 600);
+  if (!sameText(c.request.headers.get('X-Admin-Key') || '', key)) throw new HttpError(401, 'Wrong admin key.');
+}
+router.add('GET', '/api/admin/orgs', async (c) => {
+  await requireAdmin(c);
+  const { results } = await c.db.prepare(`SELECT o.id, o.name, o.gstin, o.state, o.phone, o.plan, o.plan_until, o.created_at,
+      (SELECT email FROM users WHERE org_id = o.id AND role = 'owner' LIMIT 1) AS owner,
+      (SELECT COUNT(*) FROM users WHERE org_id = o.id AND active = 1) AS users,
+      (SELECT COUNT(*) FROM docs WHERE org_id = o.id AND type = 'INV') AS invoices,
+      (SELECT MAX(at) FROM audit WHERE org_id = o.id) AS last_active
+    FROM orgs o ORDER BY o.id DESC LIMIT 1000`).all();
+  return json({ rows: results.map((o) => ({ ...o, effective: planOut(o).key })), plans: Object.keys(PLANS) });
+}, { public: true });
+router.add('POST', '/api/admin/orgs/:id/plan', async (c) => {
+  await requireAdmin(c);
+  const org = await c.db.prepare(`SELECT * FROM orgs WHERE id = ?`).bind(+c.params.id).first();
+  if (!org) throw notFound('Business not found.');
+  const plan = oneOf(c.body.plan, Object.keys(PLANS), 'Plan');
+  const until = await extendPlan(c.db, org, plan, int(c.body.months, 'Months', { min: 1, max: 1200, def: 12 }));
+  return json({ ok: true, plan, until });
+}, { public: true });
+router.add('POST', '/api/admin/codes', async (c) => {
+  await requireAdmin(c);
+  const plan = oneOf(c.body.plan, Object.keys(PLANS).filter((k) => k !== 'free'), 'Plan');
+  const months = int(c.body.months, 'Months', { min: 1, max: 120, def: 12 }), count = int(c.body.count, 'Count', { min: 1, max: 50, def: 1 });
+  const codes = [];
+  for (let i = 0; i < count; i++) codes.push(await makeCode(c.env, plan, months));
+  return json({ codes, plan, months });
+}, { public: true });
 
 /* ======================================================================= payments, expenses, journals */
 router.add('GET', '/api/payments', async (c) => {

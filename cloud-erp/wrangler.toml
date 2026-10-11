@@ -4,6 +4,8 @@
 name = "operation-structure-project"
 main = "src/worker.js"
 compatibility_date = "2025-09-01"
+# keep variables set in the Cloudflare dashboard (PAY_UPI, SUPPORT_WHATSAPP, PAY_NAME) across deploys
+keep_vars = true
 
 # The web app. API calls (/api/*) run the worker first; everything else is a static file,
 # and unknown paths fall back to index.html so the single-page app can route them.

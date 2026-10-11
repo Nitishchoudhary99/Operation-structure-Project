@@ -7,6 +7,8 @@ import {
   counterStatements, counterValueSql,
 } from './lib.js';
 import { requireCan } from './auth.js';
+import { stateCode } from './gst.js';
+import { checkInvoiceLimit } from './saas.js';
 
 export const DOC_TYPES = {
   QUOTE: { side: 'sales', prefix: 'QT', label: 'Quotation', from: [] },
@@ -108,6 +110,7 @@ export async function createDoc(ctx, body) {
   const T = DOC_TYPES[type];
   if (!T) throw bad('Unknown document type.');
   requireCan(ctx.user, T.side === 'sales' ? 'sales' : 'purchase');
+  if (type === 'INV') await checkInvoiceLimit(db, ctx.org);
   const orgId = ctx.org.id;
   const d = date(body.date);
 
@@ -131,7 +134,9 @@ export async function createDoc(ctx, body) {
   }
 
   const wh = await warehouseOf(db, orgId, +body.warehouse_id || (src && src.warehouse_id) || 0);
-  const inter = !!(party.state && ctx.org.state && party.state.toLowerCase() !== ctx.org.state.toLowerCase());
+  // inter-state when the two GST state codes differ (from GSTIN, else state name); falls back to comparing names
+  const sc = stateCode(party.state, party.gstin), oc = stateCode(ctx.org.state, ctx.org.gstin);
+  const inter = sc && oc ? sc !== oc : !!(party.state && ctx.org.state && party.state.toLowerCase() !== ctx.org.state.toLowerCase());
   const lines = Array.isArray(body.lines) ? body.lines : [];
   if (!lines.length) throw bad('Add at least one line.');
   if (lines.length > 200) throw bad('At most 200 lines per document.');

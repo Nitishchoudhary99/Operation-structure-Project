@@ -18,6 +18,11 @@ Market research and pricing advice: see [docs/COMPETITORS.md](docs/COMPETITORS.m
 | **Khata Book** | Khatabook-style "you gave / you got" credit book per contact, with running balance and one-tap **WhatsApp / SMS reminders that include a UPI payment link**. Works well on phones. |
 | **Payments** | Receipts and payments into cash, bank or UPI accounts. Applied to the oldest open invoices or bills first, or to a chosen document. Voiding reverses everything. |
 | **Control** | Multi-user with roles (owner, admin, accountant, store, sales), audit trail, cancel-with-reversal (never silent edits), one database holding many businesses with strict separation. |
+| **POS & barcodes** | Quick-bill screen for counters: USB/Bluetooth scanner or phone camera, cash / UPI (with a QR for the exact amount) / card / credit, change due, 80 mm thermal receipt, F9 to finish. Barcode labels (Code 128) printed from any item. |
+| **GST portals** | E-invoice JSON (NIC schema 1.1) for B2B invoices and credit notes, and e-way bill bulk-upload JSON with transport details. Save the IRN, Ack and e-way bill numbers back on the document, and they print on the invoice. |
+| **Tally export** | One XML file with ledgers and every voucher for a period, which imports into Tally Prime / ERP 9 with a matching trial balance. |
+| **Plans (SaaS)** | Free / Starter ₹2,999 / Growth ₹7,999 / Business ₹17,999 a year, with invoice, user and godown limits and feature gates. 14-day Growth trial on signup. One-time activation codes and an admin panel (`#/admin`) to manage every business. |
+| **Installable app (PWA)** | "Install app" on Android/desktop, "Add to Home Screen" on iPhone. Opens full-screen with shortcuts to POS, New invoice and Khata. The app shell opens offline; business data always comes live. |
 | **Dashboard** | Sales, profit, receivables, payables, stock value, GST due, 12-month chart, overdue invoices, low stock. |
 | **Documents** | Printable GST tax invoice with the amount in words, UPI ID and signature block (Print → Save as PDF). WhatsApp invoice sharing. CSV export of every list and report. |
 
@@ -77,13 +82,27 @@ npx wrangler deploy
 once you add the repository secrets `CLOUDFLARE_API_TOKEN` (a token from the "Edit Cloudflare Workers"
 template with D1 edit permission) and `CLOUDFLARE_ACCOUNT_ID`.
 
+## Selling it: plans, payments and the admin panel
+
+Set these on the worker in **Settings → Variables and Secrets**:
+
+| Name | Type | What it does |
+|---|---|---|
+| `ADMIN_KEY` | Secret | Any random text of 16+ characters. Unlocks `https://<your-domain>/#/admin`, where you see every business, set plans (1200 months = lifetime), and generate activation codes. |
+| `PAY_UPI` | Text | Your UPI ID. The Plan & Billing page shows a QR for the plan price, including GST. |
+| `PAY_NAME` | Text | Name shown on that UPI payment. |
+| `SUPPORT_WHATSAPP` | Text | Your WhatsApp number, e.g. 919876543210. Customers send you the payment screenshot. |
+
+Flow: the customer pays by UPI and WhatsApps you. In the admin panel you **Generate activation code** for the plan and send it to them, and they paste it in **Plan & Billing**. Each code works once. To give your own business unlimited use, open the admin panel and set it to **business** for **1200** months.
+
 ## Run locally
 
 ```bash
 cd cloud-erp
 npm install
 npx wrangler dev            # http://localhost:8787, with a local D1 database in .wrangler/
-node test/run.mjs           # in another terminal: 47-check end-to-end business test
+node test/run.mjs           # in another terminal: 66-check end-to-end business test
+                            # (put ADMIN_KEY=local-test-admin-key-0001 in cloud-erp/.dev.vars for the admin checks)
 ```
 
 ## Project layout
@@ -97,7 +116,10 @@ cloud-erp/
   src/schema.js        tables + default chart of accounts; auto-migrates on first request
   src/auth.js          PBKDF2 passwords, signed session cookies, roles, rate limits
   src/lib.js           validation, GST maths, numbering, router
-  public/              the web app (plain HTML/CSS/JS, no build step)
+  src/gst.js           state codes, units, e-invoice and e-way bill JSON
+  src/tally.js         Tally XML export
+  src/saas.js          plans, limits, activation codes
+  public/              the web app (plain HTML/CSS/JS, no build step), PWA manifest + service worker
   test/run.mjs         end-to-end test against a running worker
   docs/COMPETITORS.md  market and competitor research
 ```
@@ -113,7 +135,7 @@ cloud-erp/
 
 ## Not built yet (next steps)
 
-- Direct IRN e-invoice and e-way bill generation (needs a GSP/IRP API account). Today the GST
-  registers and summary can be exported as CSV for your filing tool or CA.
-- Tally XML export, barcode scanning and POS mode, batch/expiry and serial numbers, manufacturing
-  (bill of materials), approval workflows, and plan/billing limits for selling it as SaaS.
+- Direct IRN / e-way bill generation through an API. This needs a GSP account; today the JSON files
+  are uploaded on the government portals.
+- Online card payments for plans (Razorpay), batch/expiry and serial numbers, manufacturing (bill of
+  materials), and approval workflows.

@@ -3,6 +3,8 @@
 name = "operation-structure-project"
 main = "cloud-erp/src/worker.js"
 compatibility_date = "2025-09-01"
+# keep variables set in the Cloudflare dashboard (PAY_UPI, SUPPORT_WHATSAPP, PAY_NAME) across deploys
+keep_vars = true
 
 [assets]
 directory = "./cloud-erp/public"

@@ -3,7 +3,7 @@
    Every business table carries org_id: one database serves many businesses (multi-tenant).
    migrate() runs on the first request after each deploy, so no manual migration step is needed. */
 
-export const SCHEMA_VERSION = 1;
+export const SCHEMA_VERSION = 2;
 
 export const SCHEMA = [
   `CREATE TABLE IF NOT EXISTS meta (k TEXT PRIMARY KEY, v TEXT NOT NULL)`,
@@ -121,14 +121,45 @@ export const DEFAULT_ACCOUNTS = [
   ['6090', 'Miscellaneous Expenses', 'expense', 'misc_exp', 0],
 ];
 
+/* Changes after the first release. Each step runs once, in order, on databases that already exist
+   (new databases get SCHEMA and then every step, so both end up identical). */
+export const MIGRATIONS = {
+  2: [
+    `ALTER TABLE orgs ADD COLUMN plan TEXT NOT NULL DEFAULT 'free'`,
+    `ALTER TABLE orgs ADD COLUMN plan_until TEXT NOT NULL DEFAULT ''`,
+    `ALTER TABLE orgs ADD COLUMN city TEXT DEFAULT ''`,
+    `ALTER TABLE orgs ADD COLUMN pincode TEXT DEFAULT ''`,
+    `ALTER TABLE orgs ADD COLUMN email TEXT DEFAULT ''`,
+    `ALTER TABLE parties ADD COLUMN city TEXT DEFAULT ''`,
+    `ALTER TABLE parties ADD COLUMN pincode TEXT DEFAULT ''`,
+    `ALTER TABLE items ADD COLUMN barcode TEXT DEFAULT ''`,
+    `ALTER TABLE docs ADD COLUMN irn TEXT DEFAULT ''`,
+    `ALTER TABLE docs ADD COLUMN ack_no TEXT DEFAULT ''`,
+    `ALTER TABLE docs ADD COLUMN ack_date TEXT DEFAULT ''`,
+    `ALTER TABLE docs ADD COLUMN ewb_no TEXT DEFAULT ''`,
+    `ALTER TABLE docs ADD COLUMN ewb_date TEXT DEFAULT ''`,
+    `CREATE INDEX IF NOT EXISTS ix_items_barcode ON items (org_id, barcode)`,
+    // businesses that signed up before plans existed get a 30-day Growth trial
+    `UPDATE orgs SET plan = 'growth', plan_until = date('now', '+30 days') WHERE plan = 'free' AND plan_until = ''`,
+  ],
+};
+
 export async function migrate(db) {
+  let version = 0;
   const row = await db.prepare(`SELECT name FROM sqlite_master WHERE type='table' AND name='meta'`).first();
   if (row) {
     const v = await db.prepare(`SELECT v FROM meta WHERE k='schema_version'`).first();
-    if (v && +v.v >= SCHEMA_VERSION) return false;
+    version = v ? +v.v : 0;
+    if (version >= SCHEMA_VERSION) return false;
   }
-  await db.batch(SCHEMA.map((sql) => db.prepare(sql)));
-  await db.prepare(`INSERT INTO meta (k, v) VALUES ('schema_version', ?) ON CONFLICT(k) DO UPDATE SET v = excluded.v`)
-    .bind(String(SCHEMA_VERSION)).run();
+  if (version < 1) { await db.batch(SCHEMA.map((sql) => db.prepare(sql))); version = 1; }
+  for (let v = version + 1; v <= SCHEMA_VERSION; v++) {
+    for (const sql of MIGRATIONS[v] || []) {
+      try { await db.prepare(sql).run(); } catch (e) {
+        if (!/duplicate column/i.test(String(e && e.message))) throw e;   // another request got there first
+      }
+    }
+    await db.prepare(`INSERT INTO meta (k, v) VALUES ('schema_version', ?) ON CONFLICT(k) DO UPDATE SET v = excluded.v`).bind(String(v)).run();
+  }
   return true;
 }
