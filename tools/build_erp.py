@@ -1205,7 +1205,7 @@ pl[f"B{r0 + 5}"].font = Font(name=FONT, size=8, italic=True)
 r1 = r0 + 7
 steps = [
     "HOW TO UPGRADE",
-    f"1.  Pay for a plan and send your mobile number:  {LIC.SELLER_CONTACT}",
+    f"1.  Buy online at  {LIC.SELLER_CONTACT}",
     "2.  You receive a license key like  PRO-H270411-1HEK",
     "3.  Settings sheet: type the same mobile number in B14 and paste the key in B15",
     "4.  This page and the Dashboard turn green: every line now counts. Your data is never lost - lines",

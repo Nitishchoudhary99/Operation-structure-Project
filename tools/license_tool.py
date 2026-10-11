@@ -30,7 +30,7 @@ PLANS = {  # code: (label, days of validity)
 }
 # Selling prices in INR (GST extra if you are registered). Single source for the Plans sheet.
 PRICES = {"M": 149, "H": 799, "Y": 1299}
-SELLER_CONTACT = os.environ.get("ST_SELLER_CONTACT", "WhatsApp: +91-XXXXXXXXXX  ·  UPI: yourname@upi")
+SELLER_CONTACT = os.environ.get("ST_SELLER_CONTACT", "docbrisk.com/smarttrader  (key appears instantly after payment)")
 
 ALPHA = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ"
 MSG_LEN, ID_LEN = 40, 20
