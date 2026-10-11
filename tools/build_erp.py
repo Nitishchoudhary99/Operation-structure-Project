@@ -1215,6 +1215,28 @@ for i, t in enumerate(steps):
     pl[f"B{r1 + i}"] = t
     pl[f"B{r1 + i}"].font = Font(name=FONT, size=12 if i == 0 else 10, bold=i == 0, color=NAVY if i == 0 else "000000")
 
+r2 = r1 + len(steps) + 1
+pl[f"B{r2}"] = "HOW PRO COMPARES (yearly price, Oct 2026 listings)"
+pl[f"B{r2}"].font = Font(name=FONT, size=12, bold=True, color=NAVY)
+comp = [("Product", "Price / year", "Per month", "Works offline, your data stays in your file"),
+        ("SmartTrader Pro (this file)", f"Rs {LIC.PRICES['Y']:,}", f"Rs {round(LIC.PRICES['Y'] / 12)}", "Yes - plain Excel, no login"),
+        ("myBillBook Plus / Pro", "Rs 3,490 - 3,990", "Rs 291 - 333", "Cloud account"),
+        ("Vyapar Desktop", "Rs 3,399 - 4,099", "Rs 283 - 342", "Desktop app"),
+        ("TallyPrime Silver (rental)", "Rs 8,100", "Rs 675", "Desktop app")]
+for i, row in enumerate(comp):
+    for j, v in enumerate(row):
+        c = pl.cell(r2 + 1 + i, 2 + j, v)
+        c.border = box
+        c.font = f_head if i == 0 else (f_bold if i == 1 else f_calc)
+        c.alignment = Alignment(horizontal="left" if j in (0, 3) else "center", wrap_text=True)
+        if i == 0:
+            c.fill = fill(TEAL)
+        elif i == 1:
+            c.fill = fill("E8F5E9")
+pl.column_dimensions["E"].width = 34
+pl[f"B{r2 + 7}"] = "Competitor prices are public listings and change often; they include cloud/mobile features this file does not."
+pl[f"B{r2 + 7}"].font = Font(name=FONT, size=8, italic=True)
+
 # sheet order & tab colours
 order = ["Dashboard", "Sales", "Purchases", "CashBook", "Items", "Parties", "Adjustments", "Invoice", "Reports",
          "Settings", "Plans", "Guide", "Lic"]

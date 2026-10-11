@@ -98,3 +98,17 @@ The full recalculation runs all six functions, with 5,000 items and 2,000 partie
 | 1,000,000 | ~2.3 s |
 
 The formula edition needs about 99,000 cell formulas to cover just 3,000 lines.
+
+## Building with Microsoft Visual Studio
+
+1. Open `xll/vs/SmartTrader.sln` in Visual Studio 2022 with the *Desktop development with C++* workload installed.
+2. Choose **Release | x64** (64-bit Excel) or **Release | x86** (32-bit Excel), then **Build ▸ Build Solution**.
+3. The output is `xll/vs/bin/Release/SmartTrader64.xll` or `SmartTrader32.xll`. Load it in Excel through *File ▸ Options ▸ Add-ins*.
+
+`SmartTrader.def` exports the functions under the undecorated names Excel looks up; this matters for 32-bit builds. Release builds link the C runtime statically, so the `.xll` needs no Visual C++ redistributable.
+
+**To debug:** set *Project ▸ Properties ▸ Debugging ▸ Command* to your `EXCEL.EXE` path, put breakpoints in `engine.c`, press F5, then load the add-in and open `SmartTrader_ERP_C.xlsx`.
+
+**Plan settings:** `StFreeLines` and `StLicenseKeys` are set near the top of `SmartTrader.vcxproj`. They must match `ST_FREE_LINES` / `ST_LICENSE_KEYS` used by `tools/license_tool.py` and the workbook build.
+
+**Status:** the solution files were written by hand and not compiled with MSVC here. The same sources and `.def` build cleanly with mingw-w64, which produced the tested binaries in `dist/`.
