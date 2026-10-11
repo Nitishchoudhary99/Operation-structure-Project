@@ -245,6 +245,63 @@ static int cis(const XLOPER12 *g, int r, int c, const char *lit)
     return 1;
 }
 
+/* Key issued by tools/license_tool.py with the default demo secret:
+     python tools/license_tool.py 9876543210 H --start 2026-10-11  ->  PRO-H270411-1HEK (expires 11-Apr-2027) */
+extern double st_test_today;
+
+static int run_plan(const char *id, int id_is_number, const char *key, double today, int *locked_rows, double *sales_total)
+{
+    enum { N = 250 };
+    XLOPER12 *in[IN_COUNT];
+    in[IN_ITEMS] = grid_new(1, 11);
+    sets(in[IN_ITEMS], 0, 0, "Pen"); setn(in[IN_ITEMS], 0, 7, 10); setn(in[IN_ITEMS], 0, 9, 1000);
+    in[IN_PARTIES] = grid_new(1, 9);
+    sets(in[IN_PARTIES], 0, 0, "Shop");
+    in[IN_PURCHASES] = grid_new(1, 8);
+    in[IN_SALES] = grid_new(N, 9);
+    for (int r = 0; r < N; r++) {
+        setn(in[IN_SALES], r, 0, 46200); sets(in[IN_SALES], r, 2, "Shop"); sets(in[IN_SALES], r, 3, "Pen");
+        setn(in[IN_SALES], r, 4, 1);
+    }
+    in[IN_CASHBOOK] = grid_new(N, 8);
+    for (int r = 0; r < N; r++) { sets(in[IN_CASHBOOK], r, 2, "Expense"); sets(in[IN_CASHBOOK], r, 5, "Cash"); setn(in[IN_CASHBOOK], r, 6, 1); }
+    in[IN_ADJUST] = grid_new(1, 5);
+    in[IN_SETTINGS] = grid_new(12, 1);
+    sets(in[IN_SETTINGS], 3, 0, "Rajasthan"); setn(in[IN_SETTINGS], 5, 0, 46113); setn(in[IN_SETTINGS], 6, 0, 46300);
+    if (id) { if (id_is_number) setn(in[IN_SETTINGS], 10, 0, atof(id)); else sets(in[IN_SETTINGS], 10, 0, id); }
+    if (key) sets(in[IN_SETTINGS], 11, 0, key);
+    st_test_today = today;
+
+    LPXLOPER12 sres = ST_SALES(in[0], in[1], in[2], in[3], in[4], in[5], in[6]);
+    LPXLOPER12 ires = ST_ITEMS(in[0], in[1], in[2], in[3], in[4], in[5], in[6]);
+    LPXLOPER12 cres = ST_CASHBOOK(in[0], in[1], in[2], in[3], in[4], in[5], in[6]);
+    *locked_rows = 0;
+    for (int r = 0; r < N; r++) *locked_rows += cis(sres, r, 10, "PRO PLAN");
+    int cash_locked = 0;
+    for (int r = 0; r < N; r++) cash_locked += cis(cres, r, 2, "PRO PLAN");
+    *sales_total = cnum(ires, 0, 9);                      /* Items!U sales value */
+    CHECK(cash_locked == *locked_rows, "cash book locks the same rows as sales (%d vs %d)", cash_locked, *locked_rows);
+    if (*locked_rows) CHECK(cis(sres, 249, 2, "") && cis(sres, 199, 10, "OK"), "locked row is blank, row 200 still posts");
+    int pro = cnum(ires, 0, 1) == N;                        /* sold qty counts every line on Pro */
+    xlAutoFree12(sres); xlAutoFree12(ires); xlAutoFree12(cres);
+    for (int i = 0; i < IN_COUNT; i++) free_grid(in[i]);
+    st_test_today = 0;
+    return pro;
+}
+
+static void licence_tests(void)
+{
+    int locked; double total;
+    CHECK(!run_plan(NULL, 0, NULL, 46306, &locked, &total) && locked == 50 && total == 2000, "Free: 200 of 250 lines count (%d locked, sales %.2f)", locked, total);
+    CHECK(run_plan("9876543210", 1, "PRO-H270411-1HEK", 46306, &locked, &total) && locked == 0 && total == 2500, "Pro key, numeric mobile cell");
+    CHECK(run_plan(" 9876543210 ", 0, "  pro-h270411-1hek ", 46306, &locked, &total), "Pro key typed in lower case with spaces");
+    CHECK(run_plan("9876543210", 1, "PRO-H270411-1HEK", 46488, &locked, &total), "Pro still active on the expiry day");
+    CHECK(!run_plan("9876543210", 1, "PRO-H270411-1HEK", 46489, &locked, &total) && locked == 50, "Pro expired the day after");
+    CHECK(!run_plan("9876500000", 1, "PRO-H270411-1HEK", 46306, &locked, &total), "key bound to another mobile number");
+    CHECK(!run_plan("9876543210", 1, "PRO-Y270411-1HEK", 46306, &locked, &total), "tampered plan letter");
+    CHECK(!run_plan("9876543210", 1, "PRO-H290411-1HEK", 46306, &locked, &total), "tampered expiry date");
+}
+
 static void selftest(void)
 {
     /* Excel ROUND(x,2) semantics */
@@ -326,6 +383,7 @@ static void selftest(void)
     xlAutoFree12(e);
 
     for (int i = 0; i < IN_COUNT; i++) free_grid(in[i]);
+    licence_tests();
     printf("selftest: %s (%d failures)\n", g_fail ? "FAILED" : "all edge cases pass", g_fail);
 }
 

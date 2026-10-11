@@ -4,7 +4,10 @@
 #   make bench      -> synthetic speed test
 SRC      = src/engine.c src/smarttrader.c
 HDR      = src/engine.h src/xlcall_min.h
-CFLAGS   = -std=c11 -O2 -Wall -Wextra -Wno-unused-parameter
+# Plan rules: keep in sync with tools/license_tool.py (same environment variables)
+ST_LICENSE_KEYS ?= 7919,10007,9967,424242
+ST_FREE_LINES   ?= 200
+CFLAGS   = -std=c11 -O2 -Wall -Wextra -Wno-unused-parameter -DST_FREE_LINES=$(ST_FREE_LINES) '-DST_LIC_K=$(ST_LICENSE_KEYS)'
 WINE     ?= $(firstword $(wildcard /usr/lib/wine/wine64 /usr/bin/wine64 /usr/bin/wine))
 WINFLAGS = $(CFLAGS) -shared -static -static-libgcc -s -Wl,--kill-at
 

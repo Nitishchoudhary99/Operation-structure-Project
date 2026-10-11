@@ -16,15 +16,25 @@ from openpyxl.chart import BarChart, LineChart, Reference
 from openpyxl.comments import Comment
 from openpyxl.formatting.rule import CellIsRule, FormulaRule
 from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
-from openpyxl.utils import get_column_letter
+from openpyxl.utils import column_index_from_string, get_column_letter
 from openpyxl.workbook.defined_name import DefinedName
 from openpyxl.worksheet.datavalidation import DataValidation
 from openpyxl.worksheet.formula import ArrayFormula
 
-ARGV = [a for a in sys.argv[1:] if not a.startswith("--")]
-C_ENGINE = "--engine" in sys.argv and sys.argv[sys.argv.index("--engine") + 1].lower() == "c"
-ARGV = [a for a in ARGV if a.lower() != "c"]
+def opt(flag, default=None):
+    return sys.argv[sys.argv.index(flag) + 1] if flag in sys.argv else default
+
+
+C_ENGINE = (opt("--engine", "formula") or "").lower() == "c"
+SAMPLE = opt("--sample", "small")          # small: demo fits the Free plan; big: ~940 sales lines (tests)
+LIC_ID = opt("--license-id", "")           # test builds only: pre-filled Pro activation
+LIC_KEY = opt("--license-key", "")
+_flags = {"--engine", "--sample", "--license-id", "--license-key"}
+ARGV = [a for i, a in enumerate(sys.argv[1:], 1) if not a.startswith("--") and sys.argv[i - 1] not in _flags]
 OUT = ARGV[0] if ARGV else ("SmartTrader_ERP_C.xlsx" if C_ENGINE else "SmartTrader_ERP.xlsx")
+
+sys.path.insert(0, __import__("os").path.dirname(__import__("os").path.abspath(__file__)))
+import license_tool as LIC  # noqa: E402  (shared with the key generator and the C engine)
 
 # ---------------------------------------------------------------- capacity
 N_TX = 20000 if C_ENGINE else 3000      # transaction rows per register (Sales / Purchases / Cash Book)
@@ -32,6 +42,8 @@ N_ADJ = 2000 if C_ENGINE else 500
 N_ITEMS = 2000 if C_ENGINE else 500
 N_PARTIES = 1000 if C_ENGINE else 300
 FIRST = 5        # first data row on every register
+FREE_LINES = LIC.FREE_LINES                  # Free plan: first N lines of Sales / Purchases / CashBook
+FREE_LAST = FIRST + FREE_LINES - 1
 
 def last(n):
     return FIRST + n - 1
@@ -77,7 +89,7 @@ def banner(ws, title, subtitle, width):
             ws.cell(r, c).fill = fill(NAVY)
     ws["A1"].alignment = Alignment(vertical="center")
     ws.row_dimensions[1].height = 28
-    ws.cell(1, width + 2).value = "◀ Home"
+    ws.cell(1, width + 2).value = "« Home"
     ws.cell(1, width + 2).hyperlink = "#Dashboard!A1"
     ws.cell(1, width + 2).font = Font(name=FONT, bold=True, color="0563C1", underline="single")
 
@@ -136,7 +148,7 @@ def name(n, ref):
 
 # =================================================================== SETTINGS
 st = wb.create_sheet("Settings")
-banner(st, "⚙  SETTINGS & MASTER LISTS", "Set this up once. Every list here feeds the dropdowns across the ERP.", 12)
+banner(st, "SETTINGS & MASTER LISTS", "Set this up once. Every list here feeds the dropdowns across the ERP.", 12)
 st.column_dimensions["A"].width = 26
 st.column_dimensions["B"].width = 34
 settings = [
@@ -150,6 +162,8 @@ settings = [
     ("Invoice Prefix", "INV-", None),
     ("Dead-Stock Threshold (days)", 90, "0"),
     ("Bank Details (on invoice)", "SBI A/c 0000000000 · IFSC SBIN0000000", None),
+    ("PRO: Registered Mobile No.", LIC_ID, "@"),
+    ("PRO: License Key", LIC_KEY, "@"),
 ]
 for i, (k, v, fmt) in enumerate(settings):
     r = 4 + i
@@ -160,11 +174,13 @@ for i, (k, v, fmt) in enumerate(settings):
     c.border = box
     if fmt:
         c.number_format = fmt
+st["B15"].comment = Comment("Paste the key you received after buying Pro, e.g. PRO-H270415-7QZ4. "
+                            "It works only with the mobile number above. See the Plans sheet.", "ERP")
 st["B10"].comment = Comment("Leave as =TODAY() for live reports, or type a fixed date to view history. "
                             "This is the ONLY volatile formula in the workbook.", "ERP")
 for n, ref in [("CoName", "$B$4"), ("CoAddr", "$B$5"), ("CoGSTIN", "$B$6"), ("HomeState", "$B$7"),
                ("CoPhone", "$B$8"), ("FYStart", "$B$9"), ("AsOf", "$B$10"), ("InvPrefix", "$B$11"),
-               ("DeadDays", "$B$12"), ("CoBank", "$B$13")]:
+               ("DeadDays", "$B$12"), ("CoBank", "$B$13"), ("LicId", "$B$14"), ("LicKey", "$B$15")]:
     name(n, f"Settings!{ref}")
 
 # Accounts with opening balances
@@ -238,16 +254,22 @@ it_headers = [
     ("Suggested Order Qty", 10, QTY), ("Sales Value (₹)", 12, INR), ("Gross Profit (₹)", 12, INR),
     ("Last Sold", 10, DATE), ("Days Since Sale", 8, "0"), ("Days of Cover", 8, "0"), ("rank key", 6, None),
 ]
-banner(it, "📦  ITEM MASTER & LIVE STOCK",
+banner(it, "ITEM MASTER & LIVE STOCK",
        "One row per product. Stock, cost, value and reorder alerts update automatically from Purchases, Sales and Adjustments.",
        len(it_headers))
 register(it, it_headers, N_ITEMS, 11)
 it.column_dimensions["Z"].hidden = True
 
-S = lambda col, end=TX_END: f"Sales!${col}${FIRST}:${col}${end}"
-P = lambda col, end=TX_END: f"Purchases!${col}${FIRST}:${col}${end}"
+# Register ranges end at INDEX(..., TxRows): the whole register on Pro, the first FREE_LINES rows
+# on Free. INDEX-built ranges are non-volatile and work in every Excel since 2007.
+def _reg(sheet, col):
+    return f"{sheet}!${col}${FIRST}:INDEX({sheet}!${col}${FIRST}:${col}${TX_END},TxRows)"
+
+
+S = lambda col: _reg("Sales", col)
+P = lambda col: _reg("Purchases", col)
 A_ = lambda col: f"Adjustments!${col}${FIRST}:${col}${ADJ_END}"
-C_ = lambda col: f"CashBook!${col}${FIRST}:${col}${TX_END}"
+C_ = lambda col: _reg("CashBook", col)
 I_ = lambda col: f"Items!${col}${FIRST}:${col}${IT_END}"
 PT = lambda col: f"Parties!${col}${FIRST}:${col}${PT_END}"
 
@@ -264,7 +286,7 @@ for r in (range(FIRST, IT_END + 1) if not C_ENGINE else ()):
     it[f"T{r}"] = f"={g}IF(O{r}<=N($I{r}),MAX(0,2*N($I{r})-O{r}),0))"
     it[f"U{r}"] = f"={g}SUMIFS({S('L')},{S('D')},$A{r}))"
     it[f"V{r}"] = f"={g}SUMIFS({S('S')},{S('D')},$A{r}))"
-    it[f"W{r}"] = f"={g}_xlfn.MAXIFS({S('A')},{S('D')},$A{r}))"
+    it[f"W{r}"] = f"={g}IFERROR(SUMPRODUCT(MAX(({S('D')}=$A{r})*{S('A')})),0))"
     it[f"X{r}"] = f"={g}IF(W{r}=0,AsOf-FYStart,AsOf-W{r}))"
     it[f"Y{r}"] = f'={g}IF(M{r}=0,"",O{r}/(M{r}/MAX(1,AsOf-FYStart))))'
     it[f"Z{r}"] = f'={g}U{r}+ROW()/1000000)'
@@ -291,7 +313,7 @@ pt_headers = [
     ("Paid (₹)", 12, INR), ("Balance (₹)", 13, INR), ("Position", 11, None), ("Last Sale", 10, DATE),
     ("Last Receipt", 10, DATE), ("Days Unpaid", 8, "0"), ("Alert", 14, None),
 ]
-banner(pt, "👥  CUSTOMERS & SUPPLIERS (PARTY LEDGER)",
+banner(pt, "CUSTOMERS & SUPPLIERS (PARTY LEDGER)",
        "Balance > 0 means the party owes you (receivable); < 0 means you owe them (payable).", len(pt_headers))
 register(pt, pt_headers, N_PARTIES, 9)
 for r in (range(FIRST, PT_END + 1) if not C_ENGINE else ()):
@@ -302,8 +324,8 @@ for r in (range(FIRST, PT_END + 1) if not C_ENGINE else ()):
     pt[f"M{r}"] = f'={g}SUMIFS({C_("G")},{C_("D")},$A{r},{C_("C")},"Payment"))'
     pt[f"N{r}"] = f"={g}N($I{r})+J{r}-K{r}-L{r}+M{r})"
     pt[f"O{r}"] = f'={g}IF(ROUND(N{r},2)>0,"Receivable",IF(ROUND(N{r},2)<0,"Payable","Settled")))'
-    pt[f"P{r}"] = f"={g}_xlfn.MAXIFS({S('A')},{S('C')},$A{r}))"
-    pt[f"Q{r}"] = f'={g}_xlfn.MAXIFS({C_("A")},{C_("D")},$A{r},{C_("C")},"Receipt"))'
+    pt[f"P{r}"] = f"={g}IFERROR(SUMPRODUCT(MAX(({S('C')}=$A{r})*{S('A')})),0))"
+    pt[f"Q{r}"] = f'={g}IFERROR(SUMPRODUCT(MAX(({C_("D")}=$A{r})*({C_("C")}="Receipt")*{C_("A")})),0))'
     pt[f"R{r}"] = f'={g}IF(ROUND(N{r},2)<=0,"",AsOf-IF(N(Q{r})>0,Q{r},IF(N(P{r})>0,P{r},FYStart))))'
     pt[f"S{r}"] = (f'={g}IF(AND(N($G{r})>0,N{r}>N($G{r})),"OVER LIMIT",'
                    f'IF(AND(N{r}>0,N(R{r})>N($H{r})),"OVERDUE",IF(ROUND(N{r},2)<0,"PAY DUE",""))))')
@@ -337,7 +359,7 @@ pu_headers = [
     ("CGST (₹)", 10, INR), ("SGST (₹)", 10, INR), ("IGST (₹)", 10, INR), ("Bill Total (₹)", 12, INR),
     ("itemRow", 6, None), ("partyRow", 6, None), ("Paid Now (₹)", 11, INR),
 ]
-banner(pu, "🛒  PURCHASES / GOODS RECEIVED (PROCURE)",
+banner(pu, "PURCHASES / GOODS RECEIVED (PROCURE)",
        "One line per item received. Stock, average cost, supplier payable and GST input credit update instantly.",
        len(pu_headers))
 register(pu, pu_headers, N_TX, 8)
@@ -366,7 +388,7 @@ sa_headers = [
     ("COGS (₹)", 11, INR), ("Profit (₹)", 11, INR), ("Stock Check", 12, None),
     ("itemRow", 6, None), ("partyRow", 6, None), ("invNum", 6, None), ("Paid Now (₹)", 11, INR),
 ]
-banner(sa, "🧾  SALES / INVOICES (DELIVER)",
+banner(sa, "SALES / INVOICES (DELIVER)",
        "One line per item sold. Keep all lines of an invoice together. Leave Rate blank to use the standard sale rate.",
        len(sa_headers))
 register(sa, sa_headers, N_TX, 9)
@@ -419,7 +441,7 @@ cb_headers = [
     ("Reference / Notes", 26, None), ("Money In (₹)", 12, INR), ("Money Out (₹)", 12, INR),
     ("Check", 18, None),
 ]
-banner(cb, "💰  CASH & BANK BOOK (FINANCE)",
+banner(cb, "CASH & BANK BOOK (FINANCE)",
        "Customer receipts, supplier payments, expenses, owner capital/drawings and transfers between accounts.",
        len(cb_headers))
 register(cb, cb_headers, N_TX, 8)
@@ -442,7 +464,7 @@ cb.conditional_formatting.add(f"K{FIRST}:K{TX_END}",
 ad = wb.create_sheet("Adjustments")
 ad_headers = [("Date *", 10, DATE), ("Item *", 26, None), ("Qty (+in / -out) *", 11, QTY), ("Reason *", 16, None),
               ("Notes", 28, None), ("Avg Cost (₹)", 11, INR), ("Value Impact (₹)", 13, INR)]
-banner(ad, "🔧  STOCK ADJUSTMENTS",
+banner(ad, "STOCK ADJUSTMENTS",
        "Damage, expiry, physical-count corrections, returns. Negative qty reduces stock and is booked as a loss.",
        len(ad_headers))
 register(ad, ad_headers, N_ADJ, 5)
@@ -451,6 +473,56 @@ for r in (range(FIRST, ADJ_END + 1) if not C_ENGINE else ()):
     ad[f"G{r}"] = f'=IF($B{r}="","",ROUND(N($C{r})*F{r},2))'
 add_list_dv(ad, f"B{FIRST}:B{ADJ_END}", "L_Items")
 add_list_dv(ad, f"D{FIRST}:D{ADJ_END}", "L_AdjReasons")
+
+# =================================================================== PLAN GATING
+def lock_rows(ws, first_col, last_col, key_col, marker_col):
+    """Rows past the Free limit compute only on Pro; on Free they show a 'PRO PLAN' marker."""
+    if C_ENGINE:
+        return   # the C engine applies the same rule internally
+    a, b = column_index_from_string(first_col), column_index_from_string(last_col)
+    for r in range(FREE_LAST + 1, TX_END + 1):
+        for ci in range(a, b + 1):
+            c = ws.cell(r, ci)
+            f = c.value
+            if isinstance(f, str) and f.startswith("="):
+                locked = f'IF(${key_col}{r}="","","PRO PLAN")' if get_column_letter(ci) == marker_col else '""'
+                c.value = f"=IF(IsPro,{f[1:]},{locked})"
+
+
+lock_rows(sa, "J", "X", "D", "T")
+lock_rows(pu, "I", "S", "D", "I")
+lock_rows(cb, "I", "K", "C", "K")
+for ws, col in ((sa, "T"), (pu, "I"), (cb, "K")):
+    ws.conditional_formatting.add(f"{col}{FIRST}:{col}{TX_END}", CellIsRule(
+        operator="equal", formula=['"PRO PLAN"'], fill=fill("D9D2E9"), font=Font(bold=True, color="5E35B1")))
+
+# Very-hidden licence check: plain Excel 2007 functions, mirrored in tools/license_tool.py and xll/src/engine.c
+lic = wb.create_sheet("Lic")
+lic.sheet_state = "veryHidden"
+alpha = LIC.ALPHA
+lic_rows = [
+    ("key", '=UPPER(TRIM(LicKey&""))'),
+    ("id", f'=LEFT(TRIM(LicId&""),{LIC.ID_LEN})'),
+    ("plan", "=MID(A1,5,1)"),
+    ("expiry", "=IFERROR(DATE(2000+VALUE(MID(A1,6,2)),VALUE(MID(A1,8,2)),VALUE(MID(A1,10,2))),0)"),
+    ("message", f'=LEFT(A2&"|"&A3&"|"&(YEAR(A4)*10000+MONTH(A4)*100+DAY(A4))&REPT(" ",{LIC.MSG_LEN}),{LIC.MSG_LEN})'),
+    ("sum", f"=SUMPRODUCT(CODE(MID(A5,ROW($A$1:$A${LIC.MSG_LEN}),1))*(MOD(ROW($A$1:$A${LIC.MSG_LEN})*{LIC.K1},{LIC.K2})+1))"),
+    ("check", f"=MOD(A6*{LIC.K3}+{LIC.K4},1679616)"),
+    ("check36", f'=MID("{alpha}",INT(A7/46656)+1,1)&MID("{alpha}",MOD(INT(A7/1296),36)+1,1)'
+                f'&MID("{alpha}",MOD(INT(A7/36),36)+1,1)&MID("{alpha}",MOD(A7,36)+1,1)'),
+    ("valid", '=AND(LEN(A1)=16,LEFT(A1,4)="PRO-",MID(A1,12,1)="-",ISNUMBER(FIND(A3,"MHY")),A4>0,LEN(A2)>0,RIGHT(A1,4)=A8)'),
+    ("is pro", "=AND(A9,TODAY()<=A4)"),
+    ("tx rows", f"=IF(A10,{N_TX},{FREE_LINES})"),
+    ("plan label", '=IF(A3="M","1 month",IF(A3="H","6 months","12 months"))'),
+    ("status", '=IF(A10,"PRO PLAN ("&A12&")  -  active till "&DAY(A4)&"/"&MONTH(A4)&"/"&YEAR(A4),'
+               'IF(A9,"PRO EXPIRED on "&DAY(A4)&"/"&MONTH(A4)&"/"&YEAR(A4)&"  -  renew on the Plans sheet",'
+               'IF(LEN(A1)>0,"LICENSE KEY NOT VALID for this mobile number  -  check Settings B14:B15","FREE PLAN")))'),
+]
+for i, (label, f) in enumerate(lic_rows, start=1):
+    lic.cell(i, 1, f)
+    lic.cell(i, 2, label)
+for n_, ref in [("IsPro", "$A$10"), ("TxRows", "$A$11"), ("LicStatus", "$A$13"), ("LicExpiry", "$A$4")]:
+    name(n_, f"Lic!{ref}")
 
 # =================================================================== INVOICE (print)
 iv = wb.create_sheet("Invoice")
@@ -472,12 +544,12 @@ iv["A5"] = "TAX INVOICE / DELIVERY CHALLAN"
 iv["A5"].font = Font(name=FONT, size=13, bold=True, color="FFFFFF")
 iv["A5"].fill = fill(NAVY)
 iv["A5"].alignment = Alignment(horizontal="center")
-iv["M3"] = "◀ Home"
+iv["M3"] = "« Home"
 iv["M3"].hyperlink = "#Dashboard!A1"
 iv["M3"].font = Font(name=FONT, bold=True, color="0563C1", underline="single")
 
 FR = f"MATCH($C$7,{S('B')},0)"  # first row of the invoice inside the Sales register
-iv["B7"], iv["B8"], iv["B9"] = "Invoice No ▶ (type to reprint)", "Invoice Date", "Payment"
+iv["B7"], iv["B8"], iv["B9"] = "Invoice No > (type to reprint)", "Invoice Date", "Payment"
 iv["C7"] = f"=IF(COUNTA({S('B')})=0,\"\",INDEX({S('B')},COUNTA({S('B')})))"
 iv["C7"].fill, iv["C7"].font = fill(INPUT_FILL), Font(name=FONT, size=11, bold=True, color="0000FF")
 iv["C7"].comment = Comment("Defaults to the latest invoice. Overwrite with any invoice number to reprint it.", "ERP")
@@ -540,7 +612,7 @@ iv[f"K{TR + 4}"] = f"=ROUND(SUM(K{TR}:K{TR + 3}),0)-SUM(K{TR}:K{TR + 3})"
 iv[f"K{TR + 5}"] = f"=SUM(K{TR}:K{TR + 4})"
 iv[f"K{TR + 5}"].font = Font(name=FONT, size=12, bold=True, color=NAVY)
 iv[f"K{TR + 5}"].fill = fill(LIGHT)
-iv[f"B{TR}"] = '=IF(COUNTIF(A13:A32,">0")>=20,"⚠ More than 20 lines: split the invoice","")'
+iv[f"B{TR}"] = '=IF(COUNTIF(A13:A32,">0")>=20,"!! More than 20 lines: split the invoice","")'
 iv[f"B{TR}"].font = Font(name=FONT, size=9, color="C00000")
 iv[f"B{TR + 1}"] = '="Bank: "&CoBank'
 iv[f"B{TR + 2}"] = "Goods once sold will be taken back only as per store policy."
@@ -558,7 +630,7 @@ iv.sheet_properties.pageSetUpPr.fitToPage = True
 
 # =================================================================== REPORTS
 rp = wb.create_sheet("Reports")
-banner(rp, "📊  REPORTS: MONTHLY P&L, GST, EXPENSES", "Financial-year view built from all registers. Nothing to type here.", 12)
+banner(rp, "REPORTS: MONTHLY P&L, GST, EXPENSES", "Financial-year view built from all registers. Nothing to type here.", 12)
 rp_head = ["Month", "Sales (₹)", "COGS (₹)", "Gross Profit (₹)", "GP %", "Expenses (₹)", "Other Income (₹)",
            "Stock Loss/Gain (₹)", "Net Profit (₹)", "Purchases (₹)", "GST Output (₹)", "GST Input (₹)", "Net GST Payable (₹)"]
 for j, h in enumerate(rp_head, start=1):
@@ -656,12 +728,29 @@ db.merge_cells("B1:N1")
 db["B1"] = '=CoName&"  ·  SmartTrader ERP' + (" (C Engine)" if C_ENGINE else "") + '"'
 db["B1"].font = Font(name=FONT, size=20, bold=True, color="FFFFFF")
 db.merge_cells("B2:N2")
-db["B2"] = '="Live business cockpit  ·  Period: "&TEXT(D4,"dd-mmm-yy")&" to "&TEXT(G4,"dd-mmm-yy")'
+db["B2"] = ('="Live business cockpit  ·  Period: "&DAY(D4)&"/"&MONTH(D4)&"/"&YEAR(D4)'
+            '&" to "&DAY(G4)&"/"&MONTH(G4)&"/"&YEAR(G4)')
 db["B2"].font = f_sub
 for rr in (1, 2):
     for c in range(1, 15):
         db.cell(rr, c).fill = fill(NAVY)
 db.row_dimensions[1].height = 34
+db.merge_cells("B3:N3")
+_used = (f'"Sales "&COUNTA(Sales!$D${FIRST}:$D${TX_END})&"  ·  Purchases "&COUNTA(Purchases!$D${FIRST}:$D${TX_END})'
+         f'&"  ·  Cash Book "&COUNTA(CashBook!$C${FIRST}:$C${TX_END})')
+_over = (f'MAX(COUNTA(Sales!$D${FIRST}:$D${TX_END}),COUNTA(Purchases!$D${FIRST}:$D${TX_END}),'
+         f'COUNTA(CashBook!$C${FIRST}:$C${TX_END}))>{FREE_LINES}')
+name("OverFreeLimit", _over)
+_over = "OverFreeLimit"
+db["B3"] = (f'=IF(IsPro,LicStatus&"   ·   lines used: "&{_used},'
+            f'LicStatus&"  ·  first {FREE_LINES} lines per register  ·  used: "&{_used}'
+            f'&IF({_over},"   >>  LIMIT REACHED: newer lines are not counted - upgrade on the Plans sheet",""))')
+db["B3"].font = Font(name=FONT, size=9, bold=True, color="FFFFFF")
+db["B3"].alignment = Alignment(horizontal="center", vertical="center")
+db["B3"].fill = fill("F9A825")
+db.conditional_formatting.add("B3", FormulaRule(formula=["IsPro"], fill=fill("2E7D32")))
+db.conditional_formatting.add("B3", FormulaRule(formula=[f"AND(NOT(IsPro),{_over})"], fill=fill("C62828")))
+db.row_dimensions[3].height = 20
 db["B4"], db["E4"] = "From", "To"
 db["D4"], db["G4"] = "=FYStart", "=AsOf"
 for c in ("D4", "G4"):
@@ -674,17 +763,18 @@ db["H4"] = "← overwrite these dates to analyse any period"
 db["H4"].font = Font(name=FONT, size=8, italic=True)
 if C_ENGINE:
     db.merge_cells("K4:N4")
-    db["K4"] = '=IFERROR("✔ "&_xll.ST_VERSION(),"⚠ C engine not loaded - see Guide")'
+    db["K4"] = '=IFERROR("Engine: "&_xll.ST_VERSION(),"!! C engine not loaded - see Guide")'
     db["K4"].font = Font(name=FONT, size=9, bold=True, color="2E7D32")
     db["K4"].alignment = Alignment(horizontal="right")
-    db.conditional_formatting.add("K4", FormulaRule(formula=['LEFT($K$4,1)="⚠"'],
+    db.conditional_formatting.add("K4", FormulaRule(formula=['LEFT($K$4,2)="!!"'],
                                                     font=Font(color="FFFFFF", bold=True), fill=fill("C62828")))
 name("DFrom", "Dashboard!$D$4")
 name("DTo", "Dashboard!$G$4")
 
-nav = [("➕ New Sale", "Sales"), ("🛒 Purchase", "Purchases"), ("💰 Cash Book", "CashBook"),
-       ("📦 Items", "Items"), ("👥 Parties", "Parties"), ("🧾 Invoice", "Invoice"),
-       ("🔧 Adjust", "Adjustments"), ("📊 Reports", "Reports"), ("⚙ Settings", "Settings"), ("❓ Guide", "Guide")]
+nav = [("New Sale", "Sales"), ("Purchase", "Purchases"), ("Cash Book", "CashBook"),
+       ("Items", "Items"), ("Parties", "Parties"), ("Invoice", "Invoice"),
+       ("Adjust", "Adjustments"), ("Reports", "Reports"), ("Settings", "Settings"), ("Guide", "Guide"),
+       ("PRO Plans", "Plans")]
 for i, (lbl, target) in enumerate(nav):
     c = db.cell(6, 2 + i, lbl)
     c.hyperlink = f"#{target}!A1"
@@ -828,7 +918,7 @@ gd.column_dimensions["A"].width = 3
 gd.column_dimensions["B"].width = 34
 gd.column_dimensions["C"].width = 95
 gd.merge_cells("B1:C1")
-gd["B1"] = "❓  HOW SMARTTRADER ERP WORKS"
+gd["B1"] = "HOW SMARTTRADER ERP WORKS"
 gd["B1"].font = f_title
 for c in ("A1", "B1", "C1"):
     gd[c].fill = fill(NAVY)
@@ -857,7 +947,7 @@ guide = [
     ("Bounded ranges", f"All lookups use fixed ranges ({N_TX:,} transaction rows, {N_ITEMS} items, {N_PARTIES} parties) - never whole-column A:A references."),
     ("Match once, reuse", "Each transaction row runs one MATCH into a hidden helper column, then several cheap INDEX calls reuse it."),
     ("SUMIFS engine", "All aggregation uses SUMIFS/COUNTIFS - Excel's fastest multi-threaded aggregation functions. No SUMPRODUCT or array formulas."),
-    ("Extra boost (optional)", "Import ERP_Macros.bas (File ▸ Save As .xlsm, Alt+F11 ▸ File ▸ Import) for one-click Fast Mode, new invoice, PDF invoice, backup and archive."),
+    ("Extra boost (optional)", "Import ERP_Macros.bas (File > Save As .xlsm, Alt+F11 > File > Import) for one-click Fast Mode, new invoice, PDF invoice, backup and archive."),
     ("H", "RULES & LIMITS"),
     ("Colour code", "Blue text on cream = you type. Black/grey = formula, never overwrite. Green = linked from another sheet."),
     ("Sample data", "Rows already filled are DEMO data. Clear only the cream input cells (or run ClearDemoData macro) before going live."),
@@ -870,9 +960,9 @@ if C_ENGINE:
     guide += [
         ("H", "C ENGINE EDITION (SmartTrader64.xll)"),
         ("What it is", "A native Excel add-in written in C. Stock, cost, GST, party ledgers and the cash book are posted in one pass by compiled code - six formulas instead of ~100,000. Results are identical to the formula edition, cell for cell."),
-        ("Install once", "1) Copy SmartTrader64.xll (or SmartTrader32.xll for 32-bit Office) to a folder, e.g. Documents\\SmartTrader. 2) Right-click it ▸ Properties ▸ tick 'Unblock' ▸ OK (Windows blocks add-ins downloaded from the internet). 3) Excel ▸ File ▸ Options ▸ Add-ins ▸ Manage: Excel Add-ins ▸ Go ▸ Browse ▸ pick the .xll ▸ OK."),
-        ("Check it works", "Dashboard top-right shows '✔ SmartTrader C Engine 1.0'. A red '⚠ C engine not loaded' means step 3 was skipped and the grey columns show NAME errors until the add-in is loaded. Your typed data is never affected."),
-        ("Which .xll?", "Excel ▸ File ▸ Account ▸ About Excel shows '64-bit' or '32-bit'. Use the matching file."),
+        ("Install once", "1) Copy SmartTrader64.xll (or SmartTrader32.xll for 32-bit Office) to a folder, e.g. Documents\\SmartTrader. 2) Right-click it > Properties > tick 'Unblock' > OK (Windows blocks add-ins downloaded from the internet). 3) Excel > File > Options > Add-ins > Manage: Excel Add-ins > Go > Browse > pick the .xll > OK."),
+        ("Check it works", "Dashboard top-right shows 'Engine: SmartTrader C Engine 1.0'. A red '!! C engine not loaded' means step 3 was skipped and the grey columns show NAME errors until the add-in is loaded. Your typed data is never affected."),
+        ("Which .xll?", "Excel > File > Account > About Excel shows '64-bit' or '32-bit'. Use the matching file."),
         ("Capacity", f"{N_TX:,} lines per register, {N_ITEMS:,} items, {N_PARTIES:,} parties. A full recalculation of the sample data takes about 5 ms."),
         ("Do not", "Sort the register sheets (the grey output blocks are single array formulas; use the filter arrows instead) or type inside grey columns."),
         ("Platforms", "Excel for Windows (2010 and later, 32- or 64-bit). On Mac / Excel Online use the formula edition (SmartTrader_ERP.xlsx), which has the same layout."),
@@ -894,10 +984,11 @@ for k, v in guide:
         gd[f"B{r}"].alignment = Alignment(vertical="top")
         gd.row_dimensions[r].height = 28
     r += 1
-gd.cell(1, 5, "◀ Home").hyperlink = "#Dashboard!A1"
+gd.cell(1, 5, "« Home").hyperlink = "#Dashboard!A1"
 
 # =================================================================== SAMPLE DATA
 random.seed(7)
+BIG = SAMPLE == "big"
 items = [
     ("Basmati Rice 25kg", "8901001", "Grocery", "Bag", "1006", 0.05, 1650, 1950, 10, 40, 1620),
     ("Sugar 50kg", "8901002", "Grocery", "Bag", "1701", 0.05, 2050, 2280, 8, 25, 2000),
@@ -976,14 +1067,14 @@ while d <= today:
     if d.day == 1 or d == start:
         restock(d + timedelta(days=1) if d != start else d)
     if d.weekday() != 6:  # shop closed on Sunday
-        for _ in range(random.choice([2, 3, 3, 4])):
+        for _ in range(random.choice([2, 3, 3, 4] if BIG else [0, 1, 1, 1])):
             inv += 1
             cust = random.choice(customers + ["Walk-in Customer"] * 2)
             mode = "Cash" if cust == "Walk-in Customer" else random.choice(["", "", "", "UPI", "Bank"])
-            for itm in random.sample(items, random.choice([1, 2, 2, 3])):
+            for itm in random.sample(items, random.choice([1, 2, 2, 3] if BIG else [1, 1, 2])):
                 if itm[0] in slow_movers and d > date(2026, 7, 15):
                     continue
-                q = max(1, int(itm[8] * random.uniform(0.05, 0.25)))
+                q = max(1, int(itm[8] * (random.uniform(0.05, 0.25) if BIG else random.uniform(0.35, 0.9))))
                 if stock[itm[0]] - q < 0:
                     continue
                 stock[itm[0]] -= q
@@ -992,7 +1083,7 @@ while d <= today:
                 sale_rows.append((d, f"INV-{inv:04d}", cust, itm[0], q, None, disc, mode, deliv))
                 if not mode:
                     owed[cust] += gross(itm, q, itm[7], disc or 0)
-    if d.day in (10, 25):  # collection & payment runs
+    if d.day in ((10, 25) if BIG else (10,)):  # collection & payment runs
         for cust in customers:
             share = 0.25 if cust == "FMCG Distributors" else random.uniform(0.55, 0.9)
             amt = int(owed[cust] * share / 100) * 100
@@ -1007,7 +1098,7 @@ while d <= today:
                 due[sup] -= amt
                 cash_rows.append((d, f"V-{vno:04d}", "Payment", sup, None, "Bank", amt, "RTGS"))
     if d.day == 5:
-        for head, amt, acc in [("Rent", 18000, "Bank"), ("Salary", 26000, "Bank"),
+        for head, amt, acc in [("Rent", 18000 if BIG else 9000, "Bank"), ("Salary", 26000 if BIG else 12000, "Bank"),
                                ("Electricity", random.randint(3200, 5200), "UPI"),
                                ("Transport / Freight", random.randint(4500, 9000), "Cash"),
                                ("Telephone / Internet", 1199, "UPI")]:
@@ -1043,17 +1134,99 @@ for i, row in enumerate(adj_rows):
     for j, v in enumerate(row):
         ad.cell(FIRST + i, 1 + j, v)
 
+# =================================================================== PLANS
+pl = wb.create_sheet("Plans")
+pl.sheet_view.showGridLines = False
+for col, w in zip("ABCDE", (3, 40, 22, 22, 22)):
+    pl.column_dimensions[col].width = w
+pl.merge_cells("B1:E1")
+pl["B1"] = "SMARTTRADER ERP  -  FREE vs PRO"
+pl["B1"].font = f_title
+for c in "ABCDE":
+    pl[f"{c}1"].fill = fill(NAVY)
+pl.row_dimensions[1].height = 30
+pl.merge_cells("B2:E2")
+pl["B2"] = "=LicStatus"
+pl["B2"].font = Font(name=FONT, size=11, bold=True, color="FFFFFF")
+pl["B2"].fill = fill("F9A825")
+pl["B2"].alignment = Alignment(horizontal="center")
+pl.conditional_formatting.add("B2", FormulaRule(formula=["IsPro"], fill=fill("2E7D32")))
+pl["G1"] = "« Home"
+pl["G1"].hyperlink = "#Dashboard!A1"
+pl["G1"].font = Font(name=FONT, bold=True, color="0563C1", underline="single")
+
+head = ["Feature", "FREE", "PRO", ""]
+rows_ = [
+    ("Sales, Purchases, Cash Book lines counted", f"First {FREE_LINES} each", f"All ({N_TX:,} each)"),
+    ("Items & parties", "Unlimited", "Unlimited"),
+    ("Live stock, avg cost, reorder & dead-stock alerts", "Yes", "Yes"),
+    ("GST: CGST/SGST/IGST split, rate-wise GSTR summary", "Yes", "Yes"),
+    ("Customer / supplier ledgers, credit-limit & overdue alerts", "Yes", "Yes"),
+    ("A4 tax invoice / delivery challan", "Yes", "Yes"),
+    ("Dashboard, monthly P&L, expense analysis", "Yes", "Yes"),
+    ("C Engine add-in (Windows, 20k lines, ~6 ms recalculation)", f"First {FREE_LINES} lines", "Full"),
+    ("Macros: PDF invoices, backup, year-end rollover", "Yes", "Yes"),
+    ("Updates & WhatsApp support", "-", "Yes"),
+]
+for j, h in enumerate(head[:3]):
+    c = pl.cell(4, 2 + j, h)
+    c.font, c.fill, c.alignment, c.border = f_head, fill(TEAL if j < 2 else "5E35B1"), center, box
+for i, (f_, free_, pro_) in enumerate(rows_):
+    r = 5 + i
+    for j, v in enumerate((f_, free_, pro_)):
+        c = pl.cell(r, 2 + j, v)
+        c.border, c.font = box, f_bold if j == 0 else f_calc
+        c.alignment = Alignment(horizontal="left" if j == 0 else "center", vertical="center", wrap_text=True)
+    pl.row_dimensions[r].height = 22
+
+r0 = 5 + len(rows_) + 1
+pl[f"B{r0}"] = "PRO PRICING"
+pl[f"B{r0}"].font = Font(name=FONT, size=12, bold=True, color=NAVY)
+for j, h in enumerate(["Plan", "Price", "Per month", "You save"]):
+    c = pl.cell(r0 + 1, 2 + j, h)
+    c.font, c.fill, c.alignment, c.border = f_head, fill("5E35B1"), center, box
+monthly = LIC.PRICES["M"]
+for i, code in enumerate(("M", "H", "Y")):
+    r = r0 + 2 + i
+    label, days = LIC.PLANS[code]
+    months = round(days / 30.4)
+    pl[f"B{r}"] = f"Pro - {label}" + ("   (best value)" if code == "Y" else "")
+    pl[f"C{r}"] = LIC.PRICES[code]
+    pl[f"D{r}"] = f"=C{r}/{months}"
+    pl[f"E{r}"] = f"=IF({monthly}*{months}-C{r}<=0,\"-\",{monthly}*{months}-C{r})"
+    for col in "BCDE":
+        c = pl[f"{col}{r}"]
+        c.border, c.font = box, f_bold if col == "B" else f_calc
+        c.alignment = Alignment(horizontal="left" if col == "B" else "center")
+    pl[f"C{r}"].number_format = pl[f"D{r}"].number_format = pl[f"E{r}"].number_format = INR0
+pl[f"B{r0 + 5}"] = "Prices in Indian Rupees. GST extra where applicable."
+pl[f"B{r0 + 5}"].font = Font(name=FONT, size=8, italic=True)
+
+r1 = r0 + 7
+steps = [
+    "HOW TO UPGRADE",
+    f"1.  Pay for a plan and send your mobile number:  {LIC.SELLER_CONTACT}",
+    "2.  You receive a license key like  PRO-H270411-1HEK",
+    "3.  Settings sheet: type the same mobile number in B14 and paste the key in B15",
+    "4.  This page and the Dashboard turn green: every line now counts. Your data is never lost - lines",
+    "     entered beyond the Free limit were kept and are counted the moment Pro is active.",
+]
+for i, t in enumerate(steps):
+    pl[f"B{r1 + i}"] = t
+    pl[f"B{r1 + i}"].font = Font(name=FONT, size=12 if i == 0 else 10, bold=i == 0, color=NAVY if i == 0 else "000000")
+
 # sheet order & tab colours
-order = ["Dashboard", "Sales", "Purchases", "CashBook", "Items", "Parties", "Adjustments", "Invoice", "Reports", "Settings", "Guide"]
+order = ["Dashboard", "Sales", "Purchases", "CashBook", "Items", "Parties", "Adjustments", "Invoice", "Reports",
+         "Settings", "Plans", "Guide", "Lic"]
 wb._sheets = [wb[n] for n in order]
-for n, color in zip(order, [NAVY, "0E7C86", "6A1B9A", "2E7D32", "283593", "EF6C00", "6D4C41", "37474F", "00838F", "757575", "9E9E9E"]):
+for n, color in zip(order, [NAVY, "0E7C86", "6A1B9A", "2E7D32", "283593", "EF6C00", "6D4C41", "37474F", "00838F", "757575", "5E35B1", "9E9E9E"]):
     wb[n].sheet_properties.tabColor = color
 wb.active = 0
 if C_ENGINE:
     inputs = [("IN_Items", f"Items!$A${FIRST}:$K${IT_END}"), ("IN_Parties", f"Parties!$A${FIRST}:$I${PT_END}"),
               ("IN_Purchases", f"Purchases!$A${FIRST}:$H${TX_END}"), ("IN_Sales", f"Sales!$A${FIRST}:$I${TX_END}"),
               ("IN_CashBook", f"CashBook!$A${FIRST}:$H${TX_END}"), ("IN_Adjust", f"Adjustments!$A${FIRST}:$E${ADJ_END}"),
-              ("IN_Settings", "Settings!$B$4:$B$13")]
+              ("IN_Settings", "Settings!$B$4:$B$15")]
     for n_, ref in inputs:
         name(n_, ref)
     args = ",".join(n_ for n_, _ in inputs)
@@ -1061,7 +1234,7 @@ if C_ENGINE:
                                 (sa, "ST_SALES", "J", "X", TX_END), (pt, "ST_PARTIES", "J", "S", PT_END),
                                 (cb, "ST_CASHBOOK", "I", "K", TX_END), (ad, "ST_ADJUST", "F", "G", ADJ_END)]:
         ws[f"{c1}{FIRST}"] = ArrayFormula(f"{c1}{FIRST}:{c2}{end}", f"=_xll.{fn}({args})")
-        ws[f"{c1}3"] = f"⚙ C engine: {{=_xll.{fn}(…)}} fills {c1}:{c2}"
+        ws[f"{c1}3"] = f"C engine: {{=_xll.{fn}(...)}} fills {c1}:{c2}"
         ws[f"{c1}3"].font = Font(name=FONT, size=8, italic=True, color="595959")
     # cells written above (sample data, array anchors) need the column style explicitly
     for ws in (it, pt, pu, sa, cb, ad):

@@ -41,7 +41,7 @@ for name, sheet, c1, c2 in INPUTS:
     ws = wb[sheet]
     ends[sheet] = last_row(ws)
     write_block(work, name, block(ws, c1, c2, 5, ends[sheet]))
-write_block(work, "settings", block(wb["Settings"], "B", "B", 4, 13))
+write_block(work, "settings", block(wb["Settings"], "B", "B", 4, 15))
 
 res = subprocess.run([harness, "verify", work], capture_output=True, text=True)
 print(res.stdout, res.stderr, sep="")

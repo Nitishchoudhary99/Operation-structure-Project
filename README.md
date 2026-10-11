@@ -119,3 +119,32 @@ Measured: about 99,000 formulas recalculate with **0 errors**. A full recalculat
 * Capacity can be raised further: extend `N_TX` in `tools/build_erp.py` and rebuild, or start a new file each year with `CarryForwardToNewYear`.
 * Returns are posted through Adjustments (qty) plus CashBook (money), as described in the Guide sheet.
 * The project diagram link is in [`Link of Project`](Link%20of%20Project).
+
+## 6. Works in every Excel version
+
+Both workbooks use only functions that exist in **Excel 2007 and every later version**: Windows, Mac, Microsoft 365, Excel Online and mobile. They also open in LibreOffice.
+* `MAXIFS` (Excel 2019+) is replaced by `SUMPRODUCT(MAX(...))`.
+* Dates are no longer passed through language-specific `TEXT` formats.
+* Emoji are replaced with plain text.
+* Cross-sheet conditional-format references go through named ranges, which Excel 2007 requires.
+
+`python tools/check_compat.py <file>` audits every formula, validation rule, conditional format and named range against the Excel 2007 function list.
+
+## 7. Free and Pro plans
+
+* **Free:** every feature, but Sales, Purchases and Cash Book count only their first 200 lines each.
+* **Pro:** all lines count (3,000 per register in the formula edition, 20,000 in the C edition).
+
+Lines entered beyond the Free limit are kept, show **PRO PLAN** and count as soon as Pro is activated. The *Plans* sheet shows the comparison and prices.
+
+**Selling a key:** run `python tools/license_tool.py <buyer-mobile> M|H|Y` to get a key such as `PRO-H270411-1HEK`. The buyer types their mobile number in `Settings!B14` and the key in `Settings!B15`. Keys expire automatically and work in both editions.
+
+**Before selling:**
+1. Set your own secret with `export ST_LICENSE_KEYS="k1,k2,k3,k4"` (k2 ≤ 10007, k3 ≤ 9973), then rebuild the workbooks and run `make -C xll`. The default secret in this repository is public.
+2. Set your contact details with `ST_SELLER_CONTACT`.
+
+A spreadsheet can't truly hide a secret, so this deters casual sharing; it is not copy protection.
+
+**Prices:** set in `PRICES` in `tools/license_tool.py`.
+
+**Full test matrix:** `tools/test_all.sh <recalc.py>` covers Free, Pro and expired licenses, both editions, compatibility, and the real `.xll` under Wine.

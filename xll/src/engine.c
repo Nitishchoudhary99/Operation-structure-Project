@@ -13,12 +13,31 @@
  *   - Each register is scanned exactly once: O(items + parties + lines).
  *   - All scratch memory comes from one arena and is released in one go.
  */
+#ifndef _WIN32
+#define _POSIX_C_SOURCE 200809L   /* localtime_r */
+#endif
 #include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 
 #include "engine.h"
+
+#ifdef _WIN32
+#include <windows.h>
+#endif
+
+/* Plan rules - must match tools/license_tool.py (ST_FREE_LINES / ST_LICENSE_KEYS) */
+#ifndef ST_FREE_LINES
+#define ST_FREE_LINES 200
+#endif
+#ifndef ST_LIC_K
+#define ST_LIC_K 7919, 10007, 9967, 424242
+#endif
+static const long long LIC_K[4] = { ST_LIC_K };
+#define LIC_MSG_LEN 40
+#define LIC_ID_LEN 20
 
 #define TYPE(x) ((x)->xltype & ~(uint32_t)(xlbitXLFree | xlbitDLLFree))
 
@@ -34,7 +53,8 @@ enum { CB_DATE, CB_VNO, CB_TYPE, CB_PARTY, CB_HEAD, CB_ACCOUNT, CB_AMOUNT, CB_NO
 /* Adjustments!A:E */
 enum { AD_DATE, AD_ITEM, AD_QTY, AD_REASON, AD_NOTES };
 /* Settings!B4:B13 */
-enum { SE_COMPANY, SE_ADDR, SE_GSTIN, SE_STATE, SE_PHONE, SE_FYSTART, SE_ASOF, SE_PREFIX, SE_DEADDAYS, SE_BANK };
+enum { SE_COMPANY, SE_ADDR, SE_GSTIN, SE_STATE, SE_PHONE, SE_FYSTART, SE_ASOF, SE_PREFIX, SE_DEADDAYS, SE_BANK,
+       SE_LICID, SE_LICKEY };
 
 static const XLOPER12 NIL = { { 0 }, xltypeNil };
 
@@ -220,6 +240,111 @@ static long long paise(double x) { return llround(st_round2(x) * 100.0); }
 static double rupees(long long p) { return (double)p / 100.0; }
 static double snapq(double q) { return round(q * 1e6) / 1e6; }
 
+/* ------------------------------------------------------------ licence */
+static long long days_from_civil(long long y, int m, int d)
+{
+    y -= m <= 2;
+    long long era = (y >= 0 ? y : y - 399) / 400;
+    long long yoe = y - era * 400;
+    long long doy = (153 * (m > 2 ? m - 3 : m + 9) + 2) / 5 + d - 1;
+    long long doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    return era * 146097 + doe - 719468;
+}
+
+static void civil_from_days(long long z, int *y, int *m, int *d)
+{
+    z += 719468;
+    long long era = (z >= 0 ? z : z - 146096) / 146097;
+    long long doe = z - era * 146097;
+    long long yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
+    long long doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    long long mp = (5 * doy + 2) / 153;
+    *d = (int)(doy - (153 * mp + 2) / 5 + 1);
+    *m = (int)(mp < 10 ? mp + 3 : mp - 9);
+    *y = (int)(yoe + era * 400 + (*m <= 2));
+}
+
+#define EXCEL_EPOCH days_from_civil(1899, 12, 30)
+
+/* Excel DATE(y, m, d): months and days roll over like Excel does */
+static double excel_date(int y, int m, int d)
+{
+    int m0 = m - 1;
+    y += m0 >= 0 ? m0 / 12 : -((11 - m0) / 12);
+    m0 = ((m0 % 12) + 12) % 12;
+    return (double)(days_from_civil(y, m0 + 1, 1) + d - 1 - EXCEL_EPOCH);
+}
+
+#ifdef ST_TEST
+double st_test_today;   /* harness can pin "today" */
+#endif
+
+static double today_serial(void)
+{
+#ifdef ST_TEST
+    if (st_test_today > 0) return st_test_today;
+#endif
+#ifdef _WIN32
+    SYSTEMTIME t;
+    GetLocalTime(&t);
+    return (double)(days_from_civil(t.wYear, t.wMonth, t.wDay) - EXCEL_EPOCH);
+#else
+    time_t now = time(NULL);
+    struct tm tmv;
+    localtime_r(&now, &tmv);
+    return (double)(days_from_civil(tmv.tm_year + 1900, tmv.tm_mon + 1, tmv.tm_mday) - EXCEL_EPOCH);
+#endif
+}
+
+/* Excel TRIM (spaces only) into buf; returns length */
+static int excel_trim(sv s, char *buf, int cap)
+{
+    int n = 0, pending = 0;
+    for (int i = 0; i < s.n; i++) {
+        XCHAR c = s.p[i];
+        if (c == ' ') { pending = n > 0; continue; }
+        if (pending && n < cap) buf[n++] = ' ';
+        pending = 0;
+        if (n < cap) buf[n++] = c < 128 ? (char)c : '?';
+    }
+    return n;
+}
+
+/* Same algorithm as the hidden Lic sheet and tools/license_tool.py */
+static int licence_is_pro(const XLOPER12 *id_cell, const XLOPER12 *key_cell, arena *a)
+{
+    char key[64], id[64], msg[LIC_MSG_LEN + 1];
+    int kn = excel_trim(key_of(key_cell, a), key, (int)sizeof key);
+    int idn = excel_trim(key_of(id_cell, a), id, (int)sizeof id);
+    if (idn > LIC_ID_LEN) idn = LIC_ID_LEN;
+    for (int i = 0; i < kn; i++)
+        if (key[i] >= 'a' && key[i] <= 'z') key[i] -= 32;
+    if (kn != 16 || memcmp(key, "PRO-", 4) != 0 || key[11] != '-' || idn == 0) return 0;
+    char plan = key[4];
+    if (plan != 'M' && plan != 'H' && plan != 'Y') return 0;
+    for (int i = 5; i < 11; i++)
+        if (key[i] < '0' || key[i] > '9') return 0;
+    double expiry = excel_date(2000 + (key[5] - '0') * 10 + key[6] - '0', (key[7] - '0') * 10 + key[8] - '0',
+                               (key[9] - '0') * 10 + key[10] - '0');
+    if (expiry <= 0) return 0;
+    int y, m, d;
+    civil_from_days((long long)expiry + EXCEL_EPOCH, &y, &m, &d);
+    memset(msg, ' ', LIC_MSG_LEN);
+    msg[LIC_MSG_LEN] = 0;
+    char tail[32];
+    int tn = snprintf(tail, sizeof tail, "|%c|%d", plan, y * 10000 + m * 100 + d);
+    memcpy(msg, id, (size_t)idn);
+    memcpy(msg + idn, tail, (size_t)(idn + tn <= LIC_MSG_LEN ? tn : LIC_MSG_LEN - idn));
+    long long sum = 0;
+    for (int i = 1; i <= LIC_MSG_LEN; i++)
+        sum += (long long)(unsigned char)msg[i - 1] * ((i * LIC_K[0]) % LIC_K[1] + 1);
+    long long v = (sum * LIC_K[2] + LIC_K[3]) % 1679616;
+    static const char ALPHA[] = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ";
+    char chk[4] = { ALPHA[(v / 46656) % 36], ALPHA[(v / 1296) % 36], ALPHA[(v / 36) % 36], ALPHA[v % 36] };
+    if (memcmp(chk, key + 12, 4) != 0) return 0;
+    return today_serial() <= expiry;
+}
+
 /* ------------------------------------------------------------ model */
 enum { CHK_NONE, CHK_OK, CHK_UNKNOWN, CHK_NEG, CHK_BELOW };
 
@@ -248,6 +373,8 @@ typedef struct {
     long long *csales, *recv, *cpurch, *paid;
     double *last_sale, *last_rec;
     line_t *pl, *sl;
+    int pro;
+    int eff[IN_COUNT];      /* rows that count: whole register on Pro, first ST_FREE_LINES on Free */
 } model;
 
 static void post_gst(line_t *L, const model *m)
@@ -334,7 +461,14 @@ static int model_build(model *m, const XLOPER12 *const in[IN_COUNT], int need)
     m->fy = num(SET(SE_FYSTART));
     m->asof = num(SET(SE_ASOF));
     m->dead = num(SET(SE_DEADDAYS));
+    m->pro = licence_is_pro(SET(SE_LICID), SET(SE_LICKEY), &m->a);
 #undef SET
+    for (int i = 0; i < IN_COUNT; i++) m->eff[i] = m->g[i].rows;
+    if (!m->pro) {
+        static const int gated[] = { IN_PURCHASES, IN_SALES, IN_CASHBOOK };
+        for (int k = 0; k < 3; k++)
+            if (m->eff[gated[k]] > ST_FREE_LINES) m->eff[gated[k]] = ST_FREE_LINES;
+    }
 
     int ni = it->rows, np = pt->rows;
     if (index_init(&m->imap, ni, &m->a) || index_init(&m->pmap, np, &m->a)) return xlerrNum;
@@ -357,7 +491,7 @@ static int model_build(model *m, const XLOPER12 *const in[IN_COUNT], int need)
     }
 
     /* 2. purchases (always needed by the passes below) */
-    for (int r = 0; r < pu->rows && need; r++) {
+    for (int r = 0; r < m->eff[IN_PURCHASES] && need; r++) {
         line_t *L = &m->pl[r];
         post_line(m, pu, r, L, IT_PRATE);
         if (!L->has_item) continue;
@@ -378,7 +512,7 @@ static int model_build(model *m, const XLOPER12 *const in[IN_COUNT], int need)
     }
 
     /* 4. sales */
-    for (int r = 0; r < sa->rows && (need & NEED_SALES); r++) {
+    for (int r = 0; r < m->eff[IN_SALES] && (need & NEED_SALES); r++) {
         line_t *L = &m->sl[r];
         post_line(m, sa, r, L, IT_SRATE);
         L->inv_kind = parse_invoice(at(sa, r, TX_DOC), m->prefix, &L->inv);
@@ -410,7 +544,7 @@ static int model_build(model *m, const XLOPER12 *const in[IN_COUNT], int need)
         m->aq[r] = snapq(m->aq[r]);
         m->close[r] = snapq(num(at(it, r, IT_OQTY)) + m->pq[r] - m->sq[r] + m->aq[r]);
     }
-    for (int r = 0; r < sa->rows && (need & NEED_ADJ); r++) {
+    for (int r = 0; r < m->eff[IN_SALES] && (need & NEED_ADJ); r++) {
         line_t *L = &m->sl[r];
         if (!L->has_item) continue;
         if (L->item < 0) L->check = CHK_UNKNOWN;
@@ -420,7 +554,7 @@ static int model_build(model *m, const XLOPER12 *const in[IN_COUNT], int need)
     }
 
     /* 7. cash book -> party receipts / payments */
-    for (int r = 0; r < cb->rows && (need & NEED_CASH); r++) {
+    for (int r = 0; r < m->eff[IN_CASHBOOK] && (need & NEED_CASH); r++) {
         const XLOPER12 *t = at(cb, r, CB_TYPE), *p = at(cb, r, CB_PARTY);
         int rec = cell_is(t, "Receipt"), pay = cell_is(t, "Payment");
         if ((!rec && !pay) || is_blank(p)) continue;
@@ -546,6 +680,10 @@ static void out_lines(model *m, outb *o, int sales)
     int c_item = sales ? 11 : 8, c_party = sales ? 12 : 9;
     for (int r = 0; r < g->rows; r++) {
         line_t *L = &lines[r];
+        if (r >= m->eff[sales ? IN_SALES : IN_PURCHASES]) {   /* beyond the Free plan */
+            if (!is_blank(at(g, r, TX_ITEM))) ob_lit(o, r, sales ? 10 : 0, "PRO PLAN");
+            continue;
+        }
         if (L->party_given && L->party >= 0) ob_num(o, r, c_party, L->party + 1);
         if (sales && L->inv_kind) ob_num(o, r, 13, L->inv);
         if (!L->has_item) continue;
@@ -604,6 +742,7 @@ static void out_cashbook(model *m, outb *o)
     for (int r = 0; r < cb->rows; r++) {
         const XLOPER12 *t = at(cb, r, CB_TYPE);
         if (is_blank(t)) continue;
+        if (r >= m->eff[IN_CASHBOOK]) { ob_lit(o, r, 2, "PRO PLAN"); continue; }
         double amt = num(at(cb, r, CB_AMOUNT));
         if (amt != 0) {
             int in = cell_is(t, "Receipt") || cell_is(t, "Other Income") || cell_is(t, "Capital In") || cell_is(t, "Transfer In");

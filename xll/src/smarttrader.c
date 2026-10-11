@@ -44,7 +44,7 @@ static const char ARG_NAMES[] = "Items,Parties,Purchases,Sales,CashBook,Adjustme
 static const char *const ARG_HELP[NARGS] = {
     "Items!A5:K (IN_Items)", "Parties!A5:I (IN_Parties)", "Purchases!A5:H (IN_Purchases)",
     "Sales!A5:I (IN_Sales)", "CashBook!A5:H (IN_CashBook)", "Adjustments!A5:E (IN_Adjust)",
-    "Settings!B4:B13 (IN_Settings)",
+    "Settings!B4:B15 (IN_Settings)",
 };
 
 static const struct { const char *proc, *help; } FUNCS[] = {
