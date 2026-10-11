@@ -8,6 +8,9 @@ HDR      = src/engine.h src/xlcall_min.h
 ST_LICENSE_KEYS ?= 7919,10007,9967,424242
 ST_FREE_LINES   ?= 200
 CFLAGS   = -std=c11 -O2 -Wall -Wextra -Wno-unused-parameter -DST_FREE_LINES=$(ST_FREE_LINES) '-DST_LIC_K=$(ST_LICENSE_KEYS)'
+# Key for the harness licence tests, made with the same secret (see test/harness.c)
+TEST_KEY := $(shell cd .. && ST_LICENSE_KEYS='$(ST_LICENSE_KEYS)' python3 -c "import sys,datetime as d; sys.path.insert(0,'tools'); import license_tool as L; print(L.make_key('9876543210','H',d.date(2027,4,11)))" 2>/dev/null)
+TESTDEFS = $(if $(TEST_KEY),'-DST_TEST_KEY="$(TEST_KEY)"',)
 WINE     ?= $(firstword $(wildcard /usr/lib/wine/wine64 /usr/bin/wine64 /usr/bin/wine))
 WINFLAGS = $(CFLAGS) -shared -static -static-libgcc -s -Wl,--kill-at
 
@@ -23,11 +26,11 @@ dist/SmartTrader32.xll: $(SRC) $(HDR)
 
 build/harness: $(SRC) $(HDR) test/harness.c
 	@mkdir -p build
-	cc $(CFLAGS) -DST_TEST -fsanitize=address,undefined -g -o $@ $(SRC) test/harness.c -lm
+	cc $(CFLAGS) $(TESTDEFS) -DST_TEST -fsanitize=address,undefined -g -o $@ $(SRC) test/harness.c -lm
 
 build/harness-fast: $(SRC) $(HDR) test/harness.c
 	@mkdir -p build
-	cc $(CFLAGS) -DST_TEST -march=native -o $@ $(SRC) test/harness.c -lm
+	cc $(CFLAGS) $(TESTDEFS) -DST_TEST -march=native -o $@ $(SRC) test/harness.c -lm
 
 test: build/harness
 	./build/harness register

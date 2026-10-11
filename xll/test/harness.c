@@ -245,8 +245,11 @@ static int cis(const XLOPER12 *g, int r, int c, const char *lit)
     return 1;
 }
 
-/* Key issued by tools/license_tool.py with the default demo secret:
-     python tools/license_tool.py 9876543210 H --start 2026-10-11  ->  PRO-H270411-1HEK (expires 11-Apr-2027) */
+/* ST_TEST_KEY: the key tools/license_tool.py issues for mobile 9876543210, plan H, expiry 11-Apr-2027,
+   with the secret this build uses. The Makefile computes it, so the tests pass with any secret. */
+#ifndef ST_TEST_KEY
+#define ST_TEST_KEY "PRO-H270411-1HEK"   /* demo secret 7919,10007,9967,424242 */
+#endif
 extern double st_test_today;
 
 static int run_plan(const char *id, int id_is_number, const char *key, double today, int *locked_rows, double *sales_total)
@@ -293,13 +296,18 @@ static void licence_tests(void)
 {
     int locked; double total;
     CHECK(!run_plan(NULL, 0, NULL, 46306, &locked, &total) && locked == 50 && total == 2000, "Free: 200 of 250 lines count (%d locked, sales %.2f)", locked, total);
-    CHECK(run_plan("9876543210", 1, "PRO-H270411-1HEK", 46306, &locked, &total) && locked == 0 && total == 2500, "Pro key, numeric mobile cell");
-    CHECK(run_plan(" 9876543210 ", 0, "  pro-h270411-1hek ", 46306, &locked, &total), "Pro key typed in lower case with spaces");
-    CHECK(run_plan("9876543210", 1, "PRO-H270411-1HEK", 46488, &locked, &total), "Pro still active on the expiry day");
-    CHECK(!run_plan("9876543210", 1, "PRO-H270411-1HEK", 46489, &locked, &total) && locked == 50, "Pro expired the day after");
-    CHECK(!run_plan("9876500000", 1, "PRO-H270411-1HEK", 46306, &locked, &total), "key bound to another mobile number");
-    CHECK(!run_plan("9876543210", 1, "PRO-Y270411-1HEK", 46306, &locked, &total), "tampered plan letter");
-    CHECK(!run_plan("9876543210", 1, "PRO-H290411-1HEK", 46306, &locked, &total), "tampered expiry date");
+    char lower[32], tplan[32], tdate[32];
+    snprintf(lower, sizeof lower, "  %s ", ST_TEST_KEY);
+    for (char *c = lower; *c; c++) if (*c >= 'A' && *c <= 'Z') *c += 32;
+    snprintf(tplan, sizeof tplan, "%s", ST_TEST_KEY); tplan[4] = 'Y';      /* plan letter changed */
+    snprintf(tdate, sizeof tdate, "%s", ST_TEST_KEY); tdate[6] = '9';      /* expiry year 2027 -> 2029 */
+    CHECK(run_plan("9876543210", 1, ST_TEST_KEY, 46306, &locked, &total) && locked == 0 && total == 2500, "Pro key, numeric mobile cell");
+    CHECK(run_plan(" 9876543210 ", 0, lower, 46306, &locked, &total), "Pro key typed in lower case with spaces");
+    CHECK(run_plan("9876543210", 1, ST_TEST_KEY, 46488, &locked, &total), "Pro still active on the expiry day");
+    CHECK(!run_plan("9876543210", 1, ST_TEST_KEY, 46489, &locked, &total) && locked == 50, "Pro expired the day after");
+    CHECK(!run_plan("9876500000", 1, ST_TEST_KEY, 46306, &locked, &total), "key bound to another mobile number");
+    CHECK(!run_plan("9876543210", 1, tplan, 46306, &locked, &total), "tampered plan letter");
+    CHECK(!run_plan("9876543210", 1, tdate, 46306, &locked, &total), "tampered expiry date");
 }
 
 static void selftest(void)
