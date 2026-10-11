@@ -59,6 +59,69 @@ Public Sub NewPurchase()
     ws.Cells(r, 2).Select
 End Sub
 
+ ---------- Quotation -> sales invoice in one click ----------------------------
+' Copies the customer and every item line of the Quotation sheet into the Sales register
+' under the next invoice number, then opens it on the Invoice sheet.
+Public Sub QuoteToInvoice()
+    Dim q As Worksheet, ws As Worksheet, r As Long, i As Long, n As Long, inv As String
+    Set q = ThisWorkbook.Worksheets("Quotation")
+    Set ws = ThisWorkbook.Worksheets("Sales")
+    If q.Range("H7").Value = "" Then MsgBox "Pick the customer on the Quotation sheet first.", vbExclamation: Exit Sub
+    inv = CStr(ThisWorkbook.Worksheets("Dashboard").Range("J15").Value)   ' NEXT INVOICE No.
+    r = NextFreeRow(ws, 4)
+    For i = 13 To 27
+        If q.Cells(i, 2).Value <> "" And Val(q.Cells(i, 4).Value) <> 0 Then
+            ws.Cells(r, 1).Value = Date
+            ws.Cells(r, 2).Value = inv
+            ws.Cells(r, 3).Value = q.Range("H7").Value
+            ws.Cells(r, 4).Value = q.Cells(i, 2).Value
+            ws.Cells(r, 5).Value = q.Cells(i, 4).Value
+            ws.Cells(r, 6).Value = q.Cells(i, 6).Value
+            If q.Cells(i, 7).Value <> "" Then ws.Cells(r, 7).Value = q.Cells(i, 7).Value
+            ws.Cells(r, 9).Value = "Pending"
+            r = r + 1: n = n + 1
+        End If
+    Next i
+    If n = 0 Then MsgBox "The quotation has no item lines.", vbExclamation: Exit Sub
+    ThisWorkbook.Worksheets("Invoice").Range("C7").Value = inv
+    ThisWorkbook.Worksheets("Invoice").Activate
+    MsgBox n & " lines added to Sales as invoice " & inv & ".", vbInformation
+End Sub
+
+' ---------- Sales return: credit note for a whole invoice ---------------------
+' Asks for the invoice number and adds the same lines with minus quantities under CN-xxxx.
+' Delete any line that is not coming back before printing the credit note.
+Public Sub CreditNoteFromInvoice()
+    Dim ws As Worksheet, inv As String, cn As String, r As Long, src As Long, last As Long, n As Long, k As Long
+    Set ws = ThisWorkbook.Worksheets("Sales")
+    inv = InputBox("Invoice number to return (e.g. INV-0012):", "Sales return")
+    If inv = "" Then Exit Sub
+    last = NextFreeRow(ws, 4) - 1
+    For src = FIRST_ROW To last
+        If Left$(CStr(ws.Cells(src, 2).Value), 3) = "CN-" Then k = k + 1
+    Next src
+    cn = "CN-" & Format(k + 1, "0000")
+    r = last + 1
+    For src = FIRST_ROW To last
+        If CStr(ws.Cells(src, 2).Value) = inv And ws.Cells(src, 4).Value <> "" And Val(ws.Cells(src, 5).Value) > 0 Then
+            ws.Cells(r, 1).Value = Date
+            ws.Cells(r, 2).Value = cn
+            ws.Cells(r, 3).Value = ws.Cells(src, 3).Value
+            ws.Cells(r, 4).Value = ws.Cells(src, 4).Value
+            ws.Cells(r, 5).Value = -ws.Cells(src, 5).Value
+            ws.Cells(r, 6).Value = ws.Cells(src, 11).Value        ' the rate charged
+            If ws.Cells(src, 7).Value <> "" Then ws.Cells(r, 7).Value = ws.Cells(src, 7).Value
+            ws.Cells(r, 8).Value = ws.Cells(src, 8).Value
+            ws.Cells(r, 9).Value = "Returned"
+            r = r + 1: n = n + 1
+        End If
+    Next src
+    If n = 0 Then MsgBox "Invoice " & inv & " was not found.", vbExclamation: Exit Sub
+    ThisWorkbook.Worksheets("Invoice").Range("C7").Value = cn
+    ThisWorkbook.Worksheets("Invoice").Activate
+    MsgBox "Credit note " & cn & " added with " & n & " lines (minus quantities).", vbInformation
+End Sub
+
 ' ---------- Save the Invoice sheet as PDF next to the workbook ---------------
 Public Sub InvoiceToPDF()
     Dim inv As String, path As String
@@ -91,7 +154,7 @@ Public Sub ClearDemoData()
     ClearInputs "CashBook", 8
     ClearInputs "Adjustments", 5
     ClearInputs "Items", 11
-    ClearInputs "Parties", 9
+    ClearInputs "Parties", 11
     FastModeOff
     MsgBox "Demo data cleared. Fill Settings, Items and Parties to go live.", vbInformation
 End Sub
@@ -128,7 +191,7 @@ Public Sub CarryForwardToNewYear()
         End If
     Next r
     For r = FIRST_ROW To LastInputRow(pt.Range(pt.Cells(FIRST_ROW, 1), pt.Cells(pt.Rows.Count, 1)))
-        If pt.Cells(r, 1).Value <> "" Then pt.Cells(r, 9).Value = pt.Cells(r, 14).Value
+        If pt.Cells(r, 1).Value <> "" Then pt.Cells(r, 9).Value = pt.Cells(r, 16).Value   ' Opening Bal <- Balance
     Next r
     FastModeOn
     ClearInputs "Sales", 9

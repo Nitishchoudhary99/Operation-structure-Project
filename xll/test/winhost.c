@@ -118,7 +118,7 @@ int main(int argc, char **argv)
     autoopen open = (autoopen)(void *)GetProcAddress(h, "xlAutoOpen");
     autofree xfree = (autofree)(void *)GetProcAddress(h, "xlAutoFree12");
     printf("xlAutoOpen -> %d\n", open ? open() : -1);
-    if (g_registered != 7) { printf("expected 7 registrations, got %d\n", g_registered); return 1; }
+    if (g_registered != 8) { printf("expected 8 registrations, got %d\n", g_registered); return 1; }
 
     udf0 ver = (udf0)(void *)GetProcAddress(h, "ST_VERSION");
     LPXLOPER12 v = ver();
@@ -127,15 +127,15 @@ int main(int argc, char **argv)
     printf("\n");
 
     static const char *in_names[] = { "items", "parties", "purchases", "sales", "cashbook", "adjust", "settings" };
-    static const char *fn_names[] = { "items", "purchases", "sales", "parties", "cashbook", "adjust" };
-    static const char *procs[] = { "ST_ITEMS", "ST_PURCHASES", "ST_SALES", "ST_PARTIES", "ST_CASHBOOK", "ST_ADJUST" };
+    static const char *fn_names[] = { "items", "purchases", "sales", "parties", "cashbook", "adjust", "ageing" };
+    static const char *procs[] = { "ST_ITEMS", "ST_PURCHASES", "ST_SALES", "ST_PARTIES", "ST_CASHBOOK", "ST_ADJUST", "ST_AGEING" };
     LPXLOPER12 in[7];
     char path[MAX_PATH];
     for (int i = 0; i < 7; i++) { snprintf(path, sizeof path, "%s/in_%s.tsv", argv[2], in_names[i]); in[i] = load(path); }
 
     LARGE_INTEGER fq, t0, t1;
     QueryPerformanceFrequency(&fq);
-    for (int k = 0; k < 6; k++) {
+    for (int k = 0; k < 7; k++) {
         udf7 fn = (udf7)(void *)GetProcAddress(h, procs[k]);
         QueryPerformanceCounter(&t0);
         LPXLOPER12 r = fn(in[0], in[1], in[2], in[3], in[4], in[5], in[6]);

@@ -32,16 +32,18 @@ def block(ws, c1, c2, r1, r2):
 
 
 # (input name, sheet, first col, last col) and (output name, sheet, first col, last col)
-INPUTS = [("items", "Items", "A", "K"), ("parties", "Parties", "A", "I"), ("purchases", "Purchases", "A", "H"),
+INPUTS = [("items", "Items", "A", "K"), ("parties", "Parties", "A", "K"), ("purchases", "Purchases", "A", "H"),
           ("sales", "Sales", "A", "I"), ("cashbook", "CashBook", "A", "H"), ("adjust", "Adjustments", "A", "E")]
-OUTPUTS = [("items", "Items", "L", "Z"), ("purchases", "Purchases", "I", "S"), ("sales", "Sales", "J", "X"),
-           ("parties", "Parties", "J", "S"), ("cashbook", "CashBook", "I", "K"), ("adjust", "Adjustments", "F", "G")]
+OUTPUTS = [("items", "Items", "L", "AE"), ("purchases", "Purchases", "I", "S"), ("sales", "Sales", "J", "Z"),
+           ("parties", "Parties", "L", "U"), ("cashbook", "CashBook", "I", "K"), ("adjust", "Adjustments", "F", "G"),
+           ("ageing", "Collections", "E", "V")]
 ends = {}
 for name, sheet, c1, c2 in INPUTS:
     ws = wb[sheet]
     ends[sheet] = last_row(ws)
     write_block(work, name, block(ws, c1, c2, 5, ends[sheet]))
-write_block(work, "settings", block(wb["Settings"], "B", "B", 4, 15))
+write_block(work, "settings", block(wb["Settings"], "B", "B", 4, 35))
+ends["Collections"] = ends["Parties"]   # one Collections row per Parties row
 
 res = subprocess.run([harness, "verify", work], capture_output=True, text=True)
 print(res.stdout, res.stderr, sep="")

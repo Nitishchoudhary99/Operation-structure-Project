@@ -20,12 +20,12 @@ int xlAutoOpen(void);
 void xlAutoFree12(LPXLOPER12 x);
 LPXLOPER12 ST_VERSION(void);
 #define DECL(N) LPXLOPER12 N(LPXLOPER12, LPXLOPER12, LPXLOPER12, LPXLOPER12, LPXLOPER12, LPXLOPER12, LPXLOPER12);
-DECL(ST_ITEMS) DECL(ST_PURCHASES) DECL(ST_SALES) DECL(ST_PARTIES) DECL(ST_CASHBOOK) DECL(ST_ADJUST)
+DECL(ST_ITEMS) DECL(ST_PURCHASES) DECL(ST_SALES) DECL(ST_PARTIES) DECL(ST_CASHBOOK) DECL(ST_ADJUST) DECL(ST_AGEING)
 
 typedef LPXLOPER12 (*udf)(LPXLOPER12, LPXLOPER12, LPXLOPER12, LPXLOPER12, LPXLOPER12, LPXLOPER12, LPXLOPER12);
 static const struct { const char *name; udf fn; } UDFS[] = {
     { "items", ST_ITEMS }, { "purchases", ST_PURCHASES }, { "sales", ST_SALES },
-    { "parties", ST_PARTIES }, { "cashbook", ST_CASHBOOK }, { "adjust", ST_ADJUST },
+    { "parties", ST_PARTIES }, { "cashbook", ST_CASHBOOK }, { "adjust", ST_ADJUST }, { "ageing", ST_AGEING },
 };
 static const char *IN_FILES[IN_COUNT] = { "items", "parties", "purchases", "sales", "cashbook", "adjust", "settings" };
 
@@ -417,7 +417,7 @@ int main(int argc, char **argv)
     if (argc >= 2 && !strcmp(argv[1], "register")) {
         int ok = xlAutoOpen();
         printf("xlAutoOpen -> %d, %d functions registered\n", ok, g_registered);
-        return !(ok && g_registered == 7);
+        return !(ok && g_registered == 8);
     }
     if (argc >= 2 && !strcmp(argv[1], "selftest")) { selftest(); return g_fail != 0; }
     if (argc >= 3 && !strcmp(argv[1], "bench")) { bench(atoi(argv[2])); return 0; }

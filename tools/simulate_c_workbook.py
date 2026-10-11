@@ -59,7 +59,8 @@ if out.returncode:
 
 # paste engine output where Excel would show it
 targets = [("Items", "L", "items"), ("Purchases", "I", "purchases"), ("Sales", "J", "sales"),
-           ("Parties", "J", "parties"), ("CashBook", "I", "cashbook"), ("Adjustments", "F", "adjust")]
+           ("Parties", "L", "parties"), ("CashBook", "I", "cashbook"), ("Adjustments", "F", "adjust"),
+           ("Collections", "E", "ageing")]
 for sheet, c1, key in targets:
     ws = wb[sheet]
     data = read_out(work, key)
@@ -77,8 +78,11 @@ print(f"LibreOffice recalc of simulated workbook: {res.get('status')}, {res.get(
 
 got = load_workbook(sim, data_only=True)
 exp = load_workbook(f_path, data_only=True)
-checks = [("Dashboard", "B8:N15"), ("Dashboard", "B20:G24"), ("Dashboard", "I20:N29"),
-          ("Reports", "A5:M17"), ("Reports", "A23:F30"), ("Reports", "H23:J34"), ("Invoice", "A7:K42")]
+checks = [("Dashboard", "B8:N18"), ("Dashboard", "B23:G27"), ("Dashboard", "I23:N32"),
+          ("Reports", "A5:O17"), ("Reports", "A23:F30"), ("Reports", "H23:J34"), ("Invoice", "A5:K42"),
+          ("Collections", "A4:AA60"), ("Statement", "A5:G29"), ("CashFlow", "A5:J20"), ("PurchaseOrder", "A5:K45"),
+          ("GST", "A4:I75"), ("BalanceSheet", "A4:E30"), ("ProfitLeaks", "A5:C15"), ("CashTally", "A4:D24"),
+          ("Quotation", "A5:K38"), ("Receipt", "A6:C34"), ("Items", "AF5:AF60")]
 total = bad = 0
 for sheet, ref in checks:
     for erow, grow in zip(exp[sheet][ref], got[sheet][ref]):
@@ -91,10 +95,12 @@ for sheet, ref in checks:
                 ok = True
             # Stock Value card: the C engine values each item to the paisa before totalling
             # (formula edition sums unrounded fractions) -> allow 0.5 paisa per item
-            if not ok and sheet == "Dashboard" and e.coordinate == "H12":
+            # (the Balance Sheet carries the same stock value into its totals)
+            if not ok and isinstance(ev, (int, float)) and isinstance(gv, (int, float)) and (
+                    (sheet == "Dashboard" and e.coordinate == "H12") or (sheet == "BalanceSheet" and e.column == 2)):
                 n_items = sum(1 for row in exp["Items"]["A5:A504"] if row[0].value)
                 ok = abs(ev - gv) <= 0.005 * n_items
-                print(f"  Dashboard!H12 stock value: formula {ev:.4f} vs C {gv:.2f} "
+                print(f"  {sheet}!{e.coordinate} stock value: formula {ev:.4f} vs C {gv:.2f} "
                       f"(paisa rounding per item, allowed ±{0.005 * n_items:.2f}) -> {'OK' if ok else 'FAIL'}")
             if not ok:
                 bad += 1

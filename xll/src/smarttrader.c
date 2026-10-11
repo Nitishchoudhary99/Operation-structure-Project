@@ -3,7 +3,7 @@
  * native, thread-safe worksheet functions.
  *
  *   =_xll.ST_ITEMS(IN_Items,IN_Parties,IN_Purchases,IN_Sales,IN_CashBook,IN_Adjust,IN_Settings)
- *   ...ST_PURCHASES / ST_SALES / ST_PARTIES / ST_CASHBOOK / ST_ADJUST (same 7 arguments)
+ *   ...ST_PURCHASES / ST_SALES / ST_PARTIES / ST_CASHBOOK / ST_ADJUST / ST_AGEING (same 7 arguments)
  *   =ST_VERSION()
  *
  * Each function is entered once as an array formula over its output block.
@@ -42,18 +42,19 @@ static int Excel12v(int fn, LPXLOPER12 res, int count, LPXLOPER12 *args)
 #define NARGS 7
 static const char ARG_NAMES[] = "Items,Parties,Purchases,Sales,CashBook,Adjustments,Settings";
 static const char *const ARG_HELP[NARGS] = {
-    "Items!A5:K (IN_Items)", "Parties!A5:I (IN_Parties)", "Purchases!A5:H (IN_Purchases)",
+    "Items!A5:K (IN_Items)", "Parties!A5:K (IN_Parties)", "Purchases!A5:H (IN_Purchases)",
     "Sales!A5:I (IN_Sales)", "CashBook!A5:H (IN_CashBook)", "Adjustments!A5:E (IN_Adjust)",
-    "Settings!B4:B15 (IN_Settings)",
+    "Settings!B4:B35 (IN_Settings)",
 };
 
 static const struct { const char *proc, *help; } FUNCS[] = {
-    { "ST_ITEMS",     "Live stock per item: purchased, sold, adjusted, closing, avg cost, value, status, margin, reorder qty, sales, profit, last sale, cover." },
+    { "ST_ITEMS",     "Live stock per item: purchased, sold, closing, avg cost, value, status, margin, sales, profit, cover, last supplier, order qty." },
     { "ST_PURCHASES", "Posts purchase lines: unit, rate, taxable, GST %, CGST, SGST, IGST, total, item row, party row, paid now." },
     { "ST_SALES",     "Posts sales lines: unit, rate, taxable, GST %, CGST, SGST, IGST, total, COGS, profit, stock check, rows, invoice no, paid now." },
     { "ST_PARTIES",   "Party ledger: credit sales, receipts, credit purchases, payments, balance, position, last sale/receipt, days unpaid, alert." },
     { "ST_CASHBOOK",  "Cash book: money in, money out, entry check." },
     { "ST_ADJUST",    "Stock adjustments: average cost and value impact." },
+    { "ST_AGEING",    "Money due per party: ageing buckets, overdue, MSME 43B(h) limit, GST credit at risk (180 days), 8-week schedule." },
 };
 #define NFUNCS (int)(sizeof FUNCS / sizeof FUNCS[0])
 
@@ -154,5 +155,6 @@ ST_UDF(ST_SALES, ST_OUT_SALES)
 ST_UDF(ST_PARTIES, ST_OUT_PARTIES)
 ST_UDF(ST_CASHBOOK, ST_OUT_CASHBOOK)
 ST_UDF(ST_ADJUST, ST_OUT_ADJUST)
+ST_UDF(ST_AGEING, ST_OUT_AGEING)
 
 XLEXPORT LPXLOPER12 XLCC ST_VERSION(void) { return &g_version; }

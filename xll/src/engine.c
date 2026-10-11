@@ -44,17 +44,17 @@ static const long long LIC_K[4] = { ST_LIC_K };
 /* ------------------------------------------------------------ column maps */
 /* Items!A:K */
 enum { IT_NAME, IT_SKU, IT_CAT, IT_UNIT, IT_HSN, IT_GST, IT_PRATE, IT_SRATE, IT_REORDER, IT_OQTY, IT_ORATE };
-/* Parties!A:I */
-enum { PT_NAME, PT_TYPE, PT_PHONE, PT_GSTIN, PT_STATE, PT_ADDR, PT_LIMIT, PT_DAYS, PT_OPEN };
+/* Parties!A:K */
+enum { PT_NAME, PT_TYPE, PT_PHONE, PT_GSTIN, PT_STATE, PT_ADDR, PT_LIMIT, PT_DAYS, PT_OPEN, PT_MSME, PT_AGREE };
 /* Purchases!A:H and Sales!A:I share the first 8 columns */
 enum { TX_DATE, TX_DOC, TX_PARTY, TX_ITEM, TX_QTY, TX_RATE, TX_DISC, TX_MODE, TX_DELIVERY };
 /* CashBook!A:H */
 enum { CB_DATE, CB_VNO, CB_TYPE, CB_PARTY, CB_HEAD, CB_ACCOUNT, CB_AMOUNT, CB_NOTES };
 /* Adjustments!A:E */
 enum { AD_DATE, AD_ITEM, AD_QTY, AD_REASON, AD_NOTES };
-/* Settings!B4:B13 */
+/* Settings!B4:B35 */
 enum { SE_COMPANY, SE_ADDR, SE_GSTIN, SE_STATE, SE_PHONE, SE_FYSTART, SE_ASOF, SE_PREFIX, SE_DEADDAYS, SE_BANK,
-       SE_LICID, SE_LICKEY };
+       SE_LICID, SE_LICKEY, SE_LEAD = 26, SE_COVER = 27 };
 
 static const XLOPER12 NIL = { { 0 }, xltypeNil };
 
@@ -236,6 +236,14 @@ double st_round2(double x)
     return r / 100.0;
 }
 
+/* Excel ROUND(x, 0) */
+static double st_round0(double x)
+{
+    double t = trunc(x), f = fabs(x - t);
+    double tol = 1e-9 * (fabs(x) > 1.0 ? fabs(x) : 1.0);
+    return (fabs(f - 0.5) <= tol) ? t + (x < 0 ? -1.0 : 1.0) : round(x);
+}
+
 static long long paise(double x) { return llround(st_round2(x) * 100.0); }
 static double rupees(long long p) { return (double)p / 100.0; }
 static double snapq(double q) { return round(q * 1e6) / 1e6; }
@@ -346,7 +354,7 @@ static int licence_is_pro(const XLOPER12 *id_cell, const XLOPER12 *key_cell, are
 }
 
 /* ------------------------------------------------------------ model */
-enum { CHK_NONE, CHK_OK, CHK_UNKNOWN, CHK_NEG, CHK_BELOW };
+enum { CHK_NONE, CHK_OK, CHK_UNKNOWN, CHK_NEG, CHK_BELOW, CHK_RETURN };
 
 typedef struct {
     int has_item;           /* item column non-blank */
@@ -363,11 +371,12 @@ typedef struct {
     arena a;
     grid g[IN_COUNT];
     sv home, prefix;
-    double fy, asof, dead;
+    double fy, asof, dead, lead, cover;
     index_t imap, pmap;
     int *ifirst, *pfirst;
     /* item accumulators, stored on the first row of each name */
-    double *pq, *sq, *aq, *last_sold, *avg, *close;
+    double *pq, *sq, *aq, *last_sold, *avg, *close, *sold30;
+    int *last_buy;          /* last purchase row of each item (register order), -1 = never bought */
     long long *ptax, *sval, *gp;
     /* party accumulators */
     long long *csales, *recv, *cpurch, *paid;
@@ -461,6 +470,8 @@ static int model_build(model *m, const XLOPER12 *const in[IN_COUNT], int need)
     m->fy = num(SET(SE_FYSTART));
     m->asof = num(SET(SE_ASOF));
     m->dead = num(SET(SE_DEADDAYS));
+    m->lead = num(SET(SE_LEAD));
+    m->cover = num(SET(SE_COVER));
     m->pro = licence_is_pro(SET(SE_LICID), SET(SE_LICKEY), &m->a);
 #undef SET
     for (int i = 0; i < IN_COUNT; i++) m->eff[i] = m->g[i].rows;
@@ -475,6 +486,7 @@ static int model_build(model *m, const XLOPER12 *const in[IN_COUNT], int need)
     ALLOC(m, m->ifirst, ni); ALLOC(m, m->pq, ni); ALLOC(m, m->sq, ni); ALLOC(m, m->aq, ni);
     ALLOC(m, m->last_sold, ni); ALLOC(m, m->avg, ni); ALLOC(m, m->close, ni);
     ALLOC(m, m->ptax, ni); ALLOC(m, m->sval, ni); ALLOC(m, m->gp, ni);
+    ALLOC(m, m->sold30, ni); ALLOC(m, m->last_buy, ni);
     ALLOC(m, m->pfirst, np); ALLOC(m, m->csales, np); ALLOC(m, m->recv, np); ALLOC(m, m->cpurch, np);
     ALLOC(m, m->paid, np); ALLOC(m, m->last_sale, np); ALLOC(m, m->last_rec, np);
     ALLOC(m, m->pl, pu->rows); ALLOC(m, m->sl, sa->rows);
@@ -484,6 +496,7 @@ static int model_build(model *m, const XLOPER12 *const in[IN_COUNT], int need)
     for (int r = 0; r < ni; r++) {
         const XLOPER12 *k = at(it, r, IT_NAME);
         m->ifirst[r] = is_blank(k) ? -1 : index_add(&m->imap, key_of(k, &m->a), r);
+        m->last_buy[r] = -1;
     }
     for (int r = 0; r < np; r++) {
         const XLOPER12 *k = at(pt, r, PT_NAME);
@@ -498,6 +511,7 @@ static int model_build(model *m, const XLOPER12 *const in[IN_COUNT], int need)
         if (L->item >= 0) {
             m->pq[L->item] += num(at(pu, r, TX_QTY));
             m->ptax[L->item] += L->tax;
+            m->last_buy[L->item] = r;
         }
         if (L->party >= 0) m->cpurch[L->party] += L->total - L->paid;
     }
@@ -525,6 +539,7 @@ static int model_build(model *m, const XLOPER12 *const in[IN_COUNT], int need)
             m->sval[L->item] += L->tax;
             m->gp[L->item] += L->tax - L->cogs;
             if (is_num(d) && num(d) > m->last_sold[L->item]) m->last_sold[L->item] = num(d);
+            if (is_num(d) && num(d) > m->asof - 30 && num(d) <= m->asof) m->sold30[L->item] += num(at(sa, r, TX_QTY));
         }
         if (L->party >= 0) m->csales[L->party] += L->total - L->paid;
     }
@@ -548,6 +563,7 @@ static int model_build(model *m, const XLOPER12 *const in[IN_COUNT], int need)
         line_t *L = &m->sl[r];
         if (!L->has_item) continue;
         if (L->item < 0) L->check = CHK_UNKNOWN;
+        else if (num(at(sa, r, TX_QTY)) < 0) L->check = CHK_RETURN;
         else if (m->close[L->item] < 0) L->check = CHK_NEG;
         else if (L->rate < m->avg[L->item]) L->check = CHK_BELOW;
         else L->check = CHK_OK;
@@ -669,6 +685,19 @@ static void out_items(model *m, outb *o)
         ob_num(o, r, 12, days);
         if (m->sq[f] != 0) ob_num(o, r, 13, close / (m->sq[f] / (span > 1 ? span : 1)));
         ob_num(o, r, 14, rupees(m->sval[f]) + (r + 1) / 1e6);   /* unique rank key for LARGE() */
+        /* purchase planning: Items!AA:AE */
+        double s30 = m->sold30[f];
+        ob_num(o, r, 15, s30);
+        int lb = m->last_buy[f];
+        if (lb >= 0) {
+            ob_sv(o, r, 16, key_of(at(&m->g[IN_PURCHASES], lb, TX_PARTY), &m->a));
+            ob_num(o, r, 17, m->pl[lb].rate);
+        } else {
+            ob_num(o, r, 17, num(at(it, r, IT_PRATE)));
+        }
+        if (s30 != 0) ob_num(o, r, 18, (close > 0 ? close : 0) / (s30 / 30));
+        double want = st_round0(s30 / 30 * (m->lead + m->cover) + reorder - close);
+        ob_num(o, r, 19, want > 0 ? want : 0);
     }
 }
 
@@ -701,9 +730,12 @@ static void out_lines(model *m, outb *o, int sales)
         if (sales) {
             ob_num(o, r, 8, rupees(L->cogs));
             ob_num(o, r, 9, rupees(L->tax - L->cogs));
-            static const char *chk[] = { "", "OK", "UNKNOWN ITEM", "NEG STOCK", "BELOW COST" };
+            static const char *chk[] = { "", "OK", "UNKNOWN ITEM", "NEG STOCK", "BELOW COST", "RETURN" };
             ob_lit(o, r, 10, chk[L->check]);
             ob_num(o, r, 14, rupees(L->paid));
+            /* GSTR-1 helpers: buyer registered (GSTIN on Parties) and the item's HSN */
+            ob_lit(o, r, 15, (L->party >= 0 && !is_blank(at(&m->g[IN_PARTIES], L->party, PT_GSTIN))) ? "B2B" : "B2C");
+            if (L->item >= 0) ob_sv(o, r, 16, key_of(at(it, L->item, IT_HSN), &m->a));
         } else {
             ob_num(o, r, 10, rupees(L->paid));
         }
@@ -733,6 +765,98 @@ static void out_parties(model *m, outb *o)
         }
         ob_lit(o, r, 9, (limit > 0 && rupees(bal) > limit) ? "OVER LIMIT"
                         : (bal > 0 && days > cdays) ? "OVERDUE" : bal < 0 ? "PAY DUE" : "");
+    }
+}
+
+/* Collections!E:V - ageing, MSME 43B(h), GST credit at risk (180 days), 8-week due schedule.
+   Payments clear the oldest bills first, so what is unpaid is the newest credit bills: the part older
+   than t days is clamp(balance - credit billed in the last t days, 0, balance). */
+enum { AG_T30, AG_T60, AG_T90, AG_T180, AG_TDUE, AG_TW1 };          /* AG_TW1 + w - 1 = due - 7w, w = 1..8 */
+#define AG_NT (AG_TW1 + 8)
+
+typedef struct { double date; int dated; long long amt, gst; int credit; } bill_t;
+
+/* group the posted lines of one register by party (counting sort): start[p]..start[p+1] */
+static bill_t *group_bills(model *m, int sales, int **start_out)
+{
+    const grid *g = &m->g[sales ? IN_SALES : IN_PURCHASES];
+    line_t *lines = sales ? m->sl : m->pl;
+    int np = m->g[IN_PARTIES].rows, n = m->eff[sales ? IN_SALES : IN_PURCHASES];
+    int *start = (int *)arena_zalloc(&m->a, sizeof(int) * (size_t)(np + 1));
+    int *fill_ = (int *)arena_zalloc(&m->a, sizeof(int) * (size_t)(np + 1));
+    if (!start || !fill_) return NULL;
+    for (int r = 0; r < n; r++)
+        if (lines[r].has_item && lines[r].party >= 0) start[lines[r].party + 1]++;
+    for (int p = 0; p < np; p++) start[p + 1] += start[p];
+    bill_t *b = (bill_t *)arena_alloc(&m->a, sizeof(bill_t) * (size_t)(start[np] > 0 ? start[np] : 1));
+    if (!b) return NULL;
+    for (int r = 0; r < n; r++) {
+        line_t *L = &lines[r];
+        if (!L->has_item || L->party < 0) continue;
+        bill_t *x = &b[start[L->party] + fill_[L->party]++];
+        const XLOPER12 *d = at(g, r, TX_DATE);
+        x->dated = is_num(d);
+        x->date = num(d);
+        x->amt = L->total - L->paid;
+        x->gst = L->cgst + L->sgst + L->igst;
+        x->credit = L->paid == 0;
+    }
+    *start_out = start;
+    return b;
+}
+
+static void out_ageing(model *m, outb *o)
+{
+    const grid *pt = &m->g[IN_PARTIES];
+    int *ss = NULL, *ps = NULL;
+    bill_t *sb = group_bills(m, 1, &ss), *pb = group_bills(m, 0, &ps);
+    if (!sb || !pb) { o->oom = 1; return; }
+    for (int r = 0; r < pt->rows; r++) {
+        int f = m->pfirst[r];
+        if (f < 0) continue;
+        long long bal = paise(num(at(pt, r, PT_OPEN))) + m->csales[f] - m->recv[f] - m->cpurch[f] + m->paid[f];
+        int sgn = bal > 0 ? 1 : bal < 0 ? -1 : 0;
+        long long amt = bal < 0 ? -bal : bal;
+        const XLOPER12 *ms = at(pt, r, PT_MSME);
+        int mse = cell_is(ms, "Micro") || cell_is(ms, "Small");
+        double days = num(at(pt, r, PT_DAYS));
+        double d43 = cell_is(at(pt, r, PT_AGREE), "Yes") ? ((days > 0 ? days : 45) < 45 ? (days > 0 ? days : 45) : 45) : 15;
+        double due = (sgn < 0 && mse) ? d43 : days;
+        double t[AG_NT] = { 30, 60, 90, 180, due };
+        for (int w = 1; w <= 8; w++) t[AG_TW1 + w - 1] = due - 7 * w;
+        long long S[AG_NT] = { 0 }, gst_old = 0, tot_old = 0;
+        if (sgn != 0) {
+            bill_t *b = sgn > 0 ? sb : pb;
+            int *st = sgn > 0 ? ss : ps;
+            for (int i = st[f]; i < st[f + 1]; i++) {
+                if (!b[i].dated) continue;
+                for (int k = 0; k < AG_NT; k++)
+                    if (b[i].date >= m->asof - t[k]) S[k] += b[i].amt;
+                if (sgn < 0 && b[i].credit && b[i].date < m->asof - 180) { gst_old += b[i].gst; tot_old += b[i].amt; }
+            }
+        }
+        long long O[AG_NT];
+        for (int k = 0; k < AG_NT; k++) {
+            long long v = amt - S[k];
+            O[k] = v < 0 ? 0 : v > amt ? amt : v;
+        }
+        ob_num(o, r, 0, rupees(amt - O[AG_T30]));
+        ob_num(o, r, 1, rupees(O[AG_T30] - O[AG_T60]));
+        ob_num(o, r, 2, rupees(O[AG_T60] - O[AG_T90]));
+        ob_num(o, r, 3, rupees(O[AG_T90]));
+        ob_num(o, r, 4, rupees(O[AG_TDUE]));
+        ob_num(o, r, 5, rupees(O[AG_TW1] - O[AG_TDUE]));
+        if (mse) {
+            ob_num(o, r, 6, d43);
+            ob_num(o, r, 7, sgn < 0 ? rupees(O[AG_TDUE]) : 0);
+            ob_num(o, r, 8, sgn < 0 ? rupees(O[AG_TW1] - O[AG_TDUE]) : 0);
+        }
+        ob_num(o, r, 9, (sgn < 0 && tot_old != 0)
+                            ? st_round2(rupees(O[AG_T180]) * rupees(gst_old) / rupees(tot_old)) : 0);
+        for (int w = 1; w <= 8; w++) {
+            long long prev = w == 1 ? O[AG_TDUE] : O[AG_TW1 + w - 2];
+            ob_num(o, r, 9 + w, sgn * rupees(O[AG_TW1 + w - 1] - prev));
+        }
     }
 }
 
@@ -770,20 +894,26 @@ static void out_adjust(model *m, outb *o)
     }
 }
 
-static int max_unit_len(const model *m)
+/* longest text copied into an output row: unit + HSN (sales) or the supplier name (items) */
+static int max_text_len(model *m)
 {
-    int n = 0;
+    int n = 0, h = 0, p = 0;
     for (int r = 0; r < m->g[IN_ITEMS].rows; r++) {
-        sv u = sv_of(at(&m->g[IN_ITEMS], r, IT_UNIT));
+        sv u = sv_of(at(&m->g[IN_ITEMS], r, IT_UNIT)), x = key_of(at(&m->g[IN_ITEMS], r, IT_HSN), &m->a);
         if (u.n > n) n = u.n;
+        if (x.n > h) h = x.n;
     }
-    return n;
+    for (int r = 0; r < m->g[IN_PURCHASES].rows; r++) {
+        sv x = key_of(at(&m->g[IN_PURCHASES], r, TX_PARTY), &m->a);
+        if (x.n > p) p = x.n;
+    }
+    return n + h + p;
 }
 
 XLOPER12 *st_compute(int which, const XLOPER12 *const in[IN_COUNT])
 {
-    static const int src[] = { IN_ITEMS, IN_PURCHASES, IN_SALES, IN_PARTIES, IN_CASHBOOK, IN_ADJUST };
-    static const int ncol[] = { 15, 11, 15, 10, 3, 2 };
+    static const int src[] = { IN_ITEMS, IN_PURCHASES, IN_SALES, IN_PARTIES, IN_CASHBOOK, IN_ADJUST, IN_PARTIES };
+    static const int ncol[] = { 20, 11, 17, 10, 3, 2, 18 };
     static const int need[] = {
         NEED_PURCH | NEED_SALES | NEED_ADJ,   /* items: stock needs every movement     */
         NEED_PURCH,                           /* purchases                              */
@@ -791,15 +921,16 @@ XLOPER12 *st_compute(int which, const XLOPER12 *const in[IN_COUNT])
         NEED_PURCH | NEED_SALES | NEED_CASH,  /* parties: credit bills and cash         */
         0,                                    /* cash book: self-contained              */
         NEED_PURCH,                           /* adjustments: average cost              */
+        NEED_PURCH | NEED_SALES | NEED_CASH,  /* ageing: balances and dated credit bills */
     };
-    if (which < 0 || which > ST_OUT_ADJUST) return err_result(xlerrValue);
+    if (which < 0 || which > ST_OUT_AGEING) return err_result(xlerrValue);
 
     model m;
     int e = model_build(&m, in, need[which]);
     if (e >= 0) { arena_free(&m.a); return err_result(e); }
 
-    /* text budget per row: unit + up to two status literals (e.g. "Receivable" + "OVER LIMIT") */
-    size_t per_row = (size_t)max_unit_len(&m) + 1 + 32;
+    /* text budget per row: copied texts + up to three status literals (e.g. "Receivable" + "OVER LIMIT") */
+    size_t per_row = (size_t)max_text_len(&m) + 3 + 40;
     outb o;
     if (ob_init(&o, m.g[src[which]].rows, ncol[which], per_row) != 0) { arena_free(&m.a); return err_result(xlerrNum); }
     switch (which) {
@@ -809,6 +940,7 @@ XLOPER12 *st_compute(int which, const XLOPER12 *const in[IN_COUNT])
     case ST_OUT_PARTIES: out_parties(&m, &o); break;
     case ST_OUT_CASHBOOK: out_cashbook(&m, &o); break;
     case ST_OUT_ADJUST: out_adjust(&m, &o); break;
+    case ST_OUT_AGEING: out_ageing(&m, &o); break;
     }
     XLOPER12 *res = ob_finish(&o);
     arena_free(&m.a);

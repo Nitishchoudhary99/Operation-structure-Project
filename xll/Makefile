@@ -52,7 +52,7 @@ build/winhost64.exe: test/winhost.c src/xlcall_min.h
 wintest: dist/SmartTrader64.xll build/winhost64.exe build/harness
 	@mkdir -p build/win-out
 	WINEDEBUG=-all $(WINE) build/winhost64.exe dist/SmartTrader64.xll build/verify build/win-out
-	@for f in items purchases sales parties cashbook adjust; do \
+	@for f in items purchases sales parties cashbook adjust ageing; do \
 	  cmp -s build/verify/out_$$f.tsv build/win-out/out_$$f.tsv && echo "  $$f: identical to native build" \
 	  || { echo "  $$f: DIFFERS"; exit 1; }; done
 

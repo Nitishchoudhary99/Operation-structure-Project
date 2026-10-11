@@ -44,6 +44,13 @@ Both editions give the same results: **98,500 engine cells and 843 dashboard, re
 | 10 | **Excel files become slow and crash** | Volatile formulas, whole-column refs, array formulas | Speed-first architecture (section 3) |
 | 11 | **Cash vs bank confusion** | No account-wise book | Account-wise **Cash / Bank / UPI** balances with opening balances and transfers between accounts |
 | 12 | **Year-end chaos** | No carry-forward | The `CarryForwardToNewYear` macro rolls closing stock, average cost and party balances into the new year |
+| 13 | **GST returns take a day every month** | Figures are collected by hand from bills | **GST sheet**: pick a month and get GSTR-1 tables (B2B, B2C, credit notes, nil-rated, HSN summary split B2B/B2C) and GSTR-3B (3.1, 4A, 4B) with the credit set-off in the legal order and the cash to pay |
+| 14 | **Returns break stock and GST** | Returns are written off as adjustments | **Credit / debit notes**: a minus qty on Sales or Purchases reverses stock, GST and the party balance; the Invoice sheet prints it as a CREDIT NOTE |
+| 15 | **Income-tax 43B(h) surprise** | Nobody tracks MSME supplier due dates | **Collections**: Micro / Small suppliers get their legal pay-by limit (15 days, up to 45 with a written agreement), what is late and what falls due in 7 days |
+| 16 | **GST credit lost after 180 days** | Old unpaid supplier bills are forgotten | **Collections column N**: GST inside supplier bills unpaid for 180+ days, with a reminder on the GST sheet to reverse it |
+| 17 | **Cash runs short without warning** | No forward view | **CashFlow**: 8-week forecast from the due date of every unpaid bill, average expenses and GST due on the 20th |
+| 18 | **Who to give credit to?** | Gut feeling | **Credit score (0-100), grade and suggested credit limit** per customer from their payment record; one-click **WhatsApp reminders** |
+| 19 | **Small losses nobody sees** | Discounts, below-cost sales, damage, interest on overdue money | **ProfitLeaks** puts a rupee value on each leak with what to do |
 
 ---
 
@@ -74,10 +81,20 @@ Both editions give the same results: **98,500 engine cells and 843 dashboard, re
 | **Purchases** | Goods received; stock, cost, GST input, payables | Date, Bill, Supplier, Item, Qty, [Rate], [Disc], [Paid Via] |
 | **CashBook** | Finance: Receipt, Payment, Expense, Other Income, Capital In, Drawings, Transfer In/Out | Date, Type, Party/Head, Account, Amount |
 | **Items** | Item master and live stock: closing qty, avg cost, value, margin, status, suggested order, last sold, days of cover | Master fields + opening stock |
-| **Parties** | Customer/supplier master and ledger: balance, position, days unpaid, alerts | Master fields + opening balance |
+| **Parties** | Customer/supplier master and ledger: balance, position, days unpaid, alerts | Master fields, MSME type, written agreement, opening balance |
 | **Adjustments** | Damage, expiry, count corrections, returns (+/− qty) | Date, Item, Qty, Reason |
-| **Invoice** | Printable A4 tax invoice / delivery challan | Invoice number (optional) |
-| **Reports** | Monthly P&L for 12 months, GST rate-wise summary, expenses by head | Nothing |
+| **Invoice** | Printable A4 tax invoice / delivery challan / credit note, due date, amount in words, e-way bill alert, WhatsApp share | Invoice number (optional) |
+| **Quotation** | Quotation, estimate, proforma invoice, sales order or delivery challan with GST; macro `QuoteToInvoice` | Customer, items, qty |
+| **Receipt** | 3-inch (80 mm) thermal receipt for counter sales | Bill number (optional) |
+| **Collections** | Money due per party: 0-30/31-60/61-90/90+ ageing, overdue, MSME 43B(h) limit, GST credit at risk, 8-week schedule, credit score, suggested limit, next action, WhatsApp reminder | Nothing |
+| **Statement** | One-page statement of account with month-by-month running balance | Party |
+| **CashFlow** | 8-week cash forecast with shortfall warning and chart | Nothing |
+| **PurchaseOrder** | Items to order by supplier from 30-day sales, lead time and cover days | Supplier (optional) |
+| **GST** | GSTR-1 and GSTR-3B summary for any month, with credit set-off | Month |
+| **Reports** | Monthly P&L for 12 months, GST rate-wise summary, expenses by head, monthly sales targets | Targets |
+| **BalanceSheet** | Assets, liabilities, owner's capital and P&L with a self-check | Nothing |
+| **ProfitLeaks** | Discounts, below-cost sales, stock loss, returns, overdue interest, dead stock, GST and MSME risks | Nothing |
+| **CashTally** | Count the drawer by denomination and compare with the books | Note counts |
 | **Settings** | Company profile, home state, FY start, as-of date, invoice prefix, accounts, all dropdown lists | Once |
 | **Guide** | In-file user manual | Nothing |
 

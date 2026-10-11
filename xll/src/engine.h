@@ -12,12 +12,13 @@
 #include "xlcall_min.h"
 
 enum {
-    ST_OUT_ITEMS,      /* Items!L:Z      15 cols */
-    ST_OUT_PURCHASES,  /* Purchases!I:S  11 cols */
-    ST_OUT_SALES,      /* Sales!J:X      15 cols */
-    ST_OUT_PARTIES,    /* Parties!J:S    10 cols */
-    ST_OUT_CASHBOOK,   /* CashBook!I:K    3 cols */
-    ST_OUT_ADJUST      /* Adjustments!F:G 2 cols */
+    ST_OUT_ITEMS,      /* Items!L:AE      20 cols */
+    ST_OUT_PURCHASES,  /* Purchases!I:S   11 cols */
+    ST_OUT_SALES,      /* Sales!J:Z       17 cols */
+    ST_OUT_PARTIES,    /* Parties!L:U     10 cols */
+    ST_OUT_CASHBOOK,   /* CashBook!I:K     3 cols */
+    ST_OUT_ADJUST,     /* Adjustments!F:G  2 cols */
+    ST_OUT_AGEING      /* Collections!E:V 18 cols */
 };
 
 /* Input block indices (order of the UDF arguments). */
