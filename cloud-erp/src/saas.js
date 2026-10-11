@@ -5,9 +5,9 @@ import { HttpError, bad, today, addDays } from './lib.js';
 /* Prices are per year in rupees, before GST. Limits: Infinity = no limit. */
 export const PLANS = {
   free: { label: 'Free', price: 0, invoices_per_month: 50, users: 1, warehouses: 1, features: [] },
-  starter: { label: 'Starter', price: 2999, invoices_per_month: Infinity, users: 2, warehouses: 1, features: ['tally'] },
-  growth: { label: 'Growth', price: 7999, invoices_per_month: Infinity, users: 5, warehouses: 3, features: ['tally', 'einvoice'] },
-  business: { label: 'Business', price: 17999, invoices_per_month: Infinity, users: 15, warehouses: Infinity, features: ['tally', 'einvoice', 'priority'] },
+  starter: { label: 'Starter', price: 999, invoices_per_month: Infinity, users: 2, warehouses: 1, features: ['tally'] },
+  growth: { label: 'Growth', price: 2499, invoices_per_month: Infinity, users: 5, warehouses: 3, features: ['tally', 'einvoice'] },
+  business: { label: 'Business', price: 4499, invoices_per_month: Infinity, users: 15, warehouses: Infinity, features: ['tally', 'einvoice', 'priority'] },
 };
 export const FEATURE_LABEL = { tally: 'Tally export', einvoice: 'E-invoice & e-way bill JSON', priority: 'Priority support' };
 export const TRIAL_DAYS = 14;

@@ -133,12 +133,18 @@ heavy credit sales; currently on Tally/Busy/Marg desktop + Khatabook, or outgrow
 | Plan | Price | Users | Warehouses | Includes |
 |---|---|---|---|---|
 | **Free (Khata)** | Rs 0 | 1 | 1 | Khata ledger, WhatsApp/UPI reminders (manual send), 50 GST invoices/mo |
-| **Starter** | **Rs 2,999** | 2 | 1 | Unlimited GST invoicing, inventory, double-entry books, automated reminders, mobile |
-| **Growth** (target plan) | **Rs 7,999** | 5 | 3 | PO→GRN→Bill, SO→DN→Invoice, e-invoice + e-way bill, roles, credit limits, Tally import/export |
-| **Business** | **Rs 17,999** | 15 | Unlimited | Approvals workflow, batch/serial, multi-GSTIN branches, audit log, API/webhooks, priority support |
+| **Starter** | **Rs 999** | 2 | 1 | Unlimited GST invoicing, inventory, double-entry books, automated reminders, mobile |
+| **Growth** (target plan) | **Rs 2,499** | 5 | 3 | PO→GRN→Bill, SO→DN→Invoice, e-invoice + e-way bill, roles, credit limits, Tally import/export |
+| **Business** | **Rs 4,499** | 15 | Unlimited | Approvals workflow, batch/serial, multi-GSTIN branches, audit log, API/webhooks, priority support |
 | Add-ons | Rs 1,200/user/yr; WhatsApp messages at cost + margin (~Rs 0.5-1/msg, approx) | | | |
 
-**Rationale:**
+**Pricing as launched (Oct 2026): set below every comparable product.**
+- Starter Rs 999 is less than a third of Vyapar desktop (Rs 3,399) and Swipe Pro (Rs 2,999 per user). It is above only myBillBook Silver (Rs 399), which runs on 1 Android device without purchase orders, godowns or double-entry books.
+- Growth Rs 2,499 (5 users, 3 godowns, e-invoice/e-way bill, Tally export) is below myBillBook Diamond (~Rs 2,599) and Platinum (~Rs 2,999), Swipe Pro for a single user, and Zoho Books Standard (~Rs 9k).
+- Business Rs 4,499 (15 users, unlimited godowns) is below myBillBook Enterprise (~Rs 4,999), Busy (Rs 5-10k) and Tally Silver renewal alone (Rs 4,500 + Rs 22,500 licence).
+- Cloudflare hosting costs only a few rupees per business a month, so these prices still leave a healthy margin.
+
+**Earlier rationale (first draft at Rs 2,999 / 7,999 / 17,999):**
 - Starter sits at Swipe Pro / myBillBook Platinum (~Rs 3k) to win the upgrade-from-billing-app segment.
 - Growth at ~Rs 8k is below Zoho Books Standard alone (~Rs 9k) and far below Books+Inventory (~Rs 27k+), Tally Silver year-1 (Rs 22.5k) or Busy Enterprise + multi-user, while bundling procurement, multi-warehouse and khata.
 - Business at ~Rs 18k undercuts Tally Gold (Rs 67.5k + Rs 13.5k TSS) and Zoho Premium tiers (~Rs 36k/yr, approx), and stays below Odoo for 5+ users (~Rs 35-65k/yr).
