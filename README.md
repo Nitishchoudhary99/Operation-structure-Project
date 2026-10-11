@@ -2,11 +2,29 @@
 
 ## SmartTrader ERP: a complete ERP for small traders that runs in Excel
 
-**File:** [`excel/SmartTrader_ERP.xlsx`](excel/SmartTrader_ERP.xlsx). It needs no install, no internet and no licence beyond Excel 2019 / 2021 / Microsoft 365.
-**Optional macros:** [`excel/ERP_Macros.bas`](excel/ERP_Macros.bas) add fast mode, one-click invoices, PDF export, backup and year-end rollover.
-**Rebuild from source:** `python tools/build_erp.py excel/SmartTrader_ERP.xlsx`
+The workbook covers the full cycle: **Procure → Stock → Sell → Deliver → Collect → Report**. Inventory, sales, purchases, cash and bank, receivables and payables, GST and profit all sit in one workbook. You record each transaction once, and every report updates.
 
-The workbook covers the full cycle: **Procure → Stock → Sell → Deliver → Collect → Report**. Inventory, sales, purchases, cash and bank, receivables and payables, GST and profit all sit in one workbook and are linked by formulas. You record each transaction once, and every report updates.
+It comes in **two editions with an identical layout**:
+
+| | **C Engine edition** (recommended on Windows) | **Formula edition** |
+|---|---|---|
+| File | [`excel/SmartTrader_ERP_C.xlsx`](excel/SmartTrader_ERP_C.xlsx) + add-in [`xll/dist/SmartTrader64.xll`](xll/dist) | [`excel/SmartTrader_ERP.xlsx`](excel/SmartTrader_ERP.xlsx) |
+| Calculation | Native C add-in (XLL): one O(n) pass, money in exact integer paise | ~99,000 Excel formulas |
+| Capacity | 20,000 lines per register, 2,000 items, 1,000 parties | 3,000 lines, 500 items, 300 parties |
+| Full recalculation | ~6 ms (3k lines) · ~150 ms (100k lines) | grows with items × lines |
+| File size | 88 KB | 1.7 MB |
+| Runs on | Excel for Windows 2010+ (32/64-bit) | Any Excel: Windows, Mac, web, mobile |
+
+Both editions give the same results: **98,500 engine cells and 843 dashboard, report and invoice cells were checked against the formula edition with 0 mismatches**. The full test report is in [`xll/README.md`](xll/README.md).
+
+**Optional macros:** [`excel/ERP_Macros.bas`](excel/ERP_Macros.bas) adds fast mode, one-click invoices, PDF export, backup and year-end rollover. It works in both editions.
+**Rebuild from source:** run `python tools/build_erp.py excel/SmartTrader_ERP.xlsx` for the formula edition, add `--engine c` for the C edition, and run `make -C xll` to build the add-in.
+
+### Installing the C Engine (once)
+1. Copy `xll/dist/SmartTrader64.xll` to a permanent folder. If your Excel is 32-bit, use `SmartTrader32.xll`. To check, go to *File ▸ Account ▸ About Excel*.
+2. Right-click the file ▸ **Properties** ▸ tick **Unblock**. Windows blocks downloaded add-ins until you do this.
+3. In Excel go to **File ▸ Options ▸ Add-ins ▸ Manage: Excel Add-ins ▸ Go ▸ Browse**, select the `.xll` and click OK.
+4. Open `SmartTrader_ERP_C.xlsx`. The Dashboard's top-right corner shows **✔ SmartTrader C Engine 1.0**.
 
 ---
 
@@ -69,6 +87,10 @@ The workbook covers the full cycle: **Procure → Stock → Sell → Deliver →
 
 ## 3. Speed architecture ("superfast" by design)
 
+**C Engine edition.** Six array formulas call compiled C, and each posts the whole ledger in a single hash-indexed pass. The functions are registered thread-safe, so Excel runs them in parallel. See [`xll/README.md`](xll/README.md).
+
+**Formula edition** follows these rules:
+
 1. **No volatile cell formulas.** There is no `OFFSET`, `INDIRECT`, `NOW` or `RAND` in cells. `TODAY()` appears exactly once (`Settings!B10`). Dynamic `OFFSET` names are used only as dropdown sources, which Excel does not recalculate.
 2. **Bounded ranges.** Every lookup uses fixed ranges: 3,000 lines per register, 500 items, 300 parties. There are no whole-column (`A:A`) references.
 3. **Match once, reuse many times.** Each transaction row does a single `MATCH` into a hidden helper column (`itemRow`, `partyRow`). The unit, rate, GST %, cost and state are then cheap `INDEX` reads.
@@ -93,6 +115,7 @@ Measured: about 99,000 formulas recalculate with **0 errors**. A full recalculat
 
 * Currency is ₹ with the Indian GST structure. GST slabs live in `Settings` and can be edited. The defaults include post-Sep-2025 slabs (5/18/40%) and legacy 12/28%. Confirm rates with your CA.
 * Costing uses the **weighted average over the financial year**.
-* Capacity is 3,000 lines per register per year. For larger volumes, extend `N_TX` in `tools/build_erp.py` and rebuild, or start a new file each year with `CarryForwardToNewYear`.
+* Formula-edition capacity is 3,000 lines per register per year; the C edition holds 20,000. In the C edition, don't sort the register sheets, because the grey output blocks are array formulas. Use the filter arrows instead.
+* Capacity can be raised further: extend `N_TX` in `tools/build_erp.py` and rebuild, or start a new file each year with `CarryForwardToNewYear`.
 * Returns are posted through Adjustments (qty) plus CashBook (money), as described in the Guide sheet.
 * The project diagram link is in [`Link of Project`](Link%20of%20Project).

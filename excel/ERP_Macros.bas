@@ -5,6 +5,7 @@ Attribute VB_Name = "ERP_Macros"
 ' Workbook (*.xlsm)" > Alt+F11 > File > Import File... > ERP_Macros.bas
 ' Then Alt+F8 to run, or assign macros to shapes on the Dashboard.
 ' The workbook works fully WITHOUT these macros - they only add speed/comfort.
+' Works with both SmartTrader_ERP.xlsx (formulas) and SmartTrader_ERP_C.xlsx (C engine).
 '==============================================================================
 Option Explicit
 
@@ -85,21 +86,30 @@ Public Sub ClearDemoData()
     If MsgBox("Delete ALL demo entries from Sales, Purchases, CashBook, Adjustments, Items and Parties?" _
               & vbLf & "Formulas are kept. This cannot be undone.", vbYesNo + vbCritical) <> vbYes Then Exit Sub
     FastModeOn
-    ClearInputs "Sales", 9, 3004
-    ClearInputs "Purchases", 8, 3004
-    ClearInputs "CashBook", 8, 3004
-    ClearInputs "Adjustments", 5, 504
-    ClearInputs "Items", 11, 504
-    ClearInputs "Parties", 9, 304
+    ClearInputs "Sales", 9
+    ClearInputs "Purchases", 8
+    ClearInputs "CashBook", 8
+    ClearInputs "Adjustments", 5
+    ClearInputs "Items", 11
+    ClearInputs "Parties", 9
     FastModeOff
     MsgBox "Demo data cleared. Fill Settings, Items and Parties to go live.", vbInformation
 End Sub
 
-Private Sub ClearInputs(sheetName As String, inputCols As Long, lastRow As Long)
+' Clears only the typed (input) columns; works for the formula and the C-engine edition.
+Private Sub ClearInputs(sheetName As String, inputCols As Long)
+    Dim lastRow As Long
     With ThisWorkbook.Worksheets(sheetName)
-        .Range(.Cells(FIRST_ROW, 1), .Cells(lastRow, inputCols)).ClearContents
+        lastRow = LastInputRow(.Range(.Cells(FIRST_ROW, 1), .Cells(.Rows.Count, inputCols)))
+        If lastRow >= FIRST_ROW Then .Range(.Cells(FIRST_ROW, 1), .Cells(lastRow, inputCols)).ClearContents
     End With
 End Sub
+
+Private Function LastInputRow(rng As Range) As Long
+    Dim hit As Range
+    Set hit = rng.Find(What:="*", LookIn:=xlFormulas, SearchOrder:=xlByRows, SearchDirection:=xlPrevious)
+    If hit Is Nothing Then LastInputRow = 0 Else LastInputRow = hit.Row
+End Function
 
 ' ---------- Year-end: copy closing stock & balances as next year's opening ---
 ' Run in a COPY of the file (Save As new FY name first).
@@ -111,20 +121,20 @@ Public Sub CarryForwardToNewYear()
     Set it = ThisWorkbook.Worksheets("Items")
     Set pt = ThisWorkbook.Worksheets("Parties")
     Application.Calculate
-    For r = FIRST_ROW To 504
+    For r = FIRST_ROW To LastInputRow(it.Range(it.Cells(FIRST_ROW, 1), it.Cells(it.Rows.Count, 1)))
         If it.Cells(r, 1).Value <> "" Then
             it.Cells(r, 11).Value = it.Cells(r, 16).Value   ' Opening Rate <- Avg Cost
             it.Cells(r, 10).Value = it.Cells(r, 15).Value   ' Opening Qty  <- Closing Stock
         End If
     Next r
-    For r = FIRST_ROW To 304
+    For r = FIRST_ROW To LastInputRow(pt.Range(pt.Cells(FIRST_ROW, 1), pt.Cells(pt.Rows.Count, 1)))
         If pt.Cells(r, 1).Value <> "" Then pt.Cells(r, 9).Value = pt.Cells(r, 14).Value
     Next r
     FastModeOn
-    ClearInputs "Sales", 9, 3004
-    ClearInputs "Purchases", 8, 3004
-    ClearInputs "CashBook", 8, 3004
-    ClearInputs "Adjustments", 5, 504
+    ClearInputs "Sales", 9
+    ClearInputs "Purchases", 8
+    ClearInputs "CashBook", 8
+    ClearInputs "Adjustments", 5
     With ThisWorkbook.Worksheets("Settings").Range("B9")
         .Value = DateSerial(Year(.Value) + 1, Month(.Value), Day(.Value))
     End With

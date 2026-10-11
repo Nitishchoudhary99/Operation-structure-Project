@@ -1,8 +1,13 @@
 """Builds SmartTrader_ERP.xlsx - a formula-driven mini ERP for small traders.
 
-Run:  python tools/build_erp.py  [output_path]
+Run:  python tools/build_erp.py  [output_path] [--engine c]
+
+  default      every calculation is an Excel formula (works everywhere, incl. Mac/web)
+  --engine c   heavy blocks are single array formulas calling the SmartTrader C
+               engine (xll/dist/SmartTrader64.xll) - Windows Excel, 20k lines/register
 """
 import random
+from copy import copy
 import sys
 from datetime import date, timedelta
 
@@ -14,14 +19,18 @@ from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
 from openpyxl.utils import get_column_letter
 from openpyxl.workbook.defined_name import DefinedName
 from openpyxl.worksheet.datavalidation import DataValidation
+from openpyxl.worksheet.formula import ArrayFormula
 
-OUT = sys.argv[1] if len(sys.argv) > 1 else "SmartTrader_ERP.xlsx"
+ARGV = [a for a in sys.argv[1:] if not a.startswith("--")]
+C_ENGINE = "--engine" in sys.argv and sys.argv[sys.argv.index("--engine") + 1].lower() == "c"
+ARGV = [a for a in ARGV if a.lower() != "c"]
+OUT = ARGV[0] if ARGV else ("SmartTrader_ERP_C.xlsx" if C_ENGINE else "SmartTrader_ERP.xlsx")
 
 # ---------------------------------------------------------------- capacity
-N_TX = 3000      # transaction rows per register (Sales / Purchases / Cash Book)
-N_ADJ = 500
-N_ITEMS = 500
-N_PARTIES = 300
+N_TX = 20000 if C_ENGINE else 3000      # transaction rows per register (Sales / Purchases / Cash Book)
+N_ADJ = 2000 if C_ENGINE else 500
+N_ITEMS = 2000 if C_ENGINE else 500
+N_PARTIES = 1000 if C_ENGINE else 300
 FIRST = 5        # first data row on every register
 
 def last(n):
@@ -87,6 +96,18 @@ def register(ws, headers, n_rows, input_cols):
     ws.row_dimensions[4].height = 32
     ws.freeze_panes = ws.cell(FIRST, 1)
     ws.auto_filter.ref = f"A4:{get_column_letter(len(headers))}{FIRST + n_rows - 1}"
+    if C_ENGINE:
+        # column-level styles keep a 20k-row file small; written cells get styled in finish_styles()
+        for i, (_, _, fmt) in enumerate(headers, start=1):
+            cd = ws.column_dimensions[get_column_letter(i)]
+            cd.font = f_in if i <= input_cols else f_calc
+            if i <= input_cols:
+                cd.fill = fill(INPUT_FILL)
+            if fmt:
+                cd.number_format = fmt
+            if ws.cell(3, i).value is None:
+                ws.cell(3, i).fill = fill("FFFFFF")
+        return
     for r in range(FIRST, FIRST + n_rows):
         for i, (_, _, fmt) in enumerate(headers, start=1):
             c = ws.cell(r, i)
@@ -230,7 +251,7 @@ C_ = lambda col: f"CashBook!${col}${FIRST}:${col}${TX_END}"
 I_ = lambda col: f"Items!${col}${FIRST}:${col}${IT_END}"
 PT = lambda col: f"Parties!${col}${FIRST}:${col}${PT_END}"
 
-for r in range(FIRST, IT_END + 1):
+for r in (range(FIRST, IT_END + 1) if not C_ENGINE else ()):
     g = f'IF($A{r}="","",'
     it[f"L{r}"] = f"={g}SUMIFS({P('E')},{P('D')},$A{r}))"
     it[f"M{r}"] = f"={g}SUMIFS({S('E')},{S('D')},$A{r}))"
@@ -273,7 +294,7 @@ pt_headers = [
 banner(pt, "👥  CUSTOMERS & SUPPLIERS (PARTY LEDGER)",
        "Balance > 0 means the party owes you (receivable); < 0 means you owe them (payable).", len(pt_headers))
 register(pt, pt_headers, N_PARTIES, 9)
-for r in range(FIRST, PT_END + 1):
+for r in (range(FIRST, PT_END + 1) if not C_ENGINE else ()):
     g = f'IF($A{r}="","",'
     pt[f"J{r}"] = f"={g}SUMIFS({S('Q')},{S('C')},$A{r})-SUMIFS({S('X')},{S('C')},$A{r}))"
     pt[f"K{r}"] = f'={g}SUMIFS({C_("G")},{C_("D")},$A{r},{C_("C")},"Receipt"))'
@@ -320,7 +341,7 @@ banner(pu, "🛒  PURCHASES / GOODS RECEIVED (PROCURE)",
        "One line per item received. Stock, average cost, supplier payable and GST input credit update instantly.",
        len(pu_headers))
 register(pu, pu_headers, N_TX, 8)
-for r in range(FIRST, TX_END + 1):
+for r in (range(FIRST, TX_END + 1) if not C_ENGINE else ()):
     g = f'IF($D{r}="","",'
     pu[f"Q{r}"] = f'={g}IFERROR(MATCH($D{r},{I_("A")},0),""))'
     pu[f"R{r}"] = f'=IF($C{r}="","",IFERROR(MATCH($C{r},{PT("A")},0),""))'
@@ -349,7 +370,7 @@ banner(sa, "🧾  SALES / INVOICES (DELIVER)",
        "One line per item sold. Keep all lines of an invoice together. Leave Rate blank to use the standard sale rate.",
        len(sa_headers))
 register(sa, sa_headers, N_TX, 9)
-for r in range(FIRST, TX_END + 1):
+for r in (range(FIRST, TX_END + 1) if not C_ENGINE else ()):
     g = f'IF($D{r}="","",'
     sa[f"U{r}"] = f'={g}IFERROR(MATCH($D{r},{I_("A")},0),""))'
     sa[f"V{r}"] = f'=IF($C{r}="","",IFERROR(MATCH($C{r},{PT("A")},0),""))'
@@ -403,7 +424,7 @@ banner(cb, "💰  CASH & BANK BOOK (FINANCE)",
        len(cb_headers))
 register(cb, cb_headers, N_TX, 8)
 IN_TYPES = '{"Receipt","Other Income","Capital In","Transfer In"}'
-for r in range(FIRST, TX_END + 1):
+for r in (range(FIRST, TX_END + 1) if not C_ENGINE else ()):
     g = f'IF(OR($C{r}="",N($G{r})=0),"",'
     cb[f"I{r}"] = f'={g}IF(OR($C{r}="Receipt",$C{r}="Other Income",$C{r}="Capital In",$C{r}="Transfer In"),$G{r},0))'
     cb[f"J{r}"] = f'={g}IF(I{r}=0,$G{r},0))'
@@ -425,7 +446,7 @@ banner(ad, "🔧  STOCK ADJUSTMENTS",
        "Damage, expiry, physical-count corrections, returns. Negative qty reduces stock and is booked as a loss.",
        len(ad_headers))
 register(ad, ad_headers, N_ADJ, 5)
-for r in range(FIRST, ADJ_END + 1):
+for r in (range(FIRST, ADJ_END + 1) if not C_ENGINE else ()):
     ad[f"F{r}"] = f'=IF($B{r}="","",IFERROR(INDEX({I_("P")},MATCH($B{r},{I_("A")},0)),0))'
     ad[f"G{r}"] = f'=IF($B{r}="","",ROUND(N($C{r})*F{r},2))'
 add_list_dv(ad, f"B{FIRST}:B{ADJ_END}", "L_Items")
@@ -632,7 +653,7 @@ for col in "ABCDEFGHIJKLMN":
     db.column_dimensions[col].width = 12.5
 db.column_dimensions["A"].width = 2
 db.merge_cells("B1:N1")
-db["B1"] = '=CoName&"  ·  SmartTrader ERP"'
+db["B1"] = '=CoName&"  ·  SmartTrader ERP' + (" (C Engine)" if C_ENGINE else "") + '"'
 db["B1"].font = Font(name=FONT, size=20, bold=True, color="FFFFFF")
 db.merge_cells("B2:N2")
 db["B2"] = '="Live business cockpit  ·  Period: "&TEXT(D4,"dd-mmm-yy")&" to "&TEXT(G4,"dd-mmm-yy")'
@@ -651,6 +672,13 @@ for c in ("D4", "G4"):
 db["B4"].font = db["E4"].font = f_bold
 db["H4"] = "← overwrite these dates to analyse any period"
 db["H4"].font = Font(name=FONT, size=8, italic=True)
+if C_ENGINE:
+    db.merge_cells("K4:N4")
+    db["K4"] = '=IFERROR("✔ "&_xll.ST_VERSION(),"⚠ C engine not loaded - see Guide")'
+    db["K4"].font = Font(name=FONT, size=9, bold=True, color="2E7D32")
+    db["K4"].alignment = Alignment(horizontal="right")
+    db.conditional_formatting.add("K4", FormulaRule(formula=['LEFT($K$4,1)="⚠"'],
+                                                    font=Font(color="FFFFFF", bold=True), fill=fill("C62828")))
 name("DFrom", "Dashboard!$D$4")
 name("DTo", "Dashboard!$G$4")
 
@@ -838,6 +866,17 @@ guide = [
     ("Costing method", "Weighted-average cost over the year (opening + all purchases). COGS uses the current average, the standard method for traders."),
     ("Assumption", "Currency ₹ and Indian GST structure. Rates in Settings are editable; verify slabs with your CA."),
 ]
+if C_ENGINE:
+    guide += [
+        ("H", "C ENGINE EDITION (SmartTrader64.xll)"),
+        ("What it is", "A native Excel add-in written in C. Stock, cost, GST, party ledgers and the cash book are posted in one pass by compiled code - six formulas instead of ~100,000. Results are identical to the formula edition, cell for cell."),
+        ("Install once", "1) Copy SmartTrader64.xll (or SmartTrader32.xll for 32-bit Office) to a folder, e.g. Documents\\SmartTrader. 2) Right-click it ▸ Properties ▸ tick 'Unblock' ▸ OK (Windows blocks add-ins downloaded from the internet). 3) Excel ▸ File ▸ Options ▸ Add-ins ▸ Manage: Excel Add-ins ▸ Go ▸ Browse ▸ pick the .xll ▸ OK."),
+        ("Check it works", "Dashboard top-right shows '✔ SmartTrader C Engine 1.0'. A red '⚠ C engine not loaded' means step 3 was skipped and the grey columns show NAME errors until the add-in is loaded. Your typed data is never affected."),
+        ("Which .xll?", "Excel ▸ File ▸ Account ▸ About Excel shows '64-bit' or '32-bit'. Use the matching file."),
+        ("Capacity", f"{N_TX:,} lines per register, {N_ITEMS:,} items, {N_PARTIES:,} parties. A full recalculation of the sample data takes about 5 ms."),
+        ("Do not", "Sort the register sheets (the grey output blocks are single array formulas; use the filter arrows instead) or type inside grey columns."),
+        ("Platforms", "Excel for Windows (2010 and later, 32- or 64-bit). On Mac / Excel Online use the formula edition (SmartTrader_ERP.xlsx), which has the same layout."),
+    ]
 r = 3
 for k, v in guide:
     if k == "H":
@@ -1010,6 +1049,27 @@ wb._sheets = [wb[n] for n in order]
 for n, color in zip(order, [NAVY, "0E7C86", "6A1B9A", "2E7D32", "283593", "EF6C00", "6D4C41", "37474F", "00838F", "757575", "9E9E9E"]):
     wb[n].sheet_properties.tabColor = color
 wb.active = 0
+if C_ENGINE:
+    inputs = [("IN_Items", f"Items!$A${FIRST}:$K${IT_END}"), ("IN_Parties", f"Parties!$A${FIRST}:$I${PT_END}"),
+              ("IN_Purchases", f"Purchases!$A${FIRST}:$H${TX_END}"), ("IN_Sales", f"Sales!$A${FIRST}:$I${TX_END}"),
+              ("IN_CashBook", f"CashBook!$A${FIRST}:$H${TX_END}"), ("IN_Adjust", f"Adjustments!$A${FIRST}:$E${ADJ_END}"),
+              ("IN_Settings", "Settings!$B$4:$B$13")]
+    for n_, ref in inputs:
+        name(n_, ref)
+    args = ",".join(n_ for n_, _ in inputs)
+    for ws, fn, c1, c2, end in [(it, "ST_ITEMS", "L", "Z", IT_END), (pu, "ST_PURCHASES", "I", "S", TX_END),
+                                (sa, "ST_SALES", "J", "X", TX_END), (pt, "ST_PARTIES", "J", "S", PT_END),
+                                (cb, "ST_CASHBOOK", "I", "K", TX_END), (ad, "ST_ADJUST", "F", "G", ADJ_END)]:
+        ws[f"{c1}{FIRST}"] = ArrayFormula(f"{c1}{FIRST}:{c2}{end}", f"=_xll.{fn}({args})")
+        ws[f"{c1}3"] = f"⚙ C engine: {{=_xll.{fn}(…)}} fills {c1}:{c2}"
+        ws[f"{c1}3"].font = Font(name=FONT, size=8, italic=True, color="595959")
+    # cells written above (sample data, array anchors) need the column style explicitly
+    for ws in (it, pt, pu, sa, cb, ad):
+        for row in ws.iter_rows(min_row=FIRST, max_row=ws.max_row):
+            for c in row:
+                if c.value is not None:
+                    cd = ws.column_dimensions[c.column_letter]
+                    c.font, c.fill, c.number_format = copy(cd.font), copy(cd.fill), cd.number_format
 wb.calculation.fullCalcOnLoad = True
 wb.save(OUT)
 print(f"saved {OUT}: {len(purch_rows)} purchase lines, {len(sale_rows)} sale lines, {len(cash_rows)} cash entries")
