@@ -18,7 +18,7 @@ run_worker_first = ["/api/*"]
 [[d1_databases]]
 binding = "DB"
 database_name = "smarttrader-erp"
-database_id = "00000000-0000-0000-0000-000000000000"
+database_id = "65271993-a4d4-4929-93fe-fcb649d132d3"
 
 [observability]
 enabled = true
