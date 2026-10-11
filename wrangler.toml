@@ -1,0 +1,19 @@
+# Root config so Cloudflare Workers Builds can deploy from the repository root.
+# The app lives in cloud-erp/ (see cloud-erp/README.md); cloud-erp/wrangler.toml is the same config for running there.
+name = "operation-structure-project"
+main = "cloud-erp/src/worker.js"
+compatibility_date = "2025-09-01"
+
+[assets]
+directory = "./cloud-erp/public"
+binding = "ASSETS"
+not_found_handling = "single-page-application"
+run_worker_first = ["/api/*"]
+
+[[d1_databases]]
+binding = "DB"
+database_name = "smarttrader-erp"
+database_id = "65271993-a4d4-4929-93fe-fcb649d132d3"
+
+[observability]
+enabled = true

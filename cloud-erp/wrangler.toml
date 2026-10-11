@@ -1,7 +1,7 @@
 # SmartTrader Cloud ERP - Cloudflare Worker + D1 + static web app.
 # Secrets never go in this file (the repository is public). Set them with
 #   npx wrangler secret put SESSION_SECRET
-name = "smarttrader-erp"
+name = "operation-structure-project"
 main = "src/worker.js"
 compatibility_date = "2025-09-01"
 
