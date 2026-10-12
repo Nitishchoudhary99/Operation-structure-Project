@@ -423,16 +423,50 @@ router.add('POST', '/api/journals', async (c) => json(await createJournal(c, c.b
 router.add('POST', '/api/stock/adjust', async (c) => json(await stockAdjust(c, c.body)));
 router.add('POST', '/api/stock/transfer', async (c) => json(await stockTransfer(c, c.body)));
 
-/* ======================================================================= khata (Khatabook-style credit book) */
+/* ======================================================================= khata (Khatabook-style credit book)
+   Trust rules: a new entry stays PENDING and does not count until it has been sent to the customer on
+   WhatsApp or SMS. Sent entries can never be edited or deleted, only reversed by a new (also sent) entry.
+   Every message carries a private link where the customer sees their full khata and can confirm or dispute
+   each entry, so neither side can quietly change the record. */
+const KHATA_BAL = `COALESCE(SUM(CASE WHEN k.status = 'sent' THEN (CASE WHEN k.kind = 'gave' THEN k.amount ELSE -k.amount END) ELSE 0 END), 0)`;
+const rs = (p) => 'Rs ' + (p / 100).toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+const fd = (d) => `${d.slice(8, 10)}-${d.slice(5, 7)}-${d.slice(0, 4)}`;
+
+async function khataToken(c, partyId) {
+  const p = await c.db.prepare(`SELECT khata_token FROM parties WHERE id = ?`).bind(partyId).first();
+  if (p && p.khata_token) return p.khata_token;
+  const t = randomHex(12);
+  await c.db.prepare(`UPDATE parties SET khata_token = ? WHERE id = ? AND (khata_token IS NULL OR khata_token = '')`).bind(t, partyId).run();
+  return (await c.db.prepare(`SELECT khata_token FROM parties WHERE id = ?`).bind(partyId).first()).khata_token;
+}
+async function khataBalance(c, partyId) {
+  return (await c.db.prepare(`SELECT ${KHATA_BAL} AS b FROM khata k WHERE k.party_id = ?`).bind(partyId).first()).b;
+}
+function sendLinks(phoneRaw, text) {
+  const phone = String(phoneRaw || '').replace(/\D/g, '');
+  const wa = phone.length === 10 ? '91' + phone : phone;
+  return { text, whatsapp_url: `https://wa.me/${wa}?text=${encodeURIComponent(text)}`, sms_url: phone ? `sms:${phone}?body=${encodeURIComponent(text)}` : '' };
+}
+/* The message for one entry, with the balance it will make once sent. */
+async function entryMessage(c, e, p) {
+  const after = (await khataBalance(c, p.id)) + (e.status === 'sent' ? 0 : (e.kind === 'gave' ? e.amount : -e.amount));
+  const link = `${c.url.origin}/#/k/${await khataToken(c, p.id)}`;
+  const what = e.kind === 'gave' ? `${rs(e.amount)} aapke khate me likha gaya (udhaar)` : `${rs(e.amount)} payment mila, dhanyavaad`;
+  const bal = after > 0 ? `Total baaki: ${rs(after)}` : after < 0 ? `Aapka advance: ${rs(-after)}` : 'Khata clear hai';
+  return `${c.org.name}: ${what} on ${fd(e.date)}${e.note ? ` (${e.note})` : ''}. ${bal}.\nApna khata dekhein aur confirm karein: ${link}`;
+}
+
 router.add('GET', '/api/khata', async (c) => {
-  const { results } = await c.db.prepare(`SELECT p.id, p.name, p.phone, p.kind,
-        COALESCE(SUM(CASE WHEN k.kind = 'gave' THEN k.amount ELSE -k.amount END), 0) AS balance, MAX(k.date) AS last_date, COUNT(k.id) AS entries
+  const { results } = await c.db.prepare(`SELECT p.id, p.name, p.phone, p.kind, ${KHATA_BAL} AS balance,
+        MAX(CASE WHEN k.status = 'sent' THEN k.date END) AS last_date, SUM(k.status = 'sent') AS entries, SUM(k.status = 'pending') AS pending,
+        SUM(k.ack = 'disputed') AS disputed
       FROM parties p LEFT JOIN khata k ON k.party_id = p.id WHERE p.org_id = ? GROUP BY p.id
-      HAVING entries > 0 OR ? = '1' ORDER BY last_date DESC, p.name`).bind(c.org.id, c.url.searchParams.get('all') ? '1' : '0').all();
+      HAVING COUNT(k.id) > 0 OR ? = '1' ORDER BY pending DESC, last_date DESC, p.name`).bind(c.org.id, c.url.searchParams.get('all') ? '1' : '0').all();
   const get = results.filter((r) => r.balance > 0).reduce((s, r) => s + r.balance, 0);
   const give = results.filter((r) => r.balance < 0).reduce((s, r) => s - r.balance, 0);
   return json({ rows: results.map((r) => ({ ...r, balance: R(r.balance) })), you_will_get: R(get), you_will_give: R(give) });
 });
+/* Creates a PENDING entry and returns the message to send. It counts only after /send. */
 router.add('POST', '/api/khata', async (c) => {
   requireCan(c.user, 'khata');
   const b = c.body;
@@ -442,40 +476,104 @@ router.add('POST', '/api/khata', async (c) => {
     const ex = await c.db.prepare(`SELECT id FROM parties WHERE org_id = ? AND name = ?`).bind(c.org.id, name).first();
     partyId = ex ? ex.id : (await c.db.prepare(`INSERT INTO parties (org_id, name, kind, phone, created_at) VALUES (?, ?, 'customer', ?, ?) RETURNING id`)
       .bind(c.org.id, name, str(b.phone, 20), nowIso()).first()).id;
-  } else if (!(await c.db.prepare(`SELECT 1 FROM parties WHERE id = ? AND org_id = ?`).bind(partyId, c.org.id).first())) throw bad('Unknown contact.');
+    if (ex && b.phone) await c.db.prepare(`UPDATE parties SET phone = ? WHERE id = ? AND phone = ''`).bind(str(b.phone, 20), ex.id).run();
+  }
+  const p = await c.db.prepare(`SELECT id, name, phone FROM parties WHERE id = ? AND org_id = ?`).bind(partyId, c.org.id).first();
+  if (!p) throw bad('Unknown contact.');
   const kind = oneOf(b.kind, ['gave', 'got'], 'Entry type');
   const amount = toPaise(num(b.amount, 'Amount', { min: 0.01 }));
-  await c.db.prepare(`INSERT INTO khata (org_id, party_id, date, kind, amount, note, created_by, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`)
-    .bind(c.org.id, partyId, date(b.date), kind, amount, str(b.note, 200), c.user.id, nowIso()).run();
-  return json({ ok: true, party_id: partyId });
+  const e = await c.db.prepare(`INSERT INTO khata (org_id, party_id, date, kind, amount, note, created_by, created_at, status) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending') RETURNING *`)
+    .bind(c.org.id, partyId, date(b.date), kind, amount, str(b.note, 200), c.user.id, nowIso()).first();
+  return json({ ok: true, party_id: partyId, entry_id: e.id, phone: p.phone, ...sendLinks(p.phone, await entryMessage(c, e, p)) });
+});
+router.add('GET', '/api/khata/entries/:id/message', async (c) => {
+  const e = await c.db.prepare(`SELECT * FROM khata WHERE id = ? AND org_id = ?`).bind(+c.params.id, c.org.id).first();
+  if (!e) throw notFound('Entry not found.');
+  const p = await c.db.prepare(`SELECT id, name, phone FROM parties WHERE id = ?`).bind(e.party_id).first();
+  return json({ entry_id: e.id, status: e.status, phone: p.phone, ...sendLinks(p.phone, await entryMessage(c, e, p)) });
+});
+/* Called when the user taps Send on WhatsApp / SMS: from now on the entry is part of the khata. */
+router.add('POST', '/api/khata/entries/:id/send', async (c) => {
+  requireCan(c.user, 'khata');
+  const via = oneOf(c.body.via, ['whatsapp', 'sms'], 'Sent via');
+  const r = await c.db.prepare(`UPDATE khata SET status = 'sent', sent_at = ?, sent_via = ? WHERE id = ? AND org_id = ? AND status = 'pending'`)
+    .bind(nowIso(), via, +c.params.id, c.org.id).run();
+  if (!r.meta.changes) {
+    const e = await c.db.prepare(`SELECT status FROM khata WHERE id = ? AND org_id = ?`).bind(+c.params.id, c.org.id).first();
+    if (!e) throw notFound('Entry not found.');
+  }
+  return json({ ok: true });
 });
 router.add('GET', '/api/khata/:party', async (c) => {
   const p = await c.db.prepare(`SELECT id, name, phone FROM parties WHERE id = ? AND org_id = ?`).bind(+c.params.party, c.org.id).first();
   if (!p) throw notFound('Contact not found.');
-  const { results } = await c.db.prepare(`SELECT id, date, kind, amount, note FROM khata WHERE org_id = ? AND party_id = ? ORDER BY date, id`).bind(c.org.id, p.id).all();
+  const { results } = await c.db.prepare(`SELECT id, date, kind, amount, note, status, sent_at, sent_via, ack, ack_at, ack_note, reverses
+      FROM khata WHERE org_id = ? AND party_id = ? ORDER BY date, id`).bind(c.org.id, p.id).all();
   let bal = 0;
-  const rows = results.map((r) => ({ ...r, amount: R(r.amount), balance: R(bal += r.kind === 'gave' ? r.amount : -r.amount) }));
-  return json({ party: p, rows: rows.reverse(), balance: R(bal) });
+  const rows = results.map((r) => ({ ...r, amount: R(r.amount), balance: R(r.status === 'sent' ? (bal += r.kind === 'gave' ? r.amount : -r.amount) : bal) }));
+  return json({ party: p, rows: rows.reverse(), balance: R(bal), statement_url: `${c.url.origin}/#/k/${await khataToken(c, p.id)}` });
 });
+/* Pending (never sent) entries can be discarded. Sent entries are permanent: reverse them instead. */
 router.add('DELETE', '/api/khata/entries/:id', async (c) => {
   requireCan(c.user, 'khata');
-  const r = await c.db.prepare(`DELETE FROM khata WHERE id = ? AND org_id = ?`).bind(+c.params.id, c.org.id).run();
-  if (!r.meta.changes) throw notFound('Entry not found.');
+  const e = await c.db.prepare(`SELECT status FROM khata WHERE id = ? AND org_id = ?`).bind(+c.params.id, c.org.id).first();
+  if (!e) throw notFound('Entry not found.');
+  if (e.status !== 'pending') throw bad('This entry was already sent to the customer, so it cannot be deleted. Use Reverse to cancel it with a new entry.');
+  await c.db.prepare(`DELETE FROM khata WHERE id = ? AND status = 'pending'`).bind(+c.params.id).run();
   return json({ ok: true });
+});
+router.add('POST', '/api/khata/entries/:id/reverse', async (c) => {
+  requireCan(c.user, 'khata');
+  const e = await c.db.prepare(`SELECT * FROM khata WHERE id = ? AND org_id = ?`).bind(+c.params.id, c.org.id).first();
+  if (!e) throw notFound('Entry not found.');
+  if (e.status !== 'sent') throw bad('Only sent entries can be reversed. A pending entry can simply be discarded.');
+  if (await c.db.prepare(`SELECT 1 FROM khata WHERE reverses = ?`).bind(e.id).first()) throw bad('This entry has already been reversed.');
+  const p = await c.db.prepare(`SELECT id, name, phone FROM parties WHERE id = ?`).bind(e.party_id).first();
+  const r = await c.db.prepare(`INSERT INTO khata (org_id, party_id, date, kind, amount, note, created_by, created_at, status, reverses)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?) RETURNING *`)
+    .bind(c.org.id, e.party_id, today(), e.kind === 'gave' ? 'got' : 'gave', e.amount, `Correction of entry dated ${fd(e.date)}${c.body.reason ? ': ' + str(c.body.reason, 120) : ''}`,
+      c.user.id, nowIso(), e.id).first();
+  return json({ ok: true, entry_id: r.id, ...sendLinks(p.phone, await entryMessage(c, r, p)) });
 });
 router.add('GET', '/api/khata/:party/reminder', async (c) => {
   const p = await c.db.prepare(`SELECT id, name, phone FROM parties WHERE id = ? AND org_id = ?`).bind(+c.params.party, c.org.id).first();
   if (!p) throw notFound('Contact not found.');
-  const b = await c.db.prepare(`SELECT COALESCE(SUM(CASE WHEN kind = 'gave' THEN amount ELSE -amount END), 0) AS b FROM khata WHERE party_id = ?`).bind(p.id).first();
-  const amt = R(b.b);
+  const amt = R(await khataBalance(c, p.id));
+  const link = `${c.url.origin}/#/k/${await khataToken(c, p.id)}`;
   const upi = c.org.upi_id && amt > 0 ? `upi://pay?pa=${encodeURIComponent(c.org.upi_id)}&pn=${encodeURIComponent(c.org.name)}&am=${amt.toFixed(2)}&cu=INR` : '';
   const text = amt > 0
-    ? `Namaste ${p.name}, your balance with ${c.org.name} is Rs ${amt.toLocaleString('en-IN', { minimumFractionDigits: 2 })}. Kindly pay at the earliest.${upi ? ' Pay by UPI: ' + upi : ''} Thank you.`
-    : `Namaste ${p.name}, your account with ${c.org.name} is settled. Thank you!`;
-  const phone = (p.phone || '').replace(/\D/g, '');
-  const wa = 'https://wa.me/' + (phone.length === 10 ? '91' + phone : phone) + '?text=' + encodeURIComponent(text);
-  return json({ text, whatsapp_url: wa, upi_url: upi, sms_url: phone ? `sms:${phone}?body=${encodeURIComponent(text)}` : '' });
+    ? `Namaste ${p.name}, ${c.org.name} me aapka baaki ${rs(amt * 100)} hai. Kripya jaldi bhugtan karein.${upi ? '\nUPI se pay karein: ' + upi : ''}\nPoora khata: ${link}`
+    : `Namaste ${p.name}, ${c.org.name} me aapka khata clear hai. Dhanyavaad!\nPoora khata: ${link}`;
+  return json({ ...sendLinks(p.phone, text), upi_url: upi });
 });
+
+/* ---------- the customer's side: a private, read-only statement link (no login) ---------- */
+async function khataByToken(c) {
+  const t = String(c.params.token || '');
+  if (!/^[0-9a-f]{24}$/.test(t)) throw notFound('This khata link is not valid.');
+  const p = await c.db.prepare(`SELECT p.id, p.name, p.org_id, o.name AS org_name, o.phone AS org_phone, o.upi_id, o.address AS org_address
+      FROM parties p JOIN orgs o ON o.id = p.org_id WHERE p.khata_token = ?`).bind(t).first();
+  if (!p) throw notFound('This khata link is not valid.');
+  return p;
+}
+router.add('GET', '/api/public/khata/:token', async (c) => {
+  await rateLimit(c.env, 'kview:' + (c.request.headers.get('CF-Connecting-IP') || 'local'), 120, 600);
+  const p = await khataByToken(c);
+  const { results } = await c.db.prepare(`SELECT id, date, kind, amount, note, sent_at, ack, ack_at FROM khata
+      WHERE party_id = ? AND status = 'sent' ORDER BY date, id`).bind(p.id).all();
+  let bal = 0;
+  const rows = results.map((r) => ({ ...r, amount: R(r.amount), balance: R(bal += r.kind === 'gave' ? r.amount : -r.amount) })).reverse();
+  return json({ shop: { name: p.org_name, phone: p.org_phone, upi_id: p.upi_id, address: p.org_address }, customer: p.name, balance: R(bal), rows });
+}, { public: true });
+router.add('POST', '/api/public/khata/:token/ack', async (c) => {
+  await rateLimit(c.env, 'kack:' + (c.request.headers.get('CF-Connecting-IP') || 'local'), 60, 600);
+  const p = await khataByToken(c);
+  const ack = oneOf(c.body.ack, ['confirmed', 'disputed'], 'Answer');
+  const r = await c.db.prepare(`UPDATE khata SET ack = ?, ack_at = ?, ack_note = ? WHERE id = ? AND party_id = ? AND status = 'sent'`)
+    .bind(ack, nowIso(), str(c.body.note, 200), +c.body.entry_id || 0, p.id).run();
+  if (!r.meta.changes) throw notFound('Entry not found.');
+  return json({ ok: true });
+}, { public: true });
 
 /* ======================================================================= reports */
 const REPORTS = {

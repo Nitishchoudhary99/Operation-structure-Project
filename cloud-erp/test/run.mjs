@@ -124,11 +124,33 @@ await api('POST', `/api/parties/${cust.id}/opening`, { amount: 1500 });
 
 /* --- khata --- */
 const k = await api('POST', '/api/khata', { name: 'Ramesh (chai stall)', phone: '9988776655', kind: 'gave', amount: 750, note: 'Sugar 10kg' });
-await api('POST', '/api/khata', { party_id: k.party_id, kind: 'got', amount: 300 });
+check('khata entry message has WhatsApp link + statement link', k.whatsapp_url.startsWith('https://wa.me/919988776655') && /#\/k\/[0-9a-f]{24}/.test(k.text), k.text);
+check('unsent khata entry does not count', (await api('GET', '/api/khata')).you_will_get === 0);
+await api('POST', `/api/khata/entries/${k.entry_id}/send`, { via: 'whatsapp' });
+check('sent khata entry counts', eq((await api('GET', '/api/khata')).you_will_get, 750));
+const k2 = await api('POST', '/api/khata', { party_id: k.party_id, kind: 'got', amount: 300 });
+await api('POST', `/api/khata/entries/${k2.entry_id}/send`, { via: 'sms' });
 const kb = await api('GET', '/api/khata');
 check('khata balance you will get', eq(kb.you_will_get, 450), kb.you_will_get);
+const delSent = await api('DELETE', `/api/khata/entries/${k.entry_id}`, null, true);
+check('sent khata entry cannot be deleted', delSent.status === 400);
+const k3 = await api('POST', '/api/khata', { party_id: k.party_id, kind: 'gave', amount: 99 });
+await api('DELETE', `/api/khata/entries/${k3.entry_id}`);
+check('unsent khata entry can be discarded', eq((await api('GET', '/api/khata')).you_will_get, 450));
+const kd = await api('GET', `/api/khata/${k.party_id}`);
+const token = kd.statement_url.split('/k/')[1];
+const pub = await (await fetch(`${BASE}/api/public/khata/${token}`)).json();
+check('customer statement link works without login', pub.customer === 'Ramesh (chai stall)' && eq(pub.balance, 450) && pub.rows.length === 2, JSON.stringify(pub).slice(0, 150));
+const ackRes = await fetch(`${BASE}/api/public/khata/${token}/ack`, { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Requested-With': 'SmartTrader' }, body: JSON.stringify({ entry_id: k.entry_id, ack: 'disputed', note: 'Only 5kg sugar' }) });
+check('customer can dispute an entry', ackRes.ok && (await api('GET', `/api/khata/${k.party_id}`)).rows.some((r) => r.ack === 'disputed' && r.ack_note === 'Only 5kg sugar'));
+const rev = await api('POST', `/api/khata/entries/${k.entry_id}/reverse`, { reason: 'wrong qty' });
+await api('POST', `/api/khata/entries/${rev.entry_id}/send`, { via: 'whatsapp' });
+check('reversal entry cancels the amount once sent', eq((await api('GET', '/api/khata')).you_will_get, 0) || eq((await api('GET', '/api/khata')).you_will_give, 300));
+check('entry cannot be reversed twice', (await api('POST', `/api/khata/entries/${k.entry_id}/reverse`, {}, true)).status === 400);
+const badTok = await fetch(`${BASE}/api/public/khata/${'0'.repeat(24)}`);
+check('random statement link is rejected', badTok.status === 404);
 const rem = await api('GET', `/api/khata/${k.party_id}/reminder`);
-check('whatsapp reminder link', rem.whatsapp_url.startsWith('https://wa.me/919988776655') && /450/.test(rem.text), rem.whatsapp_url);
+check('whatsapp reminder link', rem.whatsapp_url.startsWith('https://wa.me/919988776655') && /#\/k\//.test(rem.text), rem.whatsapp_url);
 
 /* --- the books --- */
 tb = await api('GET', '/api/reports/trial-balance');

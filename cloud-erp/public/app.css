@@ -215,3 +215,17 @@ input.scan { font-size: 18px; padding: 12px 14px; }
   .posgrid { grid-template-columns: 1fr; }
   .pos-pay { position: static; }
 }
+
+/* khata trust flow */
+.warnbox { background: var(--warn-soft); color: var(--warn); border-color: transparent; }
+pre.msg { white-space: pre-wrap; word-break: break-word; background: var(--soft); border-radius: 8px; padding: 12px; font: 13px/1.45 system-ui, sans-serif; margin: 10px 0 14px; }
+.btn:disabled { opacity: .5; cursor: not-allowed; }
+.pub { max-width: 760px; margin: 0 auto; }
+.kl .ke { display: flex; justify-content: space-between; gap: 12px; padding: 12px 14px; border-bottom: 1px solid var(--line); }
+.kl .ke:last-child { border-bottom: 0; }
+.kl .ke.pending { background: var(--warn-soft); }
+.kl-l { min-width: 0; }
+.kl-r { text-align: right; flex: none; }
+.kl .ka { font-weight: 700; font-size: 15px; white-space: nowrap; }
+.kl .ks { margin-top: 4px; font-size: 12px; }
+.kact { display: flex; gap: 6px; justify-content: flex-end; margin-top: 6px; }

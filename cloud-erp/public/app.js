@@ -604,38 +604,103 @@ route(/^stock$/, async (el) => {
 /* ======================================================================= khata */
 route(/^khata$/, async (el) => {
   const k = await GET('/api/khata');
+  const pend = k.rows.reduce((s, r) => s + (r.pending || 0), 0);
   el.innerHTML = head('Khata Book', `<button class="btn primary" id="new">+ Add entry</button>`) + `
     <div class="khata-sum"><div class="kpi"><div class="l">You will get</div><div class="v get">${inr(k.you_will_get)}</div></div>
       <div class="kpi"><div class="l">You will give</div><div class="v give">${inr(k.you_will_give)}</div></div></div>
+    ${pend ? `<div class="panel warnbox">${pend} entr${pend === 1 ? 'y is' : 'ies are'} not sent yet. They do not count until you send them to the customer.</div>` : ''}
     <div class="panel"><input id="search" placeholder="Search name or mobile…"></div><div class="panel flush" id="list"></div>
-    <p class="muted">The khata is a quick credit book for udhaar, separate from the GST books. Use it for small customers, staff advances and anyone you lend to.</p>`;
-  const cols = [{ h: 'Name', f: (r) => `<b>${esc(r.name)}</b><div class="muted">${esc(r.phone || '')}</div>` }, { h: 'Last entry', f: (r) => fdate(r.last_date), cls: 'hide-sm' },
+    <p class="muted">Every entry is sent to the customer on WhatsApp or SMS before it counts, with a private link where they can see and confirm their khata. Sent entries cannot be deleted, only reversed, so both sides can trust the record.</p>`;
+  const cols = [{ h: 'Name', f: (r) => `<b>${esc(r.name)}</b><div class="muted">${esc(r.phone || '')}</div>${r.pending ? ` <span class="badge b-partial">${r.pending} not sent</span>` : ''}${r.disputed ? ` <span class="badge b-unpaid">${r.disputed} disputed</span>` : ''}` },
+    { h: 'Last entry', f: (r) => fdate(r.last_date), cls: 'hide-sm' },
     { h: 'Balance', num: 1, f: (r) => r.balance === 0 ? '<span class="muted">settled</span>' : `<span class="${r.balance > 0 ? 'pos' : 'neg'}">${inr(Math.abs(r.balance))}</span><div class="muted">${r.balance > 0 ? "you'll get" : "you'll give"}</div>` }];
   const draw = (f) => { const r = k.rows.filter((x) => !f || (x.name + ' ' + x.phone).toLowerCase().includes(f)); $('#list').innerHTML = table(cols, r, { onRow: true, empty: 'No khata entries yet. Tap “Add entry”.' }); bindRows($('#list'), r, (x) => go('khata/' + x.id)); };
   draw('');
   $('#search').oninput = (e) => draw(e.target.value.toLowerCase());
-  $('#new').onclick = () => modal('New khata entry', [{ k: 'name', label: 'Name', required: true }, { k: 'phone', label: 'Mobile', type: 'tel' },
+  $('#new').onclick = () => modal('New khata entry', [{ k: 'name', label: 'Name', required: true }, { k: 'phone', label: 'Mobile (to send the entry)', type: 'tel' },
     { k: 'kind', label: 'Entry', type: 'select', options: [{ v: 'gave', t: 'You gave (udhaar diya)' }, { v: 'got', t: 'You got (paise mile)' }] },
     { k: 'amount', label: 'Amount (₹)', type: 'number' }, { k: 'note', label: 'Note', wide: true }, { k: 'date', label: 'Date', type: 'date', value: ME.today }],
-  async (v) => { const r = await POST('/api/khata', v); dirty('parties'); go('khata/' + r.party_id); });
+  async (v) => { const r = await POST('/api/khata', v); dirty('parties'); setTimeout(() => sendEntry(r, () => go('khata/' + r.party_id)), 0); }, { submit: 'Next: send to customer' });
 });
+
+/* Shows the message for an entry and sends it. The entry counts only once it has been sent. */
+function sendEntry(r, after) {
+  const root = $('#modal-root');
+  root.innerHTML = `<div class="modal-bg"><div class="modal"><h2>Send to customer to save this entry</h2>
+    <p class="muted">The entry is added to the khata only after it is sent, so the customer always knows. They get a link to see and confirm it.</p>
+    <pre class="msg">${esc(r.text)}</pre>
+    ${r.phone ? '' : '<p class="err">No mobile number saved for this contact. WhatsApp will ask you to pick the chat; SMS needs a number.</p>'}
+    <div class="khata-btns"><button class="btn got" data-via="whatsapp">Send on WhatsApp</button><button class="btn" data-via="sms" ${r.sms_url ? '' : 'disabled'}>Send SMS</button></div>
+    <div class="actions"><button class="btn" id="later">Later (keep as not sent)</button></div></div></div>`;
+  const close = () => { root.innerHTML = ''; if (after) after(); else render(); };
+  $('#later').onclick = close;
+  $$('[data-via]', root).forEach((b) => b.onclick = async () => {
+    const via = b.dataset.via;
+    window.open(via === 'whatsapp' ? r.whatsapp_url : r.sms_url, '_blank');     // open first: browsers allow it only inside the tap
+    try { await POST(`/api/khata/entries/${r.entry_id}/send`, { via }); toast('Entry sent and saved'); } catch (e) { alert(e.message); }
+    close();
+  });
+}
+
 route(/^khata\/(\d+)$/, async (el, m) => {
   const k = await GET('/api/khata/' + m[1]);
+  const reversed = new Set(k.rows.filter((r) => r.reverses).map((r) => r.reverses));
+  const status = (r) => r.status === 'pending' ? '<span class="badge b-partial">not sent: does not count</span>'
+    : `<span class="muted">✓ ${r.sent_via === 'sms' ? 'SMS' : r.sent_via === 'whatsapp' ? 'WhatsApp' : 'sent'}${r.sent_at ? ' ' + new Date(r.sent_at).toLocaleString('en-IN', { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' }) : ''}</span>
+       ${r.ack === 'confirmed' ? ' <span class="badge b-paid">customer confirmed</span>' : r.ack === 'disputed' ? ` <span class="badge b-unpaid">customer disputed</span>${r.ack_note ? `<div class="neg">“${esc(r.ack_note)}”</div>` : ''}` : ''}
+       ${reversed.has(r.id) ? ' <span class="badge">reversed</span>' : ''}`;
   el.innerHTML = head(esc(k.party.name), `<a class="btn" href="#/khata">All contacts</a>`) + `
     <div class="kpis"><div class="kpi"><div class="l">${k.balance >= 0 ? 'You will get' : 'You will give'}</div><div class="v ${k.balance >= 0 ? 'pos' : 'neg'}">${inr(Math.abs(k.balance))}</div>
       <div class="s">${esc(k.party.phone || 'No mobile number saved')}</div></div></div>
     <div class="khata-btns"><button class="btn gave" data-k="gave">You gave ₹</button><button class="btn got" data-k="got">You got ₹</button></div>
-    <div class="row" style="margin:12px 0"><button class="btn" id="wa">Send WhatsApp reminder</button><button class="btn" id="sms">SMS</button></div>
-    <div class="panel flush">${table([{ h: 'Date', f: (r) => fdate(r.date) + (r.note ? `<div class="muted">${esc(r.note)}</div>` : '') },
-      { h: 'You gave', num: 1, f: (r) => r.kind === 'gave' ? `<span class="neg">${inr(r.amount)}</span>` : '' }, { h: 'You got', num: 1, f: (r) => r.kind === 'got' ? `<span class="pos">${inr(r.amount)}</span>` : '' },
-      { h: 'Balance', num: 1, f: (r) => inr(r.balance) }, { h: '', f: (r) => `<button class="btn sm danger" data-del="${r.id}">&times;</button>` }], k.rows, { empty: 'No entries yet.' })}</div>`;
+    <div class="row" style="margin:12px 0"><button class="btn" id="wa">WhatsApp reminder</button><button class="btn" id="sms">SMS reminder</button><button class="btn" id="share">Copy customer's khata link</button></div>
+    <div class="panel flush kl">${k.rows.length ? k.rows.map((r) => `<div class="ke ${r.status}">
+        <div class="kl-l"><b>${fdate(r.date)}</b>${r.note ? `<div class="muted">${esc(r.note)}</div>` : ''}<div class="ks">${status(r)}</div></div>
+        <div class="kl-r"><div class="${r.kind === 'gave' ? 'neg' : 'pos'} ka">${r.kind === 'gave' ? 'You gave ' : 'You got '}${inr(r.amount)}</div>
+          ${r.status === 'sent' ? `<div class="muted">Bal ${inr(r.balance)}</div>` : ''}
+          <div class="kact">${r.status === 'pending' ? `<button class="btn sm primary" data-send="${r.id}">Send</button><button class="btn sm danger" data-del="${r.id}">Discard</button>`
+            : (reversed.has(r.id) || r.reverses ? '' : `<button class="btn sm" data-rev="${r.id}">Reverse</button>`)}</div></div></div>`).join('') : '<div class="empty">No entries yet.</div>'}</div>`;
   $$('[data-k]', el).forEach((b) => b.onclick = () => modal(b.dataset.k === 'gave' ? 'You gave' : 'You got', [{ k: 'amount', label: 'Amount (₹)', type: 'number', required: true },
     { k: 'date', label: 'Date', type: 'date', value: ME.today }, { k: 'note', label: 'Note (items, reason)', wide: true }],
-  async (v) => { await POST('/api/khata', { ...v, party_id: k.party.id, kind: b.dataset.k }); toast('Saved'); render(); }));
-  $$('[data-del]', el).forEach((b) => b.onclick = async () => { if (confirm('Delete this entry?')) { await api('DELETE', '/api/khata/entries/' + b.dataset.del); render(); } });
+  async (v) => { const r = await POST('/api/khata', { ...v, party_id: k.party.id, kind: b.dataset.k }); setTimeout(() => sendEntry(r), 0); }, { submit: 'Next: send to customer' }));
+  $$('[data-send]', el).forEach((b) => b.onclick = async () => sendEntry(await GET(`/api/khata/entries/${b.dataset.send}/message`)));
+  $$('[data-del]', el).forEach((b) => b.onclick = async () => { if (confirm('Discard this unsent entry?')) { await api('DELETE', '/api/khata/entries/' + b.dataset.del); render(); } });
+  $$('[data-rev]', el).forEach((b) => b.onclick = () => modal('Reverse this entry', [{ k: 'reason', label: 'Reason (sent to the customer)', wide: true }],
+    async (v) => { const r = await POST(`/api/khata/entries/${b.dataset.rev}/reverse`, v); setTimeout(() => sendEntry(r), 0); },
+    { submit: 'Next: send correction', intro: '<p class="muted">Sent entries stay on record. A correction entry with the opposite amount is added and sent to the customer.</p>' }));
   const rem = async (which) => { const r = await GET(`/api/khata/${k.party.id}/reminder`); if (which === 'sms' && !r.sms_url) return alert('Save a mobile number for this contact first.'); open(which === 'sms' ? r.sms_url : r.whatsapp_url, '_blank'); };
   $('#wa').onclick = () => rem('wa'); $('#sms').onclick = () => rem('sms');
+  $('#share').onclick = async () => { try { await navigator.clipboard.writeText(k.statement_url); toast('Link copied'); } catch (e) { prompt('Copy this link:', k.statement_url); } };
 });
+
+/* The customer's private statement page (#/k/<token>): no login, read-only, confirm or dispute entries. */
+async function publicKhata(token) {
+  const app = $('#app');
+  const load = async () => {
+    const res = await fetch('/api/public/khata/' + token);
+    const d = await res.json();
+    if (!res.ok) { app.innerHTML = `<div class="boot"><h2>Khata not found</h2><p class="muted">${esc(d.error || '')}</p></div>`; return; }
+    app.innerHTML = `<main class="page pub"><div class="panel"><div class="muted">Khata statement from</div><h1>${esc(d.shop.name)}</h1>
+        <div class="muted">${esc(d.shop.address || '')} ${d.shop.phone ? '&middot; ' + esc(d.shop.phone) : ''}</div></div>
+      <div class="kpi" style="margin-bottom:14px"><div class="l">${esc(d.customer)}, ${d.balance > 0 ? 'you have to pay' : d.balance < 0 ? 'your advance' : 'your khata is'}</div>
+        <div class="v ${d.balance > 0 ? 'neg' : 'pos'}">${d.balance === 0 ? 'Settled ✓' : inr(Math.abs(d.balance))}</div>
+        ${d.balance > 0 && d.shop.upi_id ? `<a class="btn primary" style="margin-top:10px" href="${esc(upiLink(d.shop.upi_id, d.shop.name, d.balance, 'Khata'))}">Pay ${inr(d.balance)} by UPI</a>` : ''}</div>
+      <div class="panel flush kl">${d.rows.length ? d.rows.map((r) => `<div class="ke">
+        <div class="kl-l"><b>${fdate(r.date)}</b>${r.note ? `<div class="muted">${esc(r.note)}</div>` : ''}
+          <div class="ks">${r.ack === 'confirmed' ? '<span class="badge b-paid">✓ you confirmed</span>' : r.ack === 'disputed' ? '<span class="badge b-unpaid">you said this is wrong</span>'
+            : `<span class="muted">Is this correct?</span> <button class="btn sm got" data-ok="${r.id}">Yes</button> <button class="btn sm danger" data-no="${r.id}">No</button>`}</div></div>
+        <div class="kl-r"><div class="${r.kind === 'gave' ? 'neg' : 'pos'} ka">${r.kind === 'gave' ? 'Udhaar ' : 'Paid '}${inr(r.amount)}</div><div class="muted">Bal ${inr(r.balance)}</div></div></div>`).join('')
+        : '<div class="empty">No entries yet.</div>'}</div>
+      <p class="muted">Entries cannot be deleted by the shop. Any correction appears here as a new entry. Powered by SmartTrader.</p></main>`;
+    const ack = async (id, a, note = '') => {
+      const r = await fetch(`/api/public/khata/${token}/ack`, { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Requested-With': 'SmartTrader' }, body: JSON.stringify({ entry_id: +id, ack: a, note }) });
+      if (!r.ok) alert((await r.json().catch(() => ({}))).error || 'Could not save'); else load();
+    };
+    $$('[data-ok]').forEach((b) => b.onclick = () => ack(b.dataset.ok, 'confirmed'));
+    $$('[data-no]').forEach((b) => b.onclick = () => { const n = prompt('What is wrong with this entry? (the shop will see this)'); if (n !== null) ack(b.dataset.no, 'disputed', n); });
+  };
+  try { await load(); } catch (e) { app.innerHTML = `<div class="boot"><h2>You are offline</h2><p class="muted">Connect to the internet to see your khata.</p></div>`; }
+}
 
 /* ======================================================================= finance */
 route(/^expenses$/, async (el, m, q) => {
@@ -1028,7 +1093,8 @@ route(/^plan$/, async (el) => {
 });
 
 /* ======================================================================= admin (owner of this deployment) */
-route(/^admin$/, async (el) => {
+async function adminPage(el) {
+  const again = () => adminPage(el);
   let key = '';
   try { key = sessionStorage.getItem('st-admin') || ''; } catch (e) { /* storage blocked */ }
   const call = async (method, path, body) => {
@@ -1039,7 +1105,7 @@ route(/^admin$/, async (el) => {
   };
   const ask = () => modal('Admin key', [{ k: 'key', label: 'ADMIN_KEY (from the worker secrets)', type: 'password', wide: true }], async (v) => {
     key = v.key; try { sessionStorage.setItem('st-admin', key); } catch (e) { /* ignore */ }
-    render();
+    again();
   });
   if (!key) { el.innerHTML = head('Admin') + '<div class="panel">Enter your admin key to manage businesses and plans.</div>'; ask(); return; }
   let data;
@@ -1056,14 +1122,15 @@ route(/^admin$/, async (el) => {
       { h: '', f: (o) => `<button class="btn sm" data-o="${o.id}">Set plan</button>` }], data.rows, { empty: 'No businesses yet.' })}</div>`;
   const planOpts = data.plans.map((p) => ({ v: p, t: p }));
   $$('[data-o]', el).forEach((b) => b.onclick = () => modal('Set plan', [{ k: 'plan', label: 'Plan', type: 'select', options: planOpts, value: 'growth' },
-    { k: 'months', label: 'Months (1200 = lifetime)', type: 'number', value: 12 }], async (v) => { await call('POST', `/api/admin/orgs/${b.dataset.o}/plan`, v); toast('Plan updated'); render(); }));
-  $('#lock').onclick = () => { try { sessionStorage.removeItem('st-admin'); } catch (e) { /* ignore */ } go('dashboard'); };
+    { k: 'months', label: 'Months (1200 = lifetime)', type: 'number', value: 12 }], async (v) => { await call('POST', `/api/admin/orgs/${b.dataset.o}/plan`, v); toast('Plan updated'); again(); }));
+  $('#lock').onclick = () => { try { sessionStorage.removeItem('st-admin'); } catch (e) { /* ignore */ } if (ME) go('dashboard'); else location.href = '/'; };
   $('#codes').onclick = () => modal('Activation codes', [{ k: 'plan', label: 'Plan', type: 'select', options: planOpts.filter((o) => o.v !== 'free'), value: 'growth' },
     { k: 'months', label: 'Months', type: 'number', value: 12 }, { k: 'count', label: 'How many', type: 'number', value: 1 }], async (v) => {
     const r = await call('POST', '/api/admin/codes', v);
     setTimeout(() => modal(`${r.codes.length} code(s): ${r.plan}, ${r.months} months`, [{ k: 'c', label: 'Each code works once. Copy and send to the customer.', type: 'textarea', value: r.codes.join('\n'), wide: true }], async () => {}, { submit: 'Done' }), 0);
   });
-});
+}
+route(/^admin$/, adminPage);
 
 /* ======================================================================= PWA: service worker + install button */
 let installEvt = null;
@@ -1086,7 +1153,13 @@ window.addEventListener('online', () => toast('Back online'));
 
 /* ======================================================================= boot */
 async function boot() {
+  const pk = location.hash.match(/^#\/k\/([0-9a-f]{24})$/);
+  if (pk) return publicKhata(pk[1]);                      // customer's statement: no login
   try { ME = await GET('/api/me'); } catch (e) {
+    if (e.status === 401 && /^#\/admin/.test(location.hash)) {   // admin works with the ADMIN_KEY alone
+      $('#app').innerHTML = '<main class="page" id="page"></main>';
+      return adminPage($('#page'));
+    }
     if (e.status === 401) return;
     const off = !navigator.onLine || e instanceof TypeError;
     $('#app').innerHTML = `<div class="boot"><h2>${off ? 'You are offline' : 'Could not load SmartTrader'}</h2>

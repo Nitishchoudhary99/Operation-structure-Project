@@ -3,7 +3,7 @@
    Every business table carries org_id: one database serves many businesses (multi-tenant).
    migrate() runs on the first request after each deploy, so no manual migration step is needed. */
 
-export const SCHEMA_VERSION = 2;
+export const SCHEMA_VERSION = 3;
 
 export const SCHEMA = [
   `CREATE TABLE IF NOT EXISTS meta (k TEXT PRIMARY KEY, v TEXT NOT NULL)`,
@@ -141,6 +141,18 @@ export const MIGRATIONS = {
     `CREATE INDEX IF NOT EXISTS ix_items_barcode ON items (org_id, barcode)`,
     // businesses that signed up before plans existed get a 30-day Growth trial
     `UPDATE orgs SET plan = 'growth', plan_until = date('now', '+30 days') WHERE plan = 'free' AND plan_until = ''`,
+  ],
+  // khata trust: entries count only after being sent to the customer; customers confirm/dispute via a private link
+  3: [
+    `ALTER TABLE khata ADD COLUMN status TEXT NOT NULL DEFAULT 'sent'`,
+    `ALTER TABLE khata ADD COLUMN sent_at TEXT DEFAULT ''`,
+    `ALTER TABLE khata ADD COLUMN sent_via TEXT DEFAULT ''`,
+    `ALTER TABLE khata ADD COLUMN ack TEXT DEFAULT ''`,
+    `ALTER TABLE khata ADD COLUMN ack_at TEXT DEFAULT ''`,
+    `ALTER TABLE khata ADD COLUMN ack_note TEXT DEFAULT ''`,
+    `ALTER TABLE khata ADD COLUMN reverses INTEGER`,
+    `ALTER TABLE parties ADD COLUMN khata_token TEXT`,
+    `CREATE UNIQUE INDEX IF NOT EXISTS ux_parties_khata_token ON parties (khata_token) WHERE khata_token IS NOT NULL`,
   ],
 };
 
