@@ -229,3 +229,20 @@ pre.msg { white-space: pre-wrap; word-break: break-word; background: var(--soft)
 .kl .ka { font-weight: 700; font-size: 15px; white-space: nowrap; }
 .kl .ks { margin-top: 4px; font-size: 12px; }
 .kact { display: flex; gap: 6px; justify-content: flex-end; margin-top: 6px; }
+
+/* WhatsApp-style preview of the message */
+.wa-prev { background: #efeae2; border-radius: 10px; padding: 12px; margin: 10px 0 12px; }
+.wa-bubble { background: #d9fdd3; color: #111b21; border-radius: 8px 0 8px 8px; padding: 8px 10px; font-size: 14px; line-height: 1.45; margin-left: 12%; box-shadow: 0 1px .5px rgba(0,0,0,.13); word-break: break-word; }
+.wa-link { color: #027eb5; text-decoration: underline; }
+
+/* printable document: the item table scrolls inside the page on small screens */
+.doc-paper { min-width: 0; overflow: hidden; }
+.doc-paper .tbl-wrap { margin: 0 -2px; }
+.pubdoc .doc-paper { box-shadow: var(--shadow); }
+@media (max-width: 860px) {
+  .doc-paper table.dl { min-width: 640px; }
+  .doc-paper th, .doc-paper td { font-size: 12px; padding: 5px 6px; }
+  .doc-paper .totals { width: 100%; }
+  .doc-paper .foot > div[style] { max-width: 100% !important; }
+}
+@media print { .doc-paper table.dl { min-width: 0; } .doc-paper .tbl-wrap { overflow: visible; } }

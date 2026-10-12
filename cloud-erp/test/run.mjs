@@ -124,7 +124,7 @@ await api('POST', `/api/parties/${cust.id}/opening`, { amount: 1500 });
 
 /* --- khata --- */
 const k = await api('POST', '/api/khata', { name: 'Ramesh (chai stall)', phone: '9988776655', kind: 'gave', amount: 750, note: 'Sugar 10kg' });
-check('khata entry message has WhatsApp link + statement link', k.whatsapp_url.startsWith('https://wa.me/919988776655') && /#\/k\/[0-9a-f]{24}/.test(k.text), k.text);
+check('khata entry message has WhatsApp link + statement link', k.whatsapp_url.startsWith('https://wa.me/919988776655') && /\/k\/[0-9a-f]{24}/.test(k.text) && /SmartTrader ERP/.test(k.text) && /SmartTrader ERP/.test(k.sms_text), k.text);
 check('unsent khata entry does not count', (await api('GET', '/api/khata')).you_will_get === 0);
 await api('POST', `/api/khata/entries/${k.entry_id}/send`, { via: 'whatsapp' });
 check('sent khata entry counts', eq((await api('GET', '/api/khata')).you_will_get, 750));
@@ -147,10 +147,20 @@ const rev = await api('POST', `/api/khata/entries/${k.entry_id}/reverse`, { reas
 await api('POST', `/api/khata/entries/${rev.entry_id}/send`, { via: 'whatsapp' });
 check('reversal entry cancels the amount once sent', eq((await api('GET', '/api/khata')).you_will_get, 0) || eq((await api('GET', '/api/khata')).you_will_give, 300));
 check('entry cannot be reversed twice', (await api('POST', `/api/khata/entries/${k.entry_id}/reverse`, {}, true)).status === 400);
+const kpage = await (await fetch(kd.statement_url.replace(/^https?:\/\/[^/]+/, BASE))).text();
+check('khata link page has WhatsApp banner tags', kpage.includes('og:image') && kpage.includes('og-khata.png') && kpage.includes('Ramesh (chai stall) ka khata'), kpage.slice(0, 300));
+const sh = await api('GET', `/api/docs/${inv.id}/share`);
+check('invoice share link + WhatsApp text', /\/i\/[0-9a-f]{24}$/.test(sh.url) && sh.text.includes(inv.number) && sh.text.includes('SmartTrader ERP'), sh.text);
+const pdoc = await (await fetch(sh.url.replace(/^https?:\/\/[^/]+/, BASE).replace('/i/', '/api/public/doc/'))).json();
+check('public invoice has no cost data', pdoc.number === inv.number && pdoc.lines.length && pdoc.lines.every((l) => l.cost === undefined) && !('id' in pdoc), JSON.stringify(pdoc).slice(0, 200));
+const ipage = await (await fetch(sh.url.replace(/^https?:\/\/[^/]+/, BASE))).text();
+check('invoice link page has banner tags', ipage.includes(`Sales Invoice ${inv.number}`) && ipage.includes('og-invoice.png'));
+const pbill = await api('GET', `/api/docs/${bill1.id}/share`);
+check('purchase bills are not public', (await fetch(pbill.url.replace(/^https?:\/\/[^/]+/, BASE).replace('/i/', '/api/public/doc/'))).status === 404);
 const badTok = await fetch(`${BASE}/api/public/khata/${'0'.repeat(24)}`);
 check('random statement link is rejected', badTok.status === 404);
 const rem = await api('GET', `/api/khata/${k.party_id}/reminder`);
-check('whatsapp reminder link', rem.whatsapp_url.startsWith('https://wa.me/919988776655') && /#\/k\//.test(rem.text), rem.whatsapp_url);
+check('whatsapp reminder link', rem.whatsapp_url.startsWith('https://wa.me/919988776655') && /\/k\/[0-9a-f]{24}/.test(rem.text), rem.whatsapp_url);
 
 /* --- the books --- */
 tb = await api('GET', '/api/reports/trial-balance');

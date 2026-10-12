@@ -300,7 +300,7 @@ async function docDetail(c, id) {
   const money = (x) => R(x);
   return {
     ...d, taxable: money(d.taxable), cgst: money(d.cgst), sgst: money(d.sgst), igst: money(d.igst), round_off: money(d.round_off),
-    total: money(d.total), paid: money(d.paid), balance: money(d.total - d.paid), label: DOC_TYPES[d.type].label,
+    total: money(d.total), paid: money(d.paid), balance: money(d.total - d.paid), label: DOC_TYPES[d.type].label, side: DOC_TYPES[d.type].side,
     party, parent, children: children.results.map((x) => ({ ...x, total: money(x.total) })),
     settlements: pays.results.map((p) => ({ ...p, amount: money(p.amount), number: p.number || p.note_number })),
     lines: lines.results.map((l) => ({ ...l, rate: money(l.rate), taxable: money(l.taxable), cgst: money(l.cgst), sgst: money(l.sgst), igst: money(l.igst),
@@ -347,6 +347,48 @@ router.add('PUT', '/api/docs/:id/gst-refs', async (c) => {
   if (!r.meta.changes) throw notFound('Document not found.');
   return json({ ok: true });
 });
+/* Customer link for a document: view, print/download and pay by UPI. Shared on WhatsApp with a banner card. */
+async function shareToken(c, docId) {
+  const d = await c.db.prepare(`SELECT share_token FROM docs WHERE id = ? AND org_id = ?`).bind(docId, c.org.id).first();
+  if (!d) throw notFound('Document not found.');
+  if (d.share_token) return d.share_token;
+  await c.db.prepare(`UPDATE docs SET share_token = ? WHERE id = ? AND share_token IS NULL`).bind(randomHex(12), docId).run();
+  return (await c.db.prepare(`SELECT share_token FROM docs WHERE id = ?`).bind(docId).first()).share_token;
+}
+router.add('GET', '/api/docs/:id/share', async (c) => {
+  const d = await docDetail(c, +c.params.id);
+  const url = `${c.url.origin}/i/${await shareToken(c, d.id)}`;
+  const p = d.party || {}, paise = (x) => Math.round(x * 100);
+  const money = ['INV', 'SRET'].includes(d.type);
+  const status = d.type === 'INV' ? (d.balance <= 0 ? 'Paid ✅' : `Balance due: *${inrW(paise(d.balance))}*`) : '';
+  const wa = [`*${c.org.name}*`, `🧾 ${d.label} *${d.number}* · ${fd(d.date)}`, '', `Namaste ${p.name || ''} ji,`, `Amount: *${inrW(paise(d.total))}*`,
+    ...(status ? [status] : []), ...(d.type === 'INV' && d.balance > 0 && c.org.upi_id ? [`UPI: ${c.org.upi_id}`] : []),
+    '', money ? 'Invoice dekhein, download karein aur pay karein 👇' : 'Document dekhein aur download karein 👇', url, '', `_Sent via ${BRAND}_`].join('\n');
+  const sms = `${c.org.name}: ${d.label} ${d.number} dt ${fd(d.date)}, amount ${rs(paise(d.total))}${d.type === 'INV' && d.balance > 0 ? `, due ${rs(paise(d.balance))}` : ''}. View/download: ${url} -${BRAND}`;
+  return json({ url, ...sendLinks(p.phone, wa, sms) });
+});
+const PUBLIC_DOCS = ['INV', 'SRET', 'QUOTE', 'SO', 'DN'];
+router.add('GET', '/api/public/doc/:token', async (c) => {
+  await rateLimit(c.env, 'dview:' + (c.request.headers.get('CF-Connecting-IP') || 'local'), 120, 600);
+  const t = String(c.params.token || '');
+  const row = /^[0-9a-f]{24}$/.test(t) ? await c.db.prepare(`SELECT id, org_id FROM docs WHERE share_token = ?`).bind(t).first() : null;
+  if (!row) throw notFound('This link is not valid.');
+  c.org = await c.db.prepare(`SELECT * FROM orgs WHERE id = ?`).bind(row.org_id).first();
+  const d = await docDetail(c, row.id);
+  if (!PUBLIC_DOCS.includes(d.type)) throw notFound('This link is not valid.');
+  const o = d.org, p = d.party || {};
+  return json({   // only what is printed on the document: no costs, margins, links to other records or internal ids
+    type: d.type, label: d.label, side: d.side, number: d.number, date: d.date, due_date: d.due_date, status: d.status, place_of_supply: d.place_of_supply,
+    inter_state: d.inter_state, taxable: d.taxable, cgst: d.cgst, sgst: d.sgst, igst: d.igst, round_off: d.round_off, total: d.total, paid: d.paid, balance: d.balance,
+    notes: d.notes, irn: d.irn, ack_no: d.ack_no, ack_date: d.ack_date, ewb_no: d.ewb_no, ewb_date: d.ewb_date, warehouse: '',
+    parent: d.parent && d.type === 'SRET' ? { number: d.parent.number, date: d.parent.date } : null,
+    org: { name: o.name, gstin: o.gstin, state: o.state, address: o.address, phone: o.phone, upi_id: o.upi_id, email: o.email },
+    party: { name: p.name, gstin: p.gstin, address: p.address, phone: p.phone, state: p.state },
+    lines: d.lines.map((l) => ({ item: l.item, description: l.description, hsn: l.hsn, unit: l.unit, qty: l.qty, rate: l.rate, discount_pct: l.discount_pct,
+      gst_rate: l.gst_rate, taxable: l.taxable, cgst: l.cgst, sgst: l.sgst, igst: l.igst, total: l.total })),
+  });
+}, { public: true });
+
 router.add('GET', '/api/export/tally', async (c) => {
   requireFeature(c.org, 'tally');
   const t = await tallyXml(c.db, c.org, c.url.searchParams);
@@ -442,18 +484,37 @@ async function khataToken(c, partyId) {
 async function khataBalance(c, partyId) {
   return (await c.db.prepare(`SELECT ${KHATA_BAL} AS b FROM khata k WHERE k.party_id = ?`).bind(partyId).first()).b;
 }
-function sendLinks(phoneRaw, text) {
+/* WhatsApp gets a formatted message (bold, sections, the link on its own line so WhatsApp shows the banner card);
+   SMS gets one short plain line. Both are signed with the ERP's name. */
+const BRAND = 'SmartTrader ERP';
+function sendLinks(phoneRaw, wa, sms = wa) {
   const phone = String(phoneRaw || '').replace(/\D/g, '');
-  const wa = phone.length === 10 ? '91' + phone : phone;
-  return { text, whatsapp_url: `https://wa.me/${wa}?text=${encodeURIComponent(text)}`, sms_url: phone ? `sms:${phone}?body=${encodeURIComponent(text)}` : '' };
+  const to = phone.length === 10 ? '91' + phone : phone;
+  return { text: wa, sms_text: sms, whatsapp_url: `https://wa.me/${to}?text=${encodeURIComponent(wa)}`, sms_url: phone ? `sms:${phone}?body=${encodeURIComponent(sms)}` : '' };
 }
-/* The message for one entry, with the balance it will make once sent. */
+const inrW = (p) => '₹' + (p / 100).toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+const khataLink = async (c, partyId) => `${c.url.origin}/k/${await khataToken(c, partyId)}`;
+/* The messages for one entry, with the balance it makes once sent. */
 async function entryMessage(c, e, p) {
   const after = (await khataBalance(c, p.id)) + (e.status === 'sent' ? 0 : (e.kind === 'gave' ? e.amount : -e.amount));
-  const link = `${c.url.origin}/#/k/${await khataToken(c, p.id)}`;
-  const what = e.kind === 'gave' ? `${rs(e.amount)} aapke khate me likha gaya (udhaar)` : `${rs(e.amount)} payment mila, dhanyavaad`;
-  const bal = after > 0 ? `Total baaki: ${rs(after)}` : after < 0 ? `Aapka advance: ${rs(-after)}` : 'Khata clear hai';
-  return `${c.org.name}: ${what} on ${fd(e.date)}${e.note ? ` (${e.note})` : ''}. ${bal}.\nApna khata dekhein aur confirm karein: ${link}`;
+  const link = await khataLink(c, p.id);
+  const balW = after > 0 ? `Total baaki: *${inrW(after)}*` : after < 0 ? `Aapka advance: *${inrW(-after)}*` : 'Khata clear hai ✅';
+  const wa = [
+    `*${c.org.name}*`,
+    `🧾 Khata entry · ${fd(e.date)}`,
+    '',
+    e.kind === 'gave' ? `Udhaar likha gaya: *${inrW(e.amount)}*` : `Payment mila: *${inrW(e.amount)}* 🙏`,
+    ...(e.note ? [`Note: ${e.note}`] : []),
+    balW,
+    '',
+    'Apna khata dekhein aur confirm karein 👇',
+    link,
+    '',
+    `_Sent via ${BRAND}_`,
+  ].join('\n');
+  const balS = after > 0 ? `Total baaki ${rs(after)}` : after < 0 ? `Advance ${rs(-after)}` : 'Khata clear';
+  const sms = `${c.org.name}: ${e.kind === 'gave' ? `${rs(e.amount)} udhaar likha gaya` : `${rs(e.amount)} payment mila`}${e.note ? ` (${e.note})` : ''} ${fd(e.date)}. ${balS}. Khata dekhein/confirm karein: ${link} -${BRAND}`;
+  return [wa, sms];
 }
 
 router.add('GET', '/api/khata', async (c) => {
@@ -484,13 +545,13 @@ router.add('POST', '/api/khata', async (c) => {
   const amount = toPaise(num(b.amount, 'Amount', { min: 0.01 }));
   const e = await c.db.prepare(`INSERT INTO khata (org_id, party_id, date, kind, amount, note, created_by, created_at, status) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending') RETURNING *`)
     .bind(c.org.id, partyId, date(b.date), kind, amount, str(b.note, 200), c.user.id, nowIso()).first();
-  return json({ ok: true, party_id: partyId, entry_id: e.id, phone: p.phone, ...sendLinks(p.phone, await entryMessage(c, e, p)) });
+  return json({ ok: true, party_id: partyId, entry_id: e.id, phone: p.phone, ...sendLinks(p.phone, ...(await entryMessage(c, e, p))) });
 });
 router.add('GET', '/api/khata/entries/:id/message', async (c) => {
   const e = await c.db.prepare(`SELECT * FROM khata WHERE id = ? AND org_id = ?`).bind(+c.params.id, c.org.id).first();
   if (!e) throw notFound('Entry not found.');
   const p = await c.db.prepare(`SELECT id, name, phone FROM parties WHERE id = ?`).bind(e.party_id).first();
-  return json({ entry_id: e.id, status: e.status, phone: p.phone, ...sendLinks(p.phone, await entryMessage(c, e, p)) });
+  return json({ entry_id: e.id, status: e.status, phone: p.phone, ...sendLinks(p.phone, ...(await entryMessage(c, e, p))) });
 });
 /* Called when the user taps Send on WhatsApp / SMS: from now on the entry is part of the khata. */
 router.add('POST', '/api/khata/entries/:id/send', async (c) => {
@@ -511,7 +572,7 @@ router.add('GET', '/api/khata/:party', async (c) => {
       FROM khata WHERE org_id = ? AND party_id = ? ORDER BY date, id`).bind(c.org.id, p.id).all();
   let bal = 0;
   const rows = results.map((r) => ({ ...r, amount: R(r.amount), balance: R(r.status === 'sent' ? (bal += r.kind === 'gave' ? r.amount : -r.amount) : bal) }));
-  return json({ party: p, rows: rows.reverse(), balance: R(bal), statement_url: `${c.url.origin}/#/k/${await khataToken(c, p.id)}` });
+  return json({ party: p, rows: rows.reverse(), balance: R(bal), statement_url: await khataLink(c, p.id) });
 });
 /* Pending (never sent) entries can be discarded. Sent entries are permanent: reverse them instead. */
 router.add('DELETE', '/api/khata/entries/:id', async (c) => {
@@ -533,18 +594,21 @@ router.add('POST', '/api/khata/entries/:id/reverse', async (c) => {
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?) RETURNING *`)
     .bind(c.org.id, e.party_id, today(), e.kind === 'gave' ? 'got' : 'gave', e.amount, `Correction of entry dated ${fd(e.date)}${c.body.reason ? ': ' + str(c.body.reason, 120) : ''}`,
       c.user.id, nowIso(), e.id).first();
-  return json({ ok: true, entry_id: r.id, ...sendLinks(p.phone, await entryMessage(c, r, p)) });
+  return json({ ok: true, entry_id: r.id, phone: p.phone, ...sendLinks(p.phone, ...(await entryMessage(c, r, p))) });
 });
 router.add('GET', '/api/khata/:party/reminder', async (c) => {
   const p = await c.db.prepare(`SELECT id, name, phone FROM parties WHERE id = ? AND org_id = ?`).bind(+c.params.party, c.org.id).first();
   if (!p) throw notFound('Contact not found.');
-  const amt = R(await khataBalance(c, p.id));
-  const link = `${c.url.origin}/#/k/${await khataToken(c, p.id)}`;
+  const bal = await khataBalance(c, p.id), amt = R(bal);
+  const link = await khataLink(c, p.id);
   const upi = c.org.upi_id && amt > 0 ? `upi://pay?pa=${encodeURIComponent(c.org.upi_id)}&pn=${encodeURIComponent(c.org.name)}&am=${amt.toFixed(2)}&cu=INR` : '';
-  const text = amt > 0
-    ? `Namaste ${p.name}, ${c.org.name} me aapka baaki ${rs(amt * 100)} hai. Kripya jaldi bhugtan karein.${upi ? '\nUPI se pay karein: ' + upi : ''}\nPoora khata: ${link}`
-    : `Namaste ${p.name}, ${c.org.name} me aapka khata clear hai. Dhanyavaad!\nPoora khata: ${link}`;
-  return json({ ...sendLinks(p.phone, text), upi_url: upi });
+  const wa = bal > 0
+    ? [`*${c.org.name}*`, '🔔 Payment reminder', '', `Namaste ${p.name} ji,`, `Aapka baaki: *${inrW(bal)}*`, 'Kripya jaldi bhugtan karein.', ...(c.org.upi_id ? [`UPI: ${c.org.upi_id}`] : []),
+      '', 'Khata dekhein aur online pay karein 👇', link, '', `_Sent via ${BRAND}_`].join('\n')
+    : [`*${c.org.name}*`, '', `Namaste ${p.name} ji, aapka khata clear hai ✅`, 'Dhanyavaad!', '', link, '', `_Sent via ${BRAND}_`].join('\n');
+  const sms = bal > 0 ? `${c.org.name}: Namaste ${p.name}, aapka baaki ${rs(bal)} hai. Kripya jaldi bhugtan karein. Khata/pay: ${link} -${BRAND}`
+    : `${c.org.name}: Namaste ${p.name}, aapka khata clear hai. Dhanyavaad! ${link} -${BRAND}`;
+  return json({ ...sendLinks(p.phone, wa, sms), upi_url: upi });
 });
 
 /* ---------- the customer's side: a private, read-only statement link (no login) ---------- */
@@ -624,9 +688,46 @@ async function handleApi(request, env) {
   return m.route.handler(c);
 }
 
+/* /k/<token> (khata) and /i/<token> (invoice): the web app, with Open Graph tags so WhatsApp shows a banner card
+   (title, amount, image) for the link. The page itself loads the data through the public API. */
+const attr = (v) => String(v ?? '').replace(/[&<>"]/g, (ch) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[ch]));
+async function sharePage(request, env, kind, token) {
+  if (!migrated) { await migrate(env.DB); migrated = true; }
+  const url = new URL(request.url);
+  let title = 'SmartTrader ERP', desc = 'Billing, stock, GST, accounts and khata for Indian businesses.', image = '/og-invoice.png';
+  if (kind === 'k') {
+    const p = await env.DB.prepare(`SELECT p.id, p.name, o.name AS org FROM parties p JOIN orgs o ON o.id = p.org_id WHERE p.khata_token = ?`).bind(token).first();
+    if (p) {
+      const b = (await env.DB.prepare(`SELECT COALESCE(SUM(CASE WHEN status = 'sent' THEN (CASE WHEN kind = 'gave' THEN amount ELSE -amount END) ELSE 0 END), 0) AS b FROM khata WHERE party_id = ?`).bind(p.id).first()).b;
+      title = `${p.name} ka khata · ${p.org}`;
+      desc = b > 0 ? `Baaki: ${inrW(b)}. Entries dekhein, confirm karein aur UPI se pay karein.` : b < 0 ? `Advance: ${inrW(-b)}. Poora khata dekhein.` : 'Khata clear hai. Poora hisaab dekhein.';
+      image = '/og-khata.png';
+    }
+  } else {
+    const d = await env.DB.prepare(`SELECT d.type, d.number, d.date, d.total, d.paid, o.name AS org FROM docs d JOIN orgs o ON o.id = d.org_id WHERE d.share_token = ?`).bind(token).first();
+    if (d) {
+      title = `${DOC_TYPES[d.type].label} ${d.number} · ${d.org}`;
+      desc = `Amount ${inrW(d.total)}${d.type === 'INV' ? (d.total - d.paid > 0 ? ` · Due ${inrW(d.total - d.paid)}` : ' · Paid') : ''}. Dekhein, download karein${d.type === 'INV' ? ' aur pay karein' : ''}.`;
+    }
+  }
+  const page = await env.ASSETS.fetch(new Request(url.origin + '/', request));
+  let html = await page.text();
+  const tags = `<title>${attr(title)}</title>
+<meta name="description" content="${attr(desc)}">
+<meta property="og:type" content="website"><meta property="og:site_name" content="SmartTrader ERP">
+<meta property="og:title" content="${attr(title)}"><meta property="og:description" content="${attr(desc)}">
+<meta property="og:url" content="${attr(url.origin + url.pathname)}">
+<meta property="og:image" content="${attr(url.origin + image)}"><meta property="og:image:width" content="1200"><meta property="og:image:height" content="630">
+<meta name="twitter:card" content="summary_large_image"><meta name="robots" content="noindex">`;
+  html = html.replace(/<title>[\s\S]*?<\/title>/, '').replace(/<meta name="description"[^>]*>/, '').replace('</head>', tags + '\n</head>');
+  return new Response(html, { headers: { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store', 'X-Robots-Tag': 'noindex' } });
+}
+
 export default {
   async fetch(request, env) {
     const url = new URL(request.url);
+    const share = url.pathname.match(/^\/(k|i)\/([0-9a-f]{24})\/?$/);
+    if (share && env.ASSETS) return sharePage(request, env, share[1], share[2]).catch(() => env.ASSETS.fetch(new Request(url.origin + '/', request)));
     if (!url.pathname.startsWith('/api/')) {
       return env.ASSETS ? env.ASSETS.fetch(request) : new Response('Not found', { status: 404 });
     }

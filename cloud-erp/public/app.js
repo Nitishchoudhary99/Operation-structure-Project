@@ -384,6 +384,33 @@ route(/^new\/([A-Z]+)$/, async (el, m, q) => {
 });
 
 /* ======================================================================= document view / print */
+/* The printable document (invoice, bill, order...). Used in the app and on the customer's public link. */
+function docPaper(d) {
+  const o = d.org, p = d.party || {};
+  const isTax = ['INV', 'BILL', 'SRET', 'PRET'].includes(d.type);
+  const title = d.type === 'INV' ? (o.gstin ? 'TAX INVOICE' : 'INVOICE') : String(d.label || '').toUpperCase();
+  const inter = !!d.inter_state;
+  return `<div class="doc-paper">
+      <div class="hdr"><div><div style="font-size:18px;font-weight:700">${esc(o.name)}</div><div>${esc(o.address)}</div>
+        <div>${[o.gstin ? 'GSTIN: ' + esc(o.gstin) : '', o.state ? 'State: ' + esc(o.state) : ''].filter(Boolean).join(' &middot; ')}</div><div>${esc(o.phone)}</div></div>
+        <div style="text-align:right"><div class="title">${esc(title)}</div><div>No: <b>${esc(d.number)}</b></div><div>Date: ${fdate(d.date)}</div>
+        ${d.due_date ? `<div>${d.type === 'QUOTE' ? 'Valid till' : 'Due'}: ${fdate(d.due_date)}</div>` : ''}${d.parent ? `<div>Ref: ${esc(d.parent.number)}</div>` : ''}</div></div>
+      <div class="parties"><div><b>${d.side === 'sales' ? 'Bill to' : 'Supplier'}</b><br>${esc(p.name)}<br>${esc(p.address || '')}<br>${p.gstin ? 'GSTIN: ' + esc(p.gstin) + '<br>' : ''}${esc(p.phone || '')}</div>
+        <div><b>Place of supply</b><br>${esc(d.place_of_supply || '-')}<br>${isTax ? (inter ? 'Inter-state (IGST)' : 'Intra-state (CGST + SGST)') : ''}${d.warehouse ? '<br>Godown: ' + esc(d.warehouse) : ''}</div></div>
+      <div class="tbl-wrap"><table class="dl"><thead><tr><th>#</th><th>Item</th><th>HSN</th><th class="num">Qty</th><th class="num">Rate</th><th class="num">Disc</th><th class="num">Taxable</th><th class="num">GST</th>${inter ? '<th class="num">IGST</th>' : '<th class="num">CGST</th><th class="num">SGST</th>'}<th class="num">Amount</th></tr></thead>
+      <tbody>${d.lines.map((l, i) => `<tr><td>${i + 1}</td><td>${esc(l.item || l.description)}${l.item && l.description && l.description !== l.item ? `<div class="muted">${esc(l.description)}</div>` : ''}</td><td>${esc(l.hsn || '')}</td>
+        <td class="num">${qtyf(l.qty)} ${esc(l.unit || '')}</td><td class="num">${inr(l.rate)}</td><td class="num">${l.discount_pct ? l.discount_pct + '%' : ''}</td><td class="num">${inr(l.taxable)}</td><td class="num">${l.gst_rate}%</td>
+        ${inter ? `<td class="num">${inr(l.igst)}</td>` : `<td class="num">${inr(l.cgst)}</td><td class="num">${inr(l.sgst)}</td>`}<td class="num">${inr(l.total)}</td></tr>`).join('')}</tbody></table></div>
+      <div class="foot"><div style="max-width:60%"><b>Amount in words:</b> ${esc(words(d.total))}${d.notes ? `<p><b>Notes:</b> ${esc(d.notes)}</p>` : ''}
+        ${d.type === 'INV' && o.upi_id && d.balance > 0 ? `<p>Pay by UPI: <b>${esc(o.upi_id)}</b></p>` : ''}</div>
+        <div class="totals"><div><span>Taxable</span><span>${inr(d.taxable)}</span></div>
+          ${inter ? `<div><span>IGST</span><span>${inr(d.igst)}</span></div>` : `<div><span>CGST</span><span>${inr(d.cgst)}</span></div><div><span>SGST</span><span>${inr(d.sgst)}</span></div>`}
+          ${d.round_off ? `<div><span>Round off</span><span>${inr(d.round_off)}</span></div>` : ''}<div class="grand"><span>Total</span><span>${inr(d.total)}</span></div></div></div>
+      ${d.irn || d.ewb_no ? `<div style="margin-top:12px;font-size:12px">${d.irn ? `IRN: <b>${esc(d.irn)}</b>${d.ack_no ? ` &middot; Ack No: ${esc(d.ack_no)}` : ''}${d.ack_date ? ` &middot; Ack Date: ${esc(d.ack_date)}` : ''}<br>` : ''}${d.ewb_no ? `E-way bill: <b>${esc(d.ewb_no)}</b>${d.ewb_date ? ` &middot; ${esc(d.ewb_date)}` : ''}` : ''}</div>` : ''}
+      <div class="foot"><div id="upiqr"></div><div class="sign">For ${esc(o.name)}<br><br><br>Authorised signatory</div></div>
+    </div>`;
+}
+
 route(/^doc\/(\d+)$/, async (el, m) => {
   const d = await GET('/api/docs/' + m[1]);
   const T = ME.doc_types[d.type], o = d.org, p = d.party || {};
@@ -393,41 +420,20 @@ route(/^doc\/(\d+)$/, async (el, m) => {
   if (d.status !== 'cancelled') {
     for (const [k, v] of next) if (hasOpen) actions.push(`<a class="btn" href="#/new/${k}?from=${d.id}">${['SRET', 'PRET'].includes(k) ? 'Return' : 'Make ' + esc(v.label)}</a>`);
     if (['INV', 'BILL'].includes(d.type) && d.balance > 0) actions.push(`<button class="btn" id="pay">${d.type === 'INV' ? 'Receive payment' : 'Record payment'}</button>`);
-    if (d.type === 'INV' && p.phone) actions.push(`<button class="btn" id="wa">WhatsApp</button>`);
+    if (['INV', 'SRET', 'QUOTE', 'SO'].includes(d.type)) actions.push(`<button class="btn got" id="wa">WhatsApp</button>`, ...(p.phone ? ['<button class="btn" id="sms">SMS</button>'] : []), `<button class="btn" id="link">Copy link</button>`);
     if (['INV', 'SRET'].includes(d.type)) actions.push(`<a class="btn" href="/api/docs/${d.id}/einvoice" id="einv">E-invoice JSON</a>`);
     if (['INV', 'DN'].includes(d.type)) actions.push(`<button class="btn" id="ewb">E-way bill</button>`);
     if (['INV', 'SRET', 'DN'].includes(d.type)) actions.push(`<button class="btn" id="refs">${d.irn || d.ewb_no ? 'Edit' : 'Add'} IRN / EWB no.</button>`);
     actions.push(`<button class="btn danger" id="cancel">Cancel</button>`);
   }
   actions.push(`<button class="btn primary" onclick="print()">Print / PDF</button>`);
-  const isTax = ['INV', 'BILL', 'SRET', 'PRET'].includes(d.type);
-  const title = d.type === 'INV' ? (o.gstin ? 'TAX INVOICE' : 'INVOICE') : T.label.toUpperCase();
-  const inter = !!d.inter_state;
   el.innerHTML = head(`${esc(d.number)} ${badge(d.status)}`, actions.join('')) + `
     <div class="panel no-print"><div class="row">
       ${d.parent ? `<span>From <a href="#/doc/${d.parent.id}">${esc(d.parent.number)}</a></span>` : ''}
       ${d.children.length ? `<span>Follow-ups: ${d.children.map((c) => `<a href="#/doc/${c.id}">${esc(c.number)}</a> ${badge(c.status)}`).join(' ')}</span>` : ''}
       ${['INV', 'BILL'].includes(d.type) ? `<span class="spacer"></span><span>Paid <b>${inr(d.paid)}</b> &middot; Balance <b>${inr(d.balance)}</b></span>` : ''}
     </div>${d.settlements.length ? `<div class="muted" style="margin-top:8px">Settled by: ${d.settlements.map((s) => `${esc(s.number)} (${inr(s.amount)})`).join(', ')}</div>` : ''}</div>
-    <div class="doc-paper">
-      <div class="hdr"><div><div style="font-size:18px;font-weight:700">${esc(o.name)}</div><div>${esc(o.address)}</div>
-        <div>${[o.gstin ? 'GSTIN: ' + esc(o.gstin) : '', o.state ? 'State: ' + esc(o.state) : ''].filter(Boolean).join(' &middot; ')}</div><div>${esc(o.phone)}</div></div>
-        <div style="text-align:right"><div class="title">${esc(title)}</div><div>No: <b>${esc(d.number)}</b></div><div>Date: ${fdate(d.date)}</div>
-        ${d.due_date ? `<div>${d.type === 'QUOTE' ? 'Valid till' : 'Due'}: ${fdate(d.due_date)}</div>` : ''}${d.parent ? `<div>Ref: ${esc(d.parent.number)}</div>` : ''}</div></div>
-      <div class="parties"><div><b>${T.side === 'sales' ? 'Bill to' : 'Supplier'}</b><br>${esc(p.name)}<br>${esc(p.address || '')}<br>${p.gstin ? 'GSTIN: ' + esc(p.gstin) + '<br>' : ''}${esc(p.phone || '')}</div>
-        <div><b>Place of supply</b><br>${esc(d.place_of_supply || '-')}<br>${isTax ? (inter ? 'Inter-state (IGST)' : 'Intra-state (CGST + SGST)') : ''}<br>Godown: ${esc(d.warehouse || '')}</div></div>
-      <table><thead><tr><th>#</th><th>Item</th><th>HSN</th><th class="num">Qty</th><th class="num">Rate</th><th class="num">Disc</th><th class="num">Taxable</th><th class="num">GST</th>${inter ? '<th class="num">IGST</th>' : '<th class="num">CGST</th><th class="num">SGST</th>'}<th class="num">Amount</th></tr></thead>
-      <tbody>${d.lines.map((l, i) => `<tr><td>${i + 1}</td><td>${esc(l.item || l.description)}${l.item && l.description && l.description !== l.item ? `<div class="muted">${esc(l.description)}</div>` : ''}</td><td>${esc(l.hsn || '')}</td>
-        <td class="num">${qtyf(l.qty)} ${esc(l.unit || '')}</td><td class="num">${inr(l.rate)}</td><td class="num">${l.discount_pct ? l.discount_pct + '%' : ''}</td><td class="num">${inr(l.taxable)}</td><td class="num">${l.gst_rate}%</td>
-        ${inter ? `<td class="num">${inr(l.igst)}</td>` : `<td class="num">${inr(l.cgst)}</td><td class="num">${inr(l.sgst)}</td>`}<td class="num">${inr(l.total)}</td></tr>`).join('')}</tbody></table>
-      <div class="foot"><div style="max-width:60%"><b>Amount in words:</b> ${esc(words(d.total))}${d.notes ? `<p><b>Notes:</b> ${esc(d.notes)}</p>` : ''}
-        ${d.type === 'INV' && o.upi_id && d.balance > 0 ? `<p>Pay by UPI: <b>${esc(o.upi_id)}</b></p>` : ''}</div>
-        <div class="totals"><div><span>Taxable</span><span>${inr(d.taxable)}</span></div>
-          ${inter ? `<div><span>IGST</span><span>${inr(d.igst)}</span></div>` : `<div><span>CGST</span><span>${inr(d.cgst)}</span></div><div><span>SGST</span><span>${inr(d.sgst)}</span></div>`}
-          ${d.round_off ? `<div><span>Round off</span><span>${inr(d.round_off)}</span></div>` : ''}<div class="grand"><span>Total</span><span>${inr(d.total)}</span></div></div></div>
-      ${d.irn || d.ewb_no ? `<div style="margin-top:12px;font-size:12px">${d.irn ? `IRN: <b>${esc(d.irn)}</b>${d.ack_no ? ` &middot; Ack No: ${esc(d.ack_no)}` : ''}${d.ack_date ? ` &middot; Ack Date: ${esc(d.ack_date)}` : ''}<br>` : ''}${d.ewb_no ? `E-way bill: <b>${esc(d.ewb_no)}</b>${d.ewb_date ? ` &middot; ${esc(d.ewb_date)}` : ''}` : ''}</div>` : ''}
-      <div class="foot"><div id="upiqr"></div><div class="sign">For ${esc(o.name)}<br><br><br>Authorised signatory</div></div>
-    </div>`;
+    ${docPaper(d)}`;
   if (d.type === 'INV' && o.upi_id && d.balance > 0) upiQr($('#upiqr'), o, d.balance, d.number, 'Scan to pay with any UPI app');
   if ($('#einv')) $('#einv').onclick = (e) => { e.preventDefault(); fileDownload(`/api/docs/${d.id}/einvoice`); };
   if ($('#ewb')) $('#ewb').onclick = () => modal('E-way bill (bulk upload JSON)', [
@@ -448,10 +454,15 @@ route(/^doc\/(\d+)$/, async (el, m) => {
     try { await POST(`/api/docs/${d.id}/cancel`); dirty('items', 'accounts', 'parties'); toast('Cancelled'); render(); } catch (e) { alert(e.message); }
   };
   if ($('#pay')) $('#pay').onclick = () => paymentForm(d.type === 'INV' ? 'receipt' : 'payment', { party_id: d.party_id, amount: d.balance, doc: d });
-  if ($('#wa')) $('#wa').onclick = () => {
-    const text = `Dear ${p.name}, invoice ${d.number} dated ${fdate(d.date)} for ${inr(d.total)} from ${o.name}. Balance due: ${inr(d.balance)}.${o.upi_id && d.balance > 0 ? ` Pay by UPI: upi://pay?pa=${o.upi_id}&pn=${encodeURIComponent(o.name)}&am=${d.balance.toFixed(2)}&cu=INR&tn=${d.number}` : ''} Thank you!`;
-    const ph = (p.phone || '').replace(/\D/g, '');
-    open('https://wa.me/' + (ph.length === 10 ? '91' + ph : ph) + '?text=' + encodeURIComponent(text), '_blank');
+  if ($('#wa')) $('#wa').onclick = async () => {
+    const w = window.open('', '_blank');                 // open now, inside the tap; filled in once the link is ready
+    try { const r = await GET(`/api/docs/${d.id}/share`); if (w) w.location = r.whatsapp_url; else location.href = r.whatsapp_url; }
+    catch (e) { if (w) w.close(); alert(e.message); }
+  };
+  if ($('#sms')) $('#sms').onclick = async () => { const r = await GET(`/api/docs/${d.id}/share`); location.href = r.sms_url; };
+  if ($('#link')) $('#link').onclick = async () => {
+    const r = await GET(`/api/docs/${d.id}/share`);
+    try { await navigator.clipboard.writeText(r.url); toast('Customer link copied'); } catch (e) { prompt('Copy this link:', r.url); }
   };
 });
 
@@ -624,11 +635,15 @@ route(/^khata$/, async (el) => {
 });
 
 /* Shows the message for an entry and sends it. The entry counts only once it has been sent. */
+/* WhatsApp-style preview: *bold*, _italic_, links */
+const waFormat = (t) => esc(t).replace(/\*([^*\n]+)\*/g, '<b>$1</b>').replace(/(^|\s)_([^_\n]+)_(?=\s|$)/g, '$1<i>$2</i>')
+  .replace(/(https?:\/\/\S+)/g, '<span class="wa-link">$1</span>').replace(/\n/g, '<br>');
 function sendEntry(r, after) {
   const root = $('#modal-root');
   root.innerHTML = `<div class="modal-bg"><div class="modal"><h2>Send to customer to save this entry</h2>
     <p class="muted">The entry is added to the khata only after it is sent, so the customer always knows. They get a link to see and confirm it.</p>
-    <pre class="msg">${esc(r.text)}</pre>
+    <div class="wa-prev"><div class="wa-bubble">${waFormat(r.text)}</div></div>
+    <details class="muted"><summary>SMS text</summary><pre class="msg">${esc(r.sms_text || r.text)}</pre></details>
     ${r.phone ? '' : '<p class="err">No mobile number saved for this contact. WhatsApp will ask you to pick the chat; SMS needs a number.</p>'}
     <div class="khata-btns"><button class="btn got" data-via="whatsapp">Send on WhatsApp</button><button class="btn" data-via="sms" ${r.sms_url ? '' : 'disabled'}>Send SMS</button></div>
     <div class="actions"><button class="btn" id="later">Later (keep as not sent)</button></div></div></div>`;
@@ -672,6 +687,23 @@ route(/^khata\/(\d+)$/, async (el, m) => {
   $('#wa').onclick = () => rem('wa'); $('#sms').onclick = () => rem('sms');
   $('#share').onclick = async () => { try { await navigator.clipboard.writeText(k.statement_url); toast('Link copied'); } catch (e) { prompt('Copy this link:', k.statement_url); } };
 });
+
+/* The customer's view of an invoice / quotation (/i/<token>): print or save as PDF, pay by UPI. */
+async function publicDoc(token) {
+  const app = $('#app');
+  try {
+    const res = await fetch('/api/public/doc/' + token);
+    const d = await res.json();
+    if (!res.ok) { app.innerHTML = `<div class="boot"><h2>Link not valid</h2><p class="muted">${esc(d.error || '')}</p></div>`; return; }
+    const due = d.type === 'INV' && d.balance > 0;
+    app.innerHTML = `<main class="page pub pubdoc"><div class="page-head no-print"><h1>${esc(d.label)} ${esc(d.number)}</h1>${d.type === 'INV' ? badge(d.status) : ''}<span class="spacer"></span>
+        ${due && d.org.upi_id ? `<a class="btn got" href="${esc(upiLink(d.org.upi_id, d.org.name, d.balance, d.number))}">Pay ${inr(d.balance)} by UPI</a>` : ''}
+        <button class="btn primary" onclick="print()">Download PDF</button></div>
+      ${due ? `<div class="panel no-print">Balance due <b>${inr(d.balance)}</b>${d.due_date ? ` by ${fdate(d.due_date)}` : ''}. Pay with any UPI app${d.org.upi_id ? ` to <b>${esc(d.org.upi_id)}</b>` : ''}.</div>` : ''}
+      ${docPaper(d)}<p class="muted no-print">Shared by ${esc(d.org.name)} using SmartTrader ERP. Tap “Download PDF” and choose “Save as PDF”.</p></main>`;
+    if (due) upiQr($('#upiqr'), d.org, d.balance, d.number, 'Scan to pay with any UPI app');
+  } catch (e) { app.innerHTML = '<div class="boot"><h2>You are offline</h2><p class="muted">Connect to the internet to see this document.</p></div>'; }
+}
 
 /* The customer's private statement page (#/k/<token>): no login, read-only, confirm or dispute entries. */
 async function publicKhata(token) {
@@ -1153,8 +1185,11 @@ window.addEventListener('online', () => toast('Back online'));
 
 /* ======================================================================= boot */
 async function boot() {
-  const pk = location.hash.match(/^#\/k\/([0-9a-f]{24})$/);
-  if (pk) return publicKhata(pk[1]);                      // customer's statement: no login
+  // customer links, no login: /k/<token> khata statement, /i/<token> invoice (old #/k/ links still work)
+  const pk = location.pathname.match(/^\/k\/([0-9a-f]{24})\/?$/) || location.hash.match(/^#\/k\/([0-9a-f]{24})$/);
+  if (pk) return publicKhata(pk[1]);
+  const pi = location.pathname.match(/^\/i\/([0-9a-f]{24})\/?$/);
+  if (pi) return publicDoc(pi[1]);
   try { ME = await GET('/api/me'); } catch (e) {
     if (e.status === 401 && /^#\/admin/.test(location.hash)) {   // admin works with the ADMIN_KEY alone
       $('#app').innerHTML = '<main class="page" id="page"></main>';

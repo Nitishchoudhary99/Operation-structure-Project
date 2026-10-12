@@ -3,7 +3,7 @@
    Every business table carries org_id: one database serves many businesses (multi-tenant).
    migrate() runs on the first request after each deploy, so no manual migration step is needed. */
 
-export const SCHEMA_VERSION = 3;
+export const SCHEMA_VERSION = 4;
 
 export const SCHEMA = [
   `CREATE TABLE IF NOT EXISTS meta (k TEXT PRIMARY KEY, v TEXT NOT NULL)`,
@@ -153,6 +153,11 @@ export const MIGRATIONS = {
     `ALTER TABLE khata ADD COLUMN reverses INTEGER`,
     `ALTER TABLE parties ADD COLUMN khata_token TEXT`,
     `CREATE UNIQUE INDEX IF NOT EXISTS ux_parties_khata_token ON parties (khata_token) WHERE khata_token IS NOT NULL`,
+  ],
+  // customer links for invoices and quotations (view, download, pay)
+  4: [
+    `ALTER TABLE docs ADD COLUMN share_token TEXT`,
+    `CREATE UNIQUE INDEX IF NOT EXISTS ux_docs_share_token ON docs (share_token) WHERE share_token IS NOT NULL`,
   ],
 };
 
