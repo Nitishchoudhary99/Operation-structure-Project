@@ -86,6 +86,22 @@ export async function available(db, orgId, itemId, warehouseId) {
   return r ? r.qty : 0;
 }
 
+/* Several rows by id in as few queries as possible (D1 allows 100 bound values per query; the free plan
+   allows 50 queries per request, so per-line lookups would break on long documents). */
+export async function loadByIds(db, sql, fixed, ids) {
+  const out = [], uniq = [...new Set(ids.filter(Boolean))];
+  for (let i = 0; i < uniq.length; i += 90) {
+    const part = uniq.slice(i, i + 90);
+    const { results } = await db.prepare(sql.replace('(?ids)', `(${part.map(() => '?').join(',')})`)).bind(...fixed, ...part).all();
+    out.push(...results);
+  }
+  return out;
+}
+async function stockIn(db, orgId, warehouseId, itemIds) {
+  const rows = await loadByIds(db, `SELECT item_id, qty FROM stock WHERE org_id = ? AND warehouse_id = ? AND item_id IN (?ids)`, [orgId, warehouseId], itemIds);
+  return new Map(rows.map((r) => [r.item_id, r.qty]));
+}
+
 async function warehouseOf(db, orgId, id) {
   if (id) {
     const w = await db.prepare(`SELECT id, name FROM warehouses WHERE id = ? AND org_id = ?`).bind(id, orgId).first();
@@ -143,11 +159,9 @@ export async function createDoc(ctx, body) {
 
   // stock movement happens here unless an earlier document already moved the goods
   const moves = T.stock && !(type === 'INV' && src && src.type === 'DN') && !(type === 'BILL' && src && src.type === 'GRN');
-  const itemCache = new Map();
-  const getItem = async (id) => {
-    if (!itemCache.has(id)) itemCache.set(id, await db.prepare(`SELECT * FROM items WHERE id = ? AND org_id = ?`).bind(id, orgId).first());
-    return itemCache.get(id);
-  };
+  // every item on the document in one query
+  const itemCache = new Map((await loadByIds(db, `SELECT * FROM items WHERE org_id = ? AND id IN (?ids)`, [orgId], lines.map((l) => +l.item_id || 0))).map((i) => [i.id, i]));
+  const getItem = (id) => itemCache.get(id);
 
   const L = [];
   const need = new Map();   // item -> qty leaving the warehouse
@@ -179,8 +193,9 @@ export async function createDoc(ctx, body) {
   }
 
   // stock must be available for anything leaving the warehouse
+  const onHand = await stockIn(db, orgId, wh.id, [...need.keys()]);
   for (const [itemId, q] of need) {
-    const have = await available(db, orgId, itemId, wh.id);
+    const have = onHand.get(itemId) || 0;
     if (have + 0.0005 < q) {
       const it = itemCache.get(itemId);
       throw bad(`Not enough stock of ${it.name} in ${wh.name}: ${roundQty(have)} ${it.unit} available, ${roundQty(q)} needed.`);
@@ -400,9 +415,13 @@ export async function cancelDoc(ctx, id) {
 
   const st = [];
   const { results: moves } = await db.prepare(`SELECT * FROM stock_moves WHERE org_id = ? AND ref_type = ? AND ref_id = ?`).bind(ctx.org.id, doc.type, doc.id).all();
+  const haveBy = new Map();
+  for (const w of new Set(moves.filter((m) => m.qty > 0).map((m) => m.warehouse_id))) {
+    for (const [item, q] of await stockIn(db, ctx.org.id, w, moves.filter((m) => m.warehouse_id === w).map((m) => m.item_id))) haveBy.set(w + ':' + item, q);
+  }
   for (const m of moves) {
     if (m.qty > 0) {
-      const have = await available(db, ctx.org.id, m.item_id, m.warehouse_id);
+      const have = haveBy.get(m.warehouse_id + ':' + m.item_id) || 0;
       if (have + 0.0005 < m.qty) throw bad('Cannot cancel: the goods received by this document have already been used.');
     }
     st.push(...stockStatements(db, ctx, { item: m.item_id, warehouse: m.warehouse_id, qty: -m.qty, value: Math.abs(m.value),

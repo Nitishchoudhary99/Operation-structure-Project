@@ -181,6 +181,30 @@ check('customer ledger closing = party balance', eq(led.closing, (await api('GET
 const dash = await api('GET', '/api/reports/dashboard');
 check('dashboard loads', !!dash);
 
+/* --- long documents: 60 different items must stay under Cloudflare's 50 queries per request (free plan) --- */
+const qc = async (method, path, body) => {
+  const res = await fetch(BASE + path, { method, headers: { 'Content-Type': 'application/json', 'X-Requested-With': 'SmartTrader', Cookie: cookie }, body: body ? JSON.stringify(body) : undefined });
+  const data = await res.json();
+  if (!res.ok) throw new Error(`${path} ${res.status} ${data.error}`);
+  return { data, n: +(res.headers.get('X-Query-Count') || -1) };
+};
+const many = [];
+for (let i = 1; i <= 60; i++) many.push((await api('POST', '/api/items', { name: `Bulk item ${i}`, gst_rate: [0, 5, 12, 18, 28][i % 5], purchase_price: 10 + i, sale_price: 15 + i })).id);
+const bigPo = await qc('POST', '/api/docs', { type: 'PO', party_id: sup.id, lines: many.map((id, i) => ({ item_id: id, qty: 5 + (i % 3) })) });
+const bigGrn = await qc('POST', '/api/docs', (await api('GET', `/api/docs/${bigPo.data.id}/convert?to=GRN`)));
+const bigInv = await qc('POST', '/api/docs', { type: 'INV', party_id: cust.id, lines: many.map((id, i) => ({ item_id: id, qty: 2, discount_pct: i % 4 })) });
+console.log(`      queries: PO ${bigPo.n}, GRN ${bigGrn.n}, INV ${bigInv.n}`);
+check('60-line PO / GRN / invoice each stay under 50 queries', [bigPo.n, bigGrn.n, bigInv.n].every((n) => n >= 0 && n < 50) || [bigPo.n, bigGrn.n, bigInv.n].every((n) => n === -1));
+check('60-line invoice totals add up', bigInv.data.lines.length === 60 && eq(bigInv.data.total, Math.round(bigInv.data.lines.reduce((t, l) => t + l.total, 0))));
+const bigCancel = await qc('POST', `/api/docs/${bigInv.data.id}/cancel`);
+check('cancelling a 60-line invoice stays under 50 queries', bigCancel.n < 50, String(bigCancel.n));
+const view = await qc('GET', `/api/docs/${bigGrn.data.id}`);
+check('opening a 60-line document stays under 50 queries', view.n < 50, String(view.n));
+tb = await api('GET', '/api/reports/trial-balance');
+check('books still balance after long documents', tb.balanced);
+const tooMany = await api('POST', '/api/docs', { type: 'QUOTE', party_id: cust.id, lines: Array.from({ length: 201 }, () => ({ item_id: many[0], qty: 1 })) }, true);
+check('more than 200 lines is refused with a clear message', tooMany.status === 400 && /200/.test(tooMany.error));
+
 /* --- roles & tenant isolation --- */
 await api('POST', '/api/users', { email: 'store' + email, name: 'Store Boy', role: 'store', password: 'Store-pass-1' });
 const ownerCookie = cookie;

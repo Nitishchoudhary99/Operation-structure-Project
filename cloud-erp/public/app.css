@@ -246,3 +246,11 @@ pre.msg { white-space: pre-wrap; word-break: break-word; background: var(--soft)
   .doc-paper .foot > div[style] { max-width: 100% !important; }
 }
 @media print { .doc-paper table.dl { min-width: 0; } .doc-paper .tbl-wrap { overflow: visible; } }
+
+/* long documents print across pages: header row repeats, rows and the totals block never split */
+@media print {
+  .doc-paper thead { display: table-header-group; }
+  .doc-paper tr { break-inside: avoid; page-break-inside: avoid; }
+  .doc-paper .foot, .doc-paper .totals, .doc-paper .sign { break-inside: avoid; page-break-inside: avoid; }
+  .doc-paper .hdr, .doc-paper .parties { break-after: avoid; }
+}

@@ -665,10 +665,20 @@ router.add('GET', '/api/audit', async (c) => {
 router.add('GET', '/api/health', async (c) => json({ ok: true, db: !!c.env.DB, time: nowIso() }), { public: true });
 
 /* ======================================================================= entry point */
-async function handleApi(request, env) {
+/* Local testing only (QUERY_COUNT=1 in .dev.vars): counts D1 calls per request, as Cloudflare does for its
+   limit of 50 per request on the free plan (a batch is one call), and reports it in the X-Query-Count header. */
+function countingDb(db, counter) {
+  const wrap = (st) => ({ __raw: st, bind: (...a) => wrap(st.bind(...a)),
+    first: (...a) => { counter.n++; return st.first(...a); }, all: () => { counter.n++; return st.all(); },
+    run: () => { counter.n++; return st.run(); }, raw: (...a) => { counter.n++; return st.raw(...a); } });
+  return { prepare: (sql) => wrap(db.prepare(sql)), batch: (list) => { counter.n++; return db.batch(list.map((x) => x.__raw || x)); }, exec: (q) => db.exec(q) };
+}
+
+async function handleApi(request, env, counter) {
   const url = new URL(request.url);
   if (!env.DB) throw new HttpError(500, 'Database not connected: bind a D1 database as DB in wrangler.toml.');
   if (!migrated) { await migrate(env.DB); migrated = true; }
+  if (counter) env = { ...env, DB: countingDb(env.DB, counter) };
   const m = router.match(request.method, url.pathname);
   if (!m) throw notFound('Unknown API route.');
   if (m.methodNotAllowed) throw new HttpError(405, 'Method not allowed.');
@@ -732,8 +742,10 @@ export default {
       return env.ASSETS ? env.ASSETS.fetch(request) : new Response('Not found', { status: 404 });
     }
     try {
-      const res = await handleApi(request, env);
+      const counter = env.QUERY_COUNT === '1' ? { n: 0 } : null;
+      const res = await handleApi(request, env, counter);
       res.headers.set('X-Content-Type-Options', 'nosniff');
+      if (counter) res.headers.set('X-Query-Count', String(counter.n));
       return res;
     } catch (e) {
       if (e instanceof HttpError) return json({ error: e.message, ...(e.extra || {}) }, e.status);
