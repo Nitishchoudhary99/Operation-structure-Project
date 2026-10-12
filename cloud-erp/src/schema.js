@@ -3,7 +3,7 @@
    Every business table carries org_id: one database serves many businesses (multi-tenant).
    migrate() runs on the first request after each deploy, so no manual migration step is needed. */
 
-export const SCHEMA_VERSION = 5;
+export const SCHEMA_VERSION = 7;
 
 export const SCHEMA = [
   `CREATE TABLE IF NOT EXISTS meta (k TEXT PRIMARY KEY, v TEXT NOT NULL)`,
@@ -178,7 +178,47 @@ export const MIGRATIONS = {
     `INSERT INTO accounts (org_id, code, name, type, sys, is_cash) SELECT o.id, '5300', 'Purchase Rate Difference', 'expense', 'pur_adj', 0 FROM orgs o
        WHERE NOT EXISTS (SELECT 1 FROM accounts a WHERE a.org_id = o.id AND (a.sys = 'pur_adj' OR a.code = '5300'))`,
   ],
+  /* Running totals kept by triggers, so dashboards and reports read a few hundred summary rows instead of
+     every journal line ever posted (Cloudflare's free plan allows 5 million rows read per day).
+     Journal lines are never updated or deleted (cancellations post reversals), so insert triggers are enough.
+     Runs as one transaction: the backfill and the triggers cannot miss a line posted in between. */
+  6: [
+    `CREATE TABLE IF NOT EXISTS acct_month (org_id INTEGER NOT NULL, account_id INTEGER NOT NULL, ym TEXT NOT NULL,
+       dr INTEGER NOT NULL DEFAULT 0, cr INTEGER NOT NULL DEFAULT 0, PRIMARY KEY (org_id, account_id, ym)) WITHOUT ROWID`,
+    `CREATE TABLE IF NOT EXISTS party_bal (org_id INTEGER NOT NULL, party_id INTEGER NOT NULL, bal INTEGER NOT NULL DEFAULT 0,
+       PRIMARY KEY (org_id, party_id)) WITHOUT ROWID`,
+    `DELETE FROM acct_month`,
+    `DELETE FROM party_bal`,
+    `INSERT INTO acct_month (org_id, account_id, ym, dr, cr) SELECT org_id, account_id, substr(date, 1, 7), SUM(debit), SUM(credit)
+       FROM journal_lines GROUP BY org_id, account_id, substr(date, 1, 7)`,
+    `INSERT INTO party_bal (org_id, party_id, bal) SELECT jl.org_id, jl.party_id, SUM(jl.debit - jl.credit) FROM journal_lines jl
+       JOIN accounts a ON a.id = jl.account_id AND a.sys IN ('ar','ap') WHERE jl.party_id IS NOT NULL GROUP BY jl.org_id, jl.party_id`,
+    `CREATE TRIGGER IF NOT EXISTS trg_jl_month AFTER INSERT ON journal_lines BEGIN
+       INSERT INTO acct_month (org_id, account_id, ym, dr, cr) VALUES (NEW.org_id, NEW.account_id, substr(NEW.date, 1, 7), NEW.debit, NEW.credit)
+       ON CONFLICT (org_id, account_id, ym) DO UPDATE SET dr = dr + excluded.dr, cr = cr + excluded.cr;
+     END`,
+    `CREATE TRIGGER IF NOT EXISTS trg_jl_party AFTER INSERT ON journal_lines
+       WHEN NEW.party_id IS NOT NULL AND EXISTS (SELECT 1 FROM accounts WHERE id = NEW.account_id AND sys IN ('ar','ap')) BEGIN
+       INSERT INTO party_bal (org_id, party_id, bal) VALUES (NEW.org_id, NEW.party_id, NEW.debit - NEW.credit)
+       ON CONFLICT (org_id, party_id) DO UPDATE SET bal = bal + excluded.bal;
+     END`,
+    // simple mode hides modules most small shops never use (orders, GRN, gate entry, e-invoice...); nothing is deleted
+    `ALTER TABLE orgs ADD COLUMN mode TEXT NOT NULL DEFAULT 'simple'`,
+  ],
+  // day totals for the part-months at the ends of a period (the current month, mostly)
+  7: [
+    `CREATE TABLE IF NOT EXISTS acct_day (org_id INTEGER NOT NULL, account_id INTEGER NOT NULL, d TEXT NOT NULL,
+       dr INTEGER NOT NULL DEFAULT 0, cr INTEGER NOT NULL DEFAULT 0, PRIMARY KEY (org_id, account_id, d)) WITHOUT ROWID`,
+    `DELETE FROM acct_day`,
+    `INSERT INTO acct_day (org_id, account_id, d, dr, cr) SELECT org_id, account_id, date, SUM(debit), SUM(credit) FROM journal_lines GROUP BY org_id, account_id, date`,
+    `CREATE TRIGGER IF NOT EXISTS trg_jl_day AFTER INSERT ON journal_lines BEGIN
+       INSERT INTO acct_day (org_id, account_id, d, dr, cr) VALUES (NEW.org_id, NEW.account_id, NEW.date, NEW.debit, NEW.credit)
+       ON CONFLICT (org_id, account_id, d) DO UPDATE SET dr = dr + excluded.dr, cr = cr + excluded.cr;
+     END`,
+  ],
 };
+
+const ATOMIC = [6, 7];
 
 export async function migrate(db) {
   let version = 0;
@@ -190,7 +230,12 @@ export async function migrate(db) {
   }
   if (version < 1) { await db.batch(SCHEMA.map((sql) => db.prepare(sql))); version = 1; }
   for (let v = version + 1; v <= SCHEMA_VERSION; v++) {
-    for (const sql of MIGRATIONS[v] || []) {
+    if (ATOMIC.includes(v)) {
+      try { await db.batch((MIGRATIONS[v] || []).map((sql) => db.prepare(sql))); } catch (e) {
+        const now = await db.prepare(`SELECT v FROM meta WHERE k='schema_version'`).first();   // another request ran it first?
+        if (!now || +now.v < v) throw e;
+      }
+    } else for (const sql of MIGRATIONS[v] || []) {
       try { await db.prepare(sql).run(); } catch (e) {
         if (!/duplicate column/i.test(String(e && e.message))) throw e;   // another request got there first
       }

@@ -220,6 +220,17 @@ check('pending report has every section', ['to_deliver', 'to_receive', 'to_invoi
 const remP = await api('GET', `/api/parties/${custIgst.id}/reminder`);
 check('invoice-due reminder lists bills and total', remP.text.includes('Payment reminder') && remP.text.includes(inv2.number) && /\/i\/[0-9a-f]{24}/.test(remP.text), remP.text);
 
+/* --- monthly summary must match the journal for any period (back-dated entries, part months) --- */
+await api('POST', '/api/journals', { date: '2026-01-15', narration: 'Old capital', lines: [{ account_id: accts.bank.id, debit: 1000 }, { account_id: accts.capital.id, credit: 1000 }] });
+await api('POST', '/api/journals', { date: '2026-03-20', narration: 'More capital', lines: [{ account_id: accts.bank.id, debit: 500 }, { account_id: accts.capital.id, credit: 500 }] });
+const capAt = async (to, from = '') => ((await api('GET', `/api/reports/trial-balance?to=${to}${from ? '&from=' + from : ''}`)).rows.find((r) => r.code === '3000') || { credit: 0 }).credit;
+check('summary: whole months', eq(await capAt('2026-02-28'), 1000));
+check('summary: part month at the end', eq(await capAt('2026-03-10'), 1000) && eq(await capAt('2026-03-20'), 1500));
+const plMid = await api('GET', '/api/reports/pnl?from=2026-01-10&to=2026-03-25');
+check('summary: P&L for a mid-month range has no current-year sales', eq(plMid.sales, 0));
+const ledBank = await api('GET', `/api/accounts/${accts.bank.id}/ledger?from=0001-01-01&to=2099-12-31`);
+check('summary: account balance = full ledger', eq((await api('GET', '/api/accounts')).rows.find((a) => a.id === accts.bank.id).balance, ledBank.closing));
+
 /* --- the books --- */
 tb = await api('GET', '/api/reports/trial-balance');
 check('trial balance balances', tb.balanced, `${tb.total_debit} vs ${tb.total_credit}`);

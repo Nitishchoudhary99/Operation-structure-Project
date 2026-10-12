@@ -17,13 +17,38 @@ export function period(org, q) {
   return { from, to };
 }
 
-async function accountBalances(db, orgId, from, to) {
-  const { results } = await db.prepare(`
-    SELECT a.id, a.code, a.name, a.type, a.sys, a.is_cash,
-           COALESCE(SUM(jl.debit), 0) AS dr, COALESCE(SUM(jl.credit), 0) AS cr
-    FROM accounts a LEFT JOIN journal_lines jl ON jl.account_id = a.id AND jl.org_id = a.org_id AND jl.date >= ? AND jl.date <= ?
-    WHERE a.org_id = ? GROUP BY a.id ORDER BY a.code`).bind(from, to, orgId).all();
-  return results;
+/* Debit/credit totals per account between two dates, from summaries kept by triggers: whole months from
+   acct_month, the part-months at either end from acct_day. The journal itself is never scanned here. */
+const ymd = (d) => d.toISOString().slice(0, 10);
+function monthSpan(from, to) {
+  let start = from.slice(8, 10) === '01' ? from : null;
+  if (!start) { const d = new Date(from.slice(0, 7) + '-01T00:00:00Z'); d.setUTCMonth(d.getUTCMonth() + 1); start = ymd(d); }
+  const next = new Date(to + 'T00:00:00Z'); next.setUTCDate(next.getUTCDate() + 1);
+  let end = next.getUTCDate() === 1 ? to : null;           // `to` is the last day of its month
+  if (!end) { const d = new Date(to.slice(0, 7) + '-01T00:00:00Z'); d.setUTCDate(0); end = ymd(d); }
+  return start <= end ? { start, end } : null;
+}
+const dayShift = (d, n) => { const x = new Date(d + 'T00:00:00Z'); x.setUTCDate(x.getUTCDate() + n); return ymd(x); };
+export async function accountBalances(db, orgId, from, to) {
+  if (from < '0001-01-01') from = '0001-01-01';
+  if (to > '9998-12-31') to = '9998-12-31';           // keep date maths inside 4-digit years
+  const { results: accts } = await db.prepare(`SELECT id, code, name, type, sys, is_cash FROM accounts WHERE org_id = ? ORDER BY code`).bind(orgId).all();
+  const tot = new Map(accts.map((a) => [a.id, { ...a, dr: 0, cr: 0 }]));
+  const add = (rows) => { for (const r of rows) { const t = tot.get(r.account_id); if (t) { t.dr += r.dr; t.cr += r.cr; } } };
+  const raw = async (a, b) => {
+    if (a > b) return;
+    add((await db.prepare(`SELECT account_id, SUM(dr) AS dr, SUM(cr) AS cr FROM acct_day WHERE org_id = ? AND d >= ? AND d <= ? GROUP BY account_id`)
+      .bind(orgId, a, b).all()).results);
+  };
+  const span = monthSpan(from, to);
+  if (!span) await raw(from, to);
+  else {
+    add((await db.prepare(`SELECT account_id, SUM(dr) AS dr, SUM(cr) AS cr FROM acct_month WHERE org_id = ? AND ym >= ? AND ym <= ? GROUP BY account_id`)
+      .bind(orgId, span.start.slice(0, 7), span.end.slice(0, 7)).all()).results);
+    await raw(from, dayShift(span.start, -1));
+    await raw(dayShift(span.end, 1), to);
+  }
+  return [...tot.values()];
 }
 
 export async function trialBalance(db, org, q) {
@@ -162,9 +187,8 @@ export async function partyLedger(db, org, partyId, q) {
 }
 
 export async function partyBalances(db, orgId) {
-  const { results } = await db.prepare(`SELECT jl.party_id, SUM(jl.debit - jl.credit) AS b FROM journal_lines jl
-      JOIN accounts a ON a.id = jl.account_id AND a.sys IN ('ar','ap') WHERE jl.org_id = ? AND jl.party_id IS NOT NULL GROUP BY jl.party_id`).bind(orgId).all();
-  return Object.fromEntries(results.map((r) => [r.party_id, r.b]));
+  const { results } = await db.prepare(`SELECT party_id, bal FROM party_bal WHERE org_id = ?`).bind(orgId).all();
+  return Object.fromEntries(results.map((r) => [r.party_id, r.bal]));
 }
 
 export async function dayBook(db, org, q) {

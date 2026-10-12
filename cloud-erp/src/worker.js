@@ -96,6 +96,12 @@ router.add('PUT', '/api/org', async (c) => {
   return json({ ok: true });
 });
 
+router.add('PUT', '/api/org/mode', async (c) => {
+  requireCan(c.user, 'settings');
+  const mode = oneOf(c.body.mode, ['simple', 'advanced'], 'Mode');
+  await c.db.batch([c.db.prepare(`UPDATE orgs SET mode = ? WHERE id = ?`).bind(mode, c.org.id), auditStatement(c, 'mode', mode)]);
+  return json({ ok: true, mode });
+});
 router.add('GET', '/api/users', async (c) => {
   requireCan(c.user, 'users');
   const { results } = await c.db.prepare(`SELECT id, email, name, role, active, created_at FROM users WHERE org_id = ? ORDER BY id`).bind(c.org.id).all();
@@ -255,9 +261,8 @@ router.add('POST', '/api/warehouses', async (c) => {
 
 /* ======================================================================= accounts */
 router.add('GET', '/api/accounts', async (c) => {
-  const { results } = await c.db.prepare(`SELECT a.*, COALESCE(SUM(jl.debit - jl.credit), 0) AS bal FROM accounts a
-      LEFT JOIN journal_lines jl ON jl.account_id = a.id WHERE a.org_id = ? GROUP BY a.id ORDER BY a.code`).bind(c.org.id).all();
-  return json({ rows: results.map((a) => ({ ...a, balance: R(['asset', 'expense'].includes(a.type) ? a.bal : -a.bal) })) });
+  const rows = await rep.accountBalances(c.db, c.org.id, '0001-01-01', '9999-12-31');
+  return json({ rows: rows.map((a) => ({ ...a, bal: a.dr - a.cr, balance: R(['asset', 'expense'].includes(a.type) ? a.dr - a.cr : a.cr - a.dr) })) });
 });
 router.add('POST', '/api/accounts', async (c) => {
   requireCan(c.user, 'finance');
@@ -771,10 +776,12 @@ router.add('GET', '/api/health', async (c) => json({ ok: true, db: !!c.env.DB, t
 /* Local testing only (QUERY_COUNT=1 in .dev.vars): counts D1 calls per request, as Cloudflare does for its
    limit of 50 per request on the free plan (a batch is one call), and reports it in the X-Query-Count header. */
 function countingDb(db, counter) {
+  const meta = (r) => { if (r && r.meta) { counter.read = (counter.read || 0) + (r.meta.rows_read || 0); counter.written = (counter.written || 0) + (r.meta.rows_written || 0); } return r; };
   const wrap = (st) => ({ __raw: st, bind: (...a) => wrap(st.bind(...a)),
-    first: (...a) => { counter.n++; return st.first(...a); }, all: () => { counter.n++; return st.all(); },
-    run: () => { counter.n++; return st.run(); }, raw: (...a) => { counter.n++; return st.raw(...a); } });
-  return { prepare: (sql) => wrap(db.prepare(sql)), batch: (list) => { counter.n++; return db.batch(list.map((x) => x.__raw || x)); }, exec: (q) => db.exec(q) };
+    first: (col) => { counter.n++; return st.all().then((r) => { meta(r); const row = r.results[0] ?? null; return col && row ? row[col] : row; }); },
+    all: () => { counter.n++; return st.all().then(meta); },
+    run: () => { counter.n++; return st.run().then(meta); }, raw: (...a) => { counter.n++; return st.raw(...a); } });
+  return { prepare: (sql) => wrap(db.prepare(sql)), batch: (list) => { counter.n++; return db.batch(list.map((x) => x.__raw || x)).then((rs) => { rs.forEach(meta); return rs; }); }, exec: (q) => db.exec(q) };
 }
 
 async function handleApi(request, env, counter) {
@@ -849,6 +856,7 @@ export default {
       const res = await handleApi(request, env, counter);
       res.headers.set('X-Content-Type-Options', 'nosniff');
       if (counter) res.headers.set('X-Query-Count', String(counter.n));
+      if (counter) res.headers.set('X-Rows', `${counter.read || 0}/${counter.written || 0}`);
       return res;
     } catch (e) {
       if (e instanceof HttpError) return json({ error: e.message, ...(e.extra || {}) }, e.status);

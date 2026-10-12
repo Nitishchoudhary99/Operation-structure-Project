@@ -159,6 +159,11 @@ function renderAuth(mode = 'login') {
 }
 
 /* ======================================================================= shell & router */
+/* Modules most small shops do not need. Simple mode (the default) hides them; Settings → Advanced shows them.
+   Nothing is deleted: the screens and data stay, only the menu and buttons change. */
+const ADVANCED = new Set(['sales/SO', 'sales/DN', 'sales/QUOTE', 'purchase/PO', 'gate/in', 'purchase/GRN', 'gate/out', 'stockcount', 'pending']);
+const ADV_DOCS = ['QUOTE', 'SO', 'DN', 'PO', 'GRN'];
+const simple = () => !ME || (ME.org.mode || 'simple') !== 'advanced';
 const NAV = [
   ['', [['dashboard', 'Dashboard']]],
   ['Sales', [['pos', 'Quick Bill (POS)'], ['sales/INV', 'Invoices'], ['sales/SO', 'Sales Orders'], ['sales/DN', 'Delivery Notes'], ['sales/QUOTE', 'Quotations'], ['sales/SRET', 'Sales Returns'], ['sales/CNOTE', 'Credit Notes (rate diff)'], ['receipts', 'Receipts']]],
@@ -174,7 +179,7 @@ function shell() {
   $('#app').innerHTML = `<div class="shell">
     <nav class="side" id="side">
       <div class="brand"><i>&#x2197;</i>SmartTrader</div>
-      ${NAV.map(([g, items]) => `${g ? `<div class="nav-group">${g}</div>` : ''}${items.map(([h, t]) => `<a href="#/${h}" data-h="${h}">${t}</a>`).join('')}`).join('')}
+      ${NAV.map(([g, all]) => { const items = all.filter(([h]) => !simple() || !ADVANCED.has(h)); return items.length ? `${g ? `<div class="nav-group">${g}</div>` : ''}${items.map(([h, t]) => `<a href="#/${h}" data-h="${h}">${t}</a>`).join('')}` : ''; }).join('')}
     </nav>
     <div class="main">
       <header class="top">
@@ -431,17 +436,17 @@ function docPaper(d) {
 route(/^doc\/(\d+)$/, async (el, m) => {
   const d = await GET('/api/docs/' + m[1]);
   const T = ME.doc_types[d.type], o = d.org, p = d.party || {};
-  const next = Object.entries(ME.doc_types).filter(([, v]) => v.from.includes(d.type));
+  const next = Object.entries(ME.doc_types).filter(([k, v]) => v.from.includes(d.type) && !(simple() && ADV_DOCS.includes(k)));
   const hasOpen = d.lines.some((l) => l.remaining > 0.0005);
   const actions = [];
   if (d.status !== 'cancelled') {
     for (const [k, v] of next) if (hasOpen || v.note) actions.push(`<a class="btn" href="#/new/${k}?from=${d.id}">${['SRET', 'PRET'].includes(k) ? 'Return goods' : v.note ? (k === 'CNOTE' ? 'Credit note' : 'Debit note') : 'Make ' + esc(v.label)}</a>`);
-    if (['SO', 'DN'].includes(d.type)) actions.push(`<a class="btn" href="#/picklist/${d.id}">Pick list</a>`);
+    if (!simple() && ['SO', 'DN'].includes(d.type)) actions.push(`<a class="btn" href="#/picklist/${d.id}">Pick list</a>`);
     if (['INV', 'BILL'].includes(d.type) && d.balance > 0) actions.push(`<button class="btn" id="pay">${d.type === 'INV' ? 'Receive payment' : 'Record payment'}</button>`);
     if (['INV', 'SRET', 'CNOTE', 'QUOTE', 'SO'].includes(d.type)) actions.push(`<button class="btn got" id="wa">WhatsApp</button>`, ...(p.phone ? ['<button class="btn" id="sms">SMS</button>'] : []), `<button class="btn" id="link">Copy link</button>`);
-    if (['INV', 'SRET', 'CNOTE'].includes(d.type)) actions.push(`<a class="btn" href="/api/docs/${d.id}/einvoice" id="einv">E-invoice JSON</a>`);
-    if (['INV', 'DN'].includes(d.type)) actions.push(`<button class="btn" id="ewb">E-way bill</button>`);
-    if (['INV', 'SRET', 'DN'].includes(d.type)) actions.push(`<button class="btn" id="refs">${d.irn || d.ewb_no ? 'Edit' : 'Add'} IRN / EWB no.</button>`);
+    if (!simple() && ['INV', 'SRET', 'CNOTE'].includes(d.type)) actions.push(`<a class="btn" href="/api/docs/${d.id}/einvoice" id="einv">E-invoice JSON</a>`);
+    if (!simple() && ['INV', 'DN'].includes(d.type)) actions.push(`<button class="btn" id="ewb">E-way bill</button>`);
+    if (!simple() && ['INV', 'SRET', 'DN'].includes(d.type)) actions.push(`<button class="btn" id="refs">${d.irn || d.ewb_no ? 'Edit' : 'Add'} IRN / EWB no.</button>`);
     actions.push(`<button class="btn danger" id="cancel">Cancel</button>`);
   }
   actions.push(`<button class="btn primary" onclick="print()">Print / PDF</button>`);
@@ -882,6 +887,10 @@ route(/^settings$/, async (el) => {
   const users = canUsers ? await GET('/api/users') : { rows: [], roles: [] };
   const audit = canUsers ? (await GET('/api/audit')).rows : [];
   el.innerHTML = head('Business & Users') + `
+    <div class="panel"><h2>Features</h2><div class="row">
+      <label class="row" style="gap:8px"><input type="radio" name="mode" value="simple" ${simple() ? 'checked' : ''}> <span><b>Simple</b><br><span class="muted">Billing, purchase bills, returns, credit notes, stock, khata, POS, accounts. Best for most shops.</span></span></label>
+      <label class="row" style="gap:8px"><input type="radio" name="mode" value="advanced" ${simple() ? '' : 'checked'}> <span><b>Advanced</b><br><span class="muted">Adds quotations, sales/purchase orders, delivery notes, GRN, gate entry & gate pass, stock count, pick lists, e-invoice & e-way bill.</span></span></label>
+    </div><p class="muted">Switching only shows or hides menus. No data is deleted.</p></div>
     <form class="panel" id="org"><h2>Business profile</h2><div class="err" hidden></div><div class="form">
       <label class="f">Business name<input name="name" value="${esc(o.name)}"></label><label class="f">GSTIN<input name="gstin" value="${esc(o.gstin)}" maxlength="15"></label>
       <label class="f">State<input name="state" list="states" autocomplete="off" value="${esc(o.state)}"></label>
@@ -899,6 +908,10 @@ route(/^settings$/, async (el) => {
       <label class="f">New password<input type="password" name="password" autocomplete="new-password" minlength="8"></label></div><div class="row" style="margin-top:12px"><span class="spacer"></span><button class="btn">Change password</button></div></form>
     <p class="muted">Selling SmartTrader to other businesses? <a href="#/admin">Open the admin panel</a> (needs the ADMIN_KEY secret).</p>
     ${canUsers ? `<div class="panel flush"><div style="padding:14px 16px 0"><h3>Audit trail</h3></div>${table([{ h: 'When', f: (a) => new Date(a.at).toLocaleString('en-IN') }, { h: 'User', k: 'user' }, { h: 'Action', k: 'action' }, { h: 'Detail', k: 'detail', cls: 'hide-sm' }], audit.slice(0, 100))}</div>` : ''}`;
+  $$('[name=mode]', el).forEach((r) => r.onchange = async () => {
+    try { await api('PUT', '/api/org/mode', { mode: r.value }); ME = await GET('/api/me'); shell(); wireInstall(); toast(r.value === 'simple' ? 'Simple mode on' : 'Advanced features on'); render(); }
+    catch (e) { alert(e.message); render(); }
+  });
   const sub = (id, fn) => { $(id).onsubmit = async (e) => { e.preventDefault(); const b = $('.err', e.target); b.hidden = true; try { await fn(Object.fromEntries(new FormData(e.target))); } catch (err) { b.hidden = false; b.textContent = err.message; } }; };
   sub('#org', async (v) => { await api('PUT', '/api/org', v); ME = await GET('/api/me'); shell(); wireInstall(); toast('Profile saved'); render(); });
   sub('#pw', async (v) => { await POST('/api/me/password', v); toast('Password changed'); $('#pw').reset(); });
