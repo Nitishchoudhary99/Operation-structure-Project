@@ -254,3 +254,5 @@ pre.msg { white-space: pre-wrap; word-break: break-word; background: var(--soft)
   .doc-paper .foot, .doc-paper .totals, .doc-paper .sign { break-inside: avoid; page-break-inside: avoid; }
   .doc-paper .hdr, .doc-paper .parties { break-after: avoid; }
 }
+.paybox { margin-top: 12px; padding: 12px; border: 1px solid var(--line); border-radius: 10px; background: var(--soft); }
+.paybox .btn.big { width: 100%; justify-content: center; }

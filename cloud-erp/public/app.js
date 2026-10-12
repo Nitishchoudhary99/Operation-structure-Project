@@ -643,6 +643,7 @@ route(/^khata$/, async (el) => {
   el.innerHTML = head('Khata Book', `<button class="btn primary" id="new">+ Add entry</button>`) + `
     <div class="khata-sum"><div class="kpi"><div class="l">You will get</div><div class="v get">${inr(k.you_will_get)}</div></div>
       <div class="kpi"><div class="l">You will give</div><div class="v give">${inr(k.you_will_give)}</div></div></div>
+${ME.org.upi_id ? '' : '<div class="panel warnbox">Add your <b>UPI ID</b> in <a href="#/settings">Business &amp; Users</a> so customers get a <b>Pay by UPI</b> button and QR in every message.</div>'}
     ${pend ? `<div class="panel warnbox">${pend} entr${pend === 1 ? 'y is' : 'ies are'} not sent yet. They do not count until you send them to the customer.</div>` : ''}
     <div class="panel"><input id="search" placeholder="Search name or mobile…"></div><div class="panel flush" id="list"></div>
     <p class="muted">Every entry is sent to the customer on WhatsApp or SMS before it counts, with a private link where they can see and confirm their khata. Sent entries cannot be deleted, only reversed, so both sides can trust the record.</p>`;
@@ -723,10 +724,28 @@ async function publicDoc(token) {
     app.innerHTML = `<main class="page pub pubdoc"><div class="page-head no-print"><h1>${esc(d.label)} ${esc(d.number)}</h1>${d.type === 'INV' ? badge(d.status) : ''}<span class="spacer"></span>
         ${due && d.org.upi_id ? `<a class="btn got" href="${esc(upiLink(d.org.upi_id, d.org.name, d.balance, d.number))}">Pay ${inr(d.balance)} by UPI</a>` : ''}
         <button class="btn primary" onclick="print()">Download PDF</button></div>
-      ${due ? `<div class="panel no-print">Balance due <b>${inr(d.balance)}</b>${d.due_date ? ` by ${fdate(d.due_date)}` : ''}. Pay with any UPI app${d.org.upi_id ? ` to <b>${esc(d.org.upi_id)}</b>` : ''}.</div>` : ''}
+      ${due ? `<div class="panel no-print">Balance due <b>${inr(d.balance)}</b>${d.due_date ? ` by ${fdate(d.due_date)}` : ''}.${payBox(d.org, d.balance, d.number)}</div>` : ''}
       ${docPaper(d)}<p class="muted no-print">Shared by ${esc(d.org.name)} using SmartTrader ERP. Tap “Download PDF” and choose “Save as PDF”.</p></main>`;
-    if (due) upiQr($('#upiqr'), d.org, d.balance, d.number, 'Scan to pay with any UPI app');
+    if (due) { upiQr($('#upiqr'), d.org, d.balance, d.number, 'Scan to pay with any UPI app'); wirePayBox(app, d.org, d.balance, d.number); }
   } catch (e) { app.innerHTML = '<div class="boot"><h2>You are offline</h2><p class="muted">Connect to the internet to see this document.</p></div>'; }
+}
+
+/* How the customer pays: a UPI button (opens GPay/PhonePe/Paytm on the phone), a QR for paying from another
+   phone, and the UPI ID to copy. Without a UPI ID on the shop, call / WhatsApp the shop instead. */
+function payBox(shop, amount, note) {
+  const phone = String(shop.phone || '').replace(/\D/g, ''), wa = phone.length === 10 ? '91' + phone : phone;
+  const contact = phone ? `<div class="row" style="margin-top:10px"><a class="btn" href="tel:${esc(phone)}">Call shop</a>
+      <a class="btn" href="https://api.whatsapp.com/send?phone=${esc(wa)}&text=${encodeURIComponent(`Namaste, maine ${shop.name} ka ${inr(amount)} ka payment karna hai.`)}">WhatsApp shop</a></div>` : '';
+  if (!shop.upi_id) return `<div class="paybox"><b>How to pay</b><p class="muted" style="margin:4px 0 0">Pay ${esc(shop.name)} in cash or ask for their UPI ID.</p>${contact}</div>`;
+  return `<div class="paybox"><a class="btn got big" href="${esc(upiLink(shop.upi_id, shop.name, amount, note))}">Pay ${inr(amount)} by UPI</a>
+    <div class="muted" style="margin:6px 0">Opens Google Pay, PhonePe, Paytm or any UPI app.</div>
+    <div class="row"><span>UPI ID: <b>${esc(shop.upi_id)}</b></span><button class="btn sm" type="button" data-copyupi="${esc(shop.upi_id)}">Copy</button></div>
+    <div data-payqr style="margin-top:10px"></div>${contact}</div>`;
+}
+function wirePayBox(root, shop, amount, note) {
+  $$('[data-copyupi]', root).forEach((b) => b.onclick = async () => { try { await navigator.clipboard.writeText(b.dataset.copyupi); toast('UPI ID copied'); } catch (e) { prompt('UPI ID:', b.dataset.copyupi); } });
+  const q = $('[data-payqr]', root);
+  if (q && shop.upi_id) upiQr(q, shop, amount, note, 'Paying from another phone? Scan this');
 }
 
 /* The customer's private statement page (#/k/<token>): no login, read-only, confirm or dispute entries. */
@@ -737,10 +756,10 @@ async function publicKhata(token) {
     const d = await res.json();
     if (!res.ok) { app.innerHTML = `<div class="boot"><h2>Khata not found</h2><p class="muted">${esc(d.error || '')}</p></div>`; return; }
     app.innerHTML = `<main class="page pub"><div class="panel"><div class="muted">Khata statement from</div><h1>${esc(d.shop.name)}</h1>
-        <div class="muted">${esc(d.shop.address || '')} ${d.shop.phone ? '&middot; ' + esc(d.shop.phone) : ''}</div></div>
+        <div class="muted">${[d.shop.address, d.shop.phone].filter(Boolean).map(esc).join(' &middot; ')}</div></div>
       <div class="kpi" style="margin-bottom:14px"><div class="l">${esc(d.customer)}, ${d.balance > 0 ? 'you have to pay' : d.balance < 0 ? 'your advance' : 'your khata is'}</div>
         <div class="v ${d.balance > 0 ? 'neg' : 'pos'}">${d.balance === 0 ? 'Settled ✓' : inr(Math.abs(d.balance))}</div>
-        ${d.balance > 0 && d.shop.upi_id ? `<a class="btn primary" style="margin-top:10px" href="${esc(upiLink(d.shop.upi_id, d.shop.name, d.balance, 'Khata'))}">Pay ${inr(d.balance)} by UPI</a>` : ''}</div>
+        ${d.balance > 0 ? payBox(d.shop, d.balance, 'Khata') : ''}</div>
       <div class="panel flush kl">${d.rows.length ? d.rows.map((r) => `<div class="ke">
         <div class="kl-l"><b>${fdate(r.date)}</b>${r.note ? `<div class="muted">${esc(r.note)}</div>` : ''}
           <div class="ks">${r.ack === 'confirmed' ? '<span class="badge b-paid">✓ you confirmed</span>' : r.ack === 'disputed' ? '<span class="badge b-unpaid">you said this is wrong</span>'
@@ -752,6 +771,7 @@ async function publicKhata(token) {
       const r = await fetch(`/api/public/khata/${token}/ack`, { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Requested-With': 'SmartTrader' }, body: JSON.stringify({ entry_id: +id, ack: a, note }) });
       if (!r.ok) alert((await r.json().catch(() => ({}))).error || 'Could not save'); else load();
     };
+    if (d.balance > 0) wirePayBox(app, d.shop, d.balance, 'Khata');
     $$('[data-ok]').forEach((b) => b.onclick = () => ack(b.dataset.ok, 'confirmed'));
     $$('[data-no]').forEach((b) => b.onclick = () => { const n = prompt('What is wrong with this entry? (the shop will see this)'); if (n !== null) ack(b.dataset.no, 'disputed', n); });
   };
@@ -1036,7 +1056,7 @@ route(/^reminders$/, async (el) => {
   const mark = (k) => { sent[k] = 1; try { sessionStorage.setItem('st-sent', JSON.stringify(sent)); } catch (e) { /* ignore */ } };
   const khRows = kh.rows.filter((r) => r.balance > 0);
   const btns = (k) => `${sent[k] ? '<span class="badge b-paid">sent</span> ' : ''}<button class="btn sm got" data-wa="${k}">WhatsApp</button> <button class="btn sm" data-sms="${k}">SMS</button>`;
-  el.innerHTML = head('Payment Reminders') + `<p class="muted">Everyone who owes you money, oldest dues first. Tap WhatsApp to send a ready reminder with the bills, total and your UPI. Sent ones are marked for today.</p>
+  el.innerHTML = head('Payment Reminders') + `${ME.org.upi_id ? '' : '<div class="panel warnbox">Add your <b>UPI ID</b> in <a href="#/settings">Business &amp; Users</a> so customers get a <b>Pay by UPI</b> button and QR in every message.</div>'}<p class="muted">Everyone who owes you money, oldest dues first. Tap WhatsApp to send a ready reminder with the bills, total and your UPI. Sent ones are marked for today.</p>
     <div class="panel flush"><div class="row" style="padding:14px 16px 0"><h3>Invoice dues</h3><span class="badge">${ag.rows.length}</span></div>${table([
       { h: 'Customer', f: (r) => `<a href="#/party/${r.party_id}">${esc(r.party)}</a><div class="muted">${esc(r.phone || 'no mobile')}</div>` },
       { h: 'Overdue', num: 1, cls: 'hide-sm', f: (r) => inr(r.total - r.current) }, { h: 'Total due', num: 1, f: (r) => `<b>${inr(r.total)}</b>` }, { h: '', f: (r) => btns('p' + r.party_id) }],
@@ -1288,7 +1308,7 @@ route(/^plan$/, async (el) => {
       ${p.key === cur.key ? '<div class="muted">Your plan</div>' : p.price ? `<button class="btn primary" data-buy="${p.key}">Choose ${esc(p.label)}</button>` : ''}</div>`).join('')}</div>
     <div class="grid g2">
       <div class="panel" id="paybox"><h2>How to upgrade</h2>${P.pay_upi ? `<p>Pay by UPI to <b>${esc(P.pay_upi)}</b>, then send the payment screenshot with your login email${P.support_whatsapp ? ' on WhatsApp' : ''}. You will get an activation code.</p><div id="payqr"></div>
-        ${P.support_whatsapp ? `<a class="btn" target="_blank" rel="noopener" href="https://wa.me/${esc(P.support_whatsapp.replace(/\D/g, ''))}?text=${encodeURIComponent(`Hi, I want to upgrade SmartTrader ERP. Business: ${ME.org.name}, login: ${ME.user.email}`)}">WhatsApp us</a>` : ''}`
+        ${P.support_whatsapp ? `<a class="btn" target="_blank" rel="noopener" href="https://api.whatsapp.com/send?phone=${esc(P.support_whatsapp.replace(/\D/g, ''))}&text=${encodeURIComponent(`Hi, I want to upgrade SmartTrader ERP. Business: ${ME.org.name}, login: ${ME.user.email}`)}">WhatsApp us</a>` : ''}`
         : '<p>Contact the person who gave you SmartTrader to buy a plan. You will get an activation code.</p>'}</div>
       <form class="panel" id="act"><h2>Have an activation code?</h2><div class="err" hidden></div><label class="f">Code<input name="code" placeholder="ST-GROWTH-12-…" autocomplete="off"></label>
         <div class="row" style="margin-top:12px"><span class="spacer"></span><button class="btn primary">Activate</button></div></form>

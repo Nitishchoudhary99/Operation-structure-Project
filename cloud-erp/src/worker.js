@@ -370,9 +370,9 @@ router.add('GET', '/api/docs/:id/share', async (c) => {
   const p = d.party || {}, paise = (x) => Math.round(x * 100);
   const money = ['INV', 'SRET', 'CNOTE'].includes(d.type);
   const status = d.type === 'INV' ? (d.balance <= 0 ? 'Paid ✅' : `Balance due: *${inrW(paise(d.balance))}*`) : '';
-  const wa = [`*${c.org.name}*`, `🧾 ${d.label} *${d.number}* · ${fd(d.date)}`, '', `Namaste ${p.name || ''} ji,`, `Amount: *${inrW(paise(d.total))}*`,
+  const wa = [`*${c.org.name}*`, `${d.label} *${d.number}* · ${fd(d.date)}`, '', `Namaste ${p.name || ''} ji,`, `Amount: *${inrW(paise(d.total))}*`,
     ...(status ? [status] : []), ...(d.type === 'INV' && d.balance > 0 && c.org.upi_id ? [`UPI: ${c.org.upi_id}`] : []),
-    '', money ? 'Invoice dekhein, download karein aur pay karein 👇' : 'Document dekhein aur download karein 👇', url, '', `_Sent via ${BRAND}_`].join('\n');
+    '', money ? `Invoice dekhein aur download karein${d.type === 'INV' && d.balance > 0 && c.org.upi_id ? ', UPI se pay karein' : ''} ⬇` : 'Document dekhein aur download karein ⬇', url, '', `_Sent via ${BRAND}_`].join('\n');
   const sms = `${c.org.name}: ${d.label} ${d.number} dt ${fd(d.date)}, amount ${rs(paise(d.total))}${d.type === 'INV' && d.balance > 0 ? `, due ${rs(paise(d.balance))}` : ''}. View/download: ${url} -${BRAND}`;
   return json({ url, ...sendLinks(p.phone, wa, sms) });
 });
@@ -545,8 +545,8 @@ router.add('GET', '/api/parties/:id/reminder', async (c) => {
   if (!due) throw bad(`${p.name} has no unpaid invoices.`);
   const link = `${c.url.origin}/i/${await shareToken(c, results[0].id)}`;
   const listW = results.slice(0, 8).map((r) => `• ${r.number} (${fd(r.date)}): ${inrW(r.bal)}`).join('\n') + (results.length > 8 ? `\n• …and ${results.length - 8} more` : '');
-  const wa = [`*${c.org.name}*`, '🔔 Payment reminder', '', `Namaste ${p.name} ji,`, 'Ye bills baaki hain:', listW, '', `Total baaki: *${inrW(due)}*`,
-    ...(c.org.upi_id ? [`UPI: ${c.org.upi_id}`] : []), '', 'Bill dekhein aur pay karein 👇', link, '', `_Sent via ${BRAND}_`].join('\n');
+  const wa = [`*${c.org.name}*`, '⏰ Payment reminder', '', `Namaste ${p.name} ji,`, 'Ye bills baaki hain:', listW, '', `Total baaki: *${inrW(due)}*`,
+    ...(c.org.upi_id ? [`UPI: ${c.org.upi_id}`] : []), '', c.org.upi_id ? 'Bill dekhein aur UPI se pay karein ⬇' : 'Bill yahan dekhein ⬇', link, '', `_Sent via ${BRAND}_`].join('\n');
   const sms = `${c.org.name}: Namaste ${p.name}, ${results.length} bill(s) baaki, total ${rs(due)}. Kripya bhugtan karein: ${link} -${BRAND}`;
   return json({ party: p.name, due: R(due), invoices: results.length, ...sendLinks(p.phone, wa, sms) });
 });
@@ -598,7 +598,7 @@ const BRAND = 'SmartTrader ERP';
 function sendLinks(phoneRaw, wa, sms = wa) {
   const phone = String(phoneRaw || '').replace(/\D/g, '');
   const to = phone.length === 10 ? '91' + phone : phone;
-  return { text: wa, sms_text: sms, whatsapp_url: `https://wa.me/${to}?text=${encodeURIComponent(wa)}`, sms_url: phone ? `sms:${phone}?body=${encodeURIComponent(sms)}` : '' };
+  return { text: wa, sms_text: sms, whatsapp_url: `https://api.whatsapp.com/send?${to ? `phone=${to}&` : ''}text=${encodeURIComponent(wa)}`, sms_url: phone ? `sms:${phone}?body=${encodeURIComponent(sms)}` : '' };
 }
 const inrW = (p) => '₹' + (p / 100).toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 const khataLink = async (c, partyId) => `${c.url.origin}/k/${await khataToken(c, partyId)}`;
@@ -609,13 +609,13 @@ async function entryMessage(c, e, p) {
   const balW = after > 0 ? `Total baaki: *${inrW(after)}*` : after < 0 ? `Aapka advance: *${inrW(-after)}*` : 'Khata clear hai ✅';
   const wa = [
     `*${c.org.name}*`,
-    `🧾 Khata entry · ${fd(e.date)}`,
+    `✍ Khata entry · ${fd(e.date)}`,
     '',
-    e.kind === 'gave' ? `Udhaar likha gaya: *${inrW(e.amount)}*` : `Payment mila: *${inrW(e.amount)}* 🙏`,
+    e.kind === 'gave' ? `Udhaar likha gaya: *${inrW(e.amount)}*` : `Payment mila: *${inrW(e.amount)}* ✅`,
     ...(e.note ? [`Note: ${e.note}`] : []),
     balW,
     '',
-    'Apna khata dekhein aur confirm karein 👇',
+    'Apna khata dekhein aur confirm karein ⬇',
     link,
     '',
     `_Sent via ${BRAND}_`,
@@ -711,8 +711,8 @@ router.add('GET', '/api/khata/:party/reminder', async (c) => {
   const link = await khataLink(c, p.id);
   const upi = c.org.upi_id && amt > 0 ? `upi://pay?pa=${encodeURIComponent(c.org.upi_id)}&pn=${encodeURIComponent(c.org.name)}&am=${amt.toFixed(2)}&cu=INR` : '';
   const wa = bal > 0
-    ? [`*${c.org.name}*`, '🔔 Payment reminder', '', `Namaste ${p.name} ji,`, `Aapka baaki: *${inrW(bal)}*`, 'Kripya jaldi bhugtan karein.', ...(c.org.upi_id ? [`UPI: ${c.org.upi_id}`] : []),
-      '', 'Khata dekhein aur online pay karein 👇', link, '', `_Sent via ${BRAND}_`].join('\n')
+    ? [`*${c.org.name}*`, '⏰ Payment reminder', '', `Namaste ${p.name} ji,`, `Aapka baaki: *${inrW(bal)}*`, 'Kripya jaldi bhugtan karein.', ...(c.org.upi_id ? [`UPI: ${c.org.upi_id}`] : []),
+      '', c.org.upi_id ? 'Khata dekhein aur UPI se pay karein ⬇' : 'Poora khata yahan dekhein ⬇', link, '', `_Sent via ${BRAND}_`].join('\n')
     : [`*${c.org.name}*`, '', `Namaste ${p.name} ji, aapka khata clear hai ✅`, 'Dhanyavaad!', '', link, '', `_Sent via ${BRAND}_`].join('\n');
   const sms = bal > 0 ? `${c.org.name}: Namaste ${p.name}, aapka baaki ${rs(bal)} hai. Kripya jaldi bhugtan karein. Khata/pay: ${link} -${BRAND}`
     : `${c.org.name}: Namaste ${p.name}, aapka khata clear hai. Dhanyavaad! ${link} -${BRAND}`;
@@ -816,11 +816,11 @@ async function sharePage(request, env, kind, token) {
   const url = new URL(request.url);
   let title = 'SmartTrader ERP', desc = 'Billing, stock, GST, accounts and khata for Indian businesses.', image = '/og-invoice.png';
   if (kind === 'k') {
-    const p = await env.DB.prepare(`SELECT p.id, p.name, o.name AS org FROM parties p JOIN orgs o ON o.id = p.org_id WHERE p.khata_token = ?`).bind(token).first();
+    const p = await env.DB.prepare(`SELECT p.id, p.name, o.name AS org, o.upi_id FROM parties p JOIN orgs o ON o.id = p.org_id WHERE p.khata_token = ?`).bind(token).first();
     if (p) {
       const b = (await env.DB.prepare(`SELECT COALESCE(SUM(CASE WHEN status = 'sent' THEN (CASE WHEN kind = 'gave' THEN amount ELSE -amount END) ELSE 0 END), 0) AS b FROM khata WHERE party_id = ?`).bind(p.id).first()).b;
       title = `${p.name} ka khata · ${p.org}`;
-      desc = b > 0 ? `Baaki: ${inrW(b)}. Entries dekhein, confirm karein aur UPI se pay karein.` : b < 0 ? `Advance: ${inrW(-b)}. Poora khata dekhein.` : 'Khata clear hai. Poora hisaab dekhein.';
+      desc = b > 0 ? `Baaki: ${inrW(b)}. Entries dekhein, confirm karein${p.upi_id ? ' aur UPI se pay karein' : ''}.` : b < 0 ? `Advance: ${inrW(-b)}. Poora khata dekhein.` : 'Khata clear hai. Poora hisaab dekhein.';
       image = '/og-khata.png';
     }
   } else {

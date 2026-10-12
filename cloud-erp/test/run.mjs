@@ -124,7 +124,7 @@ await api('POST', `/api/parties/${cust.id}/opening`, { amount: 1500 });
 
 /* --- khata --- */
 const k = await api('POST', '/api/khata', { name: 'Ramesh (chai stall)', phone: '9988776655', kind: 'gave', amount: 750, note: 'Sugar 10kg' });
-check('khata entry message has WhatsApp link + statement link', k.whatsapp_url.startsWith('https://wa.me/919988776655') && /\/k\/[0-9a-f]{24}/.test(k.text) && /SmartTrader ERP/.test(k.text) && /SmartTrader ERP/.test(k.sms_text), k.text);
+check('khata entry message has WhatsApp link + statement link', k.whatsapp_url.startsWith('https://api.whatsapp.com/send?phone=919988776655&text=') && /\/k\/[0-9a-f]{24}/.test(k.text) && /SmartTrader ERP/.test(k.text) && /SmartTrader ERP/.test(k.sms_text), k.text);
 check('unsent khata entry does not count', (await api('GET', '/api/khata')).you_will_get === 0);
 await api('POST', `/api/khata/entries/${k.entry_id}/send`, { via: 'whatsapp' });
 check('sent khata entry counts', eq((await api('GET', '/api/khata')).you_will_get, 750));
@@ -160,7 +160,7 @@ check('purchase bills are not public', (await fetch(pbill.url.replace(/^https?:\
 const badTok = await fetch(`${BASE}/api/public/khata/${'0'.repeat(24)}`);
 check('random statement link is rejected', badTok.status === 404);
 const rem = await api('GET', `/api/khata/${k.party_id}/reminder`);
-check('whatsapp reminder link', rem.whatsapp_url.startsWith('https://wa.me/919988776655') && /\/k\/[0-9a-f]{24}/.test(rem.text), rem.whatsapp_url);
+check('whatsapp reminder link', rem.whatsapp_url.startsWith('https://api.whatsapp.com/send?phone=919988776655&text=') && /\/k\/[0-9a-f]{24}/.test(rem.text), rem.whatsapp_url);
 
 /* --- value credit / debit notes (rate difference, no goods) --- */
 const inv2Before = await api('GET', `/api/docs/${inv2.id}`);
