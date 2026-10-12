@@ -5,3 +5,4 @@ Disallow: /k/
 Disallow: /i/
 
 Sitemap: https://erp.docbrisk.com/sitemap.xml
+Sitemap: https://erp.docbrisk.com/sitemap-erp.xml
