@@ -162,6 +162,64 @@ check('random statement link is rejected', badTok.status === 404);
 const rem = await api('GET', `/api/khata/${k.party_id}/reminder`);
 check('whatsapp reminder link', rem.whatsapp_url.startsWith('https://wa.me/919988776655') && /\/k\/[0-9a-f]{24}/.test(rem.text), rem.whatsapp_url);
 
+/* --- value credit / debit notes (rate difference, no goods) --- */
+const inv2Before = await api('GET', `/api/docs/${inv2.id}`);
+const cnDraft = await api('GET', `/api/docs/${inv2.id}/convert?to=CNOTE`);
+check('credit note draft lists invoice lines with blank rate', cnDraft.lines.length === 2 && cnDraft.lines[0].rate === '');
+const stockOilBefore = (await api('GET', '/api/reports/stock')).rows.find((r) => r.id === oil.id).qty;
+const cn = await api('POST', '/api/docs', { ...cnDraft, lines: [{ ...cnDraft.lines[0], rate: 50 }] });
+check('value credit note numbered CRN', cn.number === 'CRN-00001' && cn.status === 'closed', cn.number);
+check('credit note: 3 x Rs 50 + GST, IGST for Delhi', eq(cn.taxable, 150) && cn.igst > 0, `${cn.taxable} ${cn.igst}`);
+check('credit note reduces the invoice balance', eq((await api('GET', `/api/docs/${inv2.id}`)).balance, inv2Before.balance - cn.total));
+check('credit note does not move stock', (await api('GET', '/api/reports/stock')).rows.find((r) => r.id === oil.id).qty === stockOilBefore);
+const emptyCn = await api('POST', '/api/docs', { ...cnDraft, lines: [{ ...cnDraft.lines[0], rate: '' }] }, true);
+check('credit note needs an amount', emptyCn.status === 400);
+const freeCn = await api('POST', '/api/docs', { type: 'CNOTE', party_id: cust.id, lines: [{ description: 'Festival discount', qty: 1, rate: 200, gst_rate: 5 }] });
+check('standalone credit note (no invoice) allowed', freeCn.number === 'CRN-00002' && eq(freeCn.total, 210));
+const dnDraft = await api('GET', `/api/docs/${bill2.id}/convert?to=DNOTE`);
+const dnote = await api('POST', '/api/docs', { ...dnDraft, lines: [{ ...dnDraft.lines[0], rate: 20 }] });
+check('value debit note numbered DRN, settles the bill', dnote.number === 'DRN-00001' && (await api('GET', `/api/docs/${bill2.id}`)).paid > 0);
+const gstAfter = await api('GET', '/api/reports/gst');
+check('GST summary nets the credit note', gstAfter.outward.rows.some((r) => r.igst < 0 || r.taxable !== 0));
+await api('POST', `/api/docs/${freeCn.id}/cancel`);
+check('credit note can be cancelled', (await api('GET', `/api/docs/${freeCn.id}`)).status === 'cancelled');
+
+/* --- gate entry -> GRN, gate pass --- */
+const po2 = await api('POST', '/api/docs', { type: 'PO', party_id: sup.id, lines: [{ item_id: rice.id, qty: 10, rate: 1800 }] });
+const noVeh = await api('POST', '/api/gate', { kind: 'in', party_id: sup.id }, true);
+check('gate entry needs a vehicle number', noVeh.status === 400);
+const ge = await api('POST', '/api/gate', { kind: 'in', party_id: sup.id, ref_doc_id: po2.id, vehicle_no: 'rj14 gb 4321', driver_name: 'Sohan', challan_no: 'CH-778', packages: 10, weight_kg: 250 });
+check('gate entry numbered GE, vehicle cleaned', ge.number === 'GE-00001' && ge.vehicle_no === 'RJ14GB4321' && ge.status === 'open', JSON.stringify(ge));
+check('pending report shows the vehicle at the gate', (await api('GET', '/api/reports/pending')).at_gate.some((g) => g.id === ge.id));
+const grnDraft = await api('GET', `/api/docs/${po2.id}/convert?to=GRN`);
+const grnGe = await api('POST', '/api/docs', { ...grnDraft, gate_entry_id: ge.id });
+const geAfter = await api('GET', `/api/gate/${ge.id}`);
+check('GRN from gate entry closes the entry', geAfter.status === 'grn_done' && geAfter.grn_id === grnGe.id && geAfter.grn_number === grnGe.number);
+const po3 = await api('POST', '/api/docs', { type: 'PO', party_id: sup.id, lines: [{ item_id: rice.id, qty: 1, rate: 1800 }] });
+const reuse = await api('POST', '/api/docs', { ...(await api('GET', `/api/docs/${po3.id}/convert?to=GRN`)), gate_entry_id: ge.id }, true);
+check('a gate entry cannot be received twice', reuse.status === 400);
+await api('POST', `/api/docs/${grnGe.id}/cancel`);
+check('cancelling the GRN re-opens the gate entry', (await api('GET', `/api/gate/${ge.id}`)).status === 'open');
+const ge2 = await api('POST', '/api/gate', { kind: 'in', party_id: sup.id, vehicle_no: 'UP16X1' });
+await api('POST', `/api/gate/${ge2.id}/reject`, { reason: 'No PO' });
+check('gate entry can be rejected', (await api('GET', `/api/gate/${ge2.id}`)).status === 'rejected');
+const gp = await api('POST', '/api/gate', { kind: 'out', ref_doc_id: dn.id, party_id: cust.id, vehicle_no: 'RJ14C9', lr_no: 'LR-55' });
+check('gate pass numbered GP', gp.number === 'GP-00001' && gp.status === 'open');
+await api('POST', `/api/gate/${gp.id}/exit`, {});
+const gpAfter = await api('GET', `/api/gate/${gp.id}`);
+check('vehicle exit closes the gate pass', gpAfter.status === 'closed' && /^\d\d:\d\d$/.test(gpAfter.time_out));
+
+/* --- stock count, pending, reminders --- */
+const before = (await api('GET', '/api/reports/stock')).rows.find((r) => r.id === rice.id);
+const mainQty = (before.warehouses.find((w) => w.warehouse === 'Main Store') || { qty: 0 }).qty;
+const cnt = await api('POST', '/api/stock/count', { warehouse_id: wh.id, lines: [{ item_id: rice.id, counted: mainQty - 2 }, { item_id: oil.id, counted: '' }] });
+check('stock count adjusts only the differences', cnt.adjusted === 1 && cnt.diffs[0].diff === -2, JSON.stringify(cnt));
+check('stock count updates stock', (await api('GET', '/api/reports/stock')).rows.find((r) => r.id === rice.id).qty === before.qty - 2);
+const pend = await api('GET', '/api/reports/pending');
+check('pending report has every section', ['to_deliver', 'to_receive', 'to_invoice', 'to_bill', 'open_quotes', 'at_gate'].every((k) => Array.isArray(pend[k])));
+const remP = await api('GET', `/api/parties/${custIgst.id}/reminder`);
+check('invoice-due reminder lists bills and total', remP.text.includes('Payment reminder') && remP.text.includes(inv2.number) && /\/i\/[0-9a-f]{24}/.test(remP.text), remP.text);
+
 /* --- the books --- */
 tb = await api('GET', '/api/reports/trial-balance');
 check('trial balance balances', tb.balanced, `${tb.total_debit} vs ${tb.total_credit}`);

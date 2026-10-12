@@ -48,7 +48,7 @@ function sellerAndBuyerProblems(d) {
 
 /* e-invoice JSON for one invoice (INV) or credit note (SRET). Only for B2B: the buyer needs a GSTIN. */
 export function einvoiceJson(d) {
-  if (!['INV', 'SRET'].includes(d.type)) throw bad('E-invoices are made for sales invoices and credit notes.');
+  if (!['INV', 'SRET', 'CNOTE'].includes(d.type)) throw bad('E-invoices are made for sales invoices and credit notes.');
   if (d.status === 'cancelled') throw bad('This document is cancelled.');
   const { o, p, problems } = sellerAndBuyerProblems(d);
   if (!/^\d{2}[A-Z0-9]{13}$/.test(p.gstin || '')) problems.push(`the customer's GSTIN (e-invoice is only for B2B sales)`);
@@ -67,12 +67,12 @@ export function einvoiceJson(d) {
   return {
     Version: '1.1',
     TranDtls: { TaxSch: 'GST', SupTyp: 'B2B', RegRev: 'N', IgstOnIntra: 'N' },
-    DocDtls: { Typ: d.type === 'SRET' ? 'CRN' : 'INV', No: d.number, Dt: dmy(d.date) },
+    DocDtls: { Typ: d.type === 'INV' ? 'INV' : 'CRN', No: d.number, Dt: dmy(d.date) },
     SellerDtls: { Gstin: o.gstin, LglNm: cut(o.name, 100), Addr1: cut(o.address, 100), Loc: cut(o.city || o.state, 50) || 'NA', Pin: pin(o.pincode), Stcd: sellerSt,
       ...(o.phone ? { Ph: String(o.phone).replace(/\D/g, '').slice(-12) } : {}), ...(o.email ? { Em: o.email } : {}) },
     BuyerDtls: { Gstin: p.gstin, LglNm: cut(p.name, 100), Pos: buyerSt, Addr1: cut(p.address, 100) || cut(p.city, 100) || 'NA', Loc: cut(p.city || p.state, 50) || 'NA',
       Pin: pin(p.pincode), Stcd: buyerSt, ...(p.phone ? { Ph: String(p.phone).replace(/\D/g, '').slice(-12) } : {}), ...(p.email ? { Em: p.email } : {}) },
-    ...(d.parent && d.type === 'SRET' ? { RefDtls: { PrecDocDtls: [{ InvNo: d.parent.number, InvDt: dmy(d.parent.date) }] } } : {}),
+    ...(d.parent && d.type !== 'INV' ? { RefDtls: { PrecDocDtls: [{ InvNo: d.parent.number, InvDt: dmy(d.parent.date) }] } } : {}),
     ItemList: items,
     ValDtls: { AssVal: d.taxable, CgstVal: d.cgst, SgstVal: d.sgst, IgstVal: d.igst, CesVal: 0, StCesVal: 0, Discount: 0, OthChrg: 0, RndOffAmt: d.round_off, TotInvVal: d.total },
   };

@@ -3,7 +3,7 @@
    Every business table carries org_id: one database serves many businesses (multi-tenant).
    migrate() runs on the first request after each deploy, so no manual migration step is needed. */
 
-export const SCHEMA_VERSION = 4;
+export const SCHEMA_VERSION = 5;
 
 export const SCHEMA = [
   `CREATE TABLE IF NOT EXISTS meta (k TEXT PRIMARY KEY, v TEXT NOT NULL)`,
@@ -108,9 +108,11 @@ export const DEFAULT_ACCOUNTS = [
   ['3200', 'Owner Drawings', 'equity', 'drawings', 0],
   ['4000', 'Sales', 'income', 'sales', 0],
   ['4100', 'Other Income', 'income', 'other_income', 0],
+  ['4200', 'Sales Discounts & Rate Difference', 'income', 'sales_adj', 0],
   ['5000', 'Cost of Goods Sold', 'expense', 'cogs', 0],
   ['5100', 'Stock Adjustments (Loss / Gain)', 'expense', 'stock_adj', 0],
   ['5200', 'Round Off', 'expense', 'round_off', 0],
+  ['5300', 'Purchase Rate Difference', 'expense', 'pur_adj', 0],
   ['6000', 'Rent', 'expense', null, 0],
   ['6010', 'Salaries & Wages', 'expense', null, 0],
   ['6020', 'Electricity', 'expense', null, 0],
@@ -158,6 +160,23 @@ export const MIGRATIONS = {
   4: [
     `ALTER TABLE docs ADD COLUMN share_token TEXT`,
     `CREATE UNIQUE INDEX IF NOT EXISTS ux_docs_share_token ON docs (share_token) WHERE share_token IS NOT NULL`,
+  ],
+  // gate entry register, value credit/debit notes, bin locations
+  5: [
+    `CREATE TABLE IF NOT EXISTS gate_entries (
+       id INTEGER PRIMARY KEY, org_id INTEGER NOT NULL, number TEXT NOT NULL, kind TEXT NOT NULL CHECK (kind IN ('in','out')),
+       date TEXT NOT NULL, time_in TEXT DEFAULT '', time_out TEXT DEFAULT '', party_id INTEGER, ref_doc_id INTEGER,
+       vehicle_no TEXT DEFAULT '', driver_name TEXT DEFAULT '', driver_phone TEXT DEFAULT '', transporter TEXT DEFAULT '', lr_no TEXT DEFAULT '',
+       challan_no TEXT DEFAULT '', challan_date TEXT DEFAULT '', packages INTEGER NOT NULL DEFAULT 0, weight_kg REAL NOT NULL DEFAULT 0,
+       remarks TEXT DEFAULT '', status TEXT NOT NULL DEFAULT 'open', grn_id INTEGER, created_by INTEGER, created_at TEXT NOT NULL,
+       UNIQUE (org_id, kind, number))`,
+    `CREATE INDEX IF NOT EXISTS ix_gate_org ON gate_entries (org_id, kind, date)`,
+    `ALTER TABLE docs ADD COLUMN gate_entry_id INTEGER`,
+    `ALTER TABLE items ADD COLUMN location TEXT DEFAULT ''`,
+    `INSERT INTO accounts (org_id, code, name, type, sys, is_cash) SELECT o.id, '4200', 'Sales Discounts & Rate Difference', 'income', 'sales_adj', 0 FROM orgs o
+       WHERE NOT EXISTS (SELECT 1 FROM accounts a WHERE a.org_id = o.id AND (a.sys = 'sales_adj' OR a.code = '4200'))`,
+    `INSERT INTO accounts (org_id, code, name, type, sys, is_cash) SELECT o.id, '5300', 'Purchase Rate Difference', 'expense', 'pur_adj', 0 FROM orgs o
+       WHERE NOT EXISTS (SELECT 1 FROM accounts a WHERE a.org_id = o.id AND (a.sys = 'pur_adj' OR a.code = '5300'))`,
   ],
 };
 

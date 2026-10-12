@@ -23,7 +23,7 @@ function groupOf(a) {
   if (a.is_cash) return 'Bank Accounts';
   return { asset: 'Current Assets', liability: 'Current Liabilities', equity: 'Capital Account', income: 'Indirect Incomes', expense: 'Indirect Expenses' }[a.type];
 }
-const VCH = { INV: 'Sales', SRET: 'Credit Note', BILL: 'Purchase', PRET: 'Debit Note', receipt: 'Receipt', payment: 'Payment' };
+const VCH = { INV: 'Sales', SRET: 'Credit Note', CNOTE: 'Credit Note', BILL: 'Purchase', PRET: 'Debit Note', DNOTE: 'Debit Note', receipt: 'Receipt', payment: 'Payment' };
 
 export async function tallyXml(db, org, q) {
   const { from, to } = period(org, q);
@@ -35,7 +35,7 @@ export async function tallyXml(db, org, q) {
            COALESCE(d.number, pay.number, '') AS number
     FROM journals j JOIN journal_lines jl ON jl.journal_id = j.id
     LEFT JOIN parties p ON p.id = jl.party_id
-    LEFT JOIN docs d ON d.id = j.ref_id AND j.ref_type IN ('INV','SRET','BILL','PRET','DN','GRN')
+    LEFT JOIN docs d ON d.id = j.ref_id AND j.ref_type IN ('INV','SRET','CNOTE','BILL','PRET','DNOTE','DN','GRN')
     LEFT JOIN payments pay ON pay.id = j.ref_id AND j.ref_type IN ('receipt','payment')
     WHERE j.org_id = ? AND j.date >= ? AND j.date <= ? ORDER BY j.date, j.id, jl.id`).bind(org.id, from, to).all();
 

@@ -3,13 +3,13 @@
    anything else -> the web app in /public (Workers static assets, single-page app) */
 import { migrate, DEFAULT_ACCOUNTS } from './schema.js';
 import {
-  HttpError, bad, notFound, forbidden, json, readJson, str, reqStr, num, int, date, nowIso, oneOf, toPaise, Router, GST_RATES, today,
+  HttpError, bad, notFound, forbidden, json, readJson, str, reqStr, num, int, date, nowIso, oneOf, toPaise, Router, GST_RATES, today, counterStatements, counterValueSql,
 } from './lib.js';
 import {
   hashPassword, randomHex, sameText, passwordProblem, issueSession, sessionCookie, clearCookie, currentUser, ROLES, can, requireCan, rateLimit,
 } from './auth.js';
 import {
-  DOC_TYPES, loadSys, createDoc, cancelDoc, createPayment, voidPayment, stockAdjust, stockTransfer, createExpense, createJournal, partyOpening,
+  DOC_TYPES, NOTE_TYPES, stockCount, loadByIds, loadSys, createDoc, cancelDoc, createPayment, voidPayment, stockAdjust, stockTransfer, createExpense, createJournal, partyOpening,
   auditStatement, cashAccount,
 } from './engine.js';
 import * as rep from './reports.js';
@@ -68,7 +68,7 @@ router.add('POST', '/api/auth/logout', async () => json({ ok: true }, 200, { 'Se
 router.add('GET', '/api/me', async (c) => json({
   user: publicUser(c.user), org: c.org,
   can: Object.fromEntries(['settings', 'users', 'items', 'purchase', 'sales', 'stock', 'finance', 'khata'].map((a) => [a, can(c.user, a)])),
-  doc_types: Object.fromEntries(Object.entries(DOC_TYPES).map(([k, v]) => [k, { label: v.label, side: v.side, from: v.from, prefix: v.prefix }])),
+  doc_types: Object.fromEntries(Object.entries(DOC_TYPES).map(([k, v]) => [k, { label: v.label, side: v.side, from: v.from, prefix: v.prefix, note: !!v.note, stock: v.stock || '' }])),
   gst_rates: GST_RATES, today: today(), states: STATES.map(([, n]) => n), plan: planOut(c.org),
 }));
 
@@ -182,7 +182,7 @@ const itemFields = (b) => ({
   gst_rate: num(b.gst_rate, 'GST rate', { min: 0, max: 100, def: 0 }),
   purchase_price: toPaise(num(b.purchase_price, 'Purchase price', { min: 0, def: 0 })), sale_price: toPaise(num(b.sale_price, 'Sale price', { min: 0, def: 0 })),
   reorder_level: num(b.reorder_level, 'Reorder level', { min: 0, def: 0 }), is_service: b.is_service ? 1 : 0,
-  barcode: str(b.barcode, 48).replace(/\s+/g, ''),
+  barcode: str(b.barcode, 48).replace(/\s+/g, ''), location: str(b.location, 30),
 });
 async function barcodeTaken(c, code, exceptId = 0) {
   if (!code) return;
@@ -201,9 +201,9 @@ router.add('POST', '/api/items', async (c) => {
   const f = itemFields(c.body);
   if (await c.db.prepare(`SELECT 1 FROM items WHERE org_id = ? AND name = ?`).bind(c.org.id, f.name).first()) throw bad(`An item called ${f.name} already exists.`);
   await barcodeTaken(c, f.barcode);
-  const r = await c.db.prepare(`INSERT INTO items (org_id, sku, name, category, unit, hsn, gst_rate, purchase_price, sale_price, reorder_level, is_service, avg_cost, barcode, created_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING *`)
-    .bind(c.org.id, f.sku, f.name, f.category, f.unit, f.hsn, f.gst_rate, f.purchase_price, f.sale_price, f.reorder_level, f.is_service, f.purchase_price, f.barcode, nowIso()).first();
+  const r = await c.db.prepare(`INSERT INTO items (org_id, sku, name, category, unit, hsn, gst_rate, purchase_price, sale_price, reorder_level, is_service, avg_cost, barcode, location, created_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING *`)
+    .bind(c.org.id, f.sku, f.name, f.category, f.unit, f.hsn, f.gst_rate, f.purchase_price, f.sale_price, f.reorder_level, f.is_service, f.purchase_price, f.barcode, f.location, nowIso()).first();
   if (c.body.opening_qty && +c.body.opening_qty > 0 && !f.is_service) {
     await stockAdjust(c, { item_id: r.id, qty: c.body.opening_qty, rate: c.body.opening_rate ?? R(f.purchase_price), reason: 'opening', warehouse_id: c.body.warehouse_id });
   }
@@ -215,8 +215,8 @@ router.add('PUT', '/api/items/:id', async (c) => {
   const dup = await c.db.prepare(`SELECT id FROM items WHERE org_id = ? AND name = ? AND id != ?`).bind(c.org.id, f.name, +c.params.id).first();
   if (dup) throw bad(`An item called ${f.name} already exists.`);
   await barcodeTaken(c, f.barcode, +c.params.id);
-  const r = await c.db.prepare(`UPDATE items SET sku = ?, name = ?, category = ?, unit = ?, hsn = ?, gst_rate = ?, purchase_price = ?, sale_price = ?, reorder_level = ?, barcode = ?
-      WHERE id = ? AND org_id = ?`).bind(f.sku, f.name, f.category, f.unit, f.hsn, f.gst_rate, f.purchase_price, f.sale_price, f.reorder_level, f.barcode, +c.params.id, c.org.id).run();
+  const r = await c.db.prepare(`UPDATE items SET sku = ?, name = ?, category = ?, unit = ?, hsn = ?, gst_rate = ?, purchase_price = ?, sale_price = ?, reorder_level = ?, barcode = ?, location = ?
+      WHERE id = ? AND org_id = ?`).bind(f.sku, f.name, f.category, f.unit, f.hsn, f.gst_rate, f.purchase_price, f.sale_price, f.reorder_level, f.barcode, f.location, +c.params.id, c.org.id).run();
   if (!r.meta.changes) throw notFound('Item not found.');
   return json({ ok: true });
 });
@@ -290,7 +290,7 @@ async function docDetail(c, id) {
   const d = await c.db.prepare(`SELECT d.*, w.name AS warehouse FROM docs d LEFT JOIN warehouses w ON w.id = d.warehouse_id WHERE d.id = ? AND d.org_id = ?`).bind(id, c.org.id).first();
   if (!d) throw notFound('Document not found.');
   const [lines, party, children, parent, pays] = await Promise.all([
-    c.db.prepare(`SELECT l.*, i.name AS item, i.unit, i.hsn, i.is_service FROM doc_lines l LEFT JOIN items i ON i.id = l.item_id WHERE l.doc_id = ? ORDER BY l.id`).bind(id).all(),
+    c.db.prepare(`SELECT l.*, i.name AS item, i.unit, i.hsn, i.is_service, i.location FROM doc_lines l LEFT JOIN items i ON i.id = l.item_id WHERE l.doc_id = ? ORDER BY l.id`).bind(id).all(),
     c.db.prepare(`SELECT * FROM parties WHERE id = ?`).bind(d.party_id).first(),
     c.db.prepare(`SELECT id, type, number, date, status, total FROM docs WHERE ref_id = ? ORDER BY id`).bind(id).all(),
     d.ref_id ? c.db.prepare(`SELECT id, type, number, date, status FROM docs WHERE id = ?`).bind(d.ref_id).first() : null,
@@ -318,6 +318,10 @@ router.add('GET', '/api/docs/:id/convert', async (c) => {
   const to = (c.url.searchParams.get('to') || '').toUpperCase();
   const T = DOC_TYPES[to];
   if (!T || !T.from.includes(src.type)) throw bad(`Cannot make a ${to} from a ${src.type}.`);
+  if (T.note) {     // value note: every line of the bill/invoice, the user types the rate difference per unit
+    return json({ type: to, party_id: src.party_id, ref_id: src.id, ref_number: src.number, warehouse_id: src.warehouse_id, date: today(),
+      lines: src.lines.map((l) => ({ item_id: l.item_id, item: l.item, unit: l.unit, description: l.description || l.item, qty: l.qty, rate: '', discount_pct: 0, gst_rate: l.gst_rate, orig_rate: l.rate })) });
+  }
   const lines = src.lines.filter((l) => l.remaining > 0.0005).map((l) => ({
     item_id: l.item_id, item: l.item, unit: l.unit, description: l.description, qty: l.remaining, rate: l.rate,
     discount_pct: l.discount_pct, gst_rate: l.gst_rate, src_line_id: l.id,
@@ -359,7 +363,7 @@ router.add('GET', '/api/docs/:id/share', async (c) => {
   const d = await docDetail(c, +c.params.id);
   const url = `${c.url.origin}/i/${await shareToken(c, d.id)}`;
   const p = d.party || {}, paise = (x) => Math.round(x * 100);
-  const money = ['INV', 'SRET'].includes(d.type);
+  const money = ['INV', 'SRET', 'CNOTE'].includes(d.type);
   const status = d.type === 'INV' ? (d.balance <= 0 ? 'Paid ✅' : `Balance due: *${inrW(paise(d.balance))}*`) : '';
   const wa = [`*${c.org.name}*`, `🧾 ${d.label} *${d.number}* · ${fd(d.date)}`, '', `Namaste ${p.name || ''} ji,`, `Amount: *${inrW(paise(d.total))}*`,
     ...(status ? [status] : []), ...(d.type === 'INV' && d.balance > 0 && c.org.upi_id ? [`UPI: ${c.org.upi_id}`] : []),
@@ -367,7 +371,7 @@ router.add('GET', '/api/docs/:id/share', async (c) => {
   const sms = `${c.org.name}: ${d.label} ${d.number} dt ${fd(d.date)}, amount ${rs(paise(d.total))}${d.type === 'INV' && d.balance > 0 ? `, due ${rs(paise(d.balance))}` : ''}. View/download: ${url} -${BRAND}`;
   return json({ url, ...sendLinks(p.phone, wa, sms) });
 });
-const PUBLIC_DOCS = ['INV', 'SRET', 'QUOTE', 'SO', 'DN'];
+const PUBLIC_DOCS = ['INV', 'SRET', 'CNOTE', 'QUOTE', 'SO', 'DN'];
 router.add('GET', '/api/public/doc/:token', async (c) => {
   await rateLimit(c.env, 'dview:' + (c.request.headers.get('CF-Connecting-IP') || 'local'), 120, 600);
   const t = String(c.params.token || '');
@@ -381,7 +385,7 @@ router.add('GET', '/api/public/doc/:token', async (c) => {
     type: d.type, label: d.label, side: d.side, number: d.number, date: d.date, due_date: d.due_date, status: d.status, place_of_supply: d.place_of_supply,
     inter_state: d.inter_state, taxable: d.taxable, cgst: d.cgst, sgst: d.sgst, igst: d.igst, round_off: d.round_off, total: d.total, paid: d.paid, balance: d.balance,
     notes: d.notes, irn: d.irn, ack_no: d.ack_no, ack_date: d.ack_date, ewb_no: d.ewb_no, ewb_date: d.ewb_date, warehouse: '',
-    parent: d.parent && d.type === 'SRET' ? { number: d.parent.number, date: d.parent.date } : null,
+    parent: d.parent && ['SRET', 'CNOTE'].includes(d.type) ? { number: d.parent.number, date: d.parent.date } : null,
     org: { name: o.name, gstin: o.gstin, state: o.state, address: o.address, phone: o.phone, upi_id: o.upi_id, email: o.email },
     party: { name: p.name, gstin: p.gstin, address: p.address, phone: p.phone, state: p.state },
     lines: d.lines.map((l) => ({ item: l.item, description: l.description, hsn: l.hsn, unit: l.unit, qty: l.qty, rate: l.rate, discount_pct: l.discount_pct,
@@ -444,6 +448,104 @@ router.add('POST', '/api/admin/codes', async (c) => {
   return json({ codes, plan, months });
 }, { public: true });
 
+/* ======================================================================= gate entry (security gate register)
+   Inward (GE): every vehicle that arrives is logged before unloading: supplier, vehicle, driver, challan/invoice,
+   packages. The goods receipt (GRN) is then made from the gate entry, and the entry closes.
+   Outward (GP, gate pass): goods leaving against a delivery note / invoice, with vehicle and exit time. */
+const nowTime = () => new Date(Date.now() + 5.5 * 3600e3).toISOString().slice(11, 16);
+const geOut = (g) => g;
+router.add('GET', '/api/gate', async (c) => {
+  const q = c.url.searchParams, kind = q.get('kind') === 'out' ? 'out' : 'in';
+  const { results } = await c.db.prepare(`SELECT g.*, p.name AS party, r.number AS ref_number, r.type AS ref_type, n.number AS grn_number
+      FROM gate_entries g LEFT JOIN parties p ON p.id = g.party_id LEFT JOIN docs r ON r.id = g.ref_doc_id LEFT JOIN docs n ON n.id = g.grn_id
+      WHERE g.org_id = ? AND g.kind = ? AND (? = '' OR g.status = ?) ORDER BY g.date DESC, g.id DESC LIMIT 300`)
+    .bind(c.org.id, kind, q.get('status') || '', q.get('status') || '').all();
+  return json({ rows: results.map(geOut) });
+});
+router.add('GET', '/api/gate/:id', async (c) => {
+  const g = await c.db.prepare(`SELECT g.*, p.name AS party, r.number AS ref_number, r.type AS ref_type, n.number AS grn_number FROM gate_entries g
+      LEFT JOIN parties p ON p.id = g.party_id LEFT JOIN docs r ON r.id = g.ref_doc_id LEFT JOIN docs n ON n.id = g.grn_id WHERE g.id = ? AND g.org_id = ?`).bind(+c.params.id, c.org.id).first();
+  if (!g) throw notFound('Gate entry not found.');
+  return json(g);
+});
+router.add('POST', '/api/gate', async (c) => {
+  if (!can(c.user, 'stock') && !can(c.user, 'purchase') && !can(c.user, 'sales')) throw forbidden();
+  const b = c.body, kind = b.kind === 'out' ? 'out' : 'in';
+  const partyId = +b.party_id || null;
+  if (partyId && !(await c.db.prepare(`SELECT 1 FROM parties WHERE id = ? AND org_id = ?`).bind(partyId, c.org.id).first())) throw bad('Unknown party.');
+  let refId = +b.ref_doc_id || null;
+  if (refId) {
+    const r = await c.db.prepare(`SELECT type, party_id, status FROM docs WHERE id = ? AND org_id = ?`).bind(refId, c.org.id).first();
+    const ok = kind === 'in' ? ['PO'] : ['DN', 'INV', 'PRET'];
+    if (!r || !ok.includes(r.type)) throw bad(kind === 'in' ? 'Link a purchase order (optional).' : 'Link a delivery note, invoice or purchase return.');
+    if (r.status === 'cancelled') throw bad('That document is cancelled.');
+    if (partyId && r.party_id !== partyId) throw bad('The linked document belongs to another party.');
+  }
+  const vehicle = str(b.vehicle_no, 20).toUpperCase().replace(/[^A-Z0-9]/g, '');
+  if (!vehicle && !b.by_hand) throw bad('Enter the vehicle number (or tick "By hand / courier").');
+  const key = kind === 'in' ? 'GE' : 'GP';
+  await c.db.batch([
+    counterStatements(c.db, c.org.id, key),
+    c.db.prepare(`INSERT INTO gate_entries (org_id, number, kind, date, time_in, time_out, party_id, ref_doc_id, vehicle_no, driver_name, driver_phone, transporter, lr_no,
+        challan_no, challan_date, packages, weight_kg, remarks, status, created_by, created_at)
+      VALUES (?, ${counterValueSql}, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'open', ?, ?)`)
+      .bind(c.org.id, key, c.org.id, key, kind, date(b.date), str(b.time_in, 5) || nowTime(), kind === 'out' && b.exited ? nowTime() : '', partyId, refId, vehicle || 'BY HAND',
+        str(b.driver_name, 60), str(b.driver_phone, 15), str(b.transporter, 80), str(b.lr_no, 30), str(b.challan_no, 40), b.challan_date ? date(b.challan_date) : '',
+        int(b.packages, 'Packages', { min: 0, max: 100000, def: 0 }), num(b.weight_kg, 'Weight', { min: 0, max: 1e7, def: 0 }), str(b.remarks, 300),
+        c.user.id, nowIso()),
+  ]);
+  const g = await c.db.prepare(`SELECT * FROM gate_entries WHERE org_id = ? AND kind = ? ORDER BY id DESC LIMIT 1`).bind(c.org.id, kind).first();
+  if (kind === 'out' && b.exited) await c.db.prepare(`UPDATE gate_entries SET status = 'closed' WHERE id = ?`).bind(g.id).run();
+  await c.db.batch([auditStatement(c, `gate ${kind}`, `${g.number} ${g.vehicle_no}`)]);
+  return json(g);
+});
+/* exit time, reject at gate (goods sent back unloaded), or close */
+router.add('POST', '/api/gate/:id/:action', async (c) => {
+  if (!can(c.user, 'stock') && !can(c.user, 'purchase') && !can(c.user, 'sales')) throw forbidden();
+  const action = oneOf(c.params.action, ['exit', 'reject', 'close'], 'Action');
+  const g = await c.db.prepare(`SELECT * FROM gate_entries WHERE id = ? AND org_id = ?`).bind(+c.params.id, c.org.id).first();
+  if (!g) throw notFound('Gate entry not found.');
+  if (action === 'exit') {
+    await c.db.prepare(`UPDATE gate_entries SET time_out = ?, status = CASE WHEN status = 'open' AND kind = 'out' THEN 'closed' ELSE status END WHERE id = ?`).bind(str(c.body.time, 5) || nowTime(), g.id).run();
+  } else {
+    if (g.status !== 'open') throw bad(`${g.number} is already ${g.status === 'grn_done' ? 'received' : g.status}.`);
+    await c.db.prepare(`UPDATE gate_entries SET status = ?, remarks = TRIM(remarks || ' ' || ?), time_out = CASE WHEN time_out = '' THEN ? ELSE time_out END WHERE id = ?`)
+      .bind(action === 'reject' ? 'rejected' : 'closed', str(c.body.reason, 200), nowTime(), g.id).run();
+  }
+  await c.db.batch([auditStatement(c, `gate ${action}`, g.number)]);
+  return json({ ok: true });
+});
+
+/* ======================================================================= pending work (what is stuck where) */
+router.add('GET', '/api/reports/pending', async (c) => {
+  const lines = async (type) => (await c.db.prepare(`SELECT d.id, d.number, d.date, d.due_date, p.name AS party, i.name AS item, i.unit, l.qty, l.done_qty, ROUND(l.qty - l.done_qty, 3) AS pending
+      FROM docs d JOIN doc_lines l ON l.doc_id = d.id LEFT JOIN items i ON i.id = l.item_id LEFT JOIN parties p ON p.id = d.party_id
+      WHERE d.org_id = ? AND d.type = ? AND d.status IN ('open','partial') AND l.qty - l.done_qty > 0.0005 ORDER BY d.date, d.id LIMIT 500`).bind(c.org.id, type).all()).results;
+  const docs = async (type) => (await c.db.prepare(`SELECT d.id, d.number, d.date, d.total, p.name AS party FROM docs d LEFT JOIN parties p ON p.id = d.party_id
+      WHERE d.org_id = ? AND d.type = ? AND d.status IN ('open','partial') ORDER BY d.date LIMIT 300`).bind(c.org.id, type).all()).results
+    .map((r) => ({ ...r, total: R(r.total) }));
+  const [so, po, dn, grn, quotes, gate] = await Promise.all([lines('SO'), lines('PO'), docs('DN'), docs('GRN'), docs('QUOTE'),
+    c.db.prepare(`SELECT g.id, g.number, g.date, g.time_in, g.vehicle_no, g.challan_no, p.name AS party FROM gate_entries g LEFT JOIN parties p ON p.id = g.party_id
+      WHERE g.org_id = ? AND g.kind = 'in' AND g.status = 'open' ORDER BY g.date, g.id`).bind(c.org.id).all()]);
+  return json({ to_deliver: so, to_receive: po, to_invoice: dn, to_bill: grn, open_quotes: quotes, at_gate: gate.results });
+});
+
+/* Payment reminder for invoice dues (the khata has its own): overdue invoices, total and UPI, for WhatsApp/SMS. */
+router.add('GET', '/api/parties/:id/reminder', async (c) => {
+  const p = await c.db.prepare(`SELECT id, name, phone FROM parties WHERE id = ? AND org_id = ?`).bind(+c.params.id, c.org.id).first();
+  if (!p) throw notFound('Party not found.');
+  const { results } = await c.db.prepare(`SELECT id, number, date, due_date, total - paid AS bal FROM docs WHERE org_id = ? AND party_id = ? AND type = 'INV'
+      AND status IN ('unpaid','partial') ORDER BY due_date, id`).bind(c.org.id, p.id).all();
+  const due = results.reduce((t, r) => t + r.bal, 0);
+  if (!due) throw bad(`${p.name} has no unpaid invoices.`);
+  const link = `${c.url.origin}/i/${await shareToken(c, results[0].id)}`;
+  const listW = results.slice(0, 8).map((r) => `• ${r.number} (${fd(r.date)}): ${inrW(r.bal)}`).join('\n') + (results.length > 8 ? `\n• …and ${results.length - 8} more` : '');
+  const wa = [`*${c.org.name}*`, '🔔 Payment reminder', '', `Namaste ${p.name} ji,`, 'Ye bills baaki hain:', listW, '', `Total baaki: *${inrW(due)}*`,
+    ...(c.org.upi_id ? [`UPI: ${c.org.upi_id}`] : []), '', 'Bill dekhein aur pay karein 👇', link, '', `_Sent via ${BRAND}_`].join('\n');
+  const sms = `${c.org.name}: Namaste ${p.name}, ${results.length} bill(s) baaki, total ${rs(due)}. Kripya bhugtan karein: ${link} -${BRAND}`;
+  return json({ party: p.name, due: R(due), invoices: results.length, ...sendLinks(p.phone, wa, sms) });
+});
+
 /* ======================================================================= payments, expenses, journals */
 router.add('GET', '/api/payments', async (c) => {
   const q = c.url.searchParams;
@@ -463,6 +565,7 @@ router.add('POST', '/api/payments/:id/void', async (c) => { await voidPayment(c,
 router.add('POST', '/api/expenses', async (c) => json(await createExpense(c, c.body)));
 router.add('POST', '/api/journals', async (c) => json(await createJournal(c, c.body)));
 router.add('POST', '/api/stock/adjust', async (c) => json(await stockAdjust(c, c.body)));
+router.add('POST', '/api/stock/count', async (c) => json(await stockCount(c, c.body)));
 router.add('POST', '/api/stock/transfer', async (c) => json(await stockTransfer(c, c.body)));
 
 /* ======================================================================= khata (Khatabook-style credit book)

@@ -20,7 +20,12 @@ export const DOC_TYPES = {
   GRN: { side: 'purchase', prefix: 'GRN', label: 'Goods Receipt (GRN)', from: ['PO'], stock: 'in' },
   BILL: { side: 'purchase', prefix: 'BILL', label: 'Purchase Bill', from: ['PO', 'GRN'], stock: 'in', money: true },
   PRET: { side: 'purchase', prefix: 'DBN', label: 'Purchase Return (Debit Note)', from: ['BILL'], needsRef: true, stock: 'out', money: true },
+  // value notes: rate difference, discount, short/damage claims, with no goods moving
+  CNOTE: { side: 'sales', prefix: 'CRN', label: 'Credit Note (rate difference)', from: ['INV'], money: true, note: true },
+  DNOTE: { side: 'purchase', prefix: 'DRN', label: 'Debit Note (rate difference)', from: ['BILL'], money: true, note: true },
 };
+/* Documents that reduce what the party owes / what we owe, and settle the original invoice or bill. */
+export const NOTE_TYPES = ['SRET', 'PRET', 'CNOTE', 'DNOTE'];
 
 /* ---------------------------------------------------------------- context */
 export async function loadSys(db, orgId) {
@@ -170,7 +175,7 @@ export async function createDoc(ctx, body) {
     const item = raw.item_id ? await getItem(+raw.item_id) : null;
     if (raw.item_id && !item) throw bad(`Line ${n}: unknown item.`);
     const qty = roundQty(num(raw.qty, `Line ${n} quantity`, { min: 0.001, max: 1e9 }));
-    const fallbackRate = item ? (T.side === 'sales' ? item.sale_price : item.purchase_price) : 0;
+    const fallbackRate = item && !T.note ? (T.side === 'sales' ? item.sale_price : item.purchase_price) : 0;   // notes: the user types the difference
     const rate = raw.rate === undefined || raw.rate === '' || raw.rate === null ? fallbackRate : toPaise(num(raw.rate, `Line ${n} rate`, { min: 0 }));
     const disc = num(raw.discount_pct, `Line ${n} discount`, { min: 0, max: 100, def: 0 });
     const gst = num(raw.gst_rate, `Line ${n} GST rate`, { min: 0, max: 100, def: item ? item.gst_rate : 0 });
@@ -191,6 +196,8 @@ export async function createDoc(ctx, body) {
     L.push({ item, qty, rate, disc, gst, desc, srcLine, calc, stocked });
     if (moves && stocked && T.stock === 'out') need.set(item.id, (need.get(item.id) || 0) + qty);
   }
+
+  if (T.note && !L.some((l) => l.calc.taxable > 0)) throw bad('Enter the rate difference (amount per unit) on at least one line.');
 
   // stock must be available for anything leaving the warehouse
   const onHand = await stockIn(db, orgId, wh.id, [...need.keys()]);
@@ -290,11 +297,27 @@ export async function createDoc(ctx, body) {
       jl = [D(sys.inventory, costIn), D(sys.grni, grniClear), D(varianceAccount, variance), D(sys.misc_exp || sys.cogs, serviceCost),
         D(sys.gst_input, tax), D(sys.round_off, roundOff), C(sys.ap, total, P)];
       break;
+    case 'CNOTE':     // reduce the sale: Dr Sales discounts, Dr GST output / Cr Debtors
+      jl = [D(sys.sales_adj || sys.sales, taxable), D(sys.gst_output, tax), D(sys.round_off, roundOff), C(sys.ar, total, P)];
+      break;
+    case 'DNOTE':     // reduce the purchase: Dr Creditors / Cr Purchase rate difference, Cr GST input
+      jl = [D(sys.ap, total, P), C(sys.pur_adj || sys.cogs, taxable), C(sys.gst_input, tax), C(sys.round_off, roundOff)];
+      break;
     case 'PRET':
       jl = [D(sys.ap, total, P), C(sys.inventory, costOut), C(sys.misc_exp || sys.cogs, -serviceCost), C(sys.gst_input, tax), C(sys.round_off, roundOff)];
       break;
   }
   if (jl.length) st.push(...journalStatements(db, ctx, { date: d, narration: narr, ...ref, lines: jl }));
+
+  // goods receipt made at the gate: link the gate entry and close it
+  if (type === 'GRN' && body.gate_entry_id) {
+    const ge = await db.prepare(`SELECT * FROM gate_entries WHERE id = ? AND org_id = ? AND kind = 'in'`).bind(+body.gate_entry_id, orgId).first();
+    if (!ge) throw bad('Gate entry not found.');
+    if (ge.status !== 'open') throw bad(`Gate entry ${ge.number} is already ${ge.status === 'grn_done' ? 'received' : ge.status}.`);
+    if (ge.party_id && ge.party_id !== party.id) throw bad(`Gate entry ${ge.number} is for another supplier.`);
+    st.push(db.prepare(`UPDATE docs SET gate_entry_id = ? WHERE txk = ?`).bind(ge.id, txk));
+    st.push(db.prepare(`UPDATE gate_entries SET status = 'grn_done', grn_id = (SELECT id FROM docs WHERE txk = ?) WHERE id = ? AND status = 'open'`).bind(txk, ge.id));
+  }
 
   // source document progress
   if (src) {
@@ -308,8 +331,8 @@ export async function createDoc(ctx, body) {
   }
 
   // a credit/debit note settles the original invoice/bill first; anything left is an advance to the party
-  if (['SRET', 'PRET'].includes(type)) {
-    const outstanding = Math.max(0, src.total - src.paid);
+  if (NOTE_TYPES.includes(type)) {
+    const outstanding = src ? Math.max(0, src.total - src.paid) : 0;
     const apply = Math.min(outstanding, total);
     if (apply > 0) {
       st.push(db.prepare(`INSERT INTO payment_allocs (payment_id, doc_id, amount, note_id) VALUES (0, ?, ?, (SELECT id FROM docs WHERE txk = ?))`).bind(src.id, apply, txk));
@@ -447,6 +470,7 @@ export async function cancelDoc(ctx, id) {
       .bind(a.amount, a.amount, a.amount, a.doc_id));
   }
   if (na.length) st.push(db.prepare(`DELETE FROM payment_allocs WHERE note_id = ?`).bind(doc.id));
+  if (doc.gate_entry_id) st.push(db.prepare(`UPDATE gate_entries SET status = 'open', grn_id = NULL WHERE id = ? AND grn_id = ?`).bind(doc.gate_entry_id, doc.id));
   st.push(db.prepare(`UPDATE docs SET status = 'cancelled' WHERE id = ?`).bind(doc.id));
   st.push(auditStatement(ctx, `cancel ${doc.type}`, doc.number));
   await db.batch(st);
@@ -503,6 +527,39 @@ export async function stockAdjust(ctx, body) {
   st.push(auditStatement(ctx, 'stock adjust', `${item.name} ${qty}`));
   await db.batch(st);
   return { item_id: item.id, qty, value: value / 100 };
+}
+
+/* Physical stock count (cycle count): the counted quantity of many items in one godown, posted as one
+   set of adjustments and one journal, so the books follow the shelf. Lines: [{ item_id, counted }]. */
+export async function stockCount(ctx, body) {
+  const { db } = ctx;
+  requireCan(ctx.user, 'stock');
+  const wh = await warehouseOf(db, ctx.org.id, +body.warehouse_id || 0);
+  const lines = (Array.isArray(body.lines) ? body.lines : []).filter((l) => l && l.counted !== '' && l.counted !== null && l.counted !== undefined);
+  if (!lines.length) throw bad('Enter the counted quantity for at least one item.');
+  if (lines.length > 300) throw bad('Count at most 300 items at a time.');
+  const d = date(body.date);
+  const items = new Map((await loadByIds(db, `SELECT * FROM items WHERE org_id = ? AND is_service = 0 AND id IN (?ids)`, [ctx.org.id], lines.map((l) => +l.item_id))).map((i) => [i.id, i]));
+  const have = await stockIn(db, ctx.org.id, wh.id, [...items.keys()]);
+  const st = [], diffs = [];
+  let gain = 0, loss = 0;
+  for (const l of lines) {
+    const it = items.get(+l.item_id);
+    if (!it) throw bad('Unknown item in the count.');
+    const counted = roundQty(num(l.counted, `${it.name} counted quantity`, { min: 0, max: 1e9 }));
+    const diff = roundQty(counted - (have.get(it.id) || 0));
+    if (Math.abs(diff) < 0.0005) continue;
+    const value = Math.round(Math.abs(diff) * (it.avg_cost || it.purchase_price));
+    st.push(...stockStatements(db, ctx, { item: it.id, warehouse: wh.id, qty: diff, value, date: d, refType: 'COUNT', refId: null, note: `Stock count ${wh.name}` }));
+    if (diff > 0) gain += value; else loss += value;
+    diffs.push({ item: it.name, system: have.get(it.id) || 0, counted, diff });
+  }
+  if (!diffs.length) return { ok: true, adjusted: 0, diffs };
+  st.push(...journalStatements(db, ctx, { date: d, narration: `Stock count ${wh.name}: ${diffs.length} item(s) adjusted`, refType: 'COUNT', refId: null,
+    lines: [D(ctx.sys.inventory, gain - loss), C(ctx.sys.stock_adj, gain - loss)] }));
+  st.push(auditStatement(ctx, 'stock count', `${wh.name}: ${diffs.length} items, net ${(gain - loss) / 100}`));
+  await db.batch(st);
+  return { ok: true, adjusted: diffs.length, gain: gain / 100, loss: loss / 100, diffs };
 }
 
 export async function stockTransfer(ctx, body) {

@@ -76,12 +76,12 @@ export async function gstSummary(db, org, q) {
     SELECT d.type, l.gst_rate, CASE WHEN p.gstin != '' THEN 'B2B' ELSE 'B2C' END AS kind,
            SUM(l.taxable) AS taxable, SUM(l.cgst) AS cgst, SUM(l.sgst) AS sgst, SUM(l.igst) AS igst, COUNT(DISTINCT d.id) AS docs
     FROM docs d JOIN doc_lines l ON l.doc_id = d.id LEFT JOIN parties p ON p.id = d.party_id
-    WHERE d.org_id = ? AND d.type IN ('INV','SRET','BILL','PRET') AND d.status != 'cancelled' AND d.date >= ? AND d.date <= ?
+    WHERE d.org_id = ? AND d.type IN ('INV','SRET','CNOTE','BILL','PRET','DNOTE') AND d.status != 'cancelled' AND d.date >= ? AND d.date <= ?
     GROUP BY d.type, l.gst_rate, kind ORDER BY l.gst_rate`).bind(org.id, from, to).all();
   const acc = (types) => {
     const by = {};
     for (const r of results.filter((x) => types.includes(x.type))) {
-      const sign = r.type === 'SRET' || r.type === 'PRET' ? -1 : 1;
+      const sign = ['SRET', 'PRET', 'CNOTE', 'DNOTE'].includes(r.type) ? -1 : 1;
       const k = r.gst_rate + '|' + r.kind;
       by[k] = by[k] || { rate: r.gst_rate, kind: r.kind, taxable: 0, cgst: 0, sgst: 0, igst: 0 };
       for (const f of ['taxable', 'cgst', 'sgst', 'igst']) by[k][f] += sign * r[f];
@@ -91,7 +91,7 @@ export async function gstSummary(db, org, q) {
     const f = (r) => ({ ...r, taxable: R(r.taxable), cgst: R(r.cgst), sgst: R(r.sgst), igst: R(r.igst), tax: R(r.cgst + r.sgst + r.igst) });
     return { rows: rows.map(f), total: f(tot), _tax: tot.cgst + tot.sgst + tot.igst };
   };
-  const out = acc(['INV', 'SRET']), inp = acc(['BILL', 'PRET']);
+  const out = acc(['INV', 'SRET', 'CNOTE']), inp = acc(['BILL', 'PRET', 'DNOTE']);
   return { from, to, outward: { rows: out.rows, total: out.total }, inward: { rows: inp.rows, total: inp.total }, net_payable: R(out._tax - inp._tax) };
 }
 
@@ -118,14 +118,14 @@ export async function ageing(db, org, q) {
 }
 
 export async function stockReport(db, org) {
-  const { results: items } = await db.prepare(`SELECT id, sku, name, category, unit, qty_on_hand, avg_cost, reorder_level, sale_price, gst_rate
+  const { results: items } = await db.prepare(`SELECT id, sku, name, category, unit, qty_on_hand, avg_cost, reorder_level, sale_price, gst_rate, location
       FROM items WHERE org_id = ? AND is_service = 0 ORDER BY name`).bind(org.id).all();
   const { results: wh } = await db.prepare(`SELECT s.item_id, w.name AS warehouse, s.qty FROM stock s JOIN warehouses w ON w.id = s.warehouse_id
       WHERE s.org_id = ? AND ABS(s.qty) > 0.0005`).bind(org.id).all();
   const by = {};
   for (const r of wh) (by[r.item_id] = by[r.item_id] || []).push({ warehouse: r.warehouse, qty: r.qty });
   const rows = items.map((i) => ({
-    id: i.id, sku: i.sku, name: i.name, category: i.category, unit: i.unit, qty: i.qty_on_hand,
+    id: i.id, sku: i.sku, name: i.name, category: i.category, unit: i.unit, qty: i.qty_on_hand, location: i.location || '',
     avg_cost: R(i.avg_cost), value: R(Math.max(0, i.qty_on_hand) * i.avg_cost), reorder_level: i.reorder_level,
     status: i.qty_on_hand <= 0 ? 'out' : i.qty_on_hand <= i.reorder_level ? 'reorder' : 'ok', warehouses: by[i.id] || [],
     suggested_order: i.qty_on_hand <= i.reorder_level ? Math.max(0, 2 * i.reorder_level - i.qty_on_hand) : 0,
@@ -151,7 +151,7 @@ export async function partyLedger(db, org, partyId, q) {
   const { results } = await db.prepare(`SELECT jl.date, jl.debit, jl.credit, j.narration, j.ref_type, j.ref_id,
         COALESCE(d.number, p.number) AS number
       FROM journal_lines jl JOIN journals j ON j.id = jl.journal_id
-      LEFT JOIN docs d ON d.id = j.ref_id AND j.ref_type IN ('INV','SRET','BILL','PRET')
+      LEFT JOIN docs d ON d.id = j.ref_id AND j.ref_type IN ('INV','SRET','CNOTE','BILL','PRET','DNOTE')
       LEFT JOIN payments p ON p.id = j.ref_id AND j.ref_type IN ('receipt','payment')
       WHERE jl.org_id = ? AND jl.party_id = ? AND jl.account_id IN (?, ?) AND jl.date >= ? AND jl.date <= ?
       ORDER BY jl.date, jl.id`).bind(org.id, partyId, ids[0], ids[1], from, to).all();
@@ -214,7 +214,7 @@ export async function dashboard(db, org) {
     months.push(dt.toISOString().slice(0, 7));
   }
   const { results: series } = await db.prepare(`SELECT substr(date, 1, 7) AS m, type, SUM(taxable) AS v FROM docs
-      WHERE org_id = ? AND type IN ('INV','BILL','SRET') AND status != 'cancelled' AND date >= ? GROUP BY m, type`).bind(org.id, months[0] + '-01').all();
+      WHERE org_id = ? AND type IN ('INV','BILL','SRET','CNOTE') AND status != 'cancelled' AND date >= ? GROUP BY m, type`).bind(org.id, months[0] + '-01').all();
   const sv = (m, ty) => (series.find((s) => s.m === m && s.type === ty) || { v: 0 }).v;
   return {
     today: t, fy_start: fy,
@@ -225,7 +225,7 @@ export async function dashboard(db, org) {
     low_stock: stock.rows.filter((r) => r.status !== 'ok').slice(0, 10),
     overdue: overdue.map((o) => ({ ...o, balance: R(o.balance) })),
     recent: recent.map((r) => ({ ...r, total: R(r.total) })),
-    monthly: months.map((m) => ({ month: m, sales: R(sv(m, 'INV') - sv(m, 'SRET')), purchases: R(sv(m, 'BILL')) })),
+    monthly: months.map((m) => ({ month: m, sales: R(sv(m, 'INV') - sv(m, 'SRET') - sv(m, 'CNOTE')), purchases: R(sv(m, 'BILL')) })),
   };
 }
 

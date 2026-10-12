@@ -161,10 +161,10 @@ function renderAuth(mode = 'login') {
 /* ======================================================================= shell & router */
 const NAV = [
   ['', [['dashboard', 'Dashboard']]],
-  ['Sales', [['pos', 'Quick Bill (POS)'], ['sales/INV', 'Invoices'], ['sales/SO', 'Sales Orders'], ['sales/DN', 'Delivery Notes'], ['sales/QUOTE', 'Quotations'], ['sales/SRET', 'Sales Returns'], ['receipts', 'Receipts']]],
-  ['Purchase', [['purchase/PO', 'Purchase Orders'], ['purchase/GRN', 'Goods Receipts'], ['purchase/BILL', 'Purchase Bills'], ['purchase/PRET', 'Purchase Returns'], ['payments', 'Payments']]],
-  ['Inventory', [['items', 'Items'], ['stock', 'Stock & Godowns']]],
-  ['Contacts', [['parties', 'Customers & Suppliers'], ['khata', 'Khata Book']]],
+  ['Sales', [['pos', 'Quick Bill (POS)'], ['sales/INV', 'Invoices'], ['sales/SO', 'Sales Orders'], ['sales/DN', 'Delivery Notes'], ['sales/QUOTE', 'Quotations'], ['sales/SRET', 'Sales Returns'], ['sales/CNOTE', 'Credit Notes (rate diff)'], ['receipts', 'Receipts']]],
+  ['Purchase', [['purchase/PO', 'Purchase Orders'], ['gate/in', 'Gate Entry (inward)'], ['purchase/GRN', 'Goods Receipts (GRN)'], ['purchase/BILL', 'Purchase Bills'], ['purchase/PRET', 'Purchase Returns'], ['purchase/DNOTE', 'Debit Notes (rate diff)'], ['payments', 'Payments']]],
+  ['Inventory', [['items', 'Items'], ['stock', 'Stock & Godowns'], ['stockcount', 'Stock Count'], ['gate/out', 'Gate Pass (outward)'], ['pending', 'Pending Orders']]],
+  ['Contacts', [['parties', 'Customers & Suppliers'], ['khata', 'Khata Book'], ['reminders', 'Payment Reminders']]],
   ['Accounts', [['expenses', 'Expenses'], ['accounts', 'Chart of Accounts'], ['journal', 'Journal Voucher'], ['daybook', 'Day Book']]],
   ['Reports', [['reports/pnl', 'Profit & Loss'], ['reports/balance-sheet', 'Balance Sheet'], ['reports/trial-balance', 'Trial Balance'], ['reports/gst', 'GST Summary'], ['reports/ageing', 'Outstanding (Ageing)'], ['reports/register', 'Registers'], ['tally', 'Tally Export']]],
   ['Settings', [['settings', 'Business & Users'], ['plan', 'Plan & Billing']]],
@@ -274,7 +274,8 @@ route(/^(sales|purchase)\/([A-Z]+)$/, async (el, m, q) => {
       <select name="status" style="max-width:160px"><option value="">All statuses</option>${['open', 'partial', 'closed', 'unpaid', 'paid', 'converted', 'cancelled'].map((s) => `<option ${q.get('status') === s ? 'selected' : ''}>${s}</option>`).join('')}</select>
       <input type="date" name="from" value="${esc(q.get('from') || '')}" style="max-width:160px"><input type="date" name="to" value="${esc(q.get('to') || '')}" style="max-width:160px">
       <button class="btn">Filter</button></form>
-      ${!make ? `<p class="muted" style="margin:10px 0 0">To make a ${esc(T.label.toLowerCase())}, open the original ${type === 'SRET' ? 'invoice' : 'bill'} and choose <b>Return</b>.</p>` : ''}</div>
+      ${!make ? `<p class="muted" style="margin:10px 0 0">To make a ${esc(T.label.toLowerCase())}, open the original ${type === 'SRET' ? 'invoice' : 'bill'} and choose <b>Return goods</b>.</p>` : ''}
+      ${ME.doc_types[type].note ? `<p class="muted" style="margin:10px 0 0">Tip: open the ${T.side === 'sales' ? 'invoice' : 'bill'} and choose <b>${T.side === 'sales' ? 'Credit note' : 'Debit note'}</b> to adjust it line by line; it is then settled against that ${T.side === 'sales' ? 'invoice' : 'bill'}.</p>` : ''}</div>
     <div class="panel flush">${table(cols, rows, { onRow: true, empty: `No ${esc(T.label.toLowerCase())}s yet.` })}</div>`;
   bindRows(el, rows, (r) => go('doc/' + r.id));
   $('#flt').onsubmit = (e) => { e.preventDefault(); const f = new URLSearchParams(new FormData(e.target)); go(`${m[1]}/${type}?${f}`); };
@@ -289,22 +290,37 @@ route(/^new\/([A-Z]+)$/, async (el, m, q) => {
   const side = T.side === 'sales' ? 'customer' : 'supplier';
   const plist = parties.filter((p) => p.kind === side || p.kind === 'both');
   let draft = { type, date: ME.today, lines: [{}], party_id: '', warehouse_id: whs[0] && whs[0].id };
+  // goods receipt from a gate entry: take the supplier and, when the vehicle came against a PO, the PO lines
+  let ge = null;
+  if (q.get('ge')) {
+    ge = await GET('/api/gate/' + q.get('ge'));
+    if (ge.ref_doc_id && !q.get('from')) draft = { ...draft, ...(await GET(`/api/docs/${ge.ref_doc_id}/convert?to=${type}`)) };
+    if (!draft.party_id) draft.party_id = ge.party_id;
+  }
   if (q.get('from')) draft = { ...draft, ...(await GET(`/api/docs/${q.get('from')}/convert?to=${type}`)) };
+  // purchase order for everything at or below its reorder level
+  if (q.get('reorder') && type === 'PO') {
+    const low = (await GET('/api/reports/stock')).rows.filter((r) => r.suggested_order > 0);
+    if (low.length) draft.lines = low.map((r) => { const it = items.find((i) => i.id === r.id) || {}; return { item_id: r.id, qty: r.suggested_order, rate: it.purchase_price || r.avg_cost, gst_rate: it.gst_rate }; });
+  }
   const fromDoc = !!draft.ref_id;
+  const isNote = !!T.note;
   const isSale = T.side === 'sales', money = ['INV', 'BILL'].includes(type);
   const itemOpt = (sel) => `<option value="">— free text / service —</option>` + items.map((i) => `<option value="${i.id}" ${+sel === i.id ? 'selected' : ''}>${esc(i.name)}${i.is_service ? '' : ` (${qtyf(i.qty_on_hand)} ${esc(i.unit)})`}</option>`).join('');
   const gstOpt = (sel) => ME.gst_rates.map((g) => `<option value="${g}" ${+sel === g ? 'selected' : ''}>${g}%</option>`).join('');
   const lineRow = (l) => `<tr>
-      <td class="c-item">${fromDoc ? `<b>${esc(l.item || l.description)}</b><input type="hidden" name="item_id" value="${esc(l.item_id || '')}"><input type="hidden" name="src_line_id" value="${esc(l.src_line_id || '')}"><input type="hidden" name="description" value="${esc(l.description || '')}">`
+      <td class="c-item">${fromDoc ? `<b>${esc(l.item || l.description)}</b>${isNote && l.orig_rate !== undefined ? `<div class="muted">billed at ${inr(l.orig_rate)}</div>` : ''}<input type="hidden" name="item_id" value="${esc(l.item_id || '')}"><input type="hidden" name="src_line_id" value="${esc(l.src_line_id || '')}"><input type="hidden" name="description" value="${esc(l.description || '')}">`
         : `<select name="item_id">${itemOpt(l.item_id)}</select><input name="description" placeholder="Description" value="${esc(l.description || '')}" style="margin-top:4px">`}</td>
       <td class="c-n"><input name="qty" type="number" step="any" min="0" value="${esc(l.qty ?? 1)}"></td>
       <td class="c-n"><input name="rate" type="number" step="any" min="0" value="${esc(l.rate ?? '')}"></td>
       <td class="c-n"><input name="discount_pct" type="number" step="any" min="0" max="100" value="${esc(l.discount_pct ?? 0)}"></td>
       <td class="c-n"><select name="gst_rate">${gstOpt(l.gst_rate ?? 0)}</select></td>
       <td class="num" data-amt></td>
-      <td>${fromDoc && ['SRET', 'PRET'].includes(type) ? '' : '<button type="button" class="btn sm danger" data-del>&times;</button>'}</td></tr>`;
+      <td>${fromDoc && !isNote && ['SRET', 'PRET'].includes(type) ? '' : '<button type="button" class="btn sm danger" data-del>&times;</button>'}</td></tr>`;
   el.innerHTML = head(`New ${esc(T.label)}${fromDoc ? ` <span class="muted">from ${esc(draft.ref_number)}</span>` : ''}`) + `
     <form id="docf"><div class="err" hidden></div>
+    ${ge ? `<div class="panel warnbox">Receiving against gate entry <b>${esc(ge.number)}</b>: vehicle ${esc(ge.vehicle_no)}${ge.challan_no ? `, challan ${esc(ge.challan_no)}` : ''}${ge.packages ? `, ${ge.packages} packages` : ''}.</div>` : ''}
+    ${isNote ? `<div class="panel muted">${isSale ? 'A credit note lowers what the customer owes' : 'A debit note lowers what you owe the supplier'} without any goods moving: rate difference, discount, short supply or damage claim. Enter the difference per unit on each line that changes.</div>` : ''}
     <div class="panel"><div class="form">
       <label class="f">${isSale ? 'Customer' : 'Supplier'}
         ${fromDoc ? `<input value="${esc((parties.find((p) => p.id === draft.party_id) || {}).name || '')}" disabled><input type="hidden" name="party_id" value="${draft.party_id}">`
@@ -314,7 +330,7 @@ route(/^new\/([A-Z]+)$/, async (el, m, q) => {
       ${money || type === 'PO' || type === 'SO' || type === 'QUOTE' ? `<label class="f">${money ? 'Due date' : type === 'QUOTE' ? 'Valid until' : 'Expected by'}<input type="date" name="due_date" placeholder="auto"></label>` : ''}
       <label class="f">Godown<select name="warehouse_id">${whs.map((w) => `<option value="${w.id}" ${w.id === +draft.warehouse_id ? 'selected' : ''}>${esc(w.name)}</option>`).join('')}</select></label>
     </div></div>
-    <div class="panel flush"><div class="tbl-wrap"><table class="t lines"><thead><tr><th>Item</th><th>Qty</th><th>Rate (₹)</th><th>Disc %</th><th>GST</th><th class="num">Amount</th><th></th></tr></thead>
+    <div class="panel flush"><div class="tbl-wrap"><table class="t lines"><thead><tr><th>Item</th><th>Qty</th><th>${isNote ? 'Rate diff (₹/unit)' : 'Rate (₹)'}</th><th>Disc %</th><th>GST</th><th class="num">Amount</th><th></th></tr></thead>
       <tbody id="lines">${draft.lines.map(lineRow).join('')}</tbody></table></div>
       ${fromDoc ? '' : '<div style="padding:10px"><button type="button" class="btn sm" id="addline">+ Add line</button></div>'}</div>
     <div class="grid g2">
@@ -335,7 +351,7 @@ route(/^new\/([A-Z]+)$/, async (el, m, q) => {
       const t = r2(g('qty') * g('rate') * (1 - g('discount_pct') / 100)), x = r2(t * g('gst_rate') / 100);
       taxable += t; tax += x; $('[data-amt]', tr).textContent = inr(t + x);
     });
-    const exact = r2(taxable + tax), total = money || ['SRET', 'PRET'].includes(type) ? Math.round(exact) : exact;
+    const exact = r2(taxable + tax), total = money || isNote || ['SRET', 'PRET'].includes(type) ? Math.round(exact) : exact;
     $('#totals').innerHTML = `<div><span>Taxable value</span><span>${inr(taxable)}</span></div>
       ${inter ? `<div><span>IGST</span><span>${inr(tax)}</span></div>` : `<div><span>CGST</span><span>${inr(tax / 2)}</span></div><div><span>SGST</span><span>${inr(tax / 2)}</span></div>`}
       ${total !== exact ? `<div><span>Round off</span><span>${inr(total - exact)}</span></div>` : ''}
@@ -346,7 +362,7 @@ route(/^new\/([A-Z]+)$/, async (el, m, q) => {
     if (sel) sel.onchange = () => {
       const it = items.find((i) => i.id === +sel.value);
       if (it) {
-        $('[name=rate]', tr).value = isSale ? it.sale_price : (it.purchase_price || it.avg_cost);
+        if (!isNote) $('[name=rate]', tr).value = isSale ? it.sale_price : (it.purchase_price || it.avg_cost);
         $('[name=gst_rate]', tr).value = it.gst_rate;
         $('[name=description]', tr).value = '';
       }
@@ -370,8 +386,9 @@ route(/^new\/([A-Z]+)$/, async (el, m, q) => {
     const lines = $$('tr', tbody).map((tr) => {
       const g = (n) => { const x = $(`[name=${n}]`, tr); return x ? x.value : ''; };
       return { item_id: +g('item_id') || null, description: g('description'), qty: g('qty'), rate: g('rate'), discount_pct: g('discount_pct'), gst_rate: g('gst_rate'), src_line_id: +g('src_line_id') || undefined };
-    }).filter((l) => +l.qty > 0);
+    }).filter((l) => +l.qty > 0 && (!isNote || +l.rate > 0));
     const body = { type, party_id: +f.party_id.value, date: f.date.value, warehouse_id: +f.warehouse_id.value, notes: f.notes.value, lines, ref_id: draft.ref_id };
+    if (ge) body.gate_entry_id = ge.id;
     if (f.due_date && f.due_date.value) body.due_date = f.due_date.value;
     if (f.pay_amount && +f.pay_amount.value > 0) body.payment = { amount: +f.pay_amount.value, account_id: +f.pay_account.value };
     const btn = $('#save'); btn.disabled = true;
@@ -387,7 +404,7 @@ route(/^new\/([A-Z]+)$/, async (el, m, q) => {
 /* The printable document (invoice, bill, order...). Used in the app and on the customer's public link. */
 function docPaper(d) {
   const o = d.org, p = d.party || {};
-  const isTax = ['INV', 'BILL', 'SRET', 'PRET'].includes(d.type);
+  const isTax = ['INV', 'BILL', 'SRET', 'PRET', 'CNOTE', 'DNOTE'].includes(d.type);
   const title = d.type === 'INV' ? (o.gstin ? 'TAX INVOICE' : 'INVOICE') : String(d.label || '').toUpperCase();
   const inter = !!d.inter_state;
   return `<div class="doc-paper">
@@ -418,10 +435,11 @@ route(/^doc\/(\d+)$/, async (el, m) => {
   const hasOpen = d.lines.some((l) => l.remaining > 0.0005);
   const actions = [];
   if (d.status !== 'cancelled') {
-    for (const [k, v] of next) if (hasOpen) actions.push(`<a class="btn" href="#/new/${k}?from=${d.id}">${['SRET', 'PRET'].includes(k) ? 'Return' : 'Make ' + esc(v.label)}</a>`);
+    for (const [k, v] of next) if (hasOpen || v.note) actions.push(`<a class="btn" href="#/new/${k}?from=${d.id}">${['SRET', 'PRET'].includes(k) ? 'Return goods' : v.note ? (k === 'CNOTE' ? 'Credit note' : 'Debit note') : 'Make ' + esc(v.label)}</a>`);
+    if (['SO', 'DN'].includes(d.type)) actions.push(`<a class="btn" href="#/picklist/${d.id}">Pick list</a>`);
     if (['INV', 'BILL'].includes(d.type) && d.balance > 0) actions.push(`<button class="btn" id="pay">${d.type === 'INV' ? 'Receive payment' : 'Record payment'}</button>`);
-    if (['INV', 'SRET', 'QUOTE', 'SO'].includes(d.type)) actions.push(`<button class="btn got" id="wa">WhatsApp</button>`, ...(p.phone ? ['<button class="btn" id="sms">SMS</button>'] : []), `<button class="btn" id="link">Copy link</button>`);
-    if (['INV', 'SRET'].includes(d.type)) actions.push(`<a class="btn" href="/api/docs/${d.id}/einvoice" id="einv">E-invoice JSON</a>`);
+    if (['INV', 'SRET', 'CNOTE', 'QUOTE', 'SO'].includes(d.type)) actions.push(`<button class="btn got" id="wa">WhatsApp</button>`, ...(p.phone ? ['<button class="btn" id="sms">SMS</button>'] : []), `<button class="btn" id="link">Copy link</button>`);
+    if (['INV', 'SRET', 'CNOTE'].includes(d.type)) actions.push(`<a class="btn" href="/api/docs/${d.id}/einvoice" id="einv">E-invoice JSON</a>`);
     if (['INV', 'DN'].includes(d.type)) actions.push(`<button class="btn" id="ewb">E-way bill</button>`);
     if (['INV', 'SRET', 'DN'].includes(d.type)) actions.push(`<button class="btn" id="refs">${d.irn || d.ewb_no ? 'Edit' : 'Add'} IRN / EWB no.</button>`);
     actions.push(`<button class="btn danger" id="cancel">Cancel</button>`);
@@ -556,6 +574,7 @@ function itemForm(i = {}) {
     { k: 'purchase_price', label: 'Purchase price (₹)', type: 'number', value: i.purchase_price }, { k: 'sale_price', label: 'Sale price (₹)', type: 'number', value: i.sale_price },
     { k: 'reorder_level', label: 'Reorder level', type: 'number', value: i.reorder_level ?? 0 },
     { k: 'barcode', label: 'Barcode (scan or leave blank)', value: i.barcode, placeholder: 'blank = auto label code' },
+    { k: 'location', label: 'Bin / rack location', value: i.location, placeholder: 'e.g. A-03-2' },
     ...(i.id ? [] : [{ k: 'is_service', label: 'Service (no stock)', type: 'checkbox' }, { k: 'opening_qty', label: 'Opening stock qty', type: 'number' }, { k: 'opening_rate', label: 'Opening rate (₹)', type: 'number' }]),
   ], async (v) => {
     if (i.id) await api('PUT', '/api/items/' + i.id, v); else await POST('/api/items', v);
@@ -601,7 +620,7 @@ route(/^stock$/, async (el) => {
     <div class="panel flush">${table([{ h: 'Item', f: (r) => `<a href="#/item/${r.id}">${esc(r.name)}</a>` }, { h: 'Godowns', cls: 'hide-sm', f: (r) => r.warehouses.map((w) => `${esc(w.warehouse)}: ${qtyf(w.qty)}`).join('<br>') },
       { h: 'Qty', num: 1, f: (r) => `${qtyf(r.qty)} ${esc(r.unit)}` }, { h: 'Avg cost', num: 1, f: (r) => inr(r.avg_cost) }, { h: 'Value', num: 1, f: (r) => inr(r.value) },
       { h: 'Status', f: (r) => badge(r.status) }, { h: 'Suggested order', num: 1, f: (r) => r.suggested_order ? qtyf(r.suggested_order) : '' }], s.rows)}</div>
-    ${s.rows.some((r) => r.suggested_order) ? '<div class="row"><a class="btn" href="#/new/PO">Raise a purchase order for low items</a></div>' : ''}`;
+    ${s.rows.some((r) => r.suggested_order) ? '<div class="row"><a class="btn primary" href="#/new/PO?reorder=1">Raise a purchase order for low items</a></div>' : ''}`;
   const itemOpts = opts(stocked, (i) => `${i.name} (${qtyf(i.qty_on_hand)} ${i.unit})`), whOpts = opts(whs);
   $('#adj').onclick = () => modal('Adjust stock', [{ k: 'item_id', label: 'Item', type: 'select', options: itemOpts, wide: true }, { k: 'warehouse_id', label: 'Godown', type: 'select', options: whOpts },
     { k: 'qty', label: 'Quantity (+ add, − remove)', type: 'number' }, { k: 'reason', label: 'Reason', value: 'Physical count', wide: true }, { k: 'date', label: 'Date', type: 'date', value: ME.today }],
@@ -887,6 +906,156 @@ route(/^settings$/, async (el) => {
     { k: 'role', label: 'Role', type: 'select', options: users.roles.filter((r) => r !== 'owner').map((r) => ({ v: r, t: r })) }, { k: 'password', label: 'Temporary password (8+ chars)', type: 'password' }],
   async (v) => { await POST('/api/users', v); toast('User added. Share the email and password with them.'); render(); });
   $$('[data-u]', el).forEach((b) => b.onclick = async () => { await api('PUT', '/api/users/' + b.dataset.u, { active: b.dataset.a !== '1' }); render(); });
+});
+
+/* ======================================================================= gate entry (inward) / gate pass (outward) */
+route(/^gate\/(in|out)$/, async (el, m, q) => {
+  const kind = m[1], inward = kind === 'in';
+  const status = q.get('status') || (inward ? 'open' : '');
+  const { rows } = await GET(`/api/gate?kind=${kind}&status=${status}`);
+  el.innerHTML = head(inward ? 'Gate Entry (inward)' : 'Gate Pass (outward)', `<button class="btn primary" id="new">+ ${inward ? 'New gate entry' : 'New gate pass'}</button>`) + `
+    <div class="tabs">${(inward ? [['open', 'At gate / not received'], ['grn_done', 'Received (GRN done)'], ['rejected', 'Rejected'], ['', 'All']] : [['', 'All'], ['open', 'Inside (not exited)'], ['closed', 'Exited']])
+      .map(([k, t]) => `<a href="#/gate/${kind}${k ? '?status=' + k : (inward ? '?status=' : '')}" class="${status === k ? 'on' : ''}">${t}</a>`).join('')}</div>
+    <p class="muted">${inward ? 'Log every vehicle at the gate before unloading. Then make the Goods Receipt (GRN) from the gate entry, so nothing is received without a gate record.'
+      : 'Every dispatch leaves with a gate pass linked to its delivery note or invoice, with vehicle and exit time.'}</p>
+    <div class="panel flush">${table([
+      { h: 'No.', f: (r) => `<b>${esc(r.number)}</b><div class="muted">${fdate(r.date)} ${esc(r.time_in || '')}${r.time_out ? ' → ' + esc(r.time_out) : ''}</div>` },
+      { h: inward ? 'Supplier' : 'Party', f: (r) => esc(r.party || '-') + (r.ref_number ? `<div class="muted">${esc(r.ref_type)} <a href="#/doc/${r.ref_doc_id}">${esc(r.ref_number)}</a></div>` : '') },
+      { h: 'Vehicle', f: (r) => `${esc(r.vehicle_no)}<div class="muted">${esc(r.driver_name || '')} ${esc(r.driver_phone || '')}</div>` },
+      { h: inward ? 'Challan / Invoice' : 'LR / Transporter', cls: 'hide-sm', f: (r) => inward ? `${esc(r.challan_no || '')}${r.packages ? `<div class="muted">${r.packages} pkgs${r.weight_kg ? ', ' + r.weight_kg + ' kg' : ''}</div>` : ''}` : `${esc(r.lr_no || '')}<div class="muted">${esc(r.transporter || '')}</div>` },
+      { h: 'Status', f: (r) => r.status === 'grn_done' ? `${badge('closed')} <a href="#/doc/${r.grn_id}">${esc(r.grn_number || 'GRN')}</a>` : badge(r.status === 'open' ? (inward ? 'open' : 'partial') : r.status) },
+      { h: '', f: (r) => r.status !== 'open' ? (r.time_out || !inward ? '' : `<button class="btn sm" data-exit="${r.id}">Vehicle out</button>`)
+        : inward ? `<a class="btn sm primary" href="#/new/GRN?ge=${r.id}">Make GRN</a> <button class="btn sm danger" data-rej="${r.id}">Reject</button>`
+          : `<button class="btn sm primary" data-exit="${r.id}">Vehicle out</button>` }],
+    rows, { empty: inward ? 'No vehicles waiting at the gate.' : 'No gate passes yet.' })}</div>`;
+  $$('[data-exit]', el).forEach((b) => b.onclick = async () => { await POST(`/api/gate/${b.dataset.exit}/exit`, {}); toast('Exit time saved'); render(); });
+  $$('[data-rej]', el).forEach((b) => b.onclick = () => modal('Reject at gate', [{ k: 'reason', label: 'Reason (wrong item, damaged, no PO…)', wide: true }],
+    async (v) => { await POST(`/api/gate/${b.dataset.rej}/reject`, v); toast('Rejected'); render(); }));
+  $('#new').onclick = async () => {
+    const parties = (await master('parties')).filter((p) => inward ? p.kind !== 'customer' : true);
+    const refs = [];
+    for (const t of inward ? ['PO'] : ['DN', 'INV']) refs.push(...(await GET(`/api/docs?type=${t}&limit=100`)).rows.filter((d) => d.status !== 'cancelled' && (!inward || d.status !== 'closed')));
+    modal(inward ? 'New gate entry' : 'New gate pass', [
+      { k: 'party_id', label: inward ? 'Supplier' : 'Party', type: 'select', options: [{ v: '', t: '—' }, ...opts(parties)] },
+      { k: 'ref_doc_id', label: inward ? 'Against purchase order (optional)' : 'Against delivery note / invoice', type: 'select', options: [{ v: '', t: '—' }, ...refs.map((d) => ({ v: d.id, t: `${d.number} · ${d.party || ''}` }))] },
+      { k: 'vehicle_no', label: 'Vehicle number', placeholder: 'RJ14GA1234' }, { k: 'driver_name', label: 'Driver name' }, { k: 'driver_phone', label: 'Driver mobile', type: 'tel' },
+      ...(inward ? [{ k: 'challan_no', label: 'Supplier challan / invoice no.' }, { k: 'challan_date', label: 'Challan date', type: 'date' }] : []),
+      { k: 'transporter', label: 'Transporter' }, { k: 'lr_no', label: 'LR / docket no.' },
+      { k: 'packages', label: 'Packages / boxes', type: 'number', value: 0 }, { k: 'weight_kg', label: 'Weight (kg)', type: 'number', value: 0 },
+      { k: 'date', label: 'Date', type: 'date', value: ME.today }, { k: 'by_hand', label: 'By hand / courier (no vehicle)', type: 'checkbox' },
+      ...(!inward ? [{ k: 'exited', label: 'Vehicle has already left', type: 'checkbox' }] : []),
+      { k: 'remarks', label: 'Remarks', wide: true }],
+    async (v) => {
+      const refSel = refs.find((d) => d.id === +v.ref_doc_id);
+      if (refSel && !v.party_id) { const p = parties.find((x) => x.name === refSel.party); if (p) v.party_id = p.id; }
+      const g = await POST('/api/gate', { ...v, kind, party_id: +v.party_id || null, ref_doc_id: +v.ref_doc_id || null });
+      toast(`${g.number} saved`); render();
+    }, { submit: 'Save' });
+  };
+});
+
+/* ======================================================================= stock count (cycle count) */
+route(/^stockcount$/, async (el, m, q) => {
+  dirty('warehouses');
+  const [whs, s] = await Promise.all([master('warehouses'), GET('/api/reports/stock')]);
+  const wid = +q.get('wh') || (whs[0] && whs[0].id);
+  const w = whs.find((x) => x.id === wid) || {};
+  const rows = s.rows.map((r) => ({ ...r, here: ((r.warehouses || []).find((x) => x.warehouse === w.name) || { qty: 0 }).qty }));
+  el.innerHTML = head('Stock Count', `<select id="wh" style="width:auto">${whs.map((x) => `<option value="${x.id}" ${x.id === wid ? 'selected' : ''}>${esc(x.name)}</option>`).join('')}</select>`) + `
+    <p class="muted">Count the shelves and type what you find. Leave an item blank to skip it. On save, the differences are adjusted in stock and in the books (Stock Adjustments) in one go.</p>
+    <div class="panel"><input id="search" placeholder="Filter items…" style="max-width:320px"></div>
+    <form id="cf"><div class="err" hidden></div><div class="panel flush"><div class="tbl-wrap"><table class="t lines"><thead><tr><th>Item</th><th class="hide-sm">Bin</th><th class="num">System qty</th><th>Counted</th><th class="num">Difference</th></tr></thead>
+      <tbody>${rows.map((r) => `<tr data-name="${esc(r.name.toLowerCase())}"><td><b>${esc(r.name)}</b><div class="muted">${esc(r.sku || '')}</div></td><td class="hide-sm">${esc((r.location || ''))}</td>
+        <td class="num">${qtyf(r.here)} ${esc(r.unit)}</td><td class="c-n"><input type="number" step="any" min="0" name="c${r.id}" data-sys="${r.here}" data-id="${r.id}" inputmode="decimal"></td><td class="num" data-diff></td></tr>`).join('')}</tbody></table></div></div>
+      <div class="row"><input type="date" name="date" value="${ME.today}" style="max-width:170px"><span class="spacer"></span><button class="btn primary">Save count & adjust stock</button></div></form>`;
+  $('#wh').onchange = (e) => go('stockcount?wh=' + e.target.value);
+  $('#search').oninput = (e) => { const f = e.target.value.toLowerCase(); $$('#cf tbody tr').forEach((tr) => { tr.hidden = f && !tr.dataset.name.includes(f); }); };
+  $('#cf').oninput = (e) => {
+    const i = e.target; if (!i.dataset.id) return;
+    const d = i.value === '' ? '' : r2(+i.value - +i.dataset.sys);
+    const cell = $('[data-diff]', i.closest('tr'));
+    cell.innerHTML = d === '' || d === 0 ? (d === 0 ? '<span class="muted">matches</span>' : '') : `<b class="${d > 0 ? 'pos' : 'neg'}">${d > 0 ? '+' : ''}${qtyf(d)}</b>`;
+  };
+  $('#cf').onsubmit = async (e) => {
+    e.preventDefault();
+    const lines = $$('#cf input[data-id]').filter((i) => i.value !== '').map((i) => ({ item_id: +i.dataset.id, counted: i.value }));
+    if (!lines.length) return toast('Type at least one counted quantity.');
+    if (!confirm(`Post the count for ${lines.length} item(s)? Differences will be adjusted.`)) return;
+    try {
+      const r = await POST('/api/stock/count', { warehouse_id: wid, date: e.target.date.value, lines });
+      dirty('items', 'accounts');
+      el.innerHTML = head('Stock Count saved') + `<div class="panel">${r.adjusted} item(s) adjusted · gain ${inr(r.gain || 0)} · loss ${inr(r.loss || 0)}</div>
+        <div class="panel flush">${table([{ h: 'Item', k: 'item' }, { h: 'System', num: 1, f: (x) => qtyf(x.system) }, { h: 'Counted', num: 1, f: (x) => qtyf(x.counted) },
+          { h: 'Difference', num: 1, f: (x) => `<b class="${x.diff > 0 ? 'pos' : 'neg'}">${x.diff > 0 ? '+' : ''}${qtyf(x.diff)}</b>` }], r.diffs, { empty: 'Everything matched. Nothing to adjust.' })}</div>
+        <div class="row"><a class="btn" href="#/stock">Stock</a><a class="btn primary" href="#/stockcount?wh=${wid}">Count again</a></div>`;
+    } catch (err) { const b = $('.err', e.target); b.hidden = false; b.textContent = err.message; window.scrollTo(0, 0); }
+  };
+});
+
+/* ======================================================================= pending work */
+route(/^pending$/, async (el) => {
+  const p = await GET('/api/reports/pending');
+  const sec = (title, cols, rows, empty) => `<div class="panel flush"><div class="row" style="padding:14px 16px 0"><h3>${title}</h3><span class="badge">${rows.length}</span></div>${table(cols, rows, { empty })}</div>`;
+  const docLink = (r) => `<a href="#/doc/${r.id}">${esc(r.number)}</a>`;
+  const lineCols = [{ h: 'Order', f: docLink }, { h: 'Party', k: 'party' }, { h: 'Item', f: (r) => esc(r.item || '') }, { h: 'Ordered', num: 1, f: (r) => qtyf(r.qty) },
+    { h: 'Pending', num: 1, f: (r) => `<b>${qtyf(r.pending)}</b> ${esc(r.unit || '')}` }, { h: 'Due', cls: 'hide-sm', f: (r) => fdate(r.due_date) }];
+  const docCols = (act, to) => [{ h: 'Number', f: docLink }, { h: 'Party', k: 'party' }, { h: 'Date', f: (r) => fdate(r.date) }, { h: 'Value', num: 1, f: (r) => inr(r.total) },
+    { h: '', f: (r) => `<a class="btn sm" href="#/new/${to}?from=${r.id}">${act}</a>` }];
+  el.innerHTML = head('Pending Orders & Receipts') + `<div class="kpis">
+      <div class="kpi"><div class="l">At the gate</div><div class="v">${p.at_gate.length}</div><div class="s">vehicles not received</div></div>
+      <div class="kpi"><div class="l">To receive</div><div class="v">${new Set(p.to_receive.map((r) => r.id)).size}</div><div class="s">open purchase orders</div></div>
+      <div class="kpi"><div class="l">To deliver</div><div class="v">${new Set(p.to_deliver.map((r) => r.id)).size}</div><div class="s">open sales orders</div></div>
+      <div class="kpi"><div class="l">To bill / invoice</div><div class="v">${p.to_bill.length + p.to_invoice.length}</div><div class="s">GRNs + delivery notes</div></div></div>
+    ${sec('Vehicles at the gate (no GRN yet)', [{ h: 'Gate entry', f: (r) => `<b>${esc(r.number)}</b>` }, { h: 'Supplier', k: 'party' }, { h: 'Vehicle', k: 'vehicle_no' }, { h: 'In', f: (r) => fdate(r.date) + ' ' + esc(r.time_in || '') },
+      { h: '', f: (r) => `<a class="btn sm primary" href="#/new/GRN?ge=${r.id}">Make GRN</a>` }], p.at_gate, 'Nothing waiting at the gate.')}
+    ${sec('Purchase orders not fully received', lineCols, p.to_receive, 'All purchase orders are received.')}
+    ${sec('Goods received, supplier bill not entered', docCols('Enter bill', 'BILL'), p.to_bill, 'Every GRN has a bill.')}
+    ${sec('Sales orders not fully delivered', lineCols, p.to_deliver, 'All sales orders are delivered.')}
+    ${sec('Delivered, not invoiced', docCols('Make invoice', 'INV'), p.to_invoice, 'Every delivery is invoiced.')}
+    ${sec('Open quotations', docCols('Make order', 'SO'), p.open_quotes, 'No open quotations.')}`;
+});
+
+/* ======================================================================= payment reminders (bulk) */
+route(/^reminders$/, async (el) => {
+  const [ag, kh] = await Promise.all([GET('/api/reports/ageing?kind=receivable'), GET('/api/khata')]);
+  let sent = {};
+  try { sent = JSON.parse(sessionStorage.getItem('st-sent') || '{}'); } catch (e) { /* storage blocked */ }
+  const mark = (k) => { sent[k] = 1; try { sessionStorage.setItem('st-sent', JSON.stringify(sent)); } catch (e) { /* ignore */ } };
+  const khRows = kh.rows.filter((r) => r.balance > 0);
+  const btns = (k) => `${sent[k] ? '<span class="badge b-paid">sent</span> ' : ''}<button class="btn sm got" data-wa="${k}">WhatsApp</button> <button class="btn sm" data-sms="${k}">SMS</button>`;
+  el.innerHTML = head('Payment Reminders') + `<p class="muted">Everyone who owes you money, oldest dues first. Tap WhatsApp to send a ready reminder with the bills, total and your UPI. Sent ones are marked for today.</p>
+    <div class="panel flush"><div class="row" style="padding:14px 16px 0"><h3>Invoice dues</h3><span class="badge">${ag.rows.length}</span></div>${table([
+      { h: 'Customer', f: (r) => `<a href="#/party/${r.party_id}">${esc(r.party)}</a><div class="muted">${esc(r.phone || 'no mobile')}</div>` },
+      { h: 'Overdue', num: 1, cls: 'hide-sm', f: (r) => inr(r.total - r.current) }, { h: 'Total due', num: 1, f: (r) => `<b>${inr(r.total)}</b>` }, { h: '', f: (r) => btns('p' + r.party_id) }],
+    ag.rows.slice().sort((a, b) => (b.total - b.current) - (a.total - a.current)), { empty: 'No unpaid invoices.' })}</div>
+    <div class="panel flush"><div class="row" style="padding:14px 16px 0"><h3>Khata dues</h3><span class="badge">${khRows.length}</span></div>${table([
+      { h: 'Contact', f: (r) => `<a href="#/khata/${r.id}">${esc(r.name)}</a><div class="muted">${esc(r.phone || 'no mobile')}</div>` }, { h: 'Baaki', num: 1, f: (r) => `<b>${inr(r.balance)}</b>` },
+      { h: '', f: (r) => btns('k' + r.id) }], khRows, { empty: 'No khata dues.' })}</div>`;
+  const go2 = async (k, via, b) => {
+    const w = via === 'wa' ? window.open('', '_blank') : null;
+    try {
+      const r = await GET(k[0] === 'p' ? `/api/parties/${k.slice(1)}/reminder` : `/api/khata/${k.slice(1)}/reminder`);
+      const url = via === 'wa' ? r.whatsapp_url : r.sms_url;
+      if (!url) { if (w) w.close(); return alert('Save a mobile number for this contact first.'); }
+      if (w) w.location = url; else location.href = url;
+      mark(k); b.closest('td').insertAdjacentHTML('afterbegin', '<span class="badge b-paid">sent</span> ');
+    } catch (e) { if (w) w.close(); alert(e.message); }
+  };
+  $$('[data-wa]', el).forEach((b) => b.onclick = () => go2(b.dataset.wa, 'wa', b));
+  $$('[data-sms]', el).forEach((b) => b.onclick = () => go2(b.dataset.sms, 'sms', b));
+});
+
+/* ======================================================================= pick list (by bin location) */
+route(/^picklist\/(\d+)$/, async (el, m) => {
+  const d = await GET('/api/docs/' + m[1]);
+  const lines = d.lines.filter((l) => l.item_id && !l.is_service).map((l) => ({ ...l, pick: d.type === 'SO' ? l.remaining : l.qty }))
+    .filter((l) => l.pick > 0.0005).sort((a, b) => (a.location || '~').localeCompare(b.location || '~', 'en', { numeric: true }) || a.item.localeCompare(b.item));
+  el.innerHTML = head(`Pick list · ${esc(d.number)}`, `<a class="btn" href="#/doc/${d.id}">Back</a><button class="btn primary" onclick="print()">Print</button>`) + `
+    <div class="doc-paper"><div class="hdr"><div><div style="font-size:18px;font-weight:700">PICK LIST</div><div>${esc(d.label)} ${esc(d.number)} · ${fdate(d.date)}</div></div>
+      <div style="text-align:right"><b>${esc((d.party || {}).name || '')}</b><div>Godown: ${esc(d.warehouse || '')}</div></div></div>
+      <div class="tbl-wrap"><table class="dl"><thead><tr><th>✓</th><th>Bin / rack</th><th>Item</th><th class="num">Qty to pick</th><th>Picked by</th></tr></thead>
+      <tbody>${lines.map((l) => `<tr><td style="width:28px">☐</td><td><b>${esc(l.location || '—')}</b></td><td>${esc(l.item)}</td><td class="num"><b>${qtyf(l.pick)}</b> ${esc(l.unit || '')}</td><td style="width:120px"></td></tr>`).join('')}</tbody></table></div>
+      <div class="foot"><div>Total lines: ${lines.length}</div><div class="sign">Checked by ____________</div></div></div>`;
 });
 
 /* ======================================================================= shared: downloads, UPI QR, scripts */

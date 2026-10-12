@@ -158,3 +158,104 @@ heavy credit sales; currently on Tally/Busy/Marg desktop + Khatabook, or outgrow
 - Zoho, Odoo, ERPNext, SAP, BC and NetSuite INR figures come from partner/aggregator sites, not vendor list prices.
 - Khatabook, OkCredit and Lio do not publish premium pricing; "Bahi"-style ledger apps had no reliable public data.
 - Re-verify all prices before external use; several vendors revised prices in 2026 (e.g. Tally, Odoo).
+
+## 8. Feature gap analysis vs Vinculum, Khatabook and others (Oct 2026)
+
+> Research compiled 2026-10-12 from web search. Vendor sites (vinculumgroup.com, khatabook.com) could not be fetched
+> directly, so features come from search snippets of vendor pages, help docs, Capterra/G2/Techjockey and press.
+> "~" = approximate or unverified. Ratings are a synthesis, not hands-on testing.
+
+### 8.1 Profiles
+
+**Vinculum (Vin eRetail OMS/WMS, Noida, founded 2007, ~370 staff).** SaaS omnichannel stack for brands, D2C and
+3PLs. The OMS ("Market in a Box") pulls orders from webstores and marketplaces (listings in ~20+ countries), syncs inventory
+and routes fulfilment to own warehouses, 3PLs, stores and franchisees. The WMS covers B2B warehousing and B2C fulfilment:
+handheld (HHT) inward/outward, putaway rules, batch and wave picking, combined picklists, cycle counts, SKU-level batch
+attributes (expiry captured at inward only where needed), warehouse-wide serialisation, barcode printing and automated
+replenishment from daily orders. Gartner WMS Magic Quadrant 2017-2020; QKS SPARK Matrix OMS "Technology Leader" 2025.
+In 2026 it is publishing on "agentic commerce" (AI agents) and VinCode.ai, but no shipped AI product was confirmed.
+Pricing is quote-based (Techjockey shows a placeholder ~Rs 1,220; real deals are enterprise-sized). Capterra 4.6/5
+(58 reviews); a common complaint is slow support (>48 h).
+Not an SME tool: no khata, no SME double-entry books, implementation-led.
+Sources: [Vinculum WMS use cases](https://www.vinculumgroup.com/use-cases/b2b-warehousing-b2c-fulfillment/brands/),
+[Gartner MQ page](https://www.vinculumgroup.com/gartner-magic-quadrant-for-wms/),
+[OMS category](https://www.vinculumgroup.com/category/order-management/),
+[AWS Marketplace](https://aws.amazon.com/marketplace/pp/prodview-zon3ljjghcjic),
+[Techjockey](https://techjockey.com/detail/vin-eretail), [Capterra](https://www.capterra.in/software/152554/vin-eretail-wms).
+
+**Khatabook (Bengaluru, Sequoia/Surge-backed).** Digital udhaar ledger for kirana and micro merchants (~8M+ active
+merchants, older figure). It offers customer/supplier ledgers, SMS/WhatsApp payment reminders with payment links,
+UPI/QR collection ("Khatabook QR"), simple sales/purchase invoices and multilingual UI. Staff management was spun out
+as the separate Pagarkhata app (attendance, leave, wages, payslips; launched Dec 2020, current status unclear).
+Revenue was ~Rs 114 cr in FY24, with a net loss of ~Rs 116 cr (Inc42). Its FY25 figure on Inc42 looks erroneous.
+The core ledger is free; myBillBook's comparison page lists Khatabook billing at ~Rs 156/month (competitor marketing,
+unverified). Weaknesses: no e-invoice/e-way bill, no stock, no double-entry, and reviewers report limits on in-app
+reminder sending.
+Sources: [Inc42 financials](https://inc42.com/company/khatabook/financials/),
+[Pagarkhata launch](https://www.ap7am.com/pn/3530/whatsapp:/send), [Capterra](https://www.capterra.in/software/197475/khatabook),
+[G2](https://www.g2.com/products/khatabook/discuss), [myBillBook vs Khatabook](https://freetrial.mybillbook.in/billing-alternative-khatabook.html).
+
+**Others, briefly.**
+- **Unicommerce:** WMS/OMS with ~290+ integrations, HHT inbound/outbound/cycle count, from ~$5k per install ([blog](https://unicommerce.com/blog/best-warehouse-management-software-in-india/), [Gartner](https://www.gartner.com/reviews/product/unicommerce-wms)).
+- **EasyEcom:** 2026 release notes added a pending GRN/return/cancellation putaway dashboard and partial returns ([what's new](https://easyecom.io/whatsnew-category/warehouse-management)).
+- **Zoho Inventory:** batch/serial tracking, zones and bin locations, barcode-scanned picklists ([help](https://www.zoho.com/en-ng/inventory/help/bin-locations/)).
+- **Vyapar:** batch/expiry/serial (IMEI) on Premium, true offline invoicing, WhatsApp reminders with payment links ([guide](https://vyaparapp.in/guides/how-to-add-item-batches-serial-numbers-in-vyapar), [reminders](https://api1.vyaparapp.in/guides/how-to-send-payment-reminders-in-vyapar)).
+- **myBillBook:** AI/OCR purchase-bill scanning, and staff attendance + payroll on Platinum and above ([scan](https://mybillbook.in/free/invoicing-software/invoice-scanning-software/)).
+- **TallyPrime 7.0** (Dec 2025): cloud backup to TallyDrive, PrimeBanking vendor payments and connected banking. 7.1 is the latest (Jun 2026) ([Tally](https://tallysolutions.com/darpan/product-update-tallyprime-7-0/)).
+- **Marg ERP:** pharma batch/expiry, rack management, Schedule H tracking, eOrder app. WhatsApp needs a third-party BSP ([guide](https://richautomate.in/blog/marg-erp-whatsapp-integration-india-2026-setup-guide)).
+- **OkCredit:** freemium ledger with SMS/WhatsApp reminders and online collection; no public paid tiers ([Techjockey](https://www.techjockey.com/reviews/okcredit)).
+
+### 8.2 Feature matrix
+
+Y = native, P = partial / higher plan / add-on, N = absent. "Yes"/"No" for SmartTrader is our current shipped status.
+
+| Feature | Vinculum | Khatabook | Vyapar/myBillBook | Zoho Inventory | Tally | SmartTrader (ours) |
+|---|---|---|---|---|---|---|
+| PO → GRN → Bill | Y | N | P | Y | Y | Yes |
+| SO → Delivery Note → Invoice | Y (OMS) | N | P | Y | Y | Yes |
+| Quotations | P | N | Y | Y | Y | Yes |
+| Return credit notes & debit notes | Y (returns) | N | Y | Y | Y | Yes |
+| Value credit/debit notes (rate difference) | N | N | P | P | Y | Yes |
+| Gate entry inward + GRN from gate entry, outward gate pass | P (~) | N | N | N | P (TDL/add-on) | Yes |
+| Barcode/HHT GRN, QC, putaway rules | Y | N | N | P | N | No (putaway) |
+| Multi-godown / warehouse | Y | N | P | Y | Y | Yes |
+| Average cost valuation | P | N | P | Y (FIFO/WAC) | Y | Yes |
+| Reorder alerts + one-click / auto PO | Y (auto replen.) | N | P (alerts) | P (reorder pts) | P | Yes |
+| Cycle count / stock count + bulk adjust | Y (HHT) | N | P | P | P | Yes |
+| Bin/rack location + pick list | Y | N | N | Y | N | Yes |
+| Wave/batch picking, WMS putaway | Y | N | N | P | N | No |
+| Batch / expiry tracking | Y | N | Y (Premium) | Y | Y | No |
+| Serial / IMEI numbers | Y | N | Y (Premium) | Y | P | No |
+| Pending orders/deliveries/receipts report | Y | N | P | Y | Y | Yes |
+| Double-entry books, TB/P&L/BS | N | N | P | P (needs Books) | Y | Yes |
+| GST summary, e-invoice & e-way bill JSON | P | N | Y | Y (with Books) | Y | Yes |
+| Tally export | P (postings) | N | P | P | n/a | Yes |
+| Marketplace integrations (Amazon/Flipkart) | Y (core) | N | N | Y | N | No |
+| Khata ledger, send-before-save, customer confirm/dispute link | N | Y (no confirm flow) | P (shared ledger link) | N | N | Yes |
+| WhatsApp/SMS reminders with UPI link | N | Y | Y | P | N | Yes |
+| Bulk reminders screen | N | P | P | N | N | Yes |
+| Automatic scheduled WhatsApp (Business API) | N | P (~) | P (scheduled) | N | N | No |
+| Customer invoice links with UPI pay | N | P | Y | Y (payment gateway) | N | Yes |
+| POS with barcode / camera scan | P | N | Y | P | P | Yes |
+| Barcode label printing | Y | N | Y | Y | P | Yes |
+| Staff attendance / payroll | N | P (Pagarkhata app) | P (myBillBook Platinum+) | N | Y (payroll) | No |
+| AI features (OCR bill scan, assistants) | P (~, agentic R&D) | N | P (myBillBook OCR) | P (Zia) | N | No |
+| Offline data entry | N | Y (app) | Y (Vyapar) | N | Y (desktop) | No |
+| Mobile app / PWA install | Y (Android HHT) | Y | Y | Y | P | Yes (PWA) |
+| Roles + audit trail | Y | N | P | Y | Y (edit log) | Yes |
+
+**Read-out.** SmartTrader already covers more of the trader workflow than any single SME product: Tally-grade
+procurement and accounting, plus khata collections and light WMS (gate entry, bins, pick list, cycle count). The
+real gaps are item-level traceability (batch/expiry/serial), channel integrations, offline use and AI convenience.
+Full WMS (wave picking, putaway rules) is Vinculum/Unicommerce territory and matters less for SME traders.
+
+### 8.3 Top 8 next features to build (ranked by impact for Indian SME traders)
+
+1. **Batch + expiry tracking (FEFO pick, near-expiry alerts):** required by pharma, FMCG, food and agro-input distributors, a large segment where Marg/Vyapar win today.
+2. **Serial / IMEI tracking:** mobile, electronics and appliance dealers need it for warranty and returns. It shares the same lot-tracking data model as #1, so it is cheap to add after it.
+3. **Automatic scheduled WhatsApp (Business API) reminders + payment-received receipts:** collections are the top daily pain. Auto-nudges on due dates beat manual sends and justify a paid add-on (per-message pass-through).
+4. **AI purchase-bill OCR → draft GRN/purchase bill:** suppliers send paper or PDF bills, and myBillBook already markets this. It cuts the slowest data-entry task and is visible "AI" in demos.
+5. **Offline data entry (PWA queue + sync) for POS, khata and GRN:** patchy connectivity in tier-2/3 markets is the main reason traders stay on Vyapar or desktop Tally.
+6. **Staff attendance + simple payroll/advances (salesman, helpers):** bundled by myBillBook and Khatabook (Pagarkhata), it raises daily active use, and the data feeds expense entries.
+7. **Marketplace + webstore sync (Amazon, Flipkart, Meesho, Shopify) for stock and orders:** a growing share of traders sell online. Start with inventory sync and order import rather than a full OMS.
+8. **Barcode GRN with QC hold/accept/reject and guided putaway to bins:** builds on the existing gate entry and bins, closes the inward-quality loop for distributors, and moves us towards Vinculum-lite WMS.

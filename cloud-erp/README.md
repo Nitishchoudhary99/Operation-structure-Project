@@ -18,6 +18,10 @@ Market research and pricing advice: see [docs/COMPETITORS.md](docs/COMPETITORS.m
 | **Khata Book** | Khatabook-style "you gave / you got" credit book per contact, with running balance and one-tap **WhatsApp / SMS reminders that include a UPI payment link**. Works well on phones. |
 | **Payments** | Receipts and payments into cash, bank or UPI accounts. Applied to the oldest open invoices or bills first, or to a chosen document. Voiding reverses everything. |
 | **Control** | Multi-user with roles (owner, admin, accountant, store, sales), audit trail, cancel-with-reversal (never silent edits), one database holding many businesses with strict separation. |
+| **Gate entry & gate pass** | Inward gate register (vehicle, driver, challan, packages, weight, against a PO), Goods Receipt made from the gate entry, reject at gate; outward gate pass against a delivery note/invoice with exit time. |
+| **Credit / debit notes** | Return notes (goods come back) and value notes for rate difference, discount or claims (no goods), made from the invoice/bill line by line or standalone, settled against the original, in GST summary, e-invoice (CRN) and Tally. |
+| **Warehouse tools** | Bin/rack location per item, printable pick list sorted by bin, stock count (cycle count) that posts all differences at once, one-click reorder PO for items below reorder level, pending orders/receipts/gate report. |
+| **Collections** | Payment Reminders screen: every customer with invoice or khata dues, one-tap WhatsApp/SMS reminder listing the bills, total and UPI. |
 | **POS & barcodes** | Quick-bill screen for counters: USB/Bluetooth scanner or phone camera, cash / UPI (with a QR for the exact amount) / card / credit, change due, 80 mm thermal receipt, F9 to finish. Barcode labels (Code 128) printed from any item. |
 | **GST portals** | E-invoice JSON (NIC schema 1.1) for B2B invoices and credit notes, and e-way bill bulk-upload JSON with transport details. Save the IRN, Ack and e-way bill numbers back on the document, and they print on the invoice. |
 | **Tally export** | One XML file with ledgers and every voucher for a period, which imports into Tally Prime / ERP 9 with a matching trial balance. |
@@ -101,7 +105,7 @@ Flow: the customer pays by UPI and WhatsApps you. In the admin panel you **Gener
 cd cloud-erp
 npm install
 npx wrangler dev            # http://localhost:8787, with a local D1 database in .wrangler/
-node test/run.mjs           # in another terminal: 66-check end-to-end business test
+node test/run.mjs           # in another terminal: 110-check end-to-end business test
                             # (put ADMIN_KEY=local-test-admin-key-0001 in cloud-erp/.dev.vars for the admin checks)
 ```
 
