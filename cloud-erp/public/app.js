@@ -119,7 +119,7 @@ function words(n) {
 }
 
 /* ======================================================================= auth screens */
-function renderAuth(mode = 'login') {
+function renderAuth(mode = /^#\/?signup/.test(location.hash) ? 'signup' : 'login') {
   $('#app').innerHTML = `<div class="auth">
     <div class="pitch">
       <h1>SmartTrader Cloud ERP</h1>
@@ -132,6 +132,7 @@ function renderAuth(mode = 'login') {
         <li>Khata with WhatsApp &amp; UPI payment reminders</li>
         <li>Staff logins with roles, full audit trail</li>
       </ul>
+      <p class="seo-links"><a href="/gst-billing-software/">GST billing</a> · <a href="/khata-book-app/">Khata book</a> · <a href="/inventory-management-software/">Inventory</a> · <a href="/pricing/">Pricing: free plan</a></p>
     </div>
     <div class="box"><form id="auth-form">
       <h1>${mode === 'login' ? 'Sign in' : 'Create your business account'}</h1>
@@ -153,6 +154,7 @@ function renderAuth(mode = 'login') {
     const btn = $('button', e.target); btn.disabled = true;
     try {
       await POST('/api/auth/' + mode, body);
+      if (/^#\/?(signup|login)/.test(location.hash)) history.replaceState(null, '', '/#/dashboard');
       await boot();
     } catch (err) { const b = $('.err', e.target); b.hidden = false; b.textContent = err.message; } finally { btn.disabled = false; }
   };

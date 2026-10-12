@@ -839,7 +839,8 @@ async function sharePage(request, env, kind, token) {
 <meta property="og:url" content="${attr(url.origin + url.pathname)}">
 <meta property="og:image" content="${attr(url.origin + image)}"><meta property="og:image:width" content="1200"><meta property="og:image:height" content="630">
 <meta name="twitter:card" content="summary_large_image"><meta name="robots" content="noindex">`;
-  html = html.replace(/<title>[\s\S]*?<\/title>/, '').replace(/<meta name="description"[^>]*>/, '').replace('</head>', tags + '\n</head>');
+  html = html.replace(/<title>[\s\S]*?<\/title>/, '').replace(/<meta (name|property)="(description|robots|og:[^"]*|twitter:[^"]*)"[^>]*>/g, '')
+    .replace(/<link rel="canonical"[^>]*>/, '').replace(/<script type="application\/ld\+json">[\s\S]*?<\/script>/g, '').replace('</head>', tags + '\n</head>');
   return new Response(html, { headers: { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store', 'X-Robots-Tag': 'noindex' } });
 }
 

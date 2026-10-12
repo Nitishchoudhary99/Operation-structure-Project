@@ -1,0 +1,7 @@
+User-agent: *
+Allow: /
+Disallow: /api/
+Disallow: /k/
+Disallow: /i/
+
+Sitemap: https://erp.docbrisk.com/sitemap.xml

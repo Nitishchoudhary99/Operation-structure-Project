@@ -1,7 +1,7 @@
 /* SmartTrader service worker: makes the app installable and lets the app shell open offline.
    Business data (/api/*) is never cached: it always comes live from the server.
    Files are fetched from the network first so a new deploy shows up at once; the saved copy is only used offline. */
-const CACHE = 'smarttrader-shell-v2';
+const CACHE = 'smarttrader-shell-v3';
 const SHELL = ['/', '/app.js', '/app.css', '/manifest.webmanifest', '/icons/icon-192.png', '/icons/icon-512.png',
   '/vendor/qrcode.mjs', '/vendor/JsBarcode.all.min.js'];
 
@@ -22,10 +22,11 @@ self.addEventListener('fetch', (e) => {
     const cache = await caches.open(CACHE);
     try {
       const res = await fetch(req);
-      if (res.ok && res.type === 'basic') cache.put(req.mode === 'navigate' ? '/' : req, res.clone());
+      // the app shell is "/"; other pages (pricing, guides) are cached under their own address
+      if (res.ok && res.type === 'basic') cache.put(req.mode === 'navigate' && url.pathname === '/' ? '/' : req, res.clone());
       return res;
     } catch (err) {
-      return (await cache.match(req.mode === 'navigate' ? '/' : req, { ignoreSearch: true })) ||
+      return (await cache.match(req, { ignoreSearch: true })) || (req.mode === 'navigate' ? await cache.match('/') : null) ||
         new Response('Offline', { status: 503, headers: { 'Content-Type': 'text/plain' } });
     }
   })());
