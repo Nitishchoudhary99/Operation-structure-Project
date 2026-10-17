@@ -1,0 +1,109 @@
+<!doctype html><html lang="en-IN"><head><meta charset="utf-8"><title>SmartTrader ERP - User Guide</title>
+<style>
+@page { size: A4; margin: 14mm 14mm 16mm; }
+body { font: 11pt/1.5 "DejaVu Sans", Arial, sans-serif; color: #18212b; }
+h1 { font-size: 26pt; margin: 0 0 6px; color: #0f766e; } h2 { font-size: 16pt; color: #0f766e; border-bottom: 2px solid #e2e7ec; padding-bottom: 4px; margin: 0 0 10px; }
+h3 { font-size: 12pt; margin: 14px 0 4px; }
+section { break-before: page; } section.first { break-before: auto; }
+.cover { height: 262mm; break-after: page; display: flex; flex-direction: column; justify-content: center; background: linear-gradient(150deg,#0f766e,#0e1b26); color: #fff; padding: 0 18mm; margin: -14mm -14mm 0; }
+.cover h1 { color: #fff; font-size: 34pt; } .cover p { font-size: 14pt; color: #cdeee9; }
+.logo { width: 64px; height: 64px; border-radius: 14px; background: #fff; display: grid; place-items: center; margin-bottom: 18px; }
+ol li, ul li { margin: 4px 0; } .tip { background: #e6f4f2; border-left: 4px solid #0f766e; padding: 8px 12px; margin: 10px 0; border-radius: 4px; }
+.warn { background: #fdf6dc; border-left: 4px solid #a16207; padding: 8px 12px; margin: 10px 0; border-radius: 4px; }
+.row { display: flex; gap: 14px; align-items: flex-start; } .row > div { flex: 1; }
+img.shot { border: 1px solid #d7dde3; border-radius: 8px; max-width: 100%; } img.phone { max-height: 120mm; } img.wide { max-height: 95mm; }
+table { border-collapse: collapse; width: 100%; font-size: 10pt; } td, th { border: 1px solid #d7dde3; padding: 5px 7px; text-align: left; } th { background: #f1f4f7; }
+.toc li { margin: 6px 0; } .small { font-size: 9pt; color: #5b6878; }
+</style></head><body>
+<div class="cover"><div class="logo"><svg width="40" height="40" viewBox="0 0 32 32"><path d="M6 23l7-8 5 4 8-11" stroke="#0f766e" stroke-width="3.5" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg></div>
+<h1>SmartTrader ERP</h1><p>User Guide — GST billing, khata, stock aur accounts, ek app me</p><p style="margin-top:30px">erp.docbrisk.com · Free plan available</p></div>
+
+<section class="first" style="break-before:auto"><h2>Contents</h2><ol class="toc">
+<li>Shuru karein: account, business details, UPI ID</li><li>App install karein (mobile / computer)</li><li>Items aur stock</li><li>Customers aur suppliers</li>
+<li>GST invoice banana aur WhatsApp par bhejna</li><li>Quick Bill (POS) aur barcode</li><li>Purchase bill, returns, credit / debit note</li>
+<li>Khata Book: udhaar ka bharosemand hisaab</li><li>Payment reminders</li><li>Reports: P&amp;L, Balance Sheet, GST</li>
+<li>Simple aur Advanced mode</li><li>Staff users aur roles</li><li>Plan aur upgrade</li><li>Aksar pooche jaane wale sawaal</li></ol>
+<div class="tip">Har screen phone aur computer dono par chalti hai. Aapka data cloud me safe rehta hai, roz ka backup Cloudflare karta hai.</div></section>
+
+<section><h2>1. Shuru karein</h2><ol>
+<li>Browser me <b>erp.docbrisk.com</b> kholein aur <b>Create a free account</b> dabayein.</li>
+<li>Business ka naam, aapka naam, <b>State</b> (zaroori: isi se CGST+SGST ya IGST tay hota hai), GSTIN (agar hai), email aur password bharein.</li>
+<li>Login ke baad <b>Settings → Business &amp; Users</b> kholein aur ye bharein: address, phone, <b>UPI ID</b> (jaise <i>dukaan@okaxis</i>), city, PIN code.</li></ol>
+<div class="tip"><b>UPI ID zaroor bharein.</b> Isse har bill aur khata message par <b>Pay by UPI</b> button aur QR aata hai, aur paisa jaldi milta hai.</div>
+<h2 style="margin-top:22px">2. App install karein</h2>
+<ul><li><b>Android / Computer (Chrome):</b> upar <b>Install app</b> button dabayein.</li><li><b>iPhone:</b> Safari me Share → <b>Add to Home Screen</b>.</li></ul>
+<p>App icon se seedha khulta hai, aur Quick Bill, New invoice, Khata ke shortcuts milte hain.</p>
+<img class="shot wide" src="dash.png"><p class="small">Dashboard: is mahine ki sale, munafa, lena-dena, stock aur GST ek nazar me.</p></section>
+
+<section><h2>3. Items aur stock</h2><ol>
+<li><b>Items → + New item</b>: naam, unit, HSN, GST %, purchase price, sale price, reorder level.</li>
+<li>Pehle se maal hai to <b>Opening stock qty</b> aur rate bharein.</li>
+<li><b>Barcode</b> scan karke daal sakte hain; khali chhodne par app khud label code bana deta hai.</li>
+<li>Item page par <b>Print barcode labels</b> se stickers print karein.</li></ol>
+<p><b>Stock &amp; Godowns</b> me har item ka stock, average cost, value aur <b>reorder</b> status dikhta hai. Kam stock wale items ka PO ek click me: <b>Raise a purchase order for low items</b> (Advanced mode).</p>
+<div class="row"><div><img class="shot" src="labels.png"></div></div>
+<h2 style="margin-top:18px">4. Customers aur suppliers</h2>
+<p><b>Customers &amp; Suppliers → + New contact</b>: naam, type, mobile (WhatsApp ke liye zaroori), GSTIN, state, credit days, credit limit. Purana baaki ho to contact khol kar <b>Opening balance</b> bharein.</p></section>
+
+<section><h2>5. GST invoice aur WhatsApp</h2><div class="row"><div><ol>
+<li><b>Invoices → + New</b> (ya dashboard par <b>+ New invoice</b>).</li><li>Customer chunein, item chunein, qty likhein: rate aur GST apne aap aata hai.</li>
+<li>Paisa abhi mila to <b>Received now</b> me amount aur account (Cash / UPI / Bank) chunein.</li><li><b>Save</b>. Invoice number apne aap (INV-00001...).</li>
+<li>Invoice par <b>WhatsApp</b> dabayein: customer ko banner wala link jata hai jahan wo bill dekh, PDF download aur UPI se pay kar sakta hai.</li>
+<li><b>Print / PDF</b> se A4 bill. Bill par amount in words aur UPI QR chhapta hai.</li></ol>
+<div class="tip">CGST+SGST ya IGST state se apne aap tay hota hai. Total rupaye me round hota hai.</div></div>
+<div style="max-width:60mm"><img class="shot phone" src="m-inv.png"></div></div></section>
+
+<section><h2>6. Quick Bill (POS) aur barcode</h2>
+<ol><li>Menu me <b>Quick Bill (POS)</b>.</li><li>Barcode scanner se scan karein, ya <b>Camera</b> button se phone ka camera use karein, ya item ka naam likh kar Enter.</li>
+<li>Payment: Cash / UPI / Card / Credit (udhaar). UPI chunne par us amount ka QR screen par aata hai.</li><li><b>Complete sale (F9)</b>: thermal receipt (80 mm) print hoti hai.</li></ol>
+<img class="shot wide" src="pos.png"></section>
+
+<section><h2>7. Purchase, returns, credit / debit note</h2>
+<ul><li><b>Purchase Bills → + New</b>: supplier ka bill. Stock badhta hai, supplier ka baaki banta hai.</li>
+<li><b>Payments</b>: supplier ko paisa diya to yahan entry.</li>
+<li><b>Maal wapsi:</b> invoice kholo → <b>Return goods</b> (Credit Note). Bill kholo → <b>Return goods</b> (Debit Note).</li>
+<li><b>Rate difference / discount (maal nahi hilta):</b> invoice kholo → <b>Credit note</b>, har line par per-unit difference likho. Supplier ke liye bill → <b>Debit note</b>.</li>
+<li>Galat bill? <b>Cancel</b> dabayein. Stock aur hisaab dono apne aap ulte ho jaate hain. Kuch chhupke se delete nahi hota.</li></ul>
+<img class="shot wide" src="cnote.png"></section>
+
+<section><h2>8. Khata Book: bharosemand udhaar</h2><div class="row"><div><ol>
+<li><b>Khata Book → + Add entry</b> (naya contact) ya contact kholo → <b>You gave ₹</b> / <b>You got ₹</b>.</li>
+<li>Amount aur note likho → <b>Next: send to customer</b>.</li><li><b>Send on WhatsApp</b> ya <b>Send SMS</b> dabao. Bhejte hi entry khate me judti hai.</li></ol>
+<div class="tip">Customer ko ek private link milta hai: wo apna poora khata dekhta hai, har entry par <b>Yes / No</b> dabata hai aur UPI se pay karta hai.</div>
+<div class="warn">Bheji hui entry delete nahi hoti. Galti ho to <b>Reverse</b> dabao: ek correction entry banti hai jo customer ko bhi jati hai. Isi se dono taraf bharosa rehta hai.</div></div>
+<div style="max-width:55mm"><img class="shot phone" src="m-send.png"></div><div style="max-width:55mm"><img class="shot phone" src="pay-upi.png"></div></div></section>
+
+<section><h2>9. Payment reminders</h2>
+<p><b>Payment Reminders</b> screen par har wo customer dikhta hai jiska invoice ya khata baaki hai, sabse purane pehle. <b>WhatsApp</b> dabao: bills ki list, total aur UPI ke saath ready message jata hai. Bheje gaye reminder par <i>sent</i> ka nishaan lag jata hai.</p>
+<h2 style="margin-top:22px">10. Reports</h2>
+<table><tr><th>Report</th><th>Kya batata hai</th></tr>
+<tr><td>Profit &amp; Loss</td><td>Sale, maal ki laagat, gross aur net munafa</td></tr><tr><td>Balance Sheet</td><td>Aapke paas kya hai aur kya dena hai</td></tr>
+<tr><td>Trial Balance</td><td>Har account ka balance; CA ke liye</td></tr><tr><td>GST Summary</td><td>Rate-wise output tax, input credit, net GST payable</td></tr>
+<tr><td>Outstanding (Ageing)</td><td>Kisse kitna lena / dena hai, kitne din purana</td></tr><tr><td>Registers</td><td>Sale, purchase, returns ki list, CSV me download</td></tr>
+<tr><td>Tally Export</td><td>Tally me import ke liye XML (Starter plan se)</td></tr></table>
+<p>Har report me date chunein, <b>CSV</b> se Excel me le jaayein ya <b>Print</b> karein.</p></section>
+
+<section><h2>11. Simple aur Advanced mode</h2>
+<p>Shuru me app <b>Simple mode</b> me hota hai: chhoti dukaan ke kaam ke menu hi dikhte hain. <b>Settings → Features → Advanced</b> chunne par ye bhi aa jaate hain:</p>
+<ul><li>Quotation, Sales Order, Delivery Note, Purchase Order, Goods Receipt (GRN)</li><li><b>Gate Entry</b> (gaadi gate par aate hi entry, phir usse GRN) aur <b>Gate Pass</b> (maal bahar jaate waqt)</li>
+<li>Stock Count (physical verification), Pick list (rack-wise), Pending Orders report</li><li>E-invoice aur e-way bill JSON (portal par upload ke liye)</li></ul>
+<img class="shot wide" src="gate.png"><p class="small">Mode badalne se koi data delete nahi hota.</p></section>
+
+<section><h2>12. Staff users aur roles</h2>
+<table><tr><th>Role</th><th>Kya kar sakta hai</th></tr><tr><td>Owner / Admin</td><td>Sab kuch, settings aur users</td></tr>
+<tr><td>Accountant</td><td>Bill, payment, kharche, reports</td></tr><tr><td>Store</td><td>Items, stock, purchase, gate entry</td></tr><tr><td>Sales</td><td>Quotation, order, invoice, khata</td></tr></table>
+<p><b>Settings → Users → + Add user</b>. Har kaam ka record <b>Audit trail</b> me rehta hai.</p>
+<h2 style="margin-top:22px">13. Plan aur upgrade</h2>
+<table><tr><th>Plan</th><th>Saal ka (+GST)</th><th>Kya milta hai</th></tr><tr><td>Free</td><td>₹0</td><td>50 invoice/mahina, 1 user, unlimited khata</td></tr>
+<tr><td>Starter</td><td>₹999</td><td>Unlimited invoice, 2 users, Tally export</td></tr><tr><td>Growth</td><td>₹2,499</td><td>5 users, 3 godown, e-invoice/e-way bill</td></tr><tr><td>Business</td><td>₹4,499</td><td>15 users, unlimited godown, priority support</td></tr></table>
+<p><b>Plan &amp; Billing</b> kholein → plan chunein → payment karein. Activation code mila ho to <b>Have an activation code?</b> me daal kar <b>Activate</b>.</p></section>
+
+<section><h2>14. Aksar pooche jaane wale sawaal</h2>
+<h3>Internet chala jaye to?</h3><p>App khulta hai, lekin nayi entry ke liye internet chahiye. Data cloud me safe rehta hai.</p>
+<h3>Galat entry kaise sudhaarein?</h3><p>Bill: <b>Cancel</b> karke naya banayein. Khata: <b>Reverse</b>. Hisaab hamesha barabar rehta hai.</p>
+<h3>Customer ko Pay button nahi dikh raha?</h3><p>Settings me apni <b>UPI ID</b> bharein.</p>
+<h3>Stock minus me kyun nahi jata?</h3><p>Jitna maal hai usse zyada becha nahi ja sakta. Pehle purchase ya opening stock bharein.</p>
+<h3>CA ko data kaise dein?</h3><p>Reports → GST Summary / Registers ka CSV, ya Tally Export ki XML file.</p>
+<h3>Madad chahiye?</h3><p>erp.docbrisk.com par <b>Plan &amp; Billing</b> page se WhatsApp karein.</p>
+<div class="tip" style="margin-top:20px">SmartTrader ERP by DocBrisk · erp.docbrisk.com</div></section>
+</body></html>
