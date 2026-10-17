@@ -3,7 +3,7 @@
    Every business table carries org_id: one database serves many businesses (multi-tenant).
    migrate() runs on the first request after each deploy, so no manual migration step is needed. */
 
-export const SCHEMA_VERSION = 7;
+export const SCHEMA_VERSION = 8;
 
 export const SCHEMA = [
   `CREATE TABLE IF NOT EXISTS meta (k TEXT PRIMARY KEY, v TEXT NOT NULL)`,
@@ -215,6 +215,14 @@ export const MIGRATIONS = {
        INSERT INTO acct_day (org_id, account_id, d, dr, cr) VALUES (NEW.org_id, NEW.account_id, NEW.date, NEW.debit, NEW.credit)
        ON CONFLICT (org_id, account_id, d) DO UPDATE SET dr = dr + excluded.dr, cr = cr + excluded.cr;
      END`,
+  ],
+  // online plan payments (Razorpay); one row per checkout
+  8: [
+    `CREATE TABLE IF NOT EXISTS billing_orders (
+       id INTEGER PRIMARY KEY, org_id INTEGER NOT NULL, user_id INTEGER, ref TEXT NOT NULL UNIQUE, order_id TEXT UNIQUE,
+       plan TEXT NOT NULL, months INTEGER NOT NULL, paise INTEGER NOT NULL, status TEXT NOT NULL DEFAULT 'created',
+       payment_id TEXT, plan_until TEXT, created_at TEXT NOT NULL, paid_at TEXT)`,
+    `CREATE INDEX IF NOT EXISTS ix_billing_org ON billing_orders (org_id, id)`,
   ],
 };
 

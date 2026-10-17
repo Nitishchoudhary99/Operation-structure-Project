@@ -1293,39 +1293,69 @@ route(/^tally$/, async (el) => {
 });
 
 /* ======================================================================= plan & billing */
-route(/^plan$/, async (el) => {
+route(/^plan$/, async (el, m, q) => {
   const P = await GET('/api/plan'), cur = P.plan, u = P.usage;
   const lim = (n) => n === null ? 'Unlimited' : n;
+  const daysLeft = cur.until ? Math.max(0, Math.round((new Date(cur.until + 'T00:00:00') - new Date(ME.today + 'T00:00:00')) / 864e5)) : null;
+  const bar = (used, max) => max === null ? '' : `<div class="meter"><i style="width:${Math.min(100, Math.round(used / Math.max(1, max) * 100))}%"></i></div>`;
+  const wa = P.support_whatsapp ? `https://api.whatsapp.com/send?phone=${encodeURIComponent(P.support_whatsapp.replace(/\D/g, ''))}&text=${encodeURIComponent(`Hi, I want to upgrade SmartTrader ERP. Business: ${ME.org.name}, login: ${ME.user.email}`)}` : '';
+  const online = P.billing !== 'off';
   el.innerHTML = head('Plan & Billing') + `
-    <div class="kpis"><div class="kpi"><div class="l">Current plan</div><div class="v">${esc(cur.label)}</div><div class="s">${cur.until ? 'Valid till ' + fdate(cur.until) : 'Free forever'}</div></div>
-      <div class="kpi"><div class="l">Invoices this month</div><div class="v">${u.invoices_this_month}</div><div class="s">of ${lim(cur.invoices_per_month)}</div></div>
-      <div class="kpi"><div class="l">Active users</div><div class="v">${u.users}</div><div class="s">of ${lim(cur.users)}</div></div>
-      <div class="kpi"><div class="l">Godowns</div><div class="v">${u.warehouses}</div><div class="s">of ${lim(cur.warehouses)}</div></div></div>
+    <div class="panel planbar"><div><div class="muted">Your plan</div><div class="big">${esc(cur.label)}</div>
+      <div class="muted">${cur.until ? `Valid till <b>${fdate(cur.until)}</b>${daysLeft !== null && daysLeft <= 15 ? ` · <span class="neg">${daysLeft} days left</span>` : ''}` : 'Free forever'}</div></div>
+      <div class="usage"><div><span>Invoices this month</span><b>${u.invoices_this_month} / ${lim(cur.invoices_per_month)}</b>${bar(u.invoices_this_month, cur.invoices_per_month)}</div>
+      <div><span>Users</span><b>${u.users} / ${lim(cur.users)}</b>${bar(u.users, cur.users)}</div>
+      <div><span>Godowns</span><b>${u.warehouses} / ${lim(cur.warehouses)}</b>${bar(u.warehouses, cur.warehouses)}</div></div></div>
+    <div id="paystate"></div>
     <div class="plans">${P.plans.map((p) => `<div class="plan ${p.key === cur.key ? 'cur' : ''} ${p.key === 'growth' ? 'pop' : ''}">
       ${p.key === 'growth' ? '<div class="badge b-open">Most popular</div>' : ''}<h2>${esc(p.label)}</h2>
-      <div class="price">${p.price ? '₹' + p.price.toLocaleString('en-IN') + '<span>/year + GST</span>' : '₹0'}</div>
-      <ul><li>${lim(p.invoices_per_month)} invoices / month</li><li>${lim(p.users)} user${p.users === 1 ? '' : 's'}</li><li>${lim(p.warehouses)} godown${p.warehouses === 1 ? '' : 's'}</li>
-      <li>Inventory, purchase, sales, GST, accounts</li><li>Khata with WhatsApp reminders</li><li>POS & barcode billing</li>
-      ${p.features.includes('tally') ? '<li>Tally export</li>' : ''}${p.features.includes('einvoice') ? '<li>E-invoice & e-way bill JSON</li>' : ''}${p.features.includes('priority') ? '<li>Priority support</li>' : ''}</ul>
-      ${p.key === cur.key ? '<div class="muted">Your plan</div>' : p.price ? `<button class="btn primary" data-buy="${p.key}">Choose ${esc(p.label)}</button>` : ''}</div>`).join('')}</div>
-    <div class="grid g2">
-      <div class="panel" id="paybox"><h2>How to upgrade</h2>${P.pay_upi ? `<p>Pay by UPI to <b>${esc(P.pay_upi)}</b>, then send the payment screenshot with your login email${P.support_whatsapp ? ' on WhatsApp' : ''}. You will get an activation code.</p><div id="payqr"></div>
-        ${P.support_whatsapp ? `<a class="btn" target="_blank" rel="noopener" href="https://api.whatsapp.com/send?phone=${esc(P.support_whatsapp.replace(/\D/g, ''))}&text=${encodeURIComponent(`Hi, I want to upgrade SmartTrader ERP. Business: ${ME.org.name}, login: ${ME.user.email}`)}">WhatsApp us</a>` : ''}`
-        : '<p>Contact the person who gave you SmartTrader to buy a plan. You will get an activation code.</p>'}</div>
-      <form class="panel" id="act"><h2>Have an activation code?</h2><div class="err" hidden></div><label class="f">Code<input name="code" placeholder="ST-GROWTH-12-…" autocomplete="off"></label>
-        <div class="row" style="margin-top:12px"><span class="spacer"></span><button class="btn primary">Activate</button></div></form>
-    </div>`;
-  $$('[data-buy]', el).forEach((b) => b.onclick = () => {
-    const p = P.plans.find((x) => x.key === b.dataset.buy), gross = Math.round(p.price * 1.18);
-    if (P.pay_upi) upiQr($('#payqr'), { upi_id: P.pay_upi, name: P.pay_name }, gross, `SmartTrader ${p.label} ${ME.user.email}`, `${p.label} plan, 1 year incl. 18% GST`);
-    $('#paybox').scrollIntoView({ behavior: 'smooth' });
-  });
-  $('#act').onsubmit = async (e) => {
-    e.preventDefault();
-    const b = $('.err', e.target); b.hidden = true;
-    try { const r = await POST('/api/plan/activate', { code: e.target.code.value }); ME = await GET('/api/me'); toast(`${r.plan} plan activated`); render(); }
-    catch (err) { b.hidden = false; b.textContent = err.message; }
+      <div class="price">${p.price ? '₹' + p.price.toLocaleString('en-IN') + '<span>/year + GST</span>' : '₹0<span>forever</span>'}</div>
+      ${p.price ? `<div class="muted small">≈ ₹${Math.round(p.price / 12)} a month · pay ₹${p.pay.toLocaleString('en-IN')} incl. GST</div>` : ''}
+      <ul class="ticks"><li>${lim(p.invoices_per_month)} invoices / month</li><li>${lim(p.users)} user${p.users === 1 ? '' : 's'}</li><li>${lim(p.warehouses)} godown${p.warehouses === 1 ? '' : 's'}</li>
+      <li>Billing, stock, khata, POS, accounts</li>${p.features.includes('tally') ? '<li>Tally export</li>' : ''}${p.features.includes('einvoice') ? '<li>E-invoice & e-way bill</li>' : ''}${p.features.includes('priority') ? '<li>Priority support</li>' : ''}</ul>
+      ${!p.price ? (p.key === cur.key ? '<div class="muted">Your plan</div>' : '') : !ME.can.settings ? '<div class="muted">Ask the owner to upgrade</div>'
+        : online ? `<button class="btn primary big" data-buy="${p.key}">${p.key === cur.key ? (P.history.some((h) => h.status === 'paid') ? 'Renew 1 year' : 'Buy 1 year') : 'Upgrade'} · Pay ₹${p.pay.toLocaleString('en-IN')}</button>`
+          : wa ? `<a class="btn primary" target="_blank" rel="noopener" href="${wa}">Upgrade on WhatsApp</a>` : '<div class="muted">Online payment coming soon</div>'}</div>`).join('')}</div>
+    <p class="muted">Pay with UPI, card, netbanking or wallet through Razorpay. The plan starts the moment payment succeeds. Renewing the same plan adds a year to your current end date.</p>
+    ${P.history.length ? `<div class="panel flush"><div style="padding:14px 16px 0"><h3>Payments</h3></div>${table([{ h: 'Date', f: (r) => fdate((r.paid_at || r.created_at).slice(0, 10)) },
+      { h: 'Plan', f: (r) => esc(r.plan) }, { h: 'Amount', num: 1, f: (r) => inr(r.amount) }, { h: 'Status', f: (r) => badge(r.status === 'paid' ? 'paid' : 'unpaid') + (r.status === 'amount_mismatch' ? ' <span class="muted">amount mismatch</span>' : '') },
+      { h: 'Payment ID', k: 'payment_id', cls: 'hide-sm' }], P.history)}</div>` : ''}`;
+  const state = (html) => { $('#paystate').innerHTML = html; $('#paystate').scrollIntoView({ behavior: 'smooth', block: 'center' }); };
+  const done = async (s) => {
+    ME = await GET('/api/me');
+    state(`<div class="panel okbox"><b>✓ ${esc(ME.plan.label)} plan is active</b>${s.plan_until ? ` till ${fdate(s.plan_until)}` : ''}. Thank you!${s.payment_id ? ` <span class="muted">Payment ${esc(s.payment_id)}</span>` : ''}</div>`);
+    setTimeout(render, 2500);
   };
+  const waitFor = async (ref) => {
+    state('<div class="panel">Confirming your payment with Razorpay… <span class="spin"></span></div>');
+    for (let i = 0; i < 45; i++) {
+      const s = await GET('/api/billing/status?ref=' + ref).catch(() => null);
+      if (s && s.status === 'paid') return done(s);
+      if (s && s.status === 'amount_mismatch') return state(`<div class="panel err">The amount paid did not match the plan. Please contact us with payment ID ${esc(s.payment_id || '')}.</div>`);
+      await new Promise((r) => setTimeout(r, 2000));
+    }
+    state('<div class="panel warnbox">Payment is taking longer to confirm. If money was deducted, the plan switches on by itself within a few minutes; refresh this page later.</div>');
+  };
+  $$('[data-buy]', el).forEach((b) => b.onclick = async () => {
+    b.disabled = true;
+    try {
+      const o = await POST('/api/billing/start', { plan: b.dataset.buy });
+      await loadScript('https://checkout.razorpay.com/v1/checkout.js');
+      const rzp = new window.Razorpay({
+        key: o.key_id, amount: o.amount, currency: o.currency, name: 'SmartTrader ERP', description: o.description,
+        ...(o.order_id ? { order_id: o.order_id } : {}), notes: o.notes, prefill: { name: o.name || '', email: o.email || '' },
+        theme: { color: '#0f766e' },
+        handler: async (resp) => {
+          if (o.mode === 'order') {
+            try { done(await POST('/api/billing/verify', { ref: o.ref, ...resp })); } catch (e) { state(`<div class="panel err">${esc(e.message)}</div>`); }
+          } else waitFor(o.ref);
+        },
+        modal: { ondismiss: () => toast('Payment not completed') },
+      });
+      rzp.on('payment.failed', (r) => state(`<div class="panel err">Payment failed: ${esc((r.error && r.error.description) || 'please try again')}.</div>`));
+      rzp.open();
+    } catch (e) { alert(e.message); } finally { b.disabled = false; }
+  });
 });
 
 /* ======================================================================= admin (owner of this deployment) */
@@ -1349,7 +1379,10 @@ async function adminPage(el) {
     try { sessionStorage.removeItem('st-admin'); } catch (x) { /* ignore */ }
     el.innerHTML = head('Admin') + `<div class="err">${esc(e.message)}</div>`; if (e.status === 401) ask(); return;
   }
-  el.innerHTML = head('Admin: businesses', `<button class="btn" id="codes">Generate activation codes</button><button class="btn" id="lock">Lock</button>`) + `
+  const pays = await call('GET', '/api/admin/payments').catch(() => ({ rows: [], mode: '?' }));
+  el.innerHTML = head('Admin: businesses', `<button class="btn" id="lock">Lock</button>`) + `
+    <div class="panel ${pays.mode === 'off' ? 'warnbox' : ''}">Online payments: <b>${pays.mode === 'order' ? 'on (Razorpay order + signature)' : pays.mode === 'webhook' ? 'on (Razorpay webhook)' : 'OFF: add RAZORPAY_WEBHOOK_SECRET (or RAZORPAY_KEY_ID + RAZORPAY_KEY_SECRET) to the worker'}</b>.
+      Paid: ${inr(pays.rows.filter((r) => r.status === 'paid').reduce((t, r) => t + r.amount, 0))} from ${pays.rows.filter((r) => r.status === 'paid').length} payment(s).</div>
     <div class="kpis"><div class="kpi"><div class="l">Businesses</div><div class="v">${data.rows.length}</div></div>
       ${['free', 'starter', 'growth', 'business'].map((k) => `<div class="kpi"><div class="l">${k}</div><div class="v">${data.rows.filter((o) => o.effective === k).length}</div></div>`).join('')}</div>
     <div class="panel flush">${table([{ h: 'Business', f: (o) => `<b>${esc(o.name)}</b><div class="muted">${esc(o.owner || '')} ${esc(o.phone || '')}</div>` },
@@ -1360,11 +1393,10 @@ async function adminPage(el) {
   $$('[data-o]', el).forEach((b) => b.onclick = () => modal('Set plan', [{ k: 'plan', label: 'Plan', type: 'select', options: planOpts, value: 'growth' },
     { k: 'months', label: 'Months (1200 = lifetime)', type: 'number', value: 12 }], async (v) => { await call('POST', `/api/admin/orgs/${b.dataset.o}/plan`, v); toast('Plan updated'); again(); }));
   $('#lock').onclick = () => { try { sessionStorage.removeItem('st-admin'); } catch (e) { /* ignore */ } if (ME) go('dashboard'); else location.href = '/'; };
-  $('#codes').onclick = () => modal('Activation codes', [{ k: 'plan', label: 'Plan', type: 'select', options: planOpts.filter((o) => o.v !== 'free'), value: 'growth' },
-    { k: 'months', label: 'Months', type: 'number', value: 12 }, { k: 'count', label: 'How many', type: 'number', value: 1 }], async (v) => {
-    const r = await call('POST', '/api/admin/codes', v);
-    setTimeout(() => modal(`${r.codes.length} code(s): ${r.plan}, ${r.months} months`, [{ k: 'c', label: 'Each code works once. Copy and send to the customer.', type: 'textarea', value: r.codes.join('\n'), wide: true }], async () => {}, { submit: 'Done' }), 0);
-  });
+  el.insertAdjacentHTML('beforeend', `<div class="panel flush"><div style="padding:14px 16px 0"><h3>Payments</h3></div>${table([
+    { h: 'When', f: (r) => fdate((r.paid_at || r.created_at).slice(0, 10)) }, { h: 'Business', f: (r) => `${esc(r.business)}<div class="muted">${esc(r.email || '')}</div>` },
+    { h: 'Plan', k: 'plan' }, { h: 'Amount', num: 1, f: (r) => inr(r.amount) }, { h: 'Status', f: (r) => badge(r.status === 'paid' ? 'paid' : 'unpaid') }, { h: 'Payment ID', k: 'payment_id', cls: 'hide-sm' }],
+    pays.rows, { empty: 'No payments yet.' })}</div>`);
 }
 route(/^admin$/, adminPage);
 

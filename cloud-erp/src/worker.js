@@ -13,9 +13,10 @@ import {
   auditStatement, cashAccount,
 } from './engine.js';
 import * as rep from './reports.js';
-import { PLANS, planOut, usage, checkCount, requireFeature, redeemCode, makeCode, extendPlan, adminKey, trialUntil } from './saas.js';
+import { PLANS, planOut, usage, checkCount, requireFeature, extendPlan, adminKey, trialUntil } from './saas.js';
 import { STATES, einvoiceJson, ewaybillJson } from './gst.js';
 import { tallyXml } from './tally.js';
+import { billingMode, grossPaise, billingStart, billingVerify, billingWebhook, billingStatus, billingHistory } from './billing.js';
 
 const R = (p) => Math.round(p) / 100;
 const router = new Router();
@@ -408,16 +409,14 @@ router.add('GET', '/api/export/tally', async (c) => {
 router.add('GET', '/api/plan', async (c) => json({
   plan: planOut(c.org), usage: await usage(c.db, c.org),
   plans: Object.entries(PLANS).map(([k, p]) => ({ key: k, ...p, invoices_per_month: p.invoices_per_month === Infinity ? null : p.invoices_per_month,
-    users: p.users === Infinity ? null : p.users, warehouses: p.warehouses === Infinity ? null : p.warehouses })),
-  pay_upi: c.env.PAY_UPI || '', pay_name: c.env.PAY_NAME || 'SmartTrader', support_whatsapp: c.env.SUPPORT_WHATSAPP || '',
+    users: p.users === Infinity ? null : p.users, warehouses: p.warehouses === Infinity ? null : p.warehouses, pay: p.price ? grossPaise(k) / 100 : 0 })),
+  billing: billingMode(c.env), history: await billingHistory(c), support_whatsapp: c.env.SUPPORT_WHATSAPP || '',
 }));
-router.add('POST', '/api/plan/activate', async (c) => {
-  requireCan(c.user, 'settings');
-  await rateLimit(c.env, 'code:' + c.org.id, 10, 3600);
-  const r = await redeemCode(c.env, c.db, c.org, c.body.code);
-  await c.db.batch([auditStatement(c, 'activate plan', `${r.plan} ${r.months} months`)]);
-  return json({ ok: true, ...r });
-});
+/* Online payment (Razorpay): see src/billing.js */
+router.add('POST', '/api/billing/start', async (c) => { requireCan(c.user, 'settings'); await rateLimit(c.env, 'pay:' + c.org.id, 20, 3600); return json(await billingStart(c)); });
+router.add('POST', '/api/billing/verify', async (c) => json(await billingVerify(c)));
+router.add('GET', '/api/billing/status', async (c) => json(await billingStatus(c)));
+router.add('POST', '/api/billing/webhook', async (c) => json(await billingWebhook(c)), { public: true, webhook: true });
 
 /* Admin (the person who runs this deployment): header X-Admin-Key must equal the ADMIN_KEY secret. */
 async function requireAdmin(c) {
@@ -444,13 +443,12 @@ router.add('POST', '/api/admin/orgs/:id/plan', async (c) => {
   const until = await extendPlan(c.db, org, plan, int(c.body.months, 'Months', { min: 1, max: 1200, def: 12 }));
   return json({ ok: true, plan, until });
 }, { public: true });
-router.add('POST', '/api/admin/codes', async (c) => {
+router.add('GET', '/api/admin/payments', async (c) => {
   await requireAdmin(c);
-  const plan = oneOf(c.body.plan, Object.keys(PLANS).filter((k) => k !== 'free'), 'Plan');
-  const months = int(c.body.months, 'Months', { min: 1, max: 120, def: 12 }), count = int(c.body.count, 'Count', { min: 1, max: 50, def: 1 });
-  const codes = [];
-  for (let i = 0; i < count; i++) codes.push(await makeCode(c.env, plan, months));
-  return json({ codes, plan, months });
+  const { results } = await c.db.prepare(`SELECT b.ref, b.plan, b.paise, b.status, b.payment_id, b.created_at, b.paid_at, b.plan_until, o.name AS business,
+      (SELECT email FROM users WHERE id = b.user_id) AS email FROM billing_orders b JOIN orgs o ON o.id = b.org_id
+      WHERE b.status != 'created' ORDER BY b.id DESC LIMIT 300`).all();
+  return json({ rows: results.map((r) => ({ ...r, amount: r.paise / 100 })), mode: billingMode(c.env) });
 }, { public: true });
 
 /* ======================================================================= gate entry (security gate register)
@@ -792,13 +790,18 @@ async function handleApi(request, env, counter) {
   const m = router.match(request.method, url.pathname);
   if (!m) throw notFound('Unknown API route.');
   if (m.methodNotAllowed) throw new HttpError(405, 'Method not allowed.');
-  if (request.method !== 'GET') {
+  if (request.method !== 'GET' && !m.route.opts.webhook) {
     // custom header + same origin: a page on another site cannot make these requests with your cookie
     if (request.headers.get('X-Requested-With') !== 'SmartTrader') throw forbidden('Missing request header.');
     const origin = request.headers.get('Origin');
     if (origin && origin !== url.origin) throw forbidden('Cross-site request blocked.');
   }
-  const c = { env, db: env.DB, request, url, params: m.params, body: request.method === 'GET' ? {} : await readJson(request) };
+  const c = { env, db: env.DB, request, url, params: m.params, body: {} };
+  if (m.route.opts.webhook) {       // a server calling us (Razorpay): signed raw body, no cookie, no custom header
+    c.raw = await request.text();
+    if (c.raw.length > 200000) throw new HttpError(413, 'Request too large.');
+    try { c.body = JSON.parse(c.raw || '{}'); } catch (e) { throw bad('Bad body.'); }
+  } else if (request.method !== 'GET') c.body = await readJson(request);
   if (!m.route.opts.public) {
     c.user = await currentUser(env, request);
     if (!c.user) throw new HttpError(401, 'Please sign in.');

@@ -86,18 +86,24 @@ npx wrangler deploy
 once you add the repository secrets `CLOUDFLARE_API_TOKEN` (a token from the "Edit Cloudflare Workers"
 template with D1 edit permission) and `CLOUDFLARE_ACCOUNT_ID`.
 
-## Selling it: plans, payments and the admin panel
+## Selling it: plans, online payment and the admin panel
 
-Set these on the worker in **Settings → Variables and Secrets**:
+Customers buy a plan in **Plan & Billing**: they tap *Pay*, pay in Razorpay Checkout (UPI, card, netbanking) and the plan
+switches on by itself. It is the same setup as docbrisk.com's Pro keys and uses the same Razorpay account.
+Every ERP payment carries `notes.product = smarttrader-erp`, so the two sites never take each other's payments.
 
-| Name | Type | What it does |
+Set these on the worker in **Settings → Variables and Secrets**, choosing ONE of the two ways:
+
+| Way | Secrets | Razorpay dashboard |
 |---|---|---|
-| `ADMIN_KEY` | Secret | Any random text of 16+ characters. Unlocks `https://<your-domain>/#/admin`, where you see every business, set plans (1200 months = lifetime), and generate activation codes. |
-| `PAY_UPI` | Text | Your UPI ID. The Plan & Billing page shows a QR for the plan price, including GST. |
-| `PAY_NAME` | Text | Name shown on that UPI payment. |
-| `SUPPORT_WHATSAPP` | Text | Your WhatsApp number, e.g. 919876543210. Customers send you the payment screenshot. |
+| Webhook (no Key Secret needed) | `RAZORPAY_WEBHOOK_SECRET` = any long random text | Settings → Webhooks → **Add**: URL `https://erp.docbrisk.com/api/billing/webhook`, event **payment.captured**, secret = the same text |
+| Order + signature (instant) | `RAZORPAY_KEY_ID`, `RAZORPAY_KEY_SECRET` | nothing more (adding the webhook too is a safety net if a buyer closes the browser early) |
 
-Flow: the customer pays by UPI and WhatsApps you. In the admin panel you **Generate activation code** for the plan and send it to them, and they paste it in **Plan & Billing**. Each code works once. To give your own business unlimited use, open the admin panel and set it to **business** for **1200** months.
+Optional: `ADMIN_KEY` (16+ characters) opens `https://erp.docbrisk.com/#/admin` to see every business and payment and to set a
+plan by hand (1200 months = lifetime, e.g. for your own business). `SUPPORT_WHATSAPP` (e.g. 919876543210) shows a WhatsApp
+button while online payment is not switched on.
+
+Prices are in `src/saas.js` (`PLANS`, per year before GST); the buyer pays the price plus 18% GST.
 
 ## Run locally
 
@@ -105,8 +111,8 @@ Flow: the customer pays by UPI and WhatsApps you. In the admin panel you **Gener
 cd cloud-erp
 npm install
 npx wrangler dev            # http://localhost:8787, with a local D1 database in .wrangler/
-node test/run.mjs           # in another terminal: 110-check end-to-end business test
-                            # (put ADMIN_KEY=local-test-admin-key-0001 in cloud-erp/.dev.vars for the admin checks)
+node test/run.mjs           # in another terminal: 120-check end-to-end business test
+                            # (put ADMIN_KEY=local-test-admin-key-0001 and RAZORPAY_WEBHOOK_SECRET=local-test-webhook-secret-0001 in cloud-erp/.dev.vars)
 ```
 
 ## Project layout

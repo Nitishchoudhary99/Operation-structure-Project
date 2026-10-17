@@ -1,6 +1,6 @@
-/* Plans, limits and activation codes, for selling the ERP to other businesses.
-   The person running this deployment manages plans with the ADMIN_KEY secret (see the admin screen, #/admin). */
-import { HttpError, bad, today, addDays } from './lib.js';
+/* Plans and limits, for selling the ERP to other businesses. Plans are bought online (src/billing.js);
+   the person running this deployment can also set a plan by hand with the ADMIN_KEY secret (#/admin). */
+import { HttpError, today, addDays } from './lib.js';
 
 /* Prices are per year in rupees, before GST. Limits: Infinity = no limit. */
 export const PLANS = {
@@ -50,32 +50,8 @@ export async function usage(db, org) {
   return r;
 }
 
-/* ---------- activation codes: ST-<PLAN>-<MONTHS>-<NONCE>-<SIG>, signed with ADMIN_KEY, usable once ---------- */
-const enc = new TextEncoder();
-async function sign(key, text) {
-  const k = await crypto.subtle.importKey('raw', enc.encode(key), { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']);
-  const sig = new Uint8Array(await crypto.subtle.sign('HMAC', k, enc.encode('st-code:' + text)));
-  return Array.from(sig.slice(0, 8), (b) => b.toString(16).padStart(2, '0')).join('').toUpperCase();
-}
 export function adminKey(env) {
   return env.ADMIN_KEY && String(env.ADMIN_KEY).length >= 16 ? String(env.ADMIN_KEY) : null;
-}
-export async function makeCode(env, plan, months) {
-  const nonce = Array.from(crypto.getRandomValues(new Uint8Array(5)), (b) => b.toString(16).padStart(2, '0')).join('').toUpperCase();
-  const body = `${plan.toUpperCase()}-${months}-${nonce}`;
-  return `ST-${body}-${await sign(adminKey(env), body)}`;
-}
-export async function redeemCode(env, db, org, code) {
-  const key = adminKey(env);
-  const m = String(code || '').trim().toUpperCase().match(/^ST-([A-Z]+)-(\d{1,3})-([0-9A-F]{10})-([0-9A-F]{16})$/);
-  if (!key || !m) throw bad('That activation code is not valid.');
-  const [, planU, monthsS, nonce, sig] = m, body = `${planU}-${monthsS}-${nonce}`;
-  const plan = planU.toLowerCase(), months = +monthsS;
-  if (!PLANS[plan] || plan === 'free' || !months || sig !== (await sign(key, body))) throw bad('That activation code is not valid.');
-  const used = await db.prepare(`INSERT INTO meta (k, v) VALUES (?, ?) ON CONFLICT(k) DO NOTHING RETURNING k`).bind('code:' + nonce, String(org.id)).first();
-  if (!used) throw bad('This activation code has already been used.');
-  await extendPlan(db, org, plan, months);
-  return { plan, months };
 }
 /* Same plan: add the months on top of the current end date. New plan: start from today. */
 export async function extendPlan(db, org, plan, months) {

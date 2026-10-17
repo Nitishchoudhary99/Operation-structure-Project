@@ -258,3 +258,18 @@ pre.msg { white-space: pre-wrap; word-break: break-word; background: var(--soft)
 .paybox .btn.big { width: 100%; justify-content: center; }
 .boot.seo { max-width: 760px; margin: 0 auto; }
 .seo-links a { color: #fff; text-decoration: underline; }
+
+/* plan & billing */
+.planbar { display: flex; gap: 20px; flex-wrap: wrap; align-items: center; justify-content: space-between; }
+.planbar .big { font-size: 24px; font-weight: 800; }
+.planbar .usage { display: grid; grid-template-columns: repeat(3, minmax(130px, 1fr)); gap: 14px; flex: 1; max-width: 640px; }
+.planbar .usage span { display: block; font-size: 12px; color: var(--muted); }
+.meter { height: 6px; background: var(--soft); border-radius: 9px; overflow: hidden; margin-top: 4px; }
+.meter i { display: block; height: 100%; background: var(--brand); }
+.okbox { background: var(--ok-soft); color: var(--ok); border-color: transparent; }
+.plan .ticks { list-style: none; padding: 0; }
+.plan .ticks li::before { content: "✓ "; color: var(--ok); font-weight: 800; }
+.small { font-size: 12px; }
+.spin { display: inline-block; width: 14px; height: 14px; border: 2px solid var(--line); border-top-color: var(--brand); border-radius: 50%; animation: spin .8s linear infinite; vertical-align: middle; }
+@keyframes spin { to { transform: rotate(360deg); } }
+@media (max-width: 640px) { .planbar .usage { grid-template-columns: 1fr; } }

@@ -314,7 +314,7 @@ check('Tally XML export', tx.ok && xml.includes('<VOUCHER VCHTYPE="Sales"') && x
 let bal = 0;
 for (const m of xml.matchAll(/<AMOUNT>(-?[\d.]+)<\/AMOUNT>/g)) bal += Math.round(+m[1] * 100);
 check('Tally vouchers balance', bal === 0, String(bal));
-// admin & activation codes (needs ADMIN_KEY in .dev.vars for local runs)
+// admin & online payments (needs ADMIN_KEY and RAZORPAY_WEBHOOK_SECRET in .dev.vars for local runs)
 const ADMIN = process.env.ADMIN_KEY || 'local-test-admin-key-0001';
 const adm = (m, path, body) => fetch(BASE + path, { method: m, headers: { 'Content-Type': 'application/json', 'X-Requested-With': 'SmartTrader', 'X-Admin-Key': ADMIN }, body: body && JSON.stringify(body) });
 const bad = await fetch(BASE + '/api/admin/orgs', { headers: { 'X-Admin-Key': 'wrong-key-wrong-key' } });
@@ -330,14 +330,32 @@ else {
   check('free plan blocks extra godowns (402)', capped.status === 402 && capped.upgrade, JSON.stringify(capped));
   const tallyFree = await raw('/api/export/tally');
   check('free plan has no Tally export', tallyFree.status === 402);
-  const { codes } = await (await adm('POST', '/api/admin/codes', { plan: 'business', months: 12, count: 2 })).json();
-  check('codes generated', codes.length === 2 && /^ST-BUSINESS-12-/.test(codes[0]), codes[0]);
-  const act = await api('POST', '/api/plan/activate', { code: codes[0] });
-  check('activation code upgrades plan', act.plan === 'business' && (await api('GET', '/api/me')).plan.key === 'business');
-  const again = await api('POST', '/api/plan/activate', { code: codes[0] }, true);
-  check('code works only once', again.status === 400);
-  const forged = await api('POST', '/api/plan/activate', { code: codes[1].slice(0, -1) + (codes[1].endsWith('0') ? '1' : '0') }, true);
-  check('tampered code rejected', forged.status === 400);
+  // online payment (Razorpay webhook way; needs RAZORPAY_WEBHOOK_SECRET in .dev.vars)
+  const WH = process.env.RAZORPAY_WEBHOOK_SECRET || 'local-test-webhook-secret-0001';
+  const { createHmac } = await import('node:crypto');
+  const hook = (ev) => { const body = JSON.stringify(ev); return fetch(BASE + '/api/billing/webhook', { method: 'POST', headers: { 'Content-Type': 'application/json',
+    'X-Razorpay-Signature': createHmac('sha256', WH).update(body).digest('hex') }, body }); };
+  const ev = (notes, amount, id = 'pay_T' + Date.now()) => ({ event: 'payment.captured', payload: { payment: { entity: { id, amount, currency: 'INR', notes } } } });
+  const planInfo = await api('GET', '/api/plan');
+  check('plan page offers online payment', planInfo.billing === 'webhook' && planInfo.plans.find((p) => p.key === 'growth').pay === 2949, JSON.stringify({ b: planInfo.billing }));
+  const st = await api('POST', '/api/billing/start', { plan: 'business' });
+  check('checkout started with a reference', /^[0-9a-f]{32}$/.test(st.ref) && st.amount === 530900 && st.notes.product === 'smarttrader-erp', JSON.stringify(st));
+  const forgedHook = await fetch(BASE + '/api/billing/webhook', { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Razorpay-Signature': 'bad' }, body: JSON.stringify(ev(st.notes, st.amount)) });
+  check('webhook with a bad signature is refused', forgedHook.status === 401);
+  check('another product on the same Razorpay account is ignored', (await (await hook(ev({ product: 'smart-pro', ref: st.ref }, st.amount))).json()).ignored === 'another product');
+  check('still not paid', (await api('GET', `/api/billing/status?ref=${st.ref}`)).status === 'created');
+  const st2 = await api('POST', '/api/billing/start', { plan: 'growth' });
+  await hook(ev(st2.notes, 100));
+  check('wrong amount does not switch the plan on', (await api('GET', `/api/billing/status?ref=${st2.ref}`)).status === 'amount_mismatch' && (await api('GET', '/api/me')).plan.key === 'free');
+  const payId = 'pay_OK' + Date.now();
+  await hook(ev(st.notes, st.amount, payId));
+  const paid = await api('GET', `/api/billing/status?ref=${st.ref}`);
+  check('paid webhook switches the plan on', paid.status === 'paid' && (await api('GET', '/api/me')).plan.key === 'business', JSON.stringify(paid));
+  const until1 = (await api('GET', '/api/me')).plan.until;
+  await hook(ev(st.notes, st.amount, payId));
+  check('repeated webhook does not add another year', (await api('GET', '/api/me')).plan.until === until1);
+  check('payment shows in history and admin', (await api('GET', '/api/plan')).history.some((h) => h.payment_id === payId) && (await (await adm('GET', '/api/admin/payments')).json()).rows.some((r) => r.payment_id === payId));
+  check('verify needs the order way', (await api('POST', '/api/billing/verify', { razorpay_order_id: 'order_x', razorpay_payment_id: 'pay_x', razorpay_signature: 'x' }, true)).status === 400);
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);
