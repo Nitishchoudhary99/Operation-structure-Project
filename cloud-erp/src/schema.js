@@ -3,7 +3,7 @@
    Every business table carries org_id: one database serves many businesses (multi-tenant).
    migrate() runs on the first request after each deploy, so no manual migration step is needed. */
 
-export const SCHEMA_VERSION = 9;
+export const SCHEMA_VERSION = 10;
 
 // document types whose monthly totals doc_month keeps (sales and purchase money documents)
 const MONTH_TYPES = `('INV','SRET','CNOTE','BILL','PRET','DNOTE')`;
@@ -262,6 +262,12 @@ export const MIGRATIONS = {
                CASE WHEN NEW.status = 'cancelled' THEN -NEW.taxable ELSE NEW.taxable END)
        ON CONFLICT (org_id, type, ym) DO UPDATE SET n = n + excluded.n, taxable = taxable + excluded.taxable;
      END`,
+  ],
+  // print branding: settings JSON on the business row, logo and signature images in their own table
+  10: [
+    `ALTER TABLE orgs ADD COLUMN print TEXT NOT NULL DEFAULT '{}'`,
+    `CREATE TABLE IF NOT EXISTS org_files (org_id INTEGER NOT NULL, kind TEXT NOT NULL, mime TEXT NOT NULL, data TEXT NOT NULL,
+       hash TEXT NOT NULL, updated_at TEXT NOT NULL, PRIMARY KEY (org_id, kind)) WITHOUT ROWID`,
   ],
 };
 

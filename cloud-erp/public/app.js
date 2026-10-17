@@ -174,7 +174,7 @@ const NAV = [
   ['Contacts', [['parties', 'Customers & Suppliers'], ['khata', 'Khata Book'], ['reminders', 'Payment Reminders']]],
   ['Accounts', [['expenses', 'Expenses'], ['accounts', 'Chart of Accounts'], ['journal', 'Journal Voucher'], ['daybook', 'Day Book']]],
   ['Reports', [['reports/pnl', 'Profit & Loss'], ['reports/balance-sheet', 'Balance Sheet'], ['reports/trial-balance', 'Trial Balance'], ['reports/gst', 'GST Summary'], ['reports/ageing', 'Outstanding (Ageing)'], ['reports/register', 'Registers'], ['tally', 'Tally Export']]],
-  ['Settings', [['settings', 'Business & Users'], ['plan', 'Plan & Billing']]],
+  ['Settings', [['settings', 'Settings'], ['plan', 'Plan & Billing']]],
 ];
 
 function shell() {
@@ -410,28 +410,39 @@ route(/^new\/([A-Z]+)$/, async (el, m, q) => {
 /* ======================================================================= document view / print */
 /* The printable document (invoice, bill, order...). Used in the app and on the customer's public link. */
 function docPaper(d) {
-  const o = d.org, p = d.party || {};
+  const o = d.org, p = d.party || {}, P = o.print || {};
   const isTax = ['INV', 'BILL', 'SRET', 'PRET', 'CNOTE', 'DNOTE'].includes(d.type);
-  const title = d.type === 'INV' ? (o.gstin ? 'TAX INVOICE' : 'INVOICE') : String(d.label || '').toUpperCase();
-  const inter = !!d.inter_state;
-  return `<div class="doc-paper">
-      <div class="hdr"><div><div style="font-size:18px;font-weight:700">${esc(o.name)}</div><div>${esc(o.address)}</div>
-        <div>${[o.gstin ? 'GSTIN: ' + esc(o.gstin) : '', o.state ? 'State: ' + esc(o.state) : ''].filter(Boolean).join(' &middot; ')}</div><div>${esc(o.phone)}</div></div>
-        <div style="text-align:right"><div class="title">${esc(title)}</div><div>No: <b>${esc(d.number)}</b></div><div>Date: ${fdate(d.date)}</div>
+  const title = d.type === 'INV' ? (P.title || (o.gstin ? 'TAX INVOICE' : 'INVOICE')) : String(d.label || '').toUpperCase();
+  const inter = !!d.inter_state, compact = P.layout === 'compact', ours = d.side === 'sales' || d.type === 'PO';
+  const color = /^#[0-9a-f]{6}$/i.test(P.color || '') ? P.color : '#0f766e';
+  const bank = ours && P.bank_account ? `<p class="bank"><b>Bank details</b><br>${[P.bank_name, 'A/c ' + P.bank_account, P.bank_ifsc && 'IFSC ' + P.bank_ifsc, P.bank_branch].filter(Boolean).map(esc).join(' &middot; ')}</p>` : '';
+  const upi = d.type === 'INV' && o.upi_id && d.balance > 0 && P.show_upi !== false;
+  const lineCells = (l, i) => compact
+    ? `<td>${esc(l.item || l.description)}<div class="muted">${qtyf(l.qty)} ${esc(l.unit || '')} &times; ${inr(l.rate)}${l.discount_pct ? ` &minus;${l.discount_pct}%` : ''}${l.gst_rate ? ` &middot; GST ${l.gst_rate}%` : ''}</div></td><td class="num">${inr(l.total)}</td>`
+    : `<td>${i + 1}</td><td>${esc(l.item || l.description)}${l.item && l.description && l.description !== l.item ? `<div class="muted">${esc(l.description)}</div>` : ''}</td><td>${esc(l.hsn || '')}</td>
+        <td class="num">${qtyf(l.qty)} ${esc(l.unit || '')}</td><td class="num">${inr(l.rate)}</td><td class="num">${l.discount_pct ? l.discount_pct + '%' : ''}</td><td class="num">${inr(l.taxable)}</td><td class="num">${l.gst_rate}%</td>
+        ${inter ? `<td class="num">${inr(l.igst)}</td>` : `<td class="num">${inr(l.cgst)}</td><td class="num">${inr(l.sgst)}</td>`}<td class="num">${inr(l.total)}</td>`;
+  const heads = compact ? '<th>Item</th><th class="num">Amount</th>'
+    : `<th>#</th><th>Item</th><th>HSN</th><th class="num">Qty</th><th class="num">Rate</th><th class="num">Disc</th><th class="num">Taxable</th><th class="num">GST</th>${inter ? '<th class="num">IGST</th>' : '<th class="num">CGST</th><th class="num">SGST</th>'}<th class="num">Amount</th>`;
+  return `<div class="doc-paper L-${esc(P.layout || 'classic')}" style="--ac:${color}">
+      <div class="hdr"><div class="org">${d.logo_url ? `<img class="logo" src="${esc(d.logo_url)}" alt="">` : ''}<div><div class="oname">${esc(o.name)}</div><div>${esc(o.address)}</div>
+        <div>${[o.gstin ? 'GSTIN: ' + esc(o.gstin) : '', o.state ? 'State: ' + esc(o.state) : ''].filter(Boolean).join(' &middot; ')}</div><div>${esc(o.phone)}</div></div></div>
+        <div class="meta"><div class="title">${esc(title)}</div><div>No: <b>${esc(d.number)}</b></div><div>Date: ${fdate(d.date)}</div>
         ${d.due_date ? `<div>${d.type === 'QUOTE' ? 'Valid till' : 'Due'}: ${fdate(d.due_date)}</div>` : ''}${d.parent ? `<div>Ref: ${esc(d.parent.number)}</div>` : ''}</div></div>
       <div class="parties"><div><b>${d.side === 'sales' ? 'Bill to' : 'Supplier'}</b><br>${esc(p.name)}<br>${esc(p.address || '')}<br>${p.gstin ? 'GSTIN: ' + esc(p.gstin) + '<br>' : ''}${esc(p.phone || '')}</div>
         <div><b>Place of supply</b><br>${esc(d.place_of_supply || '-')}<br>${isTax ? (inter ? 'Inter-state (IGST)' : 'Intra-state (CGST + SGST)') : ''}${d.warehouse ? '<br>Godown: ' + esc(d.warehouse) : ''}</div></div>
-      <div class="tbl-wrap"><table class="dl"><thead><tr><th>#</th><th>Item</th><th>HSN</th><th class="num">Qty</th><th class="num">Rate</th><th class="num">Disc</th><th class="num">Taxable</th><th class="num">GST</th>${inter ? '<th class="num">IGST</th>' : '<th class="num">CGST</th><th class="num">SGST</th>'}<th class="num">Amount</th></tr></thead>
-      <tbody>${d.lines.map((l, i) => `<tr><td>${i + 1}</td><td>${esc(l.item || l.description)}${l.item && l.description && l.description !== l.item ? `<div class="muted">${esc(l.description)}</div>` : ''}</td><td>${esc(l.hsn || '')}</td>
-        <td class="num">${qtyf(l.qty)} ${esc(l.unit || '')}</td><td class="num">${inr(l.rate)}</td><td class="num">${l.discount_pct ? l.discount_pct + '%' : ''}</td><td class="num">${inr(l.taxable)}</td><td class="num">${l.gst_rate}%</td>
-        ${inter ? `<td class="num">${inr(l.igst)}</td>` : `<td class="num">${inr(l.cgst)}</td><td class="num">${inr(l.sgst)}</td>`}<td class="num">${inr(l.total)}</td></tr>`).join('')}</tbody></table></div>
-      <div class="foot"><div style="max-width:60%"><b>Amount in words:</b> ${esc(words(d.total))}${d.notes ? `<p><b>Notes:</b> ${esc(d.notes)}</p>` : ''}
-        ${d.type === 'INV' && o.upi_id && d.balance > 0 ? `<p>Pay by UPI: <b>${esc(o.upi_id)}</b></p>` : ''}</div>
+      ${d.custom_print || ''}
+      <div class="tbl-wrap"><table class="dl"><thead><tr>${heads}</tr></thead>
+      <tbody>${d.lines.map((l, i) => `<tr>${lineCells(l, i)}</tr>`).join('')}</tbody></table></div>
+      <div class="foot"><div class="words"><b>Amount in words:</b> ${esc(words(d.total))}${d.notes ? `<p><b>Notes:</b> ${esc(d.notes)}</p>` : ''}
+        ${upi ? `<p>Pay by UPI: <b>${esc(o.upi_id)}</b></p>` : ''}${bank}</div>
         <div class="totals"><div><span>Taxable</span><span>${inr(d.taxable)}</span></div>
           ${inter ? `<div><span>IGST</span><span>${inr(d.igst)}</span></div>` : `<div><span>CGST</span><span>${inr(d.cgst)}</span></div><div><span>SGST</span><span>${inr(d.sgst)}</span></div>`}
           ${d.round_off ? `<div><span>Round off</span><span>${inr(d.round_off)}</span></div>` : ''}<div class="grand"><span>Total</span><span>${inr(d.total)}</span></div></div></div>
       ${d.irn || d.ewb_no ? `<div style="margin-top:12px;font-size:12px">${d.irn ? `IRN: <b>${esc(d.irn)}</b>${d.ack_no ? ` &middot; Ack No: ${esc(d.ack_no)}` : ''}${d.ack_date ? ` &middot; Ack Date: ${esc(d.ack_date)}` : ''}<br>` : ''}${d.ewb_no ? `E-way bill: <b>${esc(d.ewb_no)}</b>${d.ewb_date ? ` &middot; ${esc(d.ewb_date)}` : ''}` : ''}</div>` : ''}
-      <div class="foot"><div id="upiqr"></div><div class="sign">For ${esc(o.name)}<br><br><br>Authorised signatory</div></div>
+      ${ours && P.terms ? `<div class="terms"><b>Terms &amp; conditions</b><div>${esc(P.terms).replace(/\n/g, '<br>')}</div></div>` : ''}
+      <div class="foot"><div id="upiqr"></div><div class="sign">For ${esc(o.name)}<br>${d.sign_url ? `<img class="sig" src="${esc(d.sign_url)}" alt="">` : '<br><br>'}<br>${P.signatory ? esc(P.signatory) + '<br>' : ''}Authorised signatory</div></div>
+      ${P.footer ? `<div class="pfoot">${esc(P.footer)}</div>` : ''}
     </div>`;
 }
 
@@ -459,7 +470,7 @@ route(/^doc\/(\d+)$/, async (el, m) => {
       ${['INV', 'BILL'].includes(d.type) ? `<span class="spacer"></span><span>Paid <b>${inr(d.paid)}</b> &middot; Balance <b>${inr(d.balance)}</b></span>` : ''}
     </div>${d.settlements.length ? `<div class="muted" style="margin-top:8px">Settled by: ${d.settlements.map((s) => `${esc(s.number)} (${inr(s.amount)})`).join(', ')}</div>` : ''}</div>
     ${docPaper(d)}`;
-  if (d.type === 'INV' && o.upi_id && d.balance > 0) upiQr($('#upiqr'), o, d.balance, d.number, 'Scan to pay with any UPI app');
+  if (d.type === 'INV' && o.upi_id && d.balance > 0 && o.print.show_upi !== false) upiQr($('#upiqr'), o, d.balance, d.number, 'Scan to pay with any UPI app');
   if ($('#einv')) $('#einv').onclick = (e) => { e.preventDefault(); fileDownload(`/api/docs/${d.id}/einvoice`); };
   if ($('#ewb')) $('#ewb').onclick = () => modal('E-way bill (bulk upload JSON)', [
     { k: 'distance', label: 'Distance (km)', type: 'number', required: true }, { k: 'vehicle_no', label: 'Vehicle number', placeholder: 'RJ14AB1234' },
@@ -728,7 +739,7 @@ async function publicDoc(token) {
         <button class="btn primary" onclick="print()">Download PDF</button></div>
       ${due ? `<div class="panel no-print">Balance due <b>${inr(d.balance)}</b>${d.due_date ? ` by ${fdate(d.due_date)}` : ''}.${payBox(d.org, d.balance, d.number)}</div>` : ''}
       ${docPaper(d)}<p class="muted no-print">Shared by ${esc(d.org.name)} using SmartTrader ERP. Tap “Download PDF” and choose “Save as PDF”.</p></main>`;
-    if (due) { upiQr($('#upiqr'), d.org, d.balance, d.number, 'Scan to pay with any UPI app'); wirePayBox(app, d.org, d.balance, d.number); }
+    if (due) { if (!d.org.print || d.org.print.show_upi !== false) upiQr($('#upiqr'), d.org, d.balance, d.number, 'Scan to pay with any UPI app'); wirePayBox(app, d.org, d.balance, d.number); }
   } catch (e) { app.innerHTML = '<div class="boot"><h2>You are offline</h2><p class="muted">Connect to the internet to see this document.</p></div>'; }
 }
 
@@ -904,11 +915,105 @@ route(/^reports\/([a-z-]+)$/, async (el, m, q) => {
 });
 
 /* ======================================================================= settings */
+const SET_TABS = [['settings', 'Business & users'], ['settings/print', 'Branding & print']];
+const setTabs = (cur) => `<div class="tabs">${SET_TABS.map(([h, t]) => `<a href="#/${h}" class="${h === cur ? 'on' : ''}">${t}</a>`).join('')}</div>`;
+
+/* Shrink a photo on this device (canvas) so it fits the 64 KB limit; nothing is uploaded until it is small. */
+async function shrinkImage(file, maxW, maxH) {
+  if (!/^image\//.test(file.type)) throw new Error('Choose an image file (PNG or JPG).');
+  const url = URL.createObjectURL(file);
+  try {
+    const img = await new Promise((ok, fail) => { const i = new Image(); i.onload = () => ok(i); i.onerror = () => fail(new Error('Could not read this image.')); i.src = url; });
+    for (const scale of [1, 0.75, 0.5, 0.35]) {
+      const k = Math.min(1, maxW / img.width, maxH / img.height) * scale;
+      const cv = document.createElement('canvas');
+      cv.width = Math.max(1, Math.round(img.width * k)); cv.height = Math.max(1, Math.round(img.height * k));
+      const g = cv.getContext('2d');
+      g.drawImage(img, 0, 0, cv.width, cv.height);
+      let out = cv.toDataURL('image/png');
+      if (out.length > 85000) { g.globalCompositeOperation = 'destination-over'; g.fillStyle = '#fff'; g.fillRect(0, 0, cv.width, cv.height); out = cv.toDataURL('image/jpeg', 0.82); }
+      if (out.length <= 85000) return out;
+    }
+    throw new Error('This image is too detailed. Try a simpler logo.');
+  } finally { URL.revokeObjectURL(url); }
+}
+
+route(/^settings\/print$/, async (el) => {
+  const cur = await GET('/api/settings/print');
+  let P = cur.print, urls = { logo_url: cur.logo_url, sign_url: cur.sign_url };
+  const canEdit = ME.can.settings;
+  const sample = () => ({ type: 'INV', label: 'Sales Invoice', side: 'sales', number: 'INV-00042', date: ME.today, due_date: '', place_of_supply: ME.org.state || 'Rajasthan', inter_state: 0,
+    party: { name: 'Mehta Stores', address: 'Shop 4, MI Road', phone: '9876543210' }, notes: '', balance: 1050, taxable: 1000, cgst: 25, sgst: 25, igst: 0, round_off: 0, total: 1050,
+    lines: [{ item: 'Basmati Rice 5kg', hsn: '1006', qty: 2, unit: 'Bag', rate: 500, discount_pct: 0, gst_rate: 5, taxable: 1000, cgst: 25, sgst: 25, igst: 0, total: 1050 }],
+    org: { ...ME.org, print: P }, ...urls });
+  const v = (k) => esc(P[k] || '');
+  el.innerHTML = head('Branding & print') + setTabs('settings/print') + `
+    <div class="grid g2 brand-grid">
+    <form class="panel" id="pf"><div class="err" hidden></div>
+      <h2>Look</h2>
+      <div class="seg" id="lay">${[['classic', 'Classic'], ['modern', 'Modern'], ['compact', 'Compact (80 mm)']].map(([k, t]) => `<button type="button" data-l="${k}" class="${P.layout === k ? 'on' : ''}">${t}</button>`).join('')}</div>
+      <div class="form" style="margin-top:12px">
+        <label class="f">Brand colour<input type="color" name="color" value="${v('color')}"></label>
+        <label class="f">Invoice title<input name="title" value="${v('title')}" placeholder="${ME.org.gstin ? 'TAX INVOICE' : 'INVOICE'}" maxlength="40"><small class="help">Leave empty for the normal title.</small></label>
+      </div>
+      <div class="imgs" id="imgs"></div>
+      <p class="muted">Images are made small on your phone before upload (max 64 KB).</p>
+      <h2>On the bill</h2>
+      <div class="form">
+        <label class="f">Signatory name<input name="signatory" value="${v('signatory')}" placeholder="e.g. Ravi Sharma" maxlength="60"></label>
+        <label class="f check"><input type="checkbox" name="show_upi" ${P.show_upi !== false ? 'checked' : ''}> Show UPI QR on bill</label>
+        <label class="f">Bank name<input name="bank_name" value="${v('bank_name')}" placeholder="State Bank of India"></label>
+        <label class="f">Account number<input name="bank_account" value="${v('bank_account')}" inputmode="numeric" maxlength="20"></label>
+        <label class="f">IFSC<input name="bank_ifsc" value="${v('bank_ifsc')}" maxlength="11" placeholder="SBIN0001234" style="text-transform:uppercase"></label>
+        <label class="f">Branch<input name="bank_branch" value="${v('bank_branch')}" maxlength="60"></label>
+        <label class="f wide">Terms &amp; conditions<textarea name="terms" rows="3" maxlength="600" placeholder="1. Goods once sold will not be taken back.">${v('terms')}</textarea></label>
+        <label class="f wide">Footer note<input name="footer" value="${v('footer')}" maxlength="160" placeholder="Thank you for your business!"></label>
+      </div>
+      <div class="row sticky-act"><span class="spacer"></span><button class="btn primary" ${canEdit ? '' : 'disabled'}>Save</button></div>
+    </form>
+    <div><h2 class="no-print">Preview</h2><div id="pv"></div></div></div>`;
+  const form = $('#pf');
+  const read = () => {
+    const f = form.elements;
+    return { ...P, layout: $('#lay .on').dataset.l, color: f.color.value, title: f.title.value, signatory: f.signatory.value, show_upi: f.show_upi.checked,
+      bank_name: f.bank_name.value, bank_account: f.bank_account.value, bank_ifsc: f.bank_ifsc.value.toUpperCase(), bank_branch: f.bank_branch.value, terms: f.terms.value, footer: f.footer.value };
+  };
+  const preview = () => { P = read(); $('#pv').innerHTML = docPaper(sample()); };
+  const box = (kind, title, url) => `<div class="imgbox"><b>${title}</b><div class="pv">${url ? `<img src="${esc(url)}" alt="">` : `<span class="muted">No ${title.toLowerCase()}</span>`}</div>
+      <label class="btn sm">${url ? 'Change' : 'Upload'}<input type="file" accept="image/*" data-file="${kind}" hidden></label>${url ? `<button type="button" class="btn sm" data-rm="${kind}">Remove</button>` : ''}</div>`;
+  const took = (r, msg) => { urls = { logo_url: r.logo_url, sign_url: r.sign_url }; ME.org.print = { ...ME.org.print, logo: r.print.logo, signature: r.print.signature };
+    P = { ...read(), logo: r.print.logo, signature: r.print.signature }; paintImgs(); preview(); toast(msg); };
+  const paintImgs = () => {
+    $('#imgs').innerHTML = box('logo', 'Logo', urls.logo_url) + box('signature', 'Signature', urls.sign_url);
+    $$('[data-file]', el).forEach((inp) => inp.onchange = async () => {
+      const kind = inp.dataset.file, file = inp.files[0];
+      if (!file) return;
+      try {
+        const data = await shrinkImage(file, kind === 'logo' ? 360 : 480, kind === 'logo' ? 360 : 180);
+        took(await api('PUT', '/api/org/files/' + kind, { data }), kind === 'logo' ? 'Logo saved' : 'Signature saved');
+      } catch (err) { alert(err.message); }
+    });
+    $$('[data-rm]', el).forEach((b) => b.onclick = async () => {
+      if (confirm('Remove this image?')) took(await api('DELETE', '/api/org/files/' + b.dataset.rm), 'Removed');
+    });
+  };
+  paintImgs();
+  $$('#lay button').forEach((b) => b.onclick = () => { $$('#lay button').forEach((x) => x.classList.toggle('on', x === b)); preview(); });
+  form.addEventListener('input', preview);
+  preview();
+  form.onsubmit = async (e) => {
+    e.preventDefault();
+    const box = $('.err', form); box.hidden = true;
+    try { const r = await api('PUT', '/api/settings/print', read()); P = r.print; ME.org.print = P; toast('Print settings saved'); }
+    catch (err) { box.hidden = false; box.textContent = err.message; }
+  };
+});
+
 route(/^settings$/, async (el) => {
   const o = ME.org, canUsers = ME.can.users;
   const users = canUsers ? await GET('/api/users') : { rows: [], roles: [] };
   const audit = canUsers ? (await GET('/api/audit')).rows : [];
-  el.innerHTML = head('Business & Users') + `
+  el.innerHTML = head('Settings') + setTabs('settings') + `
     <div class="panel"><h2>Features</h2><div class="row">
       <label class="row" style="gap:8px"><input type="radio" name="mode" value="simple" ${simple() ? 'checked' : ''}> <span><b>Simple</b><br><span class="muted">Billing, purchase bills, returns, credit notes, stock, khata, POS, accounts. Best for most shops.</span></span></label>
       <label class="row" style="gap:8px"><input type="radio" name="mode" value="advanced" ${simple() ? '' : 'checked'}> <span><b>Advanced</b><br><span class="muted">Adds quotations, sales/purchase orders, delivery notes, GRN, gate entry & gate pass, stock count, pick lists, e-invoice & e-way bill.</span></span></label>
@@ -1254,14 +1359,15 @@ function printReceipt(d, method, received) {
   const o = d.org;
   let r = $('#receipt');
   if (!r) { r = document.createElement('div'); r.id = 'receipt'; r.className = 'receipt'; document.body.appendChild(r); }
-  r.innerHTML = `<div class="c"><b>${esc(o.name)}</b><br>${esc(o.address || '')}${o.gstin ? `<br>GSTIN ${esc(o.gstin)}` : ''}${o.phone ? `<br>${esc(o.phone)}` : ''}</div>
-    <div class="c">${o.gstin ? 'TAX INVOICE' : 'BILL'}<br>${esc(d.number)} &middot; ${fdate(d.date)}</div>
+  const P = o.print || {};
+  r.innerHTML = `<div class="c">${d.logo_url ? `<img src="${esc(d.logo_url)}" alt="" style="max-height:40px;filter:grayscale(1)"><br>` : ''}<b>${esc(o.name)}</b><br>${esc(o.address || '')}${o.gstin ? `<br>GSTIN ${esc(o.gstin)}` : ''}${o.phone ? `<br>${esc(o.phone)}` : ''}</div>
+    <div class="c">${esc(P.title || (o.gstin ? 'TAX INVOICE' : 'BILL'))}<br>${esc(d.number)} &middot; ${fdate(d.date)}</div>
     <table>${d.lines.map((l) => `<tr><td colspan="3">${esc(l.item || l.description)}</td></tr><tr><td>${qtyf(l.qty)} x ${inr(l.rate)}</td><td>${l.gst_rate}%</td><td class="r">${inr(l.total)}</td></tr>`).join('')}</table>
     <table><tr><td>Taxable</td><td class="r">${inr(d.taxable)}</td></tr>${d.igst ? `<tr><td>IGST</td><td class="r">${inr(d.igst)}</td></tr>` : `<tr><td>CGST</td><td class="r">${inr(d.cgst)}</td></tr><tr><td>SGST</td><td class="r">${inr(d.sgst)}</td></tr>`}
     ${d.round_off ? `<tr><td>Round off</td><td class="r">${inr(d.round_off)}</td></tr>` : ''}<tr class="g"><td>TOTAL</td><td class="r">${inr(d.total)}</td></tr>
     <tr><td>Paid (${esc(method)})</td><td class="r">${inr(d.paid)}</td></tr>${method === 'cash' && received > d.total ? `<tr><td>Change</td><td class="r">${inr(received - d.total)}</td></tr>` : ''}
     ${d.balance > 0 ? `<tr><td>Balance due</td><td class="r">${inr(d.balance)}</td></tr>` : ''}</table>
-    <div class="c">Thank you! Visit again.</div>`;
+    ${P.show_upi !== false && o.upi_id && d.balance > 0 ? `<div class="c">UPI: ${esc(o.upi_id)}</div>` : ''}<div class="c">${esc(P.footer || 'Thank you! Visit again.')}</div>`;
   document.body.classList.add('print-receipt');
   setTimeout(() => { print(); document.body.classList.remove('print-receipt'); }, 50);
 }

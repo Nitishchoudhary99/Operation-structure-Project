@@ -16,6 +16,7 @@ import * as rep from './reports.js';
 import { PLANS, planOut, usage, checkCount, requireFeature, extendPlan, adminKey, trialUntil } from './saas.js';
 import { STATES, einvoiceJson, ewaybillJson } from './gst.js';
 import { tallyXml } from './tally.js';
+import { printOf, cleanPrint, imageFromDataUrl, shortHash, imageResponse, FILE_KINDS } from './custom.js';
 import { billingMode, grossPaise, billingStart, billingVerify, billingWebhook, billingStatus, billingHistory } from './billing.js';
 
 const R = (p) => Math.round(p) / 100;
@@ -67,7 +68,7 @@ router.add('POST', '/api/auth/login', async (c) => {
 router.add('POST', '/api/auth/logout', async () => json({ ok: true }, 200, { 'Set-Cookie': clearCookie() }), { public: true });
 
 router.add('GET', '/api/me', async (c) => json({
-  user: publicUser(c.user), org: c.org,
+  user: publicUser(c.user), org: orgOut(c.org),
   can: Object.fromEntries(['settings', 'users', 'items', 'purchase', 'sales', 'stock', 'finance', 'khata'].map((a) => [a, can(c.user, a)])),
   doc_types: Object.fromEntries(Object.entries(DOC_TYPES).map(([k, v]) => [k, { label: v.label, side: v.side, from: v.from, prefix: v.prefix, note: !!v.note, stock: v.stock || '' }])),
   gst_rates: GST_RATES, today: today(), states: STATES.map(([, n]) => n), plan: planOut(c.org),
@@ -103,6 +104,47 @@ router.add('PUT', '/api/org/mode', async (c) => {
   await c.db.batch([c.db.prepare(`UPDATE orgs SET mode = ? WHERE id = ?`).bind(mode, c.org.id), auditStatement(c, 'mode', mode)]);
   return json({ ok: true, mode });
 });
+/* business row for the app: settings JSON parsed, image URLs ready for <img> */
+const orgOut = (o) => ({ ...o, print: printOf(o) });
+const fileUrls = (P, base) => ({ logo_url: P.logo ? `${base}/logo?v=${P.logo}` : '', sign_url: P.signature ? `${base}/signature?v=${P.signature}` : '' });
+
+/* Branding & print: layout, colour, title, terms, bank, UPI on bill, signatory, footer */
+router.add('GET', '/api/settings/print', async (c) => { const P = printOf(c.org); return json({ print: P, ...fileUrls(P, '/api/org/files') }); });
+router.add('PUT', '/api/settings/print', async (c) => {
+  requireCan(c.user, 'settings');
+  const P = cleanPrint(c.body, printOf(c.org));
+  await c.db.batch([c.db.prepare(`UPDATE orgs SET print = ? WHERE id = ?`).bind(JSON.stringify(P), c.org.id), auditStatement(c, 'print settings', P.layout)]);
+  return json({ print: P, ...fileUrls(P, '/api/org/files') });
+});
+/* logo / signature: the browser shrinks the image first; at most 64 KB */
+router.add('PUT', '/api/org/files/:kind', async (c) => {
+  requireCan(c.user, 'settings');
+  const kind = oneOf(c.params.kind, FILE_KINDS, 'File');
+  const img = imageFromDataUrl(c.body.data);
+  const hash = await shortHash(img.b64);
+  const P = { ...printOf(c.org), [kind]: hash };
+  await c.db.batch([
+    c.db.prepare(`INSERT INTO org_files (org_id, kind, mime, data, hash, updated_at) VALUES (?, ?, ?, ?, ?, ?)
+      ON CONFLICT (org_id, kind) DO UPDATE SET mime = excluded.mime, data = excluded.data, hash = excluded.hash, updated_at = excluded.updated_at`)
+      .bind(c.org.id, kind, img.mime, img.b64, hash, nowIso()),
+    c.db.prepare(`UPDATE orgs SET print = ? WHERE id = ?`).bind(JSON.stringify(P), c.org.id),
+    auditStatement(c, 'upload ' + kind, `${Math.round(img.size / 1024)} KB`)]);
+  return json({ print: P, ...fileUrls(P, '/api/org/files') });
+});
+router.add('DELETE', '/api/org/files/:kind', async (c) => {
+  requireCan(c.user, 'settings');
+  const kind = oneOf(c.params.kind, FILE_KINDS, 'File');
+  const P = { ...printOf(c.org), [kind]: '' };
+  await c.db.batch([c.db.prepare(`DELETE FROM org_files WHERE org_id = ? AND kind = ?`).bind(c.org.id, kind),
+    c.db.prepare(`UPDATE orgs SET print = ? WHERE id = ?`).bind(JSON.stringify(P), c.org.id), auditStatement(c, 'remove ' + kind)]);
+  return json({ print: P, ...fileUrls(P, '/api/org/files') });
+});
+router.add('GET', '/api/org/files/:kind', async (c) => {
+  const row = await c.db.prepare(`SELECT mime, data FROM org_files WHERE org_id = ? AND kind = ?`).bind(c.org.id, oneOf(c.params.kind, FILE_KINDS, 'File')).first();
+  if (!row) throw notFound('No image.');
+  return imageResponse(row);
+});
+
 router.add('GET', '/api/users', async (c) => {
   requireCan(c.user, 'users');
   const { results } = await c.db.prepare(`SELECT id, email, name, role, active, created_at FROM users WHERE org_id = ? ORDER BY id`).bind(c.org.id).all();
@@ -311,7 +353,7 @@ async function docDetail(c, id) {
     settlements: pays.results.map((p) => ({ ...p, amount: money(p.amount), number: p.number || p.note_number })),
     lines: lines.results.map((l) => ({ ...l, rate: money(l.rate), taxable: money(l.taxable), cgst: money(l.cgst), sgst: money(l.sgst), igst: money(l.igst),
       total: money(l.total), cost: money(l.cost), remaining: Math.round((l.qty - l.done_qty) * 1000) / 1000 })),
-    org: c.org,
+    org: orgOut(c.org), ...fileUrls(printOf(c.org), '/api/org/files'),
   };
 }
 router.add('GET', '/api/docs/:id', async (c) => json(await docDetail(c, +c.params.id)));
@@ -392,11 +434,21 @@ router.add('GET', '/api/public/doc/:token', async (c) => {
     inter_state: d.inter_state, taxable: d.taxable, cgst: d.cgst, sgst: d.sgst, igst: d.igst, round_off: d.round_off, total: d.total, paid: d.paid, balance: d.balance,
     notes: d.notes, irn: d.irn, ack_no: d.ack_no, ack_date: d.ack_date, ewb_no: d.ewb_no, ewb_date: d.ewb_date, warehouse: '',
     parent: d.parent && ['SRET', 'CNOTE'].includes(d.type) ? { number: d.parent.number, date: d.parent.date } : null,
-    org: { name: o.name, gstin: o.gstin, state: o.state, address: o.address, phone: o.phone, upi_id: o.upi_id, email: o.email },
+    org: { name: o.name, gstin: o.gstin, state: o.state, address: o.address, phone: o.phone, upi_id: o.upi_id, email: o.email, print: o.print },
+    ...fileUrls(o.print, `/api/public/doc/${t}/file`),
     party: { name: p.name, gstin: p.gstin, address: p.address, phone: p.phone, state: p.state },
     lines: d.lines.map((l) => ({ item: l.item, description: l.description, hsn: l.hsn, unit: l.unit, qty: l.qty, rate: l.rate, discount_pct: l.discount_pct,
       gst_rate: l.gst_rate, taxable: l.taxable, cgst: l.cgst, sgst: l.sgst, igst: l.igst, total: l.total })),
   });
+}, { public: true });
+
+/* logo / signature on the customer's link: only for a business that has a shared document with this token */
+router.add('GET', '/api/public/doc/:token/file/:kind', async (c) => {
+  const t = String(c.params.token || ''), kind = oneOf(c.params.kind, FILE_KINDS, 'File');
+  const row = /^[0-9a-f]{24}$/.test(t) ? await c.db.prepare(`SELECT f.mime, f.data FROM docs d JOIN org_files f ON f.org_id = d.org_id AND f.kind = ?
+      WHERE d.share_token = ? AND d.type IN ('${PUBLIC_DOCS.join("','")}')`).bind(kind, t).first() : null;
+  if (!row) throw notFound('No image.');
+  return imageResponse(row);
 }, { public: true });
 
 router.add('GET', '/api/export/tally', async (c) => {

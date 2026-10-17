@@ -280,10 +280,52 @@ const ownerCookie = cookie;
 await api('POST', '/api/auth/login', { email: 'store' + email, password: 'Store-pass-1' });
 const denied = await api('POST', '/api/payments', { kind: 'receipt', party_id: cust.id, account_id: accts.cash.id, amount: 1 }, true);
 check('store role cannot record receipts', denied.status === 403);
+const storeCookie = cookie;
 await api('POST', '/api/auth/signup', { business: 'Other Co', name: 'X', email: 'x' + email, password: 'Other-pass-1' });
 const peek = await api('GET', `/api/docs/${inv.id}`, null, true);
 check('another business cannot see this invoice', peek.status === 404);
 cookie = ownerCookie;
+
+/* --- branding & print templates --- */
+{
+  const raw = (path, ck = cookie) => fetch(BASE + path, { headers: { Cookie: ck } });
+  const p0 = await api('GET', '/api/settings/print');
+  check('print settings default to classic', p0.print.layout === 'classic' && p0.print.show_upi === true && p0.logo_url === '');
+  check('bad colour is refused', (await api('PUT', '/api/settings/print', { color: 'red' }, true)).status === 400);
+  check('bad IFSC is refused', (await api('PUT', '/api/settings/print', { bank_ifsc: 'SBI12' }, true)).status === 400);
+  check('bad layout is refused', (await api('PUT', '/api/settings/print', { layout: 'fancy' }, true)).status === 400);
+  cookie = storeCookie;
+  check('store user cannot change print settings', (await api('PUT', '/api/settings/print', { layout: 'modern' }, true)).status === 403);
+  check('store user can read print settings', (await api('GET', '/api/settings/print')).print.layout === 'classic');
+  cookie = ownerCookie;
+  const ps = await api('PUT', '/api/settings/print', { layout: 'modern', color: '#AA3300', title: 'BILL OF SUPPLY', terms: 'Goods once sold will not be taken back.',
+    bank_name: 'SBI', bank_account: '1234 5678 9012', bank_ifsc: 'sbin0001234', signatory: 'Ravi Sharma', footer: 'Thank you!', show_upi: false, logo: 'forged' });
+  check('print settings saved and cleaned', ps.print.layout === 'modern' && ps.print.color === '#aa3300' && ps.print.bank_ifsc === 'SBIN0001234' && ps.print.bank_account === '123456789012'
+    && ps.print.show_upi === false && ps.print.logo === '', JSON.stringify(ps.print));
+  check('/api/me carries print settings', (await api('GET', '/api/me')).org.print.title === 'BILL OF SUPPLY');
+  const big = 'data:image/png;base64,' + Buffer.alloc(70000, 7).toString('base64');
+  check('logo over 64 KB is refused (413)', (await api('PUT', '/api/org/files/logo', { data: big }, true)).status === 413);
+  check('non-image upload is refused', (await api('PUT', '/api/org/files/logo', { data: 'data:text/html;base64,PGI+' }, true)).status === 400);
+  check('unknown file kind is refused', (await api('PUT', '/api/org/files/stamp', { data: big }, true)).status === 400);
+  const png = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==';
+  const up = await api('PUT', '/api/org/files/logo', { data: 'data:image/png;base64,' + png });
+  check('logo uploaded', /^[0-9a-f]{16}$/.test(up.print.logo) && up.logo_url.includes(up.print.logo) && up.print.terms === ps.print.terms);
+  const lg = await raw(up.logo_url);
+  const bytes = Buffer.from(await lg.arrayBuffer());
+  check('logo served with immutable cache', lg.status === 200 && lg.headers.get('content-type') === 'image/png' && /immutable/.test(lg.headers.get('cache-control')) && bytes.equals(Buffer.from(png, 'base64')));
+  check('logo needs a session', (await fetch(BASE + up.logo_url)).status === 401);
+  const dv = await api('GET', `/api/docs/${inv.id}`);
+  check('document carries branding for print', dv.org.print.layout === 'modern' && dv.logo_url === up.logo_url);
+  const tok = (await api('GET', `/api/docs/${inv.id}/share`)).url.split('/i/')[1];
+  const pub = await (await fetch(`${BASE}/api/public/doc/${tok}`)).json();
+  check('public link shows branding', pub.org.print.terms === ps.print.terms && pub.org.print.bank_account === '123456789012' && pub.logo_url.startsWith(`/api/public/doc/${tok}/file/logo`));
+  check('public link shows nothing internal', pub.org.id === undefined && pub.org.plan === undefined && pub.lines.every((l) => l.cost === undefined) && pub.org.print.show_upi === false);
+  const pl = await fetch(BASE + pub.logo_url);
+  check('public logo served', pl.status === 200 && pl.headers.get('content-type') === 'image/png');
+  check('public logo needs a valid link', (await fetch(`${BASE}/api/public/doc/${'0'.repeat(24)}/file/logo`)).status === 404);
+  await api('DELETE', '/api/org/files/logo');
+  check('logo removed', (await raw('/api/org/files/logo')).status === 404 && (await api('GET', '/api/settings/print')).logo_url === '');
+}
 
 /* --- plans, barcode, GST portal files, Tally, admin --- */
 const raw = (path, headers = {}) => fetch(BASE + path, { headers: { Cookie: cookie, ...headers } });
