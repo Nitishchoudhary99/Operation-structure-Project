@@ -79,8 +79,9 @@ export function counterStatements(db, orgId, key) {
   return db.prepare(`INSERT INTO counters (org_id, key, next) VALUES (?, ?, 2)
                      ON CONFLICT(org_id, key) DO UPDATE SET next = next + 1`).bind(orgId, key);
 }
-/* SQL that reads the number just reserved by counterStatements, inside the same batch */
-export const counterValueSql = `(SELECT printf('%s-%05d', ?, next - 1) FROM counters WHERE org_id = ? AND key = ?)`;
+/* SQL that reads the number just reserved by counterStatements, inside the same batch.
+   Binds: printf format (e.g. 'INV-%05d' or 'SHT/26-27/%04d'), org id, counter key. */
+export const counterValueSql = `(SELECT printf(?, next - 1) FROM counters WHERE org_id = ? AND key = ?)`;
 
 export const uid = () => crypto.randomUUID();
 

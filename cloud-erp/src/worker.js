@@ -16,7 +16,7 @@ import * as rep from './reports.js';
 import { PLANS, planOut, usage, checkCount, requireFeature, extendPlan, adminKey, trialUntil } from './saas.js';
 import { STATES, einvoiceJson, ewaybillJson } from './gst.js';
 import { tallyXml } from './tally.js';
-import { printOf, cleanPrint, imageFromDataUrl, shortHash, imageResponse, FILE_KINDS } from './custom.js';
+import { printOf, cleanPrint, imageFromDataUrl, shortHash, imageResponse, FILE_KINDS, seriesOf, numberSpec, formatNumber, cleanSeries, fyParts } from './custom.js';
 import { billingMode, grossPaise, billingStart, billingVerify, billingWebhook, billingStatus, billingHistory } from './billing.js';
 
 const R = (p) => Math.round(p) / 100;
@@ -105,7 +105,7 @@ router.add('PUT', '/api/org/mode', async (c) => {
   return json({ ok: true, mode });
 });
 /* business row for the app: settings JSON parsed, image URLs ready for <img> */
-const orgOut = (o) => ({ ...o, print: printOf(o) });
+const orgOut = (o) => ({ ...o, print: printOf(o), series: seriesOf(o) });
 const fileUrls = (P, base) => ({ logo_url: P.logo ? `${base}/logo?v=${P.logo}` : '', sign_url: P.signature ? `${base}/signature?v=${P.signature}` : '' });
 
 /* Branding & print: layout, colour, title, terms, bank, UPI on bill, signatory, footer */
@@ -143,6 +143,44 @@ router.add('GET', '/api/org/files/:kind', async (c) => {
   const row = await c.db.prepare(`SELECT mime, data FROM org_files WHERE org_id = ? AND kind = ?`).bind(c.org.id, oneOf(c.params.kind, FILE_KINDS, 'File')).first();
   if (!row) throw notFound('No image.');
   return imageResponse(row);
+});
+
+/* Numbering: prefix, digits, next number and yearly reset for each document type, receipts and payments */
+const SERIES = () => [...Object.entries(DOC_TYPES).map(([k, v]) => [k, v.label, v.prefix]), ['receipt', 'Receipt', 'RCT'], ['payment', 'Payment', 'PAY']];
+async function seriesRows(c, only) {
+  const { results } = await c.db.prepare(`SELECT key, next FROM counters WHERE org_id = ?`).bind(c.org.id).all();
+  const next = Object.fromEntries(results.map((r) => [r.key, r.next])), S = seriesOf(c.org), d = today();
+  return SERIES().filter(([k]) => !only || k === only).map(([k, label, prefix]) => {
+    const spec = numberSpec(c.org, k, prefix, d), n = next[spec.key] || 1, s = S[k];
+    return { type: k, label, custom: !!s, prefix: s ? s.prefix : prefix + '-', pad: s ? s.pad : 5, fy_reset: s ? s.fy_reset : 0, next: n, preview: formatNumber(spec, n) };
+  });
+}
+router.add('GET', '/api/settings/series', async (c) => json({ rows: await seriesRows(c), fy: fyParts(c.org, today()).fy }));
+router.add('PUT', '/api/settings/series/:type', async (c) => {
+  requireCan(c.user, 'settings');
+  const def = SERIES().find(([k]) => k === c.params.type);
+  if (!def) throw bad('Unknown document type.');
+  const d = today(), S = seriesOf(c.org);
+  const v = cleanSeries(c.body, c.org, d);
+  const org = { ...c.org, series: JSON.stringify({ ...S, [def[0]]: { prefix: v.prefix, pad: v.pad, fy_reset: v.fy_reset } }) };
+  const spec = numberSpec(org, def[0], def[2], d);
+  const st = [c.db.prepare(`UPDATE orgs SET series = ? WHERE id = ?`).bind(org.series, c.org.id), auditStatement(c, 'numbering', `${def[0]} ${v.prefix} ${v.pad}${v.fy_reset ? ' yearly' : ''}${v.next ? ' next ' + v.next : ''}`)];
+  if (v.next) {
+    const cur = await c.db.prepare(`SELECT next FROM counters WHERE org_id = ? AND key = ?`).bind(c.org.id, spec.key).first();
+    if (cur && v.next < cur.next) throw bad(`Next number cannot go back. It must be ${cur.next} or more.`);
+    st.push(c.db.prepare(`INSERT INTO counters (org_id, key, next) VALUES (?, ?, ?) ON CONFLICT (org_id, key) DO UPDATE SET next = MAX(next, excluded.next)`).bind(c.org.id, spec.key, v.next));
+  }
+  await c.db.batch(st);
+  c.org = org;
+  return json((await seriesRows(c, def[0]))[0]);
+});
+router.add('DELETE', '/api/settings/series/:type', async (c) => {
+  requireCan(c.user, 'settings');
+  const S = seriesOf(c.org);
+  delete S[c.params.type];
+  c.org = { ...c.org, series: JSON.stringify(S) };
+  await c.db.batch([c.db.prepare(`UPDATE orgs SET series = ? WHERE id = ?`).bind(c.org.series, c.org.id), auditStatement(c, 'numbering', `${c.params.type} default`)]);
+  return json({ ok: true });
 });
 
 router.add('GET', '/api/users', async (c) => {
@@ -544,7 +582,7 @@ router.add('POST', '/api/gate', async (c) => {
     c.db.prepare(`INSERT INTO gate_entries (org_id, number, kind, date, time_in, time_out, party_id, ref_doc_id, vehicle_no, driver_name, driver_phone, transporter, lr_no,
         challan_no, challan_date, packages, weight_kg, remarks, status, created_by, created_at)
       VALUES (?, ${counterValueSql}, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'open', ?, ?)`)
-      .bind(c.org.id, key, c.org.id, key, kind, date(b.date), str(b.time_in, 5) || nowTime(), kind === 'out' && b.exited ? nowTime() : '', partyId, refId, vehicle || 'BY HAND',
+      .bind(c.org.id, key + '-%05d', c.org.id, key, kind, date(b.date), str(b.time_in, 5) || nowTime(), kind === 'out' && b.exited ? nowTime() : '', partyId, refId, vehicle || 'BY HAND',
         str(b.driver_name, 60), str(b.driver_phone, 15), str(b.transporter, 80), str(b.lr_no, 30), str(b.challan_no, 40), b.challan_date ? date(b.challan_date) : '',
         int(b.packages, 'Packages', { min: 0, max: 100000, def: 0 }), num(b.weight_kg, 'Weight', { min: 0, max: 1e7, def: 0 }), str(b.remarks, 300),
         c.user.id, nowIso()),

@@ -9,6 +9,7 @@ import {
 import { requireCan } from './auth.js';
 import { stateCode } from './gst.js';
 import { checkInvoiceLimit } from './saas.js';
+import { numberSpec } from './custom.js';
 
 export const DOC_TYPES = {
   QUOTE: { side: 'sales', prefix: 'QT', label: 'Quotation', from: [] },
@@ -220,11 +221,12 @@ export async function createDoc(ctx, body) {
   const dueDate = T.money ? (body.due_date ? date(body.due_date, 'Due date') : addDays(d, party.credit_days || 0)) : (body.due_date ? date(body.due_date, 'Due date') : null);
   const initialStatus = T.money && ['INV', 'BILL'].includes(type) ? 'unpaid' : 'open';
 
-  st.push(counterStatements(db, orgId, type));
+  const nspec = numberSpec(ctx.org, type, T.prefix, d);
+  st.push(counterStatements(db, orgId, nspec.key));
   st.push(db.prepare(`INSERT INTO docs (org_id, type, number, party_id, date, due_date, warehouse_id, ref_id, status, place_of_supply,
         inter_state, taxable, cgst, sgst, igst, round_off, total, paid, notes, created_by, created_at, txk)
       VALUES (?, ?, ${counterValueSql}, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?)`)
-    .bind(orgId, type, T.prefix, orgId, type, party.id, d, dueDate, wh.id, src ? src.id : null, initialStatus,
+    .bind(orgId, type, nspec.fmt, orgId, nspec.key, party.id, d, dueDate, wh.id, src ? src.id : null, initialStatus,
       party.state || ctx.org.state || '', inter ? 1 : 0, taxable, cgst, sgst, igst, roundOff, total,
       str(body.notes, 1000), ctx.user.id, nowIso(), txk));
 
@@ -348,7 +350,10 @@ export async function createDoc(ctx, body) {
   }
 
   st.push(auditStatement(ctx, `create ${type}`, `${party.name} ${total / 100}`));
-  await db.batch(st);
+  try { await db.batch(st); } catch (e) {
+    if (/UNIQUE constraint failed: docs\.org_id, docs\.type, docs\.number/.test(String(e && e.message))) throw bad('This document number is already used. Change the next number in Settings > Numbering.');
+    throw e;
+  }
   return db.prepare(`SELECT * FROM docs WHERE txk = ?`).bind(txk).first();
 }
 
@@ -361,10 +366,11 @@ export const auditStatement = (ctx, action, detail = '') =>
 export function paymentStatements(ctx, { kind, party, account, date: d, amount, reference = '', notes = '', allocs = [] }) {
   const { db } = ctx, sys = ctx.sys;
   const ptxk = uid();
-  const st = [counterStatements(db, ctx.org.id, kind),
+  const nspec = numberSpec(ctx.org, kind, kind === 'receipt' ? 'RCT' : 'PAY', d);
+  const st = [counterStatements(db, ctx.org.id, nspec.key),
     db.prepare(`INSERT INTO payments (org_id, number, kind, party_id, account_id, date, amount, reference, notes, created_by, created_at, txk)
                 VALUES (?, ${counterValueSql}, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
-      .bind(ctx.org.id, kind === 'receipt' ? 'RCT' : 'PAY', ctx.org.id, kind, kind, party.id, account, d, amount, reference, notes, ctx.user.id, nowIso(), ptxk)];
+      .bind(ctx.org.id, nspec.fmt, ctx.org.id, nspec.key, kind, party.id, account, d, amount, reference, notes, ctx.user.id, nowIso(), ptxk)];
   for (const a of allocs) {
     if (!a.amount) continue;
     const docExpr = a.txk ? '(SELECT id FROM docs WHERE txk = ?)' : '?';

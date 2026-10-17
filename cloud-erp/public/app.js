@@ -915,7 +915,7 @@ route(/^reports\/([a-z-]+)$/, async (el, m, q) => {
 });
 
 /* ======================================================================= settings */
-const SET_TABS = [['settings', 'Business & users'], ['settings/print', 'Branding & print']];
+const SET_TABS = [['settings', 'Business & users'], ['settings/print', 'Branding & print'], ['settings/numbering', 'Numbering']];
 const setTabs = (cur) => `<div class="tabs">${SET_TABS.map(([h, t]) => `<a href="#/${h}" class="${h === cur ? 'on' : ''}">${t}</a>`).join('')}</div>`;
 
 /* Shrink a photo on this device (canvas) so it fits the 64 KB limit; nothing is uploaded until it is small. */
@@ -1007,6 +1007,39 @@ route(/^settings\/print$/, async (el) => {
     try { const r = await api('PUT', '/api/settings/print', read()); P = r.print; ME.org.print = P; toast('Print settings saved'); }
     catch (err) { box.hidden = false; box.textContent = err.message; }
   };
+});
+
+route(/^settings\/numbering$/, async (el) => {
+  const { rows, fy } = await GET('/api/settings/series');
+  const canEdit = ME.can.settings;
+  const shown = rows.filter((r) => !(simple() && ADV_DOCS.includes(r.type)));
+  const [fy1] = fy.split('-');
+  const expand = (p) => p.replace(/\{FY\}/g, fy).replace(/\{YYYY\}/g, '20' + fy1).replace(/\{YY\}/g, fy1);
+  const pv = (f) => expand(f.prefix.value) + String(Math.max(1, +f.next.value || 1)).padStart(Math.min(8, Math.max(1, +f.pad.value || 1)), '0');
+  el.innerHTML = head('Numbering') + setTabs('settings/numbering') + `
+    <p class="muted">Set how bill numbers look. Use <b>{FY}</b> for the year (${esc(fy)}), <b>{YY}</b> or <b>{YYYY}</b>. GST allows up to 16 characters.</p>
+    <div class="series">${shown.map((r) => `<form class="panel" data-t="${r.type}"><div class="row"><b>${esc(r.label)}</b><span class="spacer"></span>${r.custom ? '<span class="badge b-ok">custom</span>' : ''}</div>
+      <div class="err" hidden></div>
+      <div class="form">
+        <label class="f">Prefix<input name="prefix" value="${esc(r.prefix)}" maxlength="20" autocapitalize="characters"></label>
+        <label class="f">Digits<input name="pad" type="number" min="1" max="8" value="${r.pad}" inputmode="numeric"></label>
+        <label class="f">Next number<input name="next" type="number" min="1" value="${r.next}" inputmode="numeric"></label>
+        <label class="f check"><input type="checkbox" name="fy_reset" ${r.fy_reset ? 'checked' : ''}> Start from 1 every year</label>
+      </div>
+      <div class="row" style="margin-top:10px"><span>Next: <b class="pvw">${esc(r.preview)}</b></span><span class="spacer"></span>
+        ${r.custom && canEdit ? '<button type="button" class="btn sm" data-reset>Use default</button>' : ''}<button class="btn sm primary" ${canEdit ? '' : 'disabled'}>Save</button></div></form>`).join('')}</div>`;
+  $$('.series form', el).forEach((f) => {
+    f.addEventListener('input', () => { $('.pvw', f).textContent = pv(f.elements); });
+    f.onsubmit = async (e) => {
+      e.preventDefault();
+      const box = $('.err', f); box.hidden = true;
+      const v = f.elements;
+      try { await api('PUT', '/api/settings/series/' + f.dataset.t, { prefix: v.prefix.value.trim(), pad: +v.pad.value, next: +v.next.value, fy_reset: v.fy_reset.checked }); toast('Numbering saved'); render(); }
+      catch (err) { box.hidden = false; box.textContent = err.message; }
+    };
+    const rs = $('[data-reset]', f);
+    if (rs) rs.onclick = async () => { await api('DELETE', '/api/settings/series/' + f.dataset.t); toast('Back to default'); render(); };
+  });
 });
 
 route(/^settings$/, async (el) => {

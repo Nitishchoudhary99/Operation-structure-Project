@@ -400,5 +400,39 @@ else {
   check('verify needs the order way', (await api('POST', '/api/billing/verify', { razorpay_order_id: 'order_x', razorpay_payment_id: 'pay_x', razorpay_signature: 'x' }, true)).status === 400);
 }
 
+/* --- custom number series --- */
+{
+  const t = (await api('GET', '/api/me')).today;
+  const y = +t.slice(0, 4) - (t.slice(5) < '04-01' ? 1 : 0), yy = (n) => String(n % 100).padStart(2, '0'), fy = `${yy(y)}-${yy(y + 1)}`;
+  const s0 = await api('GET', '/api/settings/series');
+  const inv0 = s0.rows.find((r) => r.type === 'INV');
+  check('numbering lists every document type with a preview', s0.rows.length >= 13 && !inv0.custom && /^INV-\d{5}$/.test(inv0.preview) && s0.fy === fy, JSON.stringify(inv0));
+  const set = await api('PUT', '/api/settings/series/INV', { prefix: 'SHT/{FY}/', pad: 4, fy_reset: true, next: 457 });
+  check('series preview with FY and start number', set.preview === `SHT/${fy}/0457` && set.custom, JSON.stringify(set));
+  const line = [{ description: 'Repair work', qty: 1, rate: 100 }];
+  const a1 = await api('POST', '/api/docs', { type: 'INV', party_id: cust.id, lines: line });
+  const a2 = await api('POST', '/api/docs', { type: 'INV', party_id: cust.id, lines: line });
+  check('invoice uses the custom series', a1.number === `SHT/${fy}/0457` && a2.number === `SHT/${fy}/0458`, a1.number + ' ' + a2.number);
+  const old = await api('POST', '/api/docs', { type: 'INV', party_id: cust.id, date: '2026-03-31', lines: line });
+  check('last year restarts at 1 with its own FY', old.number === 'SHT/25-26/0001', old.number);
+  check('yearly reset needs an FY token', (await api('PUT', '/api/settings/series/INV', { prefix: 'SHT/', pad: 4, fy_reset: true }, true)).status === 400);
+  check('bad characters refused', (await api('PUT', '/api/settings/series/INV', { prefix: 'IN V#', pad: 4 }, true)).status === 400);
+  check('more than 16 characters refused', (await api('PUT', '/api/settings/series/INV', { prefix: 'SHARMATRADERS/{FY}/', pad: 4 }, true)).status === 400);
+  check('digits out of range refused', (await api('PUT', '/api/settings/series/INV', { prefix: 'A', pad: 9 }, true)).status === 400);
+  check('next number cannot go back', (await api('PUT', '/api/settings/series/INV', { prefix: 'SHT/{FY}/', pad: 4, fy_reset: true, next: 3 }, true)).status === 400);
+  check('unknown type refused', (await api('PUT', '/api/settings/series/XYZ', { prefix: 'A', pad: 4 }, true)).status === 400);
+  cookie = storeCookie;
+  check('store user cannot change numbering', (await api('PUT', '/api/settings/series/INV', { prefix: 'A', pad: 4 }, true)).status === 403);
+  cookie = ownerCookie;
+  await api('PUT', '/api/settings/series/receipt', { prefix: 'R/{YY}/', pad: 3 });
+  const rc = await api('POST', '/api/payments', { kind: 'receipt', party_id: cust.id, account_id: accts.cash.id, amount: 1 });
+  check('receipts use their own series', new RegExp(`^R/${yy(y)}/\\d{3}$`).test(rc.number), rc.number);
+  await api('DELETE', '/api/settings/series/INV');
+  const back = await api('POST', '/api/docs', { type: 'INV', party_id: cust.id, lines: line });
+  check('back to default numbering', /^INV-\d{5}$/.test(back.number), back.number);
+  const pay1 = await api('GET', '/api/payments?kind=payment');
+  check('payment numbers unchanged', (pay1.rows || []).every((p) => /^PAY-\d{5}$/.test(p.number)));
+}
+
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

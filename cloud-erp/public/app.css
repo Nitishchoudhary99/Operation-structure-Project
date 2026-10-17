@@ -322,3 +322,7 @@ label.f.check input { width: 20px; height: 20px; }
 .brand-grid > * { min-width: 0; }
 .brand-grid #pv { position: sticky; top: 70px; }
 .brand-grid #pv .doc-paper { font-size: 12px; }
+.series { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 340px), 1fr)); gap: 12px; }
+.series .panel { margin: 0; }
+.series .form { grid-template-columns: repeat(auto-fill, minmax(120px, 1fr)); margin-top: 8px; }
+.series .pvw { font-family: ui-monospace, monospace; }
