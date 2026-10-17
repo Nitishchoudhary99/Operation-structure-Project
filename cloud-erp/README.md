@@ -96,16 +96,38 @@ template with D1 edit permission) and `CLOUDFLARE_ACCOUNT_ID`.
 
 ## Selling it: plans, online payment and the admin panel
 
-Customers buy a plan in **Plan & Billing**: they tap *Pay*, pay in Razorpay Checkout (UPI, card, netbanking) and the plan
-switches on by itself. It is the same setup as docbrisk.com's Pro keys and uses the same Razorpay account.
-Every ERP payment carries `notes.product = smarttrader-erp`, so the two sites never take each other's payments.
+Customers buy a plan in **Plan & Billing**: they tap *Pay by UPI*, pay the exact amount shown (for example ₹5,309.07) from
+GPay, PhonePe, Paytm or any UPI app, and the plan switches on by itself. Phones get app buttons; computers get a QR made in
+the browser. Payments are confirmed by **DocBrisk Pay**, our own automatic UPI hub in the `docbrisk-api` worker (it reads the
+bank's signed credit e-mails). The browser talks only to this worker; this worker talks to the hub with signed requests, and
+the plan is switched on only by the hub's signed callback (or a signed status check if the callback is late).
 
-Set these on the worker in **Settings → Variables and Secrets**, choosing ONE of the two ways:
+**One-time setup (DocBrisk Pay)**, after the hub itself is live in `docbrisk-api`:
+
+1. Make one long random text (e.g. `openssl rand -hex 32`). On the `docbrisk-api` worker set it as the secret
+   `PAYHUB_SECRET` (or `PAYHUB_SECRET_ERP` to give the ERP its own).
+2. On this worker (`operation-structure-project`), **Settings → Variables and Secrets**:
+   - secret `PAYHUB_SECRET` = the same text;
+   - variable `PAYHUB_URL` = the address of the `docbrisk-api` worker (its custom domain, e.g. `https://api.docbrisk.com`).
+3. Both workers are on the same Cloudflare account, so a service binding is faster and private, and it is needed if the hub
+   only has a `workers.dev` address (Cloudflare blocks worker-to-worker calls to `workers.dev` on one account). Uncomment the
+   `PAYHUB_API` lines in `wrangler.toml` here, and the `ERP` service lines in `docbrisk-api/wrangler.toml` for the callbacks.
+4. Deploy both. **Admin** (below) then shows "Online payments: on (DocBrisk Pay, automatic UPI)". Buy the cheapest plan once
+   with your own phone to see it switch on.
+
+The hub sends its callbacks to the fixed address `https://erp.docbrisk.com/api/billing/upi-callback`; nothing to set for it.
+If the hub is busy or not ready, the page offers card / netbanking when Razorpay is set up, or asks to try again in a minute.
+
+**Optional: card and netbanking (Razorpay).** Shown as a second button only when its keys are set. It is the same setup as
+docbrisk.com's Pro keys. Every ERP payment carries `notes.product = smarttrader-erp`, so the two sites never take each
+other's payments. Choose ONE of the two ways:
 
 | Way | Secrets | Razorpay dashboard |
 |---|---|---|
 | Webhook (no Key Secret needed) | `RAZORPAY_WEBHOOK_SECRET` = any long random text | Settings → Webhooks → **Add**: URL `https://erp.docbrisk.com/api/billing/webhook`, event **payment.captured**, secret = the same text |
 | Order + signature (instant) | `RAZORPAY_KEY_ID`, `RAZORPAY_KEY_SECRET` | nothing more (adding the webhook too is a safety net if a buyer closes the browser early) |
+
+Without DocBrisk Pay, Razorpay (if set) is the main way to pay.
 
 Optional: `ADMIN_KEY` (16+ characters) opens `https://erp.docbrisk.com/#/admin` to see every business and payment and to set a
 plan by hand (1200 months = lifetime, e.g. for your own business). `SUPPORT_WHATSAPP` (e.g. 919876543210) shows a WhatsApp
@@ -157,5 +179,5 @@ cloud-erp/
 
 - Direct IRN / e-way bill generation through an API. This needs a GSP account; today the JSON files
   are uploaded on the government portals.
-- Online card payments for plans (Razorpay), batch/expiry and serial numbers, manufacturing (bill of
+- Batch/expiry and serial numbers, manufacturing (bill of
   materials), and approval workflows.

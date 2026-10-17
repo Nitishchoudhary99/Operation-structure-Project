@@ -2039,7 +2039,7 @@ route(/^plan$/, async (el, m, q) => {
   const daysLeft = cur.until ? Math.max(0, Math.round((new Date(cur.until + 'T00:00:00') - new Date(ME.today + 'T00:00:00')) / 864e5)) : null;
   const bar = (used, max) => max === null ? '' : `<div class="meter"><i style="width:${Math.min(100, Math.round(used / Math.max(1, max) * 100))}%"></i></div>`;
   const wa = P.support_whatsapp ? `https://api.whatsapp.com/send?phone=${encodeURIComponent(P.support_whatsapp.replace(/\D/g, ''))}&text=${encodeURIComponent(`Hi, I want to upgrade SmartTrader ERP. Business: ${ME.org.name}, login: ${ME.user.email}`)}` : '';
-  const online = P.billing !== 'off';
+  const online = P.billing !== 'off', upiOn = P.billing === 'upi', cardOn = !!P.razorpay && P.razorpay !== 'off';
   el.innerHTML = head('Plan & Billing') + `
     <div class="panel planbar"><div><div class="muted">Your plan</div><div class="big">${esc(cur.label)}</div>
       <div class="muted">${cur.until ? `Valid till <b>${fdate(cur.until)}</b>${daysLeft !== null && daysLeft <= 15 ? ` · <span class="neg">${daysLeft} days left</span>` : ''}` : 'Free forever'}</div></div>
@@ -2055,9 +2055,10 @@ route(/^plan$/, async (el, m, q) => {
       <li>Billing, stock, khata, POS, accounts</li>${p.features.includes('tally') ? '<li>Tally export</li>' : ''}${p.features.includes('einvoice') ? '<li>E-invoice & e-way bill</li>' : ''}${p.features.includes('priority') ? '<li>Priority support</li>' : ''}
       <li>Grahak khud tareekh chune (vaada)${p.features.includes('vaada') ? '' : ': 10 khule vaade tak'}</li>${p.features.includes('vaada') ? '<li>Kisht + udhaar check</li>' : ''}${p.features.includes('cash') ? '<li>Kal ka Cash (4 hafte ka cash)</li>' : ''}</ul>
       ${!p.price ? (p.key === cur.key ? '<div class="muted">Your plan</div>' : '') : !ME.can.settings ? '<div class="muted">Ask the owner to upgrade</div>'
-        : online ? `<button class="btn primary big" data-buy="${p.key}">${p.key === cur.key ? (P.history.some((h) => h.status === 'paid') ? 'Renew 1 year' : 'Buy 1 year') : 'Upgrade'} · Pay ₹${p.pay.toLocaleString('en-IN')}</button>`
+        : online ? `<button class="btn primary big" data-buy="${p.key}">${p.key === cur.key ? (P.history.some((h) => h.status === 'paid') ? 'Renew 1 year' : 'Buy 1 year') : 'Upgrade'} · Pay ₹${p.pay.toLocaleString('en-IN')}${upiOn ? ' by UPI' : ''}</button>`
           : wa ? `<a class="btn primary" target="_blank" rel="noopener" href="${wa}">Upgrade on WhatsApp</a>` : '<div class="muted">Online payment coming soon</div>'}</div>`).join('')}</div>
-    <p class="muted">Pay with UPI, card, netbanking or wallet through Razorpay. The plan starts the moment payment succeeds. Renewing the same plan adds a year to your current end date.</p>
+    <p class="muted">${upiOn ? `Pay by UPI: GPay, PhonePe, Paytm or any UPI app. The plan starts by itself after payment.${cardOn ? ' Card and netbanking also work.' : ''}`
+      : 'Pay by UPI, card, netbanking or wallet. The plan starts the moment payment succeeds.'} Renewing the same plan adds a year to your current end date.</p>
     ${P.history.length ? `<div class="panel flush"><div style="padding:14px 16px 0"><h3>Payments</h3></div>${table([{ h: 'Date', f: (r) => fdate((r.paid_at || r.created_at).slice(0, 10)) },
       { h: 'Plan', f: (r) => esc(r.plan) }, { h: 'Amount', num: 1, f: (r) => inr(r.amount) }, { h: 'Status', f: (r) => badge(r.status === 'paid' ? 'paid' : 'unpaid') + (r.status === 'amount_mismatch' ? ' <span class="muted">amount mismatch</span>' : '') },
       { h: 'Payment ID', k: 'payment_id', cls: 'hide-sm' }], P.history)}</div>` : ''}`;
@@ -2068,7 +2069,7 @@ route(/^plan$/, async (el, m, q) => {
     setTimeout(render, 2500);
   };
   const waitFor = async (ref) => {
-    state('<div class="panel">Confirming your payment with Razorpay… <span class="spin"></span></div>');
+    state('<div class="panel">Confirming your payment… <span class="spin"></span></div>');
     for (let i = 0; i < 45; i++) {
       const s = await GET('/api/billing/status?ref=' + ref).catch(() => null);
       if (s && s.status === 'paid') return done(s);
@@ -2077,25 +2078,137 @@ route(/^plan$/, async (el, m, q) => {
     }
     state('<div class="panel warnbox">Payment is taking longer to confirm. If money was deducted, the plan switches on by itself within a few minutes; refresh this page later.</div>');
   };
+  /* Card / netbanking (Razorpay, optional) */
+  const payCard = async (o) => {
+    await loadScript('https://checkout.razorpay.com/v1/checkout.js');
+    const rzp = new window.Razorpay({
+      key: o.key_id, amount: o.amount, currency: o.currency, name: 'SmartTrader ERP', description: o.description,
+      ...(o.order_id ? { order_id: o.order_id } : {}), notes: o.notes, prefill: { name: o.name || '', email: o.email || '' },
+      theme: { color: '#0f766e' },
+      handler: async (resp) => {
+        if (o.mode === 'order') {
+          try { done(await POST('/api/billing/verify', { ref: o.ref, ...resp })); } catch (e) { state(`<div class="panel err">${esc(e.message)}</div>`); }
+        } else waitFor(o.ref);
+      },
+      modal: { ondismiss: () => toast('Payment not completed') },
+    });
+    rzp.on('payment.failed', (r) => state(`<div class="panel err">Payment failed: ${esc((r.error && r.error.description) || 'please try again')}.</div>`));
+    rzp.open();
+  };
+  let stopUpi = null;   // closes the open UPI panel (stops its timers)
+  const startPay = async (plan, method) => {
+    if (stopUpi) stopUpi(true);
+    const o = await POST('/api/billing/start', method ? { plan, method } : { plan });
+    return o.method === 'upi' ? upiPanel(o) : payCard(o);
+  };
+  /* DocBrisk Pay: the exact amount, app buttons on a phone, a QR made on this device, and live status */
+  const upiPanel = (o) => {
+    const u = o.upi, ua = navigator.userAgent || '', L = u.app_links || {};
+    const phone = matchMedia('(pointer: coarse)').matches, ios = /iPhone|iPad|iPod/i.test(ua), android = /Android/i.test(ua);
+    const apps = ios ? [['gpay', 'GPay'], ['phonepe', 'PhonePe'], ['paytm', 'Paytm']].map(([k, t]) => [L.ios && L.ios[k], t])
+      : android ? [['gpay', 'GPay'], ['phonepe', 'PhonePe'], ['paytm', 'Paytm'], ['bhim', 'BHIM']].map(([k, t]) => [L.android && L.android[k], t]) : [];
+    const anyLink = L.any || u.upi_link, amt = inr(u.amount_paise / 100);
+    state(`<div class="panel upipay" id="upibox">
+      <div class="upihead"><div><div class="muted small">Pay exactly</div><div class="upiamt">${amt}</div></div>
+        <button class="btn sm" id="upiamtcopy">Copy amount</button></div>
+      <p class="small">Pay this exact amount. The paise tell us it is your payment, so do not change it.</p>
+      ${phone ? `<div class="upiapps">${apps.filter((x) => x[0]).map(([h, t]) => `<a class="btn primary" href="${esc(h)}">${t}</a>`).join('')}<a class="btn${apps.some((x) => x[0]) ? '' : ' primary'}" href="${esc(anyLink)}">${apps.some((x) => x[0]) ? 'Other UPI app' : 'Open UPI app'}</a></div>
+        <details class="upimore"><summary>Pay from another phone: show QR</summary><div class="upiqr" id="upiqr"></div></details>`
+        : `<div class="upiqr" id="upiqr"></div><p class="muted small upimid">Scan with any UPI app</p>`}
+      <div class="upito small">To <b>${esc(u.payee || '')}</b> · ${esc(u.vpa || '')} <button class="btn sm" id="upivpacopy">Copy UPI ID</button></div>
+      <div class="muted small">Code ${esc(u.note || '')} · expires in <b id="upicd">--:--</b></div>
+      <div class="upimsg" id="upimsg"></div>
+      <div class="upibtns"><button class="btn primary" id="upipaid">I have paid</button>${o.razorpay ? '<button class="btn" id="upicard">Card / netbanking</button>' : ''}<button class="btn" id="upiclose">Cancel</button></div>
+      <details class="upimore" id="upiref"><summary>Paid but plan not active?</summary>
+        <p class="small muted">Enter the 12-digit UPI Ref No. from your UPI app. GPay: "UPI transaction ID". PhonePe: "UTR". Paytm: "UPI Ref No".</p>
+        <div class="upirefrow"><input id="upirrn" inputmode="numeric" autocomplete="off" maxlength="16" placeholder="12-digit UPI Ref No."><button class="btn primary" id="upirefgo">Check</button></div>
+        <div class="small" id="upirefmsg"></div></details>
+    </div>`);
+    const box = $('#upibox'), t0 = Date.now(), off = (+u.server_time || Date.now()) - Date.now();
+    let alive = true, timer = 0, busy = false, fast = false, hubState = '', shown = '';
+    const left = () => (+u.expires_at || 0) - (Date.now() + off);
+    const openRef = () => { const d = $('#upiref'); if (d && !d.open) d.open = true; };
+    const copy = async (text, what) => { try { await navigator.clipboard.writeText(text); toast(what + ' copied'); } catch (e) { prompt(what + ':', text); } };
+    $('#upiamtcopy').onclick = () => copy(String(u.amount), 'Amount');
+    $('#upivpacopy').onclick = () => copy(String(u.vpa || ''), 'UPI ID');
+    import('/vendor/qrcode.mjs').then(({ default: qrcode }) => {
+      const qr = qrcode(0, 'M'); qr.addData(u.qr_text); qr.make();
+      const q = $('#upiqr'); if (q) q.innerHTML = qr.createSvgTag({ cellSize: 4, margin: 2, scalable: true });
+    }).catch(() => { const q = $('#upiqr'); if (q) q.innerHTML = '<p class="muted small">QR could not load. Use the UPI ID above.</p>'; });
+    const say = () => {
+      const age = Date.now() - t0, gone = left() <= 0;
+      const k = hubState === 'review' ? 'review' : hubState === 'activating' ? 'act' : age > 3600000 ? 'late' : gone ? 'gone' : age < 120000 ? 'wait' : 'slow';
+      if (k === shown) return;
+      shown = k;
+      const m = $('#upimsg'); if (!m) return;
+      m.innerHTML = {
+        review: 'Payment found. We are checking it. Your plan starts soon.',
+        act: '<span class="spin"></span> Payment received. Starting your plan…',
+        wait: '<span class="spin"></span> Waiting for your payment… This page updates by itself.',
+        slow: '<span class="spin"></span> Banks sometimes take a few minutes. You can close this page. Your plan starts by itself.',
+        gone: 'This payment code has expired. Already paid? Enter the UPI Ref below. <button class="btn sm primary" id="upinew">Get a new code</button>',
+        late: 'Still waiting. If you paid, the plan starts by itself when the bank confirms. Check this page later.',
+      }[k];
+      if (k === 'gone' || k === 'late') openRef();
+      const nb = $('#upinew'); if (nb) nb.onclick = () => startPay(o.plan).catch((e) => toast(e.message, 'err'));
+    };
+    const tick = () => {
+      if (!box.isConnected) return stop(false);
+      const ms = Math.max(0, left()), cd = $('#upicd');
+      if (cd) cd.textContent = ms ? `${Math.floor(ms / 60000)}:${String(Math.floor(ms / 1000) % 60).padStart(2, '0')}` : 'expired';
+      if (Date.now() - t0 > 15 * 60000) openRef();
+      say();
+    };
+    const gap = () => { const a = Date.now() - t0; return fast || a < 180000 ? 3000 : a < 900000 ? 6000 : 30000; };
+    const poll = async () => {
+      if (!alive || busy) return;
+      clearTimeout(timer);
+      if (!box.isConnected) return stop(false);
+      if (Date.now() - t0 > 3600000) return say();       // after an hour: stop asking; the plan still starts by itself
+      if (document.hidden) return;                          // paused; visibilitychange polls again
+      busy = true;
+      let s = null;
+      try { s = await GET('/api/billing/status?ref=' + o.ref); } catch (e) { s = null; } finally { busy = false; }
+      if (!alive) return;
+      if (s && s.status === 'paid') { stop(false); return done(s); }
+      if (s && s.status === 'amount_mismatch') { stop(false); return state(`<div class="panel err">The amount paid did not match the plan. Please contact us with payment ID ${esc(s.payment_id || '')}.</div>`); }
+      if (s && s.hub && s.hub.status) hubState = s.hub.status === 'paid' ? 'activating' : s.hub.status;
+      say();
+      timer = setTimeout(poll, gap());
+    };
+    const onVis = () => { if (!document.hidden) poll(); };
+    const cdTimer = setInterval(tick, 1000);
+    const stop = (cancel) => {
+      if (!alive) return;
+      alive = false; clearTimeout(timer); clearInterval(cdTimer); document.removeEventListener('visibilitychange', onVis);
+      if (stopUpi === stop) stopUpi = null;
+      if (cancel) POST('/api/billing/upi-cancel', { ref: o.ref }).catch(() => {});
+    };
+    stopUpi = stop;
+    document.addEventListener('visibilitychange', onVis);
+    $('#upipaid').onclick = () => { fast = true; openRef(); toast('Thanks! Checking your payment…'); poll(); };
+    $('#upiclose').onclick = () => { stop(true); $('#paystate').innerHTML = ''; toast('Payment closed'); };
+    if ($('#upicard')) $('#upicard').onclick = () => startPay(o.plan, 'razorpay').catch((e) => toast(e.message, 'err'));
+    $('#upirefgo').onclick = async (ev) => {
+      const rrn = $('#upirrn').value.replace(/\D/g, ''), out = $('#upirefmsg'), btn = ev.currentTarget;
+      if (rrn.length !== 12) { out.innerHTML = '<span class="neg">Enter the 12-digit number.</span>'; return; }
+      btn.disabled = true;
+      try {
+        const r = await POST('/api/billing/upi-claim', { ref: o.ref, rrn });
+        out.innerHTML = r.status === 'underpaid'
+          ? `<span class="neg">You paid ${inr(r.paid)}, but the price is ${inr(r.price)}.</span> ${wa ? `<a target="_blank" rel="noopener" href="${wa}">Message us on WhatsApp</a> for the rest or a refund.` : 'Please contact us for the rest or a refund.'}`
+          : esc({ paid: 'Payment found. Starting your plan…', review: 'Payment found. We are checking it. Your plan starts soon.',
+            waiting: 'Saved. Your plan starts by itself when your bank confirms. You can close this page.',
+            not_found: 'This UPI Ref does not match this payment. Please check the number.', invalid: 'Enter the 12-digit UPI Ref No. from your UPI app.' }[r.status] || 'Saved.');
+        if (r.status === 'paid' || r.status === 'review') { hubState = r.status === 'paid' ? 'activating' : 'review'; fast = true; say(); poll(); }
+      } catch (e) { out.innerHTML = `<span class="neg">${esc(e.message)}</span>`; } finally { btn.disabled = false; }
+    };
+    tick();
+    timer = setTimeout(poll, 3000);
+  };
   $$('[data-buy]', el).forEach((b) => b.onclick = async () => {
     b.disabled = true;
-    try {
-      const o = await POST('/api/billing/start', { plan: b.dataset.buy });
-      await loadScript('https://checkout.razorpay.com/v1/checkout.js');
-      const rzp = new window.Razorpay({
-        key: o.key_id, amount: o.amount, currency: o.currency, name: 'SmartTrader ERP', description: o.description,
-        ...(o.order_id ? { order_id: o.order_id } : {}), notes: o.notes, prefill: { name: o.name || '', email: o.email || '' },
-        theme: { color: '#0f766e' },
-        handler: async (resp) => {
-          if (o.mode === 'order') {
-            try { done(await POST('/api/billing/verify', { ref: o.ref, ...resp })); } catch (e) { state(`<div class="panel err">${esc(e.message)}</div>`); }
-          } else waitFor(o.ref);
-        },
-        modal: { ondismiss: () => toast('Payment not completed') },
-      });
-      rzp.on('payment.failed', (r) => state(`<div class="panel err">Payment failed: ${esc((r.error && r.error.description) || 'please try again')}.</div>`));
-      rzp.open();
-    } catch (e) { toast(e.message, 'err'); } finally { b.disabled = false; }
+    try { await startPay(b.dataset.buy); } catch (e) { toast(e.message, 'err'); } finally { b.disabled = false; }
   });
 });
 
@@ -2122,7 +2235,8 @@ async function adminPage(el) {
   }
   const pays = await call('GET', '/api/admin/payments').catch(() => ({ rows: [], mode: '?' }));
   el.innerHTML = head('Admin: businesses', `<button class="btn" id="lock">Lock</button>`) + `
-    <div class="panel ${pays.mode === 'off' ? 'warnbox' : ''}">Online payments: <b>${pays.mode === 'order' ? 'on (Razorpay order + signature)' : pays.mode === 'webhook' ? 'on (Razorpay webhook)' : 'OFF: add RAZORPAY_WEBHOOK_SECRET (or RAZORPAY_KEY_ID + RAZORPAY_KEY_SECRET) to the worker'}</b>.
+    <div class="panel ${pays.mode === 'off' ? 'warnbox' : ''}">Online payments: <b>${pays.mode === 'upi' ? 'on (DocBrisk Pay, automatic UPI)' : pays.mode === 'order' ? 'on (Razorpay order + signature)' : pays.mode === 'webhook' ? 'on (Razorpay webhook)' : 'OFF: set PAYHUB_URL and the PAYHUB_SECRET secret (DocBrisk Pay) on the worker'}</b>.
+      ${pays.mode === 'upi' ? `Card (Razorpay): <b>${pays.razorpay && pays.razorpay !== 'off' ? 'on' : 'off'}</b>.` : ''}
       Paid: ${inr(pays.rows.filter((r) => r.status === 'paid').reduce((t, r) => t + r.amount, 0))} from ${pays.rows.filter((r) => r.status === 'paid').length} payment(s).</div>
     <div class="kpis"><div class="kpi"><div class="l">Businesses</div><div class="v">${data.rows.length}</div></div>
       ${['free', 'starter', 'growth', 'business'].map((k) => `<div class="kpi"><div class="l">${k}</div><div class="v">${data.rows.filter((o) => o.effective === k).length}</div></div>`).join('')}</div>

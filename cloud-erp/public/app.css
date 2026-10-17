@@ -527,3 +527,19 @@ a.vcard:hover { background: var(--soft); }
   .seg.s4 { gap: 4px; }
   .seg.s4 button { padding: 8px 2px; font-size: 13.5px; }
 }
+/* DocBrisk Pay (UPI) checkout panel on Plan & Billing */
+.upipay { max-width: 520px; margin-left: auto; margin-right: auto; display: flex; flex-direction: column; gap: 10px; }
+.upihead { display: flex; justify-content: space-between; align-items: flex-end; gap: 10px; }
+.upiamt { font-size: 32px; font-weight: 800; letter-spacing: .5px; }
+.upiapps { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+.upiapps .btn { justify-content: center; padding: 12px; font-size: 16px; }
+.upiqr { display: flex; justify-content: center; }
+.upiqr svg { width: 240px; height: 240px; max-width: 100%; background: #fff; border-radius: 8px; padding: 4px; }
+.upimid { text-align: center; margin: 0; }
+.upito { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; word-break: break-all; }
+.upimsg { padding: 10px 12px; border-radius: 8px; background: var(--soft); }
+.upimsg:empty { display: none; }
+.upibtns { display: flex; flex-wrap: wrap; gap: 8px; }
+.upimore summary { cursor: pointer; font-weight: 600; padding: 4px 0; }
+.upirefrow { display: flex; gap: 8px; }
+.upirefrow input { flex: 1; min-width: 0; font-size: 16px; letter-spacing: 1px; }

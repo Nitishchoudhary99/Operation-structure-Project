@@ -4,7 +4,7 @@
 name = "operation-structure-project"
 main = "src/worker.js"
 compatibility_date = "2025-09-01"
-# keep variables set in the Cloudflare dashboard (PAY_UPI, SUPPORT_WHATSAPP, PAY_NAME) across deploys
+# keep variables set in the Cloudflare dashboard (PAYHUB_URL, SUPPORT_WHATSAPP, ...) across deploys
 keep_vars = true
 
 # The web app. API calls (/api/*) run the worker first; everything else is a static file,
@@ -21,6 +21,12 @@ run_worker_first = ["/api/*", "/k/*", "/i/*"]
 binding = "DB"
 database_name = "smarttrader-erp"
 database_id = "65271993-a4d4-4929-93fe-fcb649d132d3"
+
+# DocBrisk Pay (automatic UPI plan payments): optional private link to the docbrisk-api worker on the same account.
+# Set the PAYHUB_SECRET secret (and PAYHUB_URL if you do not use this binding); see README "One-time setup".
+# [[services]]
+# binding = "PAYHUB_API"
+# service = "docbrisk-api"
 
 # Run the worker near the D1 database: many short DB round trips per request. Static files still come from the nearest edge.
 [placement]

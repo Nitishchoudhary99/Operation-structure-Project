@@ -3,7 +3,7 @@
    Every business table carries org_id: one database serves many businesses (multi-tenant).
    migrate() runs on the first request after each deploy, so no manual migration step is needed. */
 
-export const SCHEMA_VERSION = 14;
+export const SCHEMA_VERSION = 15;
 
 // document types whose monthly totals doc_month keeps (sales and purchase money documents)
 const MONTH_TYPES = `('INV','SRET','CNOTE','BILL','PRET','DNOTE')`;
@@ -219,7 +219,7 @@ export const MIGRATIONS = {
        ON CONFLICT (org_id, account_id, d) DO UPDATE SET dr = dr + excluded.dr, cr = cr + excluded.cr;
      END`,
   ],
-  // online plan payments (Razorpay); one row per checkout
+  // online plan payments (DocBrisk Pay UPI or Razorpay); one row per checkout
   8: [
     `CREATE TABLE IF NOT EXISTS billing_orders (
        id INTEGER PRIMARY KEY, org_id INTEGER NOT NULL, user_id INTEGER, ref TEXT NOT NULL UNIQUE, order_id TEXT UNIQUE,
@@ -319,6 +319,14 @@ export const MIGRATIONS = {
     `CREATE INDEX IF NOT EXISTS ix_pay_kind_date ON payments (org_id, kind, date)`,
     // Kal ka Cash: one cached result per business per day
     `CREATE TABLE IF NOT EXISTS vaada_cache (org_id INTEGER PRIMARY KEY, d TEXT NOT NULL, at TEXT NOT NULL, data TEXT NOT NULL)`,
+  ],
+  // DocBrisk Pay (automatic UPI): which way a checkout pays, the hub's order, the exact UPI amount and its expiry
+  15: [
+    `ALTER TABLE billing_orders ADD COLUMN method TEXT`,
+    `ALTER TABLE billing_orders ADD COLUMN hub_id TEXT`,
+    `ALTER TABLE billing_orders ADD COLUMN pay_paise INTEGER`,
+    `ALTER TABLE billing_orders ADD COLUMN pay_expires_at TEXT`,
+    `ALTER TABLE billing_orders ADD COLUMN pay_checked_at INTEGER`,
   ],
 };
 

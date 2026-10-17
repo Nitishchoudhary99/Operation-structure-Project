@@ -22,7 +22,8 @@ import { STATES, einvoiceJson, ewaybillJson } from './gst.js';
 import { tallyXml } from './tally.js';
 import { printOf, cleanPrint, imageFromDataUrl, shortHash, imageResponse, FILE_KINDS, seriesOf, numberSpec, formatNumber, cleanSeries, fyParts,
   fieldsOf, extraOf, cleanField, cleanExtra, extraFilter, printExtra } from './custom.js';
-import { billingMode, grossPaise, billingStart, billingVerify, billingWebhook, billingStatus, billingHistory } from './billing.js';
+import { billingMode, razorpayMode, grossPaise, billingStart, billingVerify, billingWebhook, billingStatus, billingHistory,
+  billingUpiCallback, billingUpiClaim, billingUpiCancel } from './billing.js';
 
 const R = (p) => Math.round(p) / 100;
 const router = new Router();
@@ -598,13 +599,16 @@ router.add('GET', '/api/plan', async (c) => json({
   plan: planOut(c.org), usage: await usage(c.db, c.org),
   plans: Object.entries(PLANS).map(([k, p]) => ({ key: k, ...p, invoices_per_month: p.invoices_per_month === Infinity ? null : p.invoices_per_month,
     users: p.users === Infinity ? null : p.users, warehouses: p.warehouses === Infinity ? null : p.warehouses, pay: p.price ? grossPaise(k) / 100 : 0 })),
-  billing: billingMode(c.env), history: await billingHistory(c), support_whatsapp: c.env.SUPPORT_WHATSAPP || '',
+  billing: billingMode(c.env), razorpay: razorpayMode(c.env), history: await billingHistory(c), support_whatsapp: c.env.SUPPORT_WHATSAPP || '',
 }));
-/* Online payment (Razorpay): see src/billing.js */
+/* Online payment (DocBrisk Pay UPI; Razorpay optional): see src/billing.js */
 router.add('POST', '/api/billing/start', async (c) => { requireCan(c.user, 'settings'); await rateLimit(c.env, 'pay:' + c.org.id, 20, 3600); return json(await billingStart(c)); });
 router.add('POST', '/api/billing/verify', async (c) => json(await billingVerify(c)));
 router.add('GET', '/api/billing/status', async (c) => json(await billingStatus(c)));
 router.add('POST', '/api/billing/webhook', async (c) => json(await billingWebhook(c)), { public: true, webhook: true });
+router.add('POST', '/api/billing/upi-callback', async (c) => json(await billingUpiCallback(c)), { public: true, webhook: true });
+router.add('POST', '/api/billing/upi-claim', async (c) => { requireCan(c.user, 'settings'); await rateLimit(c.env, 'upiclaim:' + c.org.id, 20, 3600); return json(await billingUpiClaim(c)); });
+router.add('POST', '/api/billing/upi-cancel', async (c) => { requireCan(c.user, 'settings'); return json(await billingUpiCancel(c)); });
 
 /* Admin (the person who runs this deployment): header X-Admin-Key must equal the ADMIN_KEY secret. */
 async function requireAdmin(c) {
@@ -633,10 +637,10 @@ router.add('POST', '/api/admin/orgs/:id/plan', async (c) => {
 }, { public: true });
 router.add('GET', '/api/admin/payments', async (c) => {
   await requireAdmin(c);
-  const { results } = await c.db.prepare(`SELECT b.ref, b.plan, b.paise, b.status, b.payment_id, b.created_at, b.paid_at, b.plan_until, o.name AS business,
+  const { results } = await c.db.prepare(`SELECT b.ref, b.plan, b.paise, b.status, b.payment_id, b.method, b.created_at, b.paid_at, b.plan_until, o.name AS business,
       (SELECT email FROM users WHERE id = b.user_id) AS email FROM billing_orders b JOIN orgs o ON o.id = b.org_id
       WHERE b.status != 'created' ORDER BY b.id DESC LIMIT 300`).all();
-  return json({ rows: results.map((r) => ({ ...r, amount: r.paise / 100 })), mode: billingMode(c.env) });
+  return json({ rows: results.map((r) => ({ ...r, amount: r.paise / 100 })), mode: billingMode(c.env), razorpay: razorpayMode(c.env) });
 }, { public: true });
 
 /* ======================================================================= gate entry (security gate register)
@@ -1346,7 +1350,7 @@ async function handleApi(request, env, counter) {
     if (origin && origin !== url.origin) throw forbidden('Cross-site request blocked.');
   }
   const c = { env, db: env.DB, request, url, params: m.params, body: {} };
-  if (m.route.opts.webhook) {       // a server calling us (Razorpay): signed raw body, no cookie, no custom header
+  if (m.route.opts.webhook) {       // a server calling us (DocBrisk Pay hub, Razorpay): signed raw body, no cookie, no custom header
     c.raw = await request.text();
     if (c.raw.length > 200000) throw new HttpError(413, 'Request too large.');
     try { c.body = JSON.parse(c.raw || '{}'); } catch (e) { throw bad('Bad body.'); }
