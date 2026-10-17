@@ -183,7 +183,7 @@ const simple = () => !ME || (ME.org.mode || 'simple') !== 'advanced';
 /* which permission area a menu entry needs (custom roles may not see every area) */
 const navArea = (h) => /^(receipts|payments|expenses|accounts|journal)$/.test(h) ? 'finance' : /^(sales\/|pos$)/.test(h) ? 'sales' : /^(purchase\/|gate\/in$)/.test(h) ? 'purchase'
   : /^(items|stock|stockcount|gate\/out|pending)$/.test(h) ? 'items' : /^(parties|reminders)$/.test(h) ? 'masters' : h === 'khata' ? 'khata'
-  : /^(reports\/|tally$|daybook$)/.test(h) ? 'reports' : '';
+  : /^(reports\/|tally$|daybook$)/.test(h) ? 'reports' : h === 'plan' ? 'settings' : '';
 const seen = (h) => { const a = navArea(h); return !a || !ME.view || ME.view[a] !== false; };
 const NAV = [
   ['', [['dashboard', 'Dashboard']]],
