@@ -113,6 +113,7 @@ npm install
 npx wrangler dev            # http://localhost:8787, with a local D1 database in .wrangler/
 node test/run.mjs           # in another terminal: 120-check end-to-end business test
                             # (put ADMIN_KEY=local-test-admin-key-0001 and RAZORPAY_WEBHOOK_SECRET=local-test-webhook-secret-0001 in cloud-erp/.dev.vars)
+node test/perf.mjs          # D1 calls and rows per screen stay within budget (QUERY_COUNT=1 in .dev.vars)
 ```
 
 ## Project layout
@@ -131,6 +132,7 @@ cloud-erp/
   src/saas.js          plans, limits, activation codes
   public/              the web app (plain HTML/CSS/JS, no build step), PWA manifest + service worker
   test/run.mjs         end-to-end test against a running worker
+  test/perf.mjs        speed budgets per screen, next to a second, busy business
   docs/COMPETITORS.md  market and competitor research
 ```
 

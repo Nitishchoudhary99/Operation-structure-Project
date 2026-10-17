@@ -6,10 +6,10 @@ import {
   HttpError, bad, notFound, forbidden, json, readJson, str, reqStr, num, int, date, nowIso, oneOf, toPaise, Router, GST_RATES, today, counterStatements, counterValueSql,
 } from './lib.js';
 import {
-  hashPassword, randomHex, sameText, passwordProblem, issueSession, sessionCookie, clearCookie, currentUser, ROLES, can, requireCan, rateLimit,
+  hashPassword, randomHex, sameText, passwordProblem, issueSession, sessionCookie, clearCookie, sessionFromRequest, sessionValid, USER_SQL, ROLES, can, requireCan, rateLimit,
 } from './auth.js';
 import {
-  DOC_TYPES, NOTE_TYPES, stockCount, loadByIds, loadSys, createDoc, cancelDoc, createPayment, voidPayment, stockAdjust, stockTransfer, createExpense, createJournal, partyOpening,
+  DOC_TYPES, NOTE_TYPES, stockCount, loadByIds, SYS_SQL, sysMap, createDoc, cancelDoc, createPayment, voidPayment, stockAdjust, stockTransfer, createExpense, createJournal, partyOpening,
   auditStatement, cashAccount,
 } from './engine.js';
 import * as rep from './reports.js';
@@ -174,8 +174,8 @@ router.add('PUT', '/api/parties/:id', async (c) => {
 router.add('DELETE', '/api/parties/:id', async (c) => {
   requireCan(c.user, 'masters');
   const id = +c.params.id;
-  const used = await c.db.prepare(`SELECT (SELECT COUNT(*) FROM docs WHERE party_id = ?) + (SELECT COUNT(*) FROM journal_lines WHERE party_id = ?)
-      + (SELECT COUNT(*) FROM khata WHERE party_id = ?) + (SELECT COUNT(*) FROM payments WHERE party_id = ?) AS n`).bind(id, id, id, id).first();
+  const used = await c.db.prepare(`SELECT EXISTS (SELECT 1 FROM docs WHERE org_id = ?1 AND party_id = ?2) + EXISTS (SELECT 1 FROM journal_lines WHERE org_id = ?1 AND party_id = ?2)
+      + EXISTS (SELECT 1 FROM khata WHERE party_id = ?2) + EXISTS (SELECT 1 FROM payments WHERE org_id = ?1 AND party_id = ?2) AS n`).bind(c.org.id, id).first();
   if (used.n) throw bad('This party has transactions and cannot be deleted.');
   await c.db.prepare(`DELETE FROM parties WHERE id = ? AND org_id = ?`).bind(id, c.org.id).run();
   return json({ ok: true });
@@ -230,7 +230,7 @@ router.add('PUT', '/api/items/:id', async (c) => {
 router.add('DELETE', '/api/items/:id', async (c) => {
   requireCan(c.user, 'items');
   const id = +c.params.id;
-  const used = await c.db.prepare(`SELECT (SELECT COUNT(*) FROM doc_lines WHERE item_id = ?) + (SELECT COUNT(*) FROM stock_moves WHERE item_id = ?) AS n`).bind(id, id).first();
+  const used = await c.db.prepare(`SELECT EXISTS (SELECT 1 FROM doc_lines WHERE item_id = ?) + EXISTS (SELECT 1 FROM stock_moves WHERE org_id = ? AND item_id = ?) AS n`).bind(id, c.org.id, id).first();
   if (used.n) throw bad('This item has transactions and cannot be deleted.');
   await c.db.prepare(`DELETE FROM items WHERE id = ? AND org_id = ?`).bind(id, c.org.id).run();
   return json({ ok: true });
@@ -248,7 +248,7 @@ router.add('GET', '/api/items/lookup', async (c) => {
 router.add('GET', '/api/items/:id/moves', async (c) => json({ rows: await rep.itemMoves(c.db, c.org, +c.params.id) }));
 
 router.add('GET', '/api/warehouses', async (c) => {
-  const { results } = await c.db.prepare(`SELECT w.*, COALESCE((SELECT SUM(s.qty * i.avg_cost) FROM stock s JOIN items i ON i.id = s.item_id WHERE s.warehouse_id = w.id AND s.qty > 0), 0) AS value
+  const { results } = await c.db.prepare(`SELECT w.*, COALESCE((SELECT SUM(s.qty * i.avg_cost) FROM stock s JOIN items i ON i.id = s.item_id WHERE s.org_id = w.org_id AND s.warehouse_id = w.id AND s.qty > 0), 0) AS value
       FROM warehouses w WHERE w.org_id = ? ORDER BY w.id`).bind(c.org.id).all();
   return json({ rows: results.map((w) => ({ ...w, value: R(w.value) })) });
 });
@@ -298,7 +298,7 @@ async function docDetail(c, id) {
   const [lines, party, children, parent, pays] = await Promise.all([
     c.db.prepare(`SELECT l.*, i.name AS item, i.unit, i.hsn, i.is_service, i.location FROM doc_lines l LEFT JOIN items i ON i.id = l.item_id WHERE l.doc_id = ? ORDER BY l.id`).bind(id).all(),
     c.db.prepare(`SELECT * FROM parties WHERE id = ?`).bind(d.party_id).first(),
-    c.db.prepare(`SELECT id, type, number, date, status, total FROM docs WHERE ref_id = ? ORDER BY id`).bind(id).all(),
+    c.db.prepare(`SELECT id, type, number, date, status, total FROM docs WHERE ref_id = ? AND org_id = ? ORDER BY id`).bind(id, c.org.id).all(),
     d.ref_id ? c.db.prepare(`SELECT id, type, number, date, status FROM docs WHERE id = ?`).bind(d.ref_id).first() : null,
     c.db.prepare(`SELECT pa.amount, pa.note_id, p.id, p.number, p.date, p.kind, n.number AS note_number FROM payment_allocs pa
         LEFT JOIN payments p ON p.id = pa.payment_id LEFT JOIN docs n ON n.id = pa.note_id WHERE pa.doc_id = ?`).bind(id).all(),
@@ -803,10 +803,16 @@ async function handleApi(request, env, counter) {
     try { c.body = JSON.parse(c.raw || '{}'); } catch (e) { throw bad('Bad body.'); }
   } else if (request.method !== 'GET') c.body = await readJson(request);
   if (!m.route.opts.public) {
-    c.user = await currentUser(env, request);
-    if (!c.user) throw new HttpError(401, 'Please sign in.');
-    c.org = await env.DB.prepare(`SELECT * FROM orgs WHERE id = ?`).bind(c.user.org_id).first();
-    c.sys = await loadSys(env.DB, c.org.id);
+    const p = await sessionFromRequest(env, request);
+    if (!p) throw new HttpError(401, 'Please sign in.');
+    // user, business and (only for writes) the posting accounts, in one D1 call
+    const db = env.DB, st = [db.prepare(USER_SQL).bind(p.u), db.prepare(`SELECT * FROM orgs WHERE id = ?`).bind(p.o)];
+    if (request.method !== 'GET') st.push(db.prepare(SYS_SQL).bind(p.o));
+    const [u, o, s] = await db.batch(st);
+    c.user = u.results[0];
+    c.org = o.results[0];
+    if (!sessionValid(c.user, p) || !c.org) throw new HttpError(401, 'Please sign in.');
+    c.sys = s ? sysMap(s.results) : null;
   }
   return m.route.handler(c);
 }

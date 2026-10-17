@@ -46,8 +46,12 @@ async function sessionSecret(env) {
   return (secretCache = row.v);
 }
 
+let keyCache = null;          // the imported HMAC key, kept for the life of this isolate
 async function hmac(secret, text) {
-  const key = await crypto.subtle.importKey('raw', enc.encode(secret), { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']);
+  if (!keyCache || keyCache.secret !== secret) {
+    keyCache = { secret, key: await crypto.subtle.importKey('raw', enc.encode(secret), { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']) };
+  }
+  const key = keyCache.key;
   return b64url(new Uint8Array(await crypto.subtle.sign('HMAC', key, enc.encode(text))));
 }
 
@@ -62,7 +66,8 @@ export function sessionCookie(token, request) {
 }
 export const clearCookie = () => `${COOKIE}=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0`;
 
-export async function currentUser(env, request) {
+/* The signed session from the cookie (or Bearer token): { u: user id, o: business id, v: password version }, or null. */
+export async function sessionFromRequest(env, request) {
   const cookie = request.headers.get('Cookie') || '';
   const m = cookie.match(new RegExp('(?:^|;\\s*)' + COOKIE + '=([^;]+)'));
   const auth = (request.headers.get('Authorization') || '').replace(/^Bearer\s+/i, '');
@@ -72,11 +77,12 @@ export async function currentUser(env, request) {
   if (!sameText(sig, await hmac(await sessionSecret(env), body))) return null;
   let p;
   try { p = JSON.parse(b64urlDecode(body)); } catch (e) { return null; }
-  if (!p || p.e < Date.now()) return null;
-  const user = await env.DB.prepare(`SELECT id, org_id, email, name, role, active, pw_changed_at FROM users WHERE id = ?`).bind(p.u).first();
-  if (!user || !user.active || user.org_id !== p.o || user.pw_changed_at !== p.v) return null;
-  return user;
+  return p && p.e >= Date.now() ? p : null;
 }
+export const USER_SQL = `SELECT id, org_id, email, name, role, active, pw_changed_at FROM users WHERE id = ?`;
+/* the user row still matches the session: active, same business, password not changed since */
+export const sessionValid = (user, p) => !!(user && user.active && user.org_id === p.o && user.pw_changed_at === p.v);
+
 
 /* ---------- roles ----------
    owner/admin: everything; accountant: finance + reports; store: stock + procurement; sales: selling + khata.

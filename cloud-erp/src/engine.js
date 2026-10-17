@@ -28,12 +28,8 @@ export const DOC_TYPES = {
 export const NOTE_TYPES = ['SRET', 'PRET', 'CNOTE', 'DNOTE'];
 
 /* ---------------------------------------------------------------- context */
-export async function loadSys(db, orgId) {
-  const { results } = await db.prepare(`SELECT id, sys FROM accounts WHERE org_id = ? AND sys IS NOT NULL`).bind(orgId).all();
-  const sys = {};
-  for (const r of results) sys[r.sys] = r.id;
-  return sys;
-}
+export const SYS_SQL = `SELECT id, sys FROM accounts WHERE org_id = ? AND sys IS NOT NULL`;
+export const sysMap = (rows) => Object.fromEntries(rows.map((r) => [r.sys, r.id]));
 
 export async function cashAccount(db, orgId, id) {
   const a = await db.prepare(`SELECT id, name FROM accounts WHERE id = ? AND org_id = ? AND is_cash = 1`).bind(id, orgId).first();
@@ -431,7 +427,7 @@ export async function cancelDoc(ctx, id) {
   if (!doc) throw notFound('Document not found.');
   requireCan(ctx.user, DOC_TYPES[doc.type].side === 'sales' ? 'sales' : 'purchase');
   if (doc.status === 'cancelled') throw bad('Already cancelled.');
-  const child = await db.prepare(`SELECT number FROM docs WHERE ref_id = ? AND status != 'cancelled' LIMIT 1`).bind(doc.id).first();
+  const child = await db.prepare(`SELECT number FROM docs WHERE ref_id = ? AND org_id = ? AND status != 'cancelled' LIMIT 1`).bind(doc.id, ctx.org.id).first();
   if (child) throw bad(`Cancel ${child.number} first: it was made from this document.`);
   const pay = await db.prepare(`SELECT 1 FROM payment_allocs WHERE doc_id = ? AND payment_id > 0 LIMIT 1`).bind(doc.id).first();
   if (pay) throw bad('Void the payments against this document first.');

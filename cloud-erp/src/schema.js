@@ -3,7 +3,10 @@
    Every business table carries org_id: one database serves many businesses (multi-tenant).
    migrate() runs on the first request after each deploy, so no manual migration step is needed. */
 
-export const SCHEMA_VERSION = 8;
+export const SCHEMA_VERSION = 9;
+
+// document types whose monthly totals doc_month keeps (sales and purchase money documents)
+const MONTH_TYPES = `('INV','SRET','CNOTE','BILL','PRET','DNOTE')`;
 
 export const SCHEMA = [
   `CREATE TABLE IF NOT EXISTS meta (k TEXT PRIMARY KEY, v TEXT NOT NULL)`,
@@ -224,9 +227,45 @@ export const MIGRATIONS = {
        payment_id TEXT, plan_until TEXT, created_at TEXT NOT NULL, paid_at TEXT)`,
     `CREATE INDEX IF NOT EXISTS ix_billing_org ON billing_orders (org_id, id)`,
   ],
+  /* speed: indexes for lookups that used to scan every business's rows, and monthly document totals
+     (doc_month) so the dashboard reads a few month rows instead of every invoice. A document's date and
+     taxable never change after insert; the triggers follow status changes into and out of 'cancelled'. */
+  9: [
+    `CREATE INDEX IF NOT EXISTS ix_jl_journal ON journal_lines (journal_id)`,
+    `CREATE INDEX IF NOT EXISTS ix_journals_date ON journals (org_id, date)`,
+    `CREATE INDEX IF NOT EXISTS ix_docs_ref ON docs (ref_id) WHERE ref_id IS NOT NULL`,
+    `CREATE INDEX IF NOT EXISTS ix_docs_org_id ON docs (org_id, id)`,
+    `CREATE INDEX IF NOT EXISTS ix_docs_open ON docs (org_id, type, due_date) WHERE status IN ('unpaid','partial')`,
+    `CREATE INDEX IF NOT EXISTS ix_stock_org ON stock (org_id, warehouse_id)`,
+    `CREATE INDEX IF NOT EXISTS ix_khata_p ON khata (party_id, date)`,
+    `CREATE INDEX IF NOT EXISTS ix_khata_rev ON khata (reverses) WHERE reverses IS NOT NULL`,
+    `CREATE INDEX IF NOT EXISTS ix_audit_org ON audit (org_id, id)`,
+    `CREATE INDEX IF NOT EXISTS ix_users_org ON users (org_id)`,
+    `CREATE INDEX IF NOT EXISTS ix_alloc_pay ON payment_allocs (payment_id)`,
+    `CREATE INDEX IF NOT EXISTS ix_alloc_note ON payment_allocs (note_id) WHERE note_id IS NOT NULL`,
+    `CREATE INDEX IF NOT EXISTS ix_moves_ref ON stock_moves (org_id, ref_type, ref_id)`,
+    `CREATE INDEX IF NOT EXISTS ix_lines_item ON doc_lines (item_id) WHERE item_id IS NOT NULL`,
+    `CREATE TABLE IF NOT EXISTS doc_month (org_id INTEGER NOT NULL, type TEXT NOT NULL, ym TEXT NOT NULL,
+       n INTEGER NOT NULL DEFAULT 0, taxable INTEGER NOT NULL DEFAULT 0, PRIMARY KEY (org_id, type, ym)) WITHOUT ROWID`,
+    `DELETE FROM doc_month`,
+    `INSERT INTO doc_month (org_id, type, ym, n, taxable) SELECT org_id, type, substr(date, 1, 7), COUNT(*), SUM(taxable)
+       FROM docs WHERE status != 'cancelled' AND type IN ${MONTH_TYPES} GROUP BY 1, 2, 3`,
+    `CREATE TRIGGER IF NOT EXISTS trg_doc_month_ins AFTER INSERT ON docs
+       WHEN NEW.status != 'cancelled' AND NEW.type IN ${MONTH_TYPES} BEGIN
+       INSERT INTO doc_month (org_id, type, ym, n, taxable) VALUES (NEW.org_id, NEW.type, substr(NEW.date, 1, 7), 1, NEW.taxable)
+       ON CONFLICT (org_id, type, ym) DO UPDATE SET n = n + 1, taxable = taxable + excluded.taxable;
+     END`,
+    `CREATE TRIGGER IF NOT EXISTS trg_doc_month_status AFTER UPDATE OF status ON docs
+       WHEN (NEW.status = 'cancelled') != (OLD.status = 'cancelled') AND NEW.type IN ${MONTH_TYPES} BEGIN
+       INSERT INTO doc_month (org_id, type, ym, n, taxable)
+       VALUES (NEW.org_id, NEW.type, substr(NEW.date, 1, 7), CASE WHEN NEW.status = 'cancelled' THEN -1 ELSE 1 END,
+               CASE WHEN NEW.status = 'cancelled' THEN -NEW.taxable ELSE NEW.taxable END)
+       ON CONFLICT (org_id, type, ym) DO UPDATE SET n = n + excluded.n, taxable = taxable + excluded.taxable;
+     END`,
+  ],
 };
 
-const ATOMIC = [6, 7];
+const ATOMIC = [6, 7, 9];
 
 export async function migrate(db) {
   let version = 0;
