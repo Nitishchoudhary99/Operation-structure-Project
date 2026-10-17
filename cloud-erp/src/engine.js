@@ -9,7 +9,7 @@ import {
 import { requireCan } from './auth.js';
 import { stateCode } from './gst.js';
 import { checkInvoiceLimit } from './saas.js';
-import { numberSpec } from './custom.js';
+import { numberSpec, fieldsOf, cleanExtra } from './custom.js';
 
 export const DOC_TYPES = {
   QUOTE: { side: 'sales', prefix: 'QT', label: 'Quotation', from: [] },
@@ -222,13 +222,14 @@ export async function createDoc(ctx, body) {
   const initialStatus = T.money && ['INV', 'BILL'].includes(type) ? 'unpaid' : 'open';
 
   const nspec = numberSpec(ctx.org, type, T.prefix, d);
+  const extra = cleanExtra(fieldsOf(ctx.org), 'doc', body.extra, T.side);
   st.push(counterStatements(db, orgId, nspec.key));
   st.push(db.prepare(`INSERT INTO docs (org_id, type, number, party_id, date, due_date, warehouse_id, ref_id, status, place_of_supply,
-        inter_state, taxable, cgst, sgst, igst, round_off, total, paid, notes, created_by, created_at, txk)
-      VALUES (?, ?, ${counterValueSql}, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?)`)
+        inter_state, taxable, cgst, sgst, igst, round_off, total, paid, notes, created_by, created_at, txk, extra)
+      VALUES (?, ?, ${counterValueSql}, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?)`)
     .bind(orgId, type, nspec.fmt, orgId, nspec.key, party.id, d, dueDate, wh.id, src ? src.id : null, initialStatus,
       party.state || ctx.org.state || '', inter ? 1 : 0, taxable, cgst, sgst, igst, roundOff, total,
-      str(body.notes, 1000), ctx.user.id, nowIso(), txk));
+      str(body.notes, 1000), ctx.user.id, nowIso(), txk, extra));
 
   // lines + stock + per-line cost
   let costOut = 0, costIn = 0, grniClear = 0, variance = 0, serviceCost = 0;

@@ -434,5 +434,47 @@ else {
   check('payment numbers unchanged', (pay1.rows || []).every((p) => /^PAY-\d{5}$/.test(p.number)));
 }
 
+/* --- custom fields --- */
+{
+  const add = (b, e) => api('POST', '/api/settings/fields', b, e);
+  await add({ entity: 'doc', label: 'Vehicle no', type: 'text', on_print: true, side: 'sales' });
+  await add({ entity: 'doc', label: 'Internal note', type: 'text' });
+  await add({ entity: 'doc', label: 'Transport', type: 'select', options: 'Road, Rail', required: true, side: 'sales' });
+  await add({ entity: 'party', label: 'Drug licence', type: 'text', on_print: true });
+  const defs = (await add({ entity: 'item', label: 'Size', type: 'select', options: ['S', 'M', 'L'], on_print: true })).rows;
+  check('custom fields saved with keys', defs.length === 5 && defs.find((f) => f.label === 'Vehicle no').key === 'vehicle_no' && (await api('GET', '/api/me')).org.fields.length === 5);
+  check('dropdown needs options', (await add({ entity: 'item', label: 'Colour', type: 'select', options: 'Red' }, true)).status === 400);
+  check('duplicate field name refused', (await add({ entity: 'item', label: 'size', type: 'text' }, true)).status === 400);
+  cookie = storeCookie;
+  check('store user cannot add fields', (await add({ entity: 'item', label: 'Brand' }, true)).status === 403);
+  cookie = ownerCookie;
+  const shirt = await api('POST', '/api/items', { name: 'CF Shirt', sale_price: 500, gst_rate: 5, opening_qty: 10, opening_rate: 300, extra: { size: 'M', junk: 'x' } });
+  check('item custom value saved, unknown keys dropped', shirt.extra.size === 'M' && shirt.extra.junk === undefined, JSON.stringify(shirt.extra));
+  check('invalid dropdown value refused', (await api('POST', '/api/items', { name: 'CF Shirt 2', extra: { size: 'XXL' } }, true)).status === 400);
+  await api('PUT', `/api/items/${shirt.id}`, { ...shirt, extra: undefined, sale_price: 520 });
+  check('editing without custom values keeps them', (await api('GET', `/api/items?cf.size=M`)).rows.some((i) => i.id === shirt.id && i.extra.size === 'M' && i.sale_price === 520));
+  check('item filter by custom field', !(await api('GET', `/api/items?cf.size=L`)).rows.some((i) => i.id === shirt.id));
+  const pc = await api('POST', '/api/parties', { name: 'CF Pharmacy', kind: 'customer', state: 'Rajasthan', extra: { drug_licence: 'RJ-DL-2211' } });
+  check('party custom value saved', pc.extra.drug_licence === 'RJ-DL-2211' && (await api('GET', '/api/parties?cf.drug_licence=DL-22')).rows.some((p) => p.id === pc.id));
+  const ln = [{ item_id: shirt.id, qty: 2 }];
+  check('missing required field refused', (await api('POST', '/api/docs', { type: 'DN', party_id: pc.id, lines: ln, extra: { vehicle_no: 'RJ14AB1234' } }, true)).status === 400);
+  check('purchase docs skip sales-only fields', (await api('POST', '/api/docs', { type: 'PO', party_id: sup.id, lines: [{ description: 'x', qty: 1, rate: 1 }] })).extra.transport === undefined);
+  const dn = await api('POST', '/api/docs', { type: 'DN', party_id: pc.id, lines: ln, extra: { vehicle_no: 'RJ14AB1234', transport: 'Road', internal_note: 'call first', foo: 1 } });
+  check('document custom values saved', dn.extra.vehicle_no === 'RJ14AB1234' && dn.extra.foo === undefined);
+  const cv = await api('GET', `/api/docs/${dn.id}/convert?to=INV`);
+  check('custom values carry to the next document', cv.extra.vehicle_no === 'RJ14AB1234' && cv.extra.transport === 'Road');
+  const ci = await api('POST', '/api/docs', cv);
+  check('invoice from delivery note keeps vehicle no', ci.extra.vehicle_no === 'RJ14AB1234' && ci.print_fields.some((f) => f.label === 'Vehicle no'));
+  check('document filter by custom field', (await api('GET', '/api/docs?type=INV&cf.vehicle_no=RJ14')).rows.some((d) => d.id === ci.id)
+    && !(await api('GET', '/api/docs?type=INV&cf.transport=Rail')).rows.some((d) => d.id === ci.id));
+  const tk = (await api('GET', `/api/docs/${ci.id}/share`)).url.split('/i/')[1];
+  const pb = await (await fetch(`${BASE}/api/public/doc/${tk}`)).json();
+  const labels = pb.print_fields.map((f) => f.label);
+  check('public link shows only print fields', labels.includes('Vehicle no') && labels.includes('Drug licence') && !labels.includes('Internal note') && pb.extra === undefined
+    && pb.lines[0].print_extra === 'Size: M', JSON.stringify(pb.print_fields) + pb.lines[0].print_extra);
+  for (const f of (await api('GET', '/api/settings/fields')).rows) await api('DELETE', `/api/settings/fields/${f.id}`);
+  check('fields removed', (await api('GET', '/api/settings/fields')).rows.length === 0);
+}
+
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

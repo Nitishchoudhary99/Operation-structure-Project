@@ -16,7 +16,8 @@ import * as rep from './reports.js';
 import { PLANS, planOut, usage, checkCount, requireFeature, extendPlan, adminKey, trialUntil } from './saas.js';
 import { STATES, einvoiceJson, ewaybillJson } from './gst.js';
 import { tallyXml } from './tally.js';
-import { printOf, cleanPrint, imageFromDataUrl, shortHash, imageResponse, FILE_KINDS, seriesOf, numberSpec, formatNumber, cleanSeries, fyParts } from './custom.js';
+import { printOf, cleanPrint, imageFromDataUrl, shortHash, imageResponse, FILE_KINDS, seriesOf, numberSpec, formatNumber, cleanSeries, fyParts,
+  fieldsOf, extraOf, cleanField, cleanExtra, extraFilter, printExtra } from './custom.js';
 import { billingMode, grossPaise, billingStart, billingVerify, billingWebhook, billingStatus, billingHistory } from './billing.js';
 
 const R = (p) => Math.round(p) / 100;
@@ -105,7 +106,7 @@ router.add('PUT', '/api/org/mode', async (c) => {
   return json({ ok: true, mode });
 });
 /* business row for the app: settings JSON parsed, image URLs ready for <img> */
-const orgOut = (o) => ({ ...o, print: printOf(o), series: seriesOf(o) });
+const orgOut = (o) => ({ ...o, print: printOf(o), series: seriesOf(o), fields: fieldsOf(o) });
 const fileUrls = (P, base) => ({ logo_url: P.logo ? `${base}/logo?v=${P.logo}` : '', sign_url: P.signature ? `${base}/signature?v=${P.signature}` : '' });
 
 /* Branding & print: layout, colour, title, terms, bank, UPI on bill, signatory, footer */
@@ -183,6 +184,31 @@ router.add('DELETE', '/api/settings/series/:type', async (c) => {
   return json({ ok: true });
 });
 
+/* Custom fields for items, parties and documents */
+router.add('GET', '/api/settings/fields', async (c) => json({ rows: fieldsOf(c.org) }));
+async function saveFields(c, defs, what) {
+  await c.db.batch([c.db.prepare(`UPDATE orgs SET fields = ? WHERE id = ?`).bind(JSON.stringify(defs), c.org.id), auditStatement(c, 'custom field', what)]);
+  return json({ rows: defs });
+}
+router.add('POST', '/api/settings/fields', async (c) => {
+  requireCan(c.user, 'settings');
+  const defs = fieldsOf(c.org), f = cleanField(c.body, defs);
+  return saveFields(c, [...defs, f], `add ${f.entity} ${f.label}`);
+});
+router.add('PUT', '/api/settings/fields/:id', async (c) => {
+  requireCan(c.user, 'settings');
+  const defs = fieldsOf(c.org), cur = defs.find((f) => f.id === +c.params.id);
+  if (!cur) throw notFound('Field not found.');
+  const f = cleanField(c.body, defs, cur);
+  return saveFields(c, defs.map((x) => (x.id === cur.id ? f : x)), `edit ${f.entity} ${f.label}`);
+});
+router.add('DELETE', '/api/settings/fields/:id', async (c) => {
+  requireCan(c.user, 'settings');
+  const defs = fieldsOf(c.org), cur = defs.find((f) => f.id === +c.params.id);
+  if (!cur) throw notFound('Field not found.');
+  return saveFields(c, defs.filter((x) => x.id !== cur.id), `remove ${cur.entity} ${cur.label}`);
+});
+
 router.add('GET', '/api/users', async (c) => {
   requireCan(c.user, 'users');
   const { results } = await c.db.prepare(`SELECT id, email, name, role, active, created_at FROM users WHERE org_id = ? ORDER BY id`).bind(c.org.id).all();
@@ -216,7 +242,8 @@ router.add('PUT', '/api/users/:id', async (c) => {
 });
 
 /* ======================================================================= parties */
-const partyFields = (b) => ({
+const partyFields = (b, c) => ({
+  extra: b.extra === undefined ? null : cleanExtra(fieldsOf(c.org), 'party', b.extra),
   name: reqStr(b.name, 'Name', 120), kind: oneOf(b.kind || 'customer', ['customer', 'supplier', 'both'], 'Type'),
   phone: str(b.phone, 20), email: str(b.email, 120), gstin: str(b.gstin, 15).toUpperCase(), state: str(b.state, 60), address: str(b.address, 300),
   credit_limit: toPaise(num(b.credit_limit, 'Credit limit', { min: 0, def: 0 })), credit_days: int(b.credit_days, 'Credit days', { min: 0, max: 365, def: 0 }),
@@ -224,30 +251,31 @@ const partyFields = (b) => ({
 });
 router.add('GET', '/api/parties', async (c) => {
   const q = c.url.searchParams;
-  const kind = q.get('kind');
+  const kind = q.get('kind'), cf = extraFilter(fieldsOf(c.org), 'party', q, 'extra');
   const { results } = await c.db.prepare(`SELECT * FROM parties WHERE org_id = ? ${kind === 'customer' ? "AND kind IN ('customer','both')" : kind === 'supplier' ? "AND kind IN ('supplier','both')" : ''}
-      AND (? = '' OR name LIKE ? OR phone LIKE ?) ORDER BY name LIMIT 1000`).bind(c.org.id, q.get('q') || '', `%${q.get('q') || ''}%`, `%${q.get('q') || ''}%`).all();
+      AND (? = '' OR name LIKE ? OR phone LIKE ?)${cf.sql} ORDER BY name LIMIT 1000`).bind(c.org.id, q.get('q') || '', `%${q.get('q') || ''}%`, `%${q.get('q') || ''}%`, ...cf.args).all();
   const bal = await rep.partyBalances(c.db, c.org.id);
   return json({ rows: results.map((p) => {
     const b = bal[p.id] || 0;
-    return { ...p, credit_limit: R(p.credit_limit), balance: R(b), over_limit: p.credit_limit > 0 && b > p.credit_limit };
+    return { ...p, extra: extraOf(p.extra), credit_limit: R(p.credit_limit), balance: R(b), over_limit: p.credit_limit > 0 && b > p.credit_limit };
   }) });
 });
 router.add('POST', '/api/parties', async (c) => {
   requireCan(c.user, 'masters');
-  const f = partyFields(c.body);
+  const f = partyFields(c.body, c);
   if (await c.db.prepare(`SELECT 1 FROM parties WHERE org_id = ? AND name = ?`).bind(c.org.id, f.name).first()) throw bad(`A party called ${f.name} already exists.`);
-  const r = await c.db.prepare(`INSERT INTO parties (org_id, name, kind, phone, email, gstin, state, address, credit_limit, credit_days, city, pincode, created_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING *`).bind(c.org.id, f.name, f.kind, f.phone, f.email, f.gstin, f.state, f.address, f.credit_limit, f.credit_days, f.city, f.pincode, nowIso()).first();
-  return json({ ...r, credit_limit: R(r.credit_limit) });
+  const r = await c.db.prepare(`INSERT INTO parties (org_id, name, kind, phone, email, gstin, state, address, credit_limit, credit_days, city, pincode, extra, created_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING *`).bind(c.org.id, f.name, f.kind, f.phone, f.email, f.gstin, f.state, f.address, f.credit_limit, f.credit_days, f.city, f.pincode,
+    f.extra ?? cleanExtra(fieldsOf(c.org), 'party', {}), nowIso()).first();
+  return json({ ...r, extra: extraOf(r.extra), credit_limit: R(r.credit_limit) });
 });
 router.add('PUT', '/api/parties/:id', async (c) => {
   requireCan(c.user, 'masters');
-  const f = partyFields(c.body);
+  const f = partyFields(c.body, c);
   const dup = await c.db.prepare(`SELECT id FROM parties WHERE org_id = ? AND name = ? AND id != ?`).bind(c.org.id, f.name, +c.params.id).first();
   if (dup) throw bad(`A party called ${f.name} already exists.`);
-  const r = await c.db.prepare(`UPDATE parties SET name = ?, kind = ?, phone = ?, email = ?, gstin = ?, state = ?, address = ?, credit_limit = ?, credit_days = ?, city = ?, pincode = ?
-      WHERE id = ? AND org_id = ?`).bind(f.name, f.kind, f.phone, f.email, f.gstin, f.state, f.address, f.credit_limit, f.credit_days, f.city, f.pincode, +c.params.id, c.org.id).run();
+  const r = await c.db.prepare(`UPDATE parties SET name = ?, kind = ?, phone = ?, email = ?, gstin = ?, state = ?, address = ?, credit_limit = ?, credit_days = ?, city = ?, pincode = ?,
+      extra = COALESCE(?, extra) WHERE id = ? AND org_id = ?`).bind(f.name, f.kind, f.phone, f.email, f.gstin, f.state, f.address, f.credit_limit, f.credit_days, f.city, f.pincode, f.extra, +c.params.id, c.org.id).run();
   if (!r.meta.changes) throw notFound('Party not found.');
   return json({ ok: true });
 });
@@ -264,7 +292,8 @@ router.add('POST', '/api/parties/:id/opening', async (c) => json(await partyOpen
 router.add('GET', '/api/parties/:id/ledger', async (c) => json(await rep.partyLedger(c.db, c.org, +c.params.id, c.url.searchParams)));
 
 /* ======================================================================= items & warehouses */
-const itemFields = (b) => ({
+const itemFields = (b, c) => ({
+  extra: b.extra === undefined ? null : cleanExtra(fieldsOf(c.org), 'item', b.extra),
   name: reqStr(b.name, 'Item name', 120), sku: str(b.sku, 40), category: str(b.category, 60), unit: str(b.unit, 12) || 'Pcs', hsn: str(b.hsn, 10),
   gst_rate: num(b.gst_rate, 'GST rate', { min: 0, max: 100, def: 0 }),
   purchase_price: toPaise(num(b.purchase_price, 'Purchase price', { min: 0, def: 0 })), sale_price: toPaise(num(b.sale_price, 'Sale price', { min: 0, def: 0 })),
@@ -276,21 +305,22 @@ async function barcodeTaken(c, code, exceptId = 0) {
   const hit = await c.db.prepare(`SELECT name FROM items WHERE org_id = ? AND id != ? AND (barcode = ? OR (sku != '' AND sku = ?))`).bind(c.org.id, exceptId, code, code).first();
   if (hit) throw bad(`Barcode ${code} is already used by ${hit.name}.`);
 }
-const itemOut = (i) => ({ ...i, purchase_price: R(i.purchase_price), sale_price: R(i.sale_price), avg_cost: R(i.avg_cost), stock_value: R(Math.max(0, i.qty_on_hand) * i.avg_cost) });
+const itemOut = (i) => ({ ...i, extra: extraOf(i.extra), purchase_price: R(i.purchase_price), sale_price: R(i.sale_price), avg_cost: R(i.avg_cost), stock_value: R(Math.max(0, i.qty_on_hand) * i.avg_cost) });
 router.add('GET', '/api/items', async (c) => {
-  const q = c.url.searchParams.get('q') || '';
-  const { results } = await c.db.prepare(`SELECT * FROM items WHERE org_id = ? AND (? = '' OR name LIKE ? OR sku LIKE ?) ORDER BY name LIMIT 2000`)
-    .bind(c.org.id, q, `%${q}%`, `%${q}%`).all();
+  const q = c.url.searchParams.get('q') || '', cf = extraFilter(fieldsOf(c.org), 'item', c.url.searchParams, 'extra');
+  const { results } = await c.db.prepare(`SELECT * FROM items WHERE org_id = ? AND (? = '' OR name LIKE ? OR sku LIKE ?)${cf.sql} ORDER BY name LIMIT 2000`)
+    .bind(c.org.id, q, `%${q}%`, `%${q}%`, ...cf.args).all();
   return json({ rows: results.map(itemOut) });
 });
 router.add('POST', '/api/items', async (c) => {
   requireCan(c.user, 'items');
-  const f = itemFields(c.body);
+  const f = itemFields(c.body, c);
   if (await c.db.prepare(`SELECT 1 FROM items WHERE org_id = ? AND name = ?`).bind(c.org.id, f.name).first()) throw bad(`An item called ${f.name} already exists.`);
   await barcodeTaken(c, f.barcode);
-  const r = await c.db.prepare(`INSERT INTO items (org_id, sku, name, category, unit, hsn, gst_rate, purchase_price, sale_price, reorder_level, is_service, avg_cost, barcode, location, created_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING *`)
-    .bind(c.org.id, f.sku, f.name, f.category, f.unit, f.hsn, f.gst_rate, f.purchase_price, f.sale_price, f.reorder_level, f.is_service, f.purchase_price, f.barcode, f.location, nowIso()).first();
+  const r = await c.db.prepare(`INSERT INTO items (org_id, sku, name, category, unit, hsn, gst_rate, purchase_price, sale_price, reorder_level, is_service, avg_cost, barcode, location, extra, created_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING *`)
+    .bind(c.org.id, f.sku, f.name, f.category, f.unit, f.hsn, f.gst_rate, f.purchase_price, f.sale_price, f.reorder_level, f.is_service, f.purchase_price, f.barcode, f.location,
+      f.extra ?? cleanExtra(fieldsOf(c.org), 'item', {}), nowIso()).first();
   if (c.body.opening_qty && +c.body.opening_qty > 0 && !f.is_service) {
     await stockAdjust(c, { item_id: r.id, qty: c.body.opening_qty, rate: c.body.opening_rate ?? R(f.purchase_price), reason: 'opening', warehouse_id: c.body.warehouse_id });
   }
@@ -298,12 +328,12 @@ router.add('POST', '/api/items', async (c) => {
 });
 router.add('PUT', '/api/items/:id', async (c) => {
   requireCan(c.user, 'items');
-  const f = itemFields(c.body);
+  const f = itemFields(c.body, c);
   const dup = await c.db.prepare(`SELECT id FROM items WHERE org_id = ? AND name = ? AND id != ?`).bind(c.org.id, f.name, +c.params.id).first();
   if (dup) throw bad(`An item called ${f.name} already exists.`);
   await barcodeTaken(c, f.barcode, +c.params.id);
-  const r = await c.db.prepare(`UPDATE items SET sku = ?, name = ?, category = ?, unit = ?, hsn = ?, gst_rate = ?, purchase_price = ?, sale_price = ?, reorder_level = ?, barcode = ?, location = ?
-      WHERE id = ? AND org_id = ?`).bind(f.sku, f.name, f.category, f.unit, f.hsn, f.gst_rate, f.purchase_price, f.sale_price, f.reorder_level, f.barcode, f.location, +c.params.id, c.org.id).run();
+  const r = await c.db.prepare(`UPDATE items SET sku = ?, name = ?, category = ?, unit = ?, hsn = ?, gst_rate = ?, purchase_price = ?, sale_price = ?, reorder_level = ?, barcode = ?, location = ?,
+      extra = COALESCE(?, extra) WHERE id = ? AND org_id = ?`).bind(f.sku, f.name, f.category, f.unit, f.hsn, f.gst_rate, f.purchase_price, f.sale_price, f.reorder_level, f.barcode, f.location, f.extra, +c.params.id, c.org.id).run();
   if (!r.meta.changes) throw notFound('Item not found.');
   return json({ ok: true });
 });
@@ -365,31 +395,32 @@ router.add('GET', '/api/docs', async (c) => {
   if (q.get('from')) { where.push('d.date >= ?'); args.push(date(q.get('from'))); }
   if (q.get('to')) { where.push('d.date <= ?'); args.push(date(q.get('to'))); }
   if (q.get('q')) { where.push('(d.number LIKE ? OR p.name LIKE ?)'); args.push(`%${q.get('q')}%`, `%${q.get('q')}%`); }
+  const cf = extraFilter(fieldsOf(c.org), 'doc', q, 'd.extra');
   const limit = Math.min(500, +q.get('limit') || 100), offset = Math.max(0, +q.get('offset') || 0);
-  const { results } = await c.db.prepare(`SELECT d.id, d.type, d.number, d.date, d.due_date, d.status, d.total, d.paid, d.taxable, d.ref_id, p.name AS party
-      FROM docs d LEFT JOIN parties p ON p.id = d.party_id WHERE ${where.join(' AND ')} ORDER BY d.date DESC, d.id DESC LIMIT ? OFFSET ?`)
-    .bind(...args, limit, offset).all();
-  return json({ rows: results.map((r) => ({ ...r, total: R(r.total), paid: R(r.paid), taxable: R(r.taxable), balance: R(r.total - r.paid) })) });
+  const { results } = await c.db.prepare(`SELECT d.id, d.type, d.number, d.date, d.due_date, d.status, d.total, d.paid, d.taxable, d.ref_id, d.extra, p.name AS party
+      FROM docs d LEFT JOIN parties p ON p.id = d.party_id WHERE ${where.join(' AND ')}${cf.sql} ORDER BY d.date DESC, d.id DESC LIMIT ? OFFSET ?`)
+    .bind(...args, ...cf.args, limit, offset).all();
+  return json({ rows: results.map((r) => ({ ...r, extra: extraOf(r.extra), total: R(r.total), paid: R(r.paid), taxable: R(r.taxable), balance: R(r.total - r.paid) })) });
 });
 
 async function docDetail(c, id) {
   const d = await c.db.prepare(`SELECT d.*, w.name AS warehouse FROM docs d LEFT JOIN warehouses w ON w.id = d.warehouse_id WHERE d.id = ? AND d.org_id = ?`).bind(id, c.org.id).first();
   if (!d) throw notFound('Document not found.');
   const [lines, party, children, parent, pays] = await Promise.all([
-    c.db.prepare(`SELECT l.*, i.name AS item, i.unit, i.hsn, i.is_service, i.location FROM doc_lines l LEFT JOIN items i ON i.id = l.item_id WHERE l.doc_id = ? ORDER BY l.id`).bind(id).all(),
+    c.db.prepare(`SELECT l.*, i.name AS item, i.unit, i.hsn, i.is_service, i.location, i.extra AS item_extra FROM doc_lines l LEFT JOIN items i ON i.id = l.item_id WHERE l.doc_id = ? ORDER BY l.id`).bind(id).all(),
     c.db.prepare(`SELECT * FROM parties WHERE id = ?`).bind(d.party_id).first(),
     c.db.prepare(`SELECT id, type, number, date, status, total FROM docs WHERE ref_id = ? AND org_id = ? ORDER BY id`).bind(id, c.org.id).all(),
     d.ref_id ? c.db.prepare(`SELECT id, type, number, date, status FROM docs WHERE id = ?`).bind(d.ref_id).first() : null,
     c.db.prepare(`SELECT pa.amount, pa.note_id, p.id, p.number, p.date, p.kind, n.number AS note_number FROM payment_allocs pa
         LEFT JOIN payments p ON p.id = pa.payment_id LEFT JOIN docs n ON n.id = pa.note_id WHERE pa.doc_id = ?`).bind(id).all(),
   ]);
-  const money = (x) => R(x);
+  const money = (x) => R(x), defs = fieldsOf(c.org), side = DOC_TYPES[d.type].side;
   return {
-    ...d, taxable: money(d.taxable), cgst: money(d.cgst), sgst: money(d.sgst), igst: money(d.igst), round_off: money(d.round_off),
+    ...d, extra: extraOf(d.extra), print_fields: [...printExtra(defs, 'doc', d.extra, side), ...printExtra(defs, 'party', party && party.extra)], taxable: money(d.taxable), cgst: money(d.cgst), sgst: money(d.sgst), igst: money(d.igst), round_off: money(d.round_off),
     total: money(d.total), paid: money(d.paid), balance: money(d.total - d.paid), label: DOC_TYPES[d.type].label, side: DOC_TYPES[d.type].side,
-    party, parent, children: children.results.map((x) => ({ ...x, total: money(x.total) })),
+    party: party && { ...party, extra: extraOf(party.extra) }, parent, children: children.results.map((x) => ({ ...x, total: money(x.total) })),
     settlements: pays.results.map((p) => ({ ...p, amount: money(p.amount), number: p.number || p.note_number })),
-    lines: lines.results.map((l) => ({ ...l, rate: money(l.rate), taxable: money(l.taxable), cgst: money(l.cgst), sgst: money(l.sgst), igst: money(l.igst),
+    lines: lines.results.map(({ item_extra, ...l }) => ({ ...l, print_extra: printExtra(defs, 'item', item_extra).map((x) => `${x.label}: ${x.value}`).join(' · '), rate: money(l.rate), taxable: money(l.taxable), cgst: money(l.cgst), sgst: money(l.sgst), igst: money(l.igst),
       total: money(l.total), cost: money(l.cost), remaining: Math.round((l.qty - l.done_qty) * 1000) / 1000 })),
     org: orgOut(c.org), ...fileUrls(printOf(c.org), '/api/org/files'),
   };
@@ -405,7 +436,7 @@ router.add('GET', '/api/docs/:id/convert', async (c) => {
   const T = DOC_TYPES[to];
   if (!T || !T.from.includes(src.type)) throw bad(`Cannot make a ${to} from a ${src.type}.`);
   if (T.note) {     // value note: every line of the bill/invoice, the user types the rate difference per unit
-    return json({ type: to, party_id: src.party_id, ref_id: src.id, ref_number: src.number, warehouse_id: src.warehouse_id, date: today(),
+    return json({ type: to, party_id: src.party_id, ref_id: src.id, ref_number: src.number, warehouse_id: src.warehouse_id, date: today(), extra: src.extra,
       lines: src.lines.map((l) => ({ item_id: l.item_id, item: l.item, unit: l.unit, description: l.description || l.item, qty: l.qty, rate: '', discount_pct: 0, gst_rate: l.gst_rate, orig_rate: l.rate })) });
   }
   const lines = src.lines.filter((l) => l.remaining > 0.0005).map((l) => ({
@@ -413,7 +444,7 @@ router.add('GET', '/api/docs/:id/convert', async (c) => {
     discount_pct: l.discount_pct, gst_rate: l.gst_rate, src_line_id: l.id,
   }));
   if (!lines.length) throw bad(`Nothing left to ${['SRET', 'PRET'].includes(to) ? 'return' : 'process'} on ${src.number}.`);
-  return json({ type: to, party_id: src.party_id, ref_id: src.id, ref_number: src.number, warehouse_id: src.warehouse_id, date: today(), lines });
+  return json({ type: to, party_id: src.party_id, ref_id: src.id, ref_number: src.number, warehouse_id: src.warehouse_id, date: today(), extra: src.extra, lines });
 });
 
 /* GST portal files: e-invoice (IRP) and e-way bill JSON, and the numbers the portal gives back */
@@ -470,13 +501,13 @@ router.add('GET', '/api/public/doc/:token', async (c) => {
   return json({   // only what is printed on the document: no costs, margins, links to other records or internal ids
     type: d.type, label: d.label, side: d.side, number: d.number, date: d.date, due_date: d.due_date, status: d.status, place_of_supply: d.place_of_supply,
     inter_state: d.inter_state, taxable: d.taxable, cgst: d.cgst, sgst: d.sgst, igst: d.igst, round_off: d.round_off, total: d.total, paid: d.paid, balance: d.balance,
-    notes: d.notes, irn: d.irn, ack_no: d.ack_no, ack_date: d.ack_date, ewb_no: d.ewb_no, ewb_date: d.ewb_date, warehouse: '',
+    notes: d.notes, print_fields: d.print_fields, irn: d.irn, ack_no: d.ack_no, ack_date: d.ack_date, ewb_no: d.ewb_no, ewb_date: d.ewb_date, warehouse: '',
     parent: d.parent && ['SRET', 'CNOTE'].includes(d.type) ? { number: d.parent.number, date: d.parent.date } : null,
     org: { name: o.name, gstin: o.gstin, state: o.state, address: o.address, phone: o.phone, upi_id: o.upi_id, email: o.email, print: o.print },
     ...fileUrls(o.print, `/api/public/doc/${t}/file`),
     party: { name: p.name, gstin: p.gstin, address: p.address, phone: p.phone, state: p.state },
     lines: d.lines.map((l) => ({ item: l.item, description: l.description, hsn: l.hsn, unit: l.unit, qty: l.qty, rate: l.rate, discount_pct: l.discount_pct,
-      gst_rate: l.gst_rate, taxable: l.taxable, cgst: l.cgst, sgst: l.sgst, igst: l.igst, total: l.total })),
+      gst_rate: l.gst_rate, taxable: l.taxable, cgst: l.cgst, sgst: l.sgst, igst: l.igst, total: l.total, print_extra: l.print_extra })),
   });
 }, { public: true });
 

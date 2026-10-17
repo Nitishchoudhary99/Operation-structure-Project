@@ -102,6 +102,20 @@ function modal(title, fields, onSubmit, { submit = 'Save', intro = '' } = {}) {
   return form;
 }
 const opts = (rows, label = (r) => r.name, value = (r) => r.id) => rows.map((r) => ({ v: value(r), t: label(r) }));
+/* ---- custom fields (Settings > Custom fields): inputs named cf_<key>, values sent as `extra` ---- */
+const cfDefs = (entity, side = '') => ((ME && ME.org.fields) || []).filter((f) => f.entity === entity && (!side || !f.side || f.side === side));
+const cfModal = (entity, extra = {}, side = '') => cfDefs(entity, side).map((f) => ({ k: 'cf_' + f.key, label: f.label + (f.required ? ' *' : ''), value: extra[f.key] ?? '',
+  type: f.type === 'select' ? 'select' : f.type, options: f.type === 'select' ? [{ v: '', t: '—' }, ...f.options.map((o) => ({ v: o, t: o }))] : undefined, required: !!f.required }));
+const cfInputs = (entity, extra = {}, side = '') => cfModal(entity, extra, side).map((f) => `<label class="f">${esc(f.label)}${f.type === 'select'
+  ? `<select name="${f.k}">${f.options.map((o) => `<option value="${esc(o.v)}" ${String(o.v) === String(f.value) ? 'selected' : ''}>${esc(o.t)}</option>`).join('')}</select>`
+  : `<input name="${f.k}" type="${f.type === 'number' ? 'number" step="any' : f.type}" value="${esc(f.value)}">`}</label>`).join('');
+function splitCf(v) {
+  const out = { extra: {} };
+  for (const [k, x] of Object.entries(v)) { if (k.startsWith('cf_')) out.extra[k.slice(3)] = x; else out[k] = x; }
+  return out;
+}
+const cfRead = (root) => Object.fromEntries($$('[name^=cf_]', root).map((i) => [i.name.slice(3), i.value]));
+const cfCols = (entity, side = '') => cfDefs(entity, side).map((f) => ({ h: esc(f.label), cls: 'hide-sm', f: (r) => esc((r.extra || {})[f.key] ?? ''), csv: (r) => (r.extra || {})[f.key] ?? '' }));
 const cashOpts = async () => opts((await master('accounts')).filter((a) => a.is_cash), (a) => `${a.name} (${inr(a.balance)})`);
 
 /* Indian-system amount in words for invoices */
@@ -212,7 +226,7 @@ async function render() {
     const m = path.match(re);
     if (!m) continue;
     page.innerHTML = '<div class="muted">Loading&hellip;</div>';
-    try { await fn(page, m, q); } catch (e) {
+    try { await fn(page, m, q); const tab = $('.tabs a.on', page); if (tab && tab.parentNode.scrollWidth > tab.parentNode.clientWidth) tab.parentNode.scrollLeft = tab.offsetLeft - 16; } catch (e) {
       if (e.status !== 401) page.innerHTML = `<div class="err">${esc(e.message)}</div>`;
     }
     window.scrollTo(0, 0);
@@ -266,7 +280,9 @@ route(/^(sales|purchase)\/([A-Z]+)$/, async (el, m, q) => {
   const type = m[2], T = ME.doc_types[type];
   const make = !['SRET', 'PRET'].includes(type);
   const p = new URLSearchParams({ type, q: q.get('q') || '', status: q.get('status') || '', from: q.get('from') || '', to: q.get('to') || '' });
+  for (const [k, v] of q) if (k.startsWith('cf.')) p.set(k, v);
   [...p.keys()].forEach((k) => { if (!p.get(k)) p.delete(k); });
+  const cfF = cfDefs('doc', T.side).slice(0, 3);
   const { rows } = await GET('/api/docs?' + p);
   const money = ['INV', 'BILL'].includes(type);
   const cols = [
@@ -274,12 +290,15 @@ route(/^(sales|purchase)\/([A-Z]+)$/, async (el, m, q) => {
     { h: T.side === 'sales' ? 'Customer' : 'Supplier', k: 'party' },
     ...(money ? [{ h: 'Due', k: 'due_date', f: (r) => fdate(r.due_date), cls: 'hide-sm' }] : []),
     { h: 'Taxable', k: 'taxable', num: 1, cls: 'hide-sm', f: (r) => inr(r.taxable) }, { h: 'Total', k: 'total', num: 1, f: (r) => inr(r.total) },
-    ...(money ? [{ h: 'Balance', k: 'balance', num: 1, f: (r) => inr(r.balance) }] : []), { h: 'Status', k: 'status', f: (r) => badge(r.status) }];
+    ...(money ? [{ h: 'Balance', k: 'balance', num: 1, f: (r) => inr(r.balance) }] : []), ...cfCols('doc', T.side),
+    { h: 'Status', k: 'status', f: (r) => badge(r.status) }];
   el.innerHTML = head(esc(T.label) + 's', `<button class="btn" id="csv">Export CSV</button>${make ? `<a class="btn primary" href="#/new/${type}">+ New ${esc(T.label)}</a>` : ''}`) + `
     <div class="panel"><form class="row" id="flt">
       <input name="q" placeholder="Search number or party" value="${esc(q.get('q') || '')}" style="max-width:260px">
       <select name="status" style="max-width:160px"><option value="">All statuses</option>${['open', 'partial', 'closed', 'unpaid', 'paid', 'converted', 'cancelled'].map((s) => `<option ${q.get('status') === s ? 'selected' : ''}>${s}</option>`).join('')}</select>
       <input type="date" name="from" value="${esc(q.get('from') || '')}" style="max-width:160px"><input type="date" name="to" value="${esc(q.get('to') || '')}" style="max-width:160px">
+      ${cfF.map((f) => f.type === 'select' ? `<select name="cf.${f.key}" style="max-width:160px"><option value="">${esc(f.label)}: all</option>${f.options.map((o) => `<option ${q.get('cf.' + f.key) === o ? 'selected' : ''}>${esc(o)}</option>`).join('')}</select>`
+        : `<input name="cf.${f.key}" placeholder="${esc(f.label)}" value="${esc(q.get('cf.' + f.key) || '')}" style="max-width:160px">`).join('')}
       <button class="btn">Filter</button></form>
       ${!make ? `<p class="muted" style="margin:10px 0 0">To make a ${esc(T.label.toLowerCase())}, open the original ${type === 'SRET' ? 'invoice' : 'bill'} and choose <b>Return goods</b>.</p>` : ''}
       ${ME.doc_types[type].note ? `<p class="muted" style="margin:10px 0 0">Tip: open the ${T.side === 'sales' ? 'invoice' : 'bill'} and choose <b>${T.side === 'sales' ? 'Credit note' : 'Debit note'}</b> to adjust it line by line; it is then settled against that ${T.side === 'sales' ? 'invoice' : 'bill'}.</p>` : ''}</div>
@@ -336,6 +355,7 @@ route(/^new\/([A-Z]+)$/, async (el, m, q) => {
       <label class="f">Date<input type="date" name="date" value="${esc(draft.date)}"></label>
       ${money || type === 'PO' || type === 'SO' || type === 'QUOTE' ? `<label class="f">${money ? 'Due date' : type === 'QUOTE' ? 'Valid until' : 'Expected by'}<input type="date" name="due_date" placeholder="auto"></label>` : ''}
       <label class="f">Godown<select name="warehouse_id">${whs.map((w) => `<option value="${w.id}" ${w.id === +draft.warehouse_id ? 'selected' : ''}>${esc(w.name)}</option>`).join('')}</select></label>
+      ${cfInputs('doc', draft.extra || {}, T.side)}
     </div></div>
     <div class="panel flush"><div class="tbl-wrap"><table class="t lines"><thead><tr><th>Item</th><th>Qty</th><th>${isNote ? 'Rate diff (₹/unit)' : 'Rate (₹)'}</th><th>Disc %</th><th>GST</th><th class="num">Amount</th><th></th></tr></thead>
       <tbody id="lines">${draft.lines.map(lineRow).join('')}</tbody></table></div>
@@ -394,7 +414,7 @@ route(/^new\/([A-Z]+)$/, async (el, m, q) => {
       const g = (n) => { const x = $(`[name=${n}]`, tr); return x ? x.value : ''; };
       return { item_id: +g('item_id') || null, description: g('description'), qty: g('qty'), rate: g('rate'), discount_pct: g('discount_pct'), gst_rate: g('gst_rate'), src_line_id: +g('src_line_id') || undefined };
     }).filter((l) => +l.qty > 0 && (!isNote || +l.rate > 0));
-    const body = { type, party_id: +f.party_id.value, date: f.date.value, warehouse_id: +f.warehouse_id.value, notes: f.notes.value, lines, ref_id: draft.ref_id };
+    const body = { type, party_id: +f.party_id.value, date: f.date.value, warehouse_id: +f.warehouse_id.value, notes: f.notes.value, lines, ref_id: draft.ref_id, extra: cfRead(form) };
     if (ge) body.gate_entry_id = ge.id;
     if (f.due_date && f.due_date.value) body.due_date = f.due_date.value;
     if (f.pay_amount && +f.pay_amount.value > 0) body.payment = { amount: +f.pay_amount.value, account_id: +f.pay_account.value };
@@ -418,8 +438,8 @@ function docPaper(d) {
   const bank = ours && P.bank_account ? `<p class="bank"><b>Bank details</b><br>${[P.bank_name, 'A/c ' + P.bank_account, P.bank_ifsc && 'IFSC ' + P.bank_ifsc, P.bank_branch].filter(Boolean).map(esc).join(' &middot; ')}</p>` : '';
   const upi = d.type === 'INV' && o.upi_id && d.balance > 0 && P.show_upi !== false;
   const lineCells = (l, i) => compact
-    ? `<td>${esc(l.item || l.description)}<div class="muted">${qtyf(l.qty)} ${esc(l.unit || '')} &times; ${inr(l.rate)}${l.discount_pct ? ` &minus;${l.discount_pct}%` : ''}${l.gst_rate ? ` &middot; GST ${l.gst_rate}%` : ''}</div></td><td class="num">${inr(l.total)}</td>`
-    : `<td>${i + 1}</td><td>${esc(l.item || l.description)}${l.item && l.description && l.description !== l.item ? `<div class="muted">${esc(l.description)}</div>` : ''}</td><td>${esc(l.hsn || '')}</td>
+    ? `<td>${esc(l.item || l.description)}${l.print_extra ? `<div class="muted">${esc(l.print_extra)}</div>` : ''}<div class="muted">${qtyf(l.qty)} ${esc(l.unit || '')} &times; ${inr(l.rate)}${l.discount_pct ? ` &minus;${l.discount_pct}%` : ''}${l.gst_rate ? ` &middot; GST ${l.gst_rate}%` : ''}</div></td><td class="num">${inr(l.total)}</td>`
+    : `<td>${i + 1}</td><td>${esc(l.item || l.description)}${l.item && l.description && l.description !== l.item ? `<div class="muted">${esc(l.description)}</div>` : ''}${l.print_extra ? `<div class="muted">${esc(l.print_extra)}</div>` : ''}</td><td>${esc(l.hsn || '')}</td>
         <td class="num">${qtyf(l.qty)} ${esc(l.unit || '')}</td><td class="num">${inr(l.rate)}</td><td class="num">${l.discount_pct ? l.discount_pct + '%' : ''}</td><td class="num">${inr(l.taxable)}</td><td class="num">${l.gst_rate}%</td>
         ${inter ? `<td class="num">${inr(l.igst)}</td>` : `<td class="num">${inr(l.cgst)}</td><td class="num">${inr(l.sgst)}</td>`}<td class="num">${inr(l.total)}</td>`;
   const heads = compact ? '<th>Item</th><th class="num">Amount</th>'
@@ -431,7 +451,7 @@ function docPaper(d) {
         ${d.due_date ? `<div>${d.type === 'QUOTE' ? 'Valid till' : 'Due'}: ${fdate(d.due_date)}</div>` : ''}${d.parent ? `<div>Ref: ${esc(d.parent.number)}</div>` : ''}</div></div>
       <div class="parties"><div><b>${d.side === 'sales' ? 'Bill to' : 'Supplier'}</b><br>${esc(p.name)}<br>${esc(p.address || '')}<br>${p.gstin ? 'GSTIN: ' + esc(p.gstin) + '<br>' : ''}${esc(p.phone || '')}</div>
         <div><b>Place of supply</b><br>${esc(d.place_of_supply || '-')}<br>${isTax ? (inter ? 'Inter-state (IGST)' : 'Intra-state (CGST + SGST)') : ''}${d.warehouse ? '<br>Godown: ' + esc(d.warehouse) : ''}</div></div>
-      ${d.custom_print || ''}
+      ${(d.print_fields || []).length ? `<div class="cfp">${d.print_fields.map((f) => `<span><b>${esc(f.label)}:</b> ${esc(f.value)}</span>`).join('')}</div>` : ''}
       <div class="tbl-wrap"><table class="dl"><thead><tr>${heads}</tr></thead>
       <tbody>${d.lines.map((l, i) => `<tr>${lineCells(l, i)}</tr>`).join('')}</tbody></table></div>
       <div class="foot"><div class="words"><b>Amount in words:</b> ${esc(words(d.total))}${d.notes ? `<p><b>Notes:</b> ${esc(d.notes)}</p>` : ''}
@@ -545,8 +565,9 @@ function partyForm(p = {}, after) {
     { k: 'gstin', label: 'GSTIN', value: p.gstin }, { k: 'state', label: 'State', value: p.state ?? ME.org.state, list: 'states' },
     { k: 'city', label: 'City', value: p.city }, { k: 'pincode', label: 'PIN code', value: p.pincode, placeholder: 'needed for e-invoice / e-way bill' },
     { k: 'credit_days', label: 'Credit days', type: 'number', value: p.credit_days ?? 0 }, { k: 'credit_limit', label: 'Credit limit (₹)', type: 'number', value: p.credit_limit ?? 0 },
-    { k: 'address', label: 'Address', type: 'textarea', value: p.address, wide: true },
+    { k: 'address', label: 'Address', type: 'textarea', value: p.address, wide: true }, ...cfModal('party', p.extra),
   ], async (v) => {
+    v = splitCf(v);
     const r = p.id ? await api('PUT', '/api/parties/' + p.id, v) : await POST('/api/parties', v);
     dirty('parties'); toast('Saved');
     if (after) after(r); else render();
@@ -557,11 +578,14 @@ route(/^parties$/, async (el, m, q) => {
   const { rows } = await GET('/api/parties' + (kind ? '?kind=' + kind : ''));
   el.innerHTML = head('Customers & Suppliers', `<button class="btn primary" id="new">+ New contact</button>`) + `
     <div class="tabs">${[['', 'All'], ['customer', 'Customers'], ['supplier', 'Suppliers']].map(([k, t]) => `<a href="#/parties${k ? '?kind=' + k : ''}" class="${kind === k ? 'on' : ''}">${t}</a>`).join('')}</div>
-    <div class="panel flush">${table([{ h: 'Name', k: 'name' }, { h: 'Type', k: 'kind' }, { h: 'Mobile', k: 'phone', cls: 'hide-sm' }, { h: 'GSTIN', k: 'gstin', cls: 'hide-sm' },
-      { h: 'Balance', num: 1, f: (r) => `<span class="${r.balance > 0 ? 'pos' : r.balance < 0 ? 'neg' : ''}">${inr(Math.abs(r.balance))} ${r.balance > 0 ? 'Dr' : r.balance < 0 ? 'Cr' : ''}</span>${r.over_limit ? ' ' + badge('overdue') : ''}` }],
-    rows, { onRow: true, empty: 'Add your customers and suppliers.' })}</div>
+    ${rows.length > 5 ? '<div class="panel"><input id="search" type="search" placeholder="Search name, mobile, GSTIN…" style="max-width:320px"></div>' : ''}<div class="panel flush" id="list"></div>
     <p class="muted">Dr = they owe you. Cr = you owe them.</p>`;
-  bindRows(el, rows, (r) => go('party/' + r.id));
+  const cols = [{ h: 'Name', k: 'name' }, { h: 'Type', k: 'kind' }, { h: 'Mobile', k: 'phone', cls: 'hide-sm' }, { h: 'GSTIN', k: 'gstin', cls: 'hide-sm' }, ...cfCols('party'),
+    { h: 'Balance', num: 1, f: (r) => `<span class="${r.balance > 0 ? 'pos' : r.balance < 0 ? 'neg' : ''}">${inr(Math.abs(r.balance))} ${r.balance > 0 ? 'Dr' : r.balance < 0 ? 'Cr' : ''}</span>${r.over_limit ? ' ' + badge('overdue') : ''}` }];
+  const draw = (f) => { const r = rows.filter((x) => !f || [x.name, x.phone, x.gstin, x.city, ...Object.values(x.extra || {})].join(' ').toLowerCase().includes(f));
+    $('#list').innerHTML = table(cols, r, { onRow: true, empty: f ? 'No match.' : 'Add your customers and suppliers.' }); bindRows($('#list'), r, (x) => go('party/' + x.id)); };
+  draw('');
+  if ($('#search')) $('#search').oninput = (e) => draw(e.target.value.toLowerCase());
   $('#new').onclick = () => partyForm();
 });
 route(/^party\/(\d+)$/, async (el, m, q) => {
@@ -594,7 +618,9 @@ function itemForm(i = {}) {
     { k: 'barcode', label: 'Barcode (scan or leave blank)', value: i.barcode, placeholder: 'blank = auto label code' },
     { k: 'location', label: 'Bin / rack location', value: i.location, placeholder: 'e.g. A-03-2' },
     ...(i.id ? [] : [{ k: 'is_service', label: 'Service (no stock)', type: 'checkbox' }, { k: 'opening_qty', label: 'Opening stock qty', type: 'number' }, { k: 'opening_rate', label: 'Opening rate (₹)', type: 'number' }]),
+    ...cfModal('item', i.extra),
   ], async (v) => {
+    v = splitCf(v);
     if (i.id) await api('PUT', '/api/items/' + i.id, v); else await POST('/api/items', v);
     dirty('items', 'accounts'); toast('Saved'); render();
   });
@@ -604,10 +630,10 @@ route(/^items$/, async (el, m, q) => {
   const rows = await master('items');
   const cols = [{ h: 'Item', k: 'name' }, { h: 'SKU', k: 'sku', cls: 'hide-sm' }, { h: 'Category', k: 'category', cls: 'hide-sm' }, { h: 'GST', k: 'gst_rate', f: (r) => r.gst_rate + '%', cls: 'hide-sm' },
     { h: 'Sale price', k: 'sale_price', num: 1, f: (r) => inr(r.sale_price) }, { h: 'Avg cost', k: 'avg_cost', num: 1, f: (r) => inr(r.avg_cost), cls: 'hide-sm' },
-    { h: 'In stock', k: 'qty_on_hand', num: 1, f: (r) => r.is_service ? '<span class="muted">service</span>' : `${qtyf(r.qty_on_hand)} ${esc(r.unit)}` }, { h: 'Value', k: 'stock_value', num: 1, f: (r) => inr(r.stock_value) }];
+    { h: 'In stock', k: 'qty_on_hand', num: 1, f: (r) => r.is_service ? '<span class="muted">service</span>' : `${qtyf(r.qty_on_hand)} ${esc(r.unit)}` }, { h: 'Value', k: 'stock_value', num: 1, f: (r) => inr(r.stock_value) }, ...cfCols('item')];
   el.innerHTML = head('Items', `<button class="btn" id="csv">Export CSV</button><button class="btn primary" id="new">+ New item</button>`) +
     `<div class="panel"><input id="search" placeholder="Search items…" style="max-width:320px"></div><div class="panel flush" id="list"></div>`;
-  const draw = (f) => { const r = rows.filter((x) => !f || (x.name + ' ' + x.sku + ' ' + x.category).toLowerCase().includes(f)); $('#list').innerHTML = table(cols, r, { onRow: true, empty: 'Add the products you buy and sell.' }); bindRows($('#list'), r, (x) => go('item/' + x.id)); };
+  const draw = (f) => { const r = rows.filter((x) => !f || (x.name + ' ' + x.sku + ' ' + x.category + ' ' + Object.values(x.extra || {}).join(' ')).toLowerCase().includes(f)); $('#list').innerHTML = table(cols, r, { onRow: true, empty: 'Add the products you buy and sell.' }); bindRows($('#list'), r, (x) => go('item/' + x.id)); };
   draw('');
   $('#search').oninput = (e) => draw(e.target.value.toLowerCase());
   $('#new').onclick = () => itemForm();
@@ -915,7 +941,7 @@ route(/^reports\/([a-z-]+)$/, async (el, m, q) => {
 });
 
 /* ======================================================================= settings */
-const SET_TABS = [['settings', 'Business & users'], ['settings/print', 'Branding & print'], ['settings/numbering', 'Numbering']];
+const SET_TABS = [['settings', 'Business & users'], ['settings/print', 'Branding & print'], ['settings/numbering', 'Numbering'], ['settings/fields', 'Custom fields']];
 const setTabs = (cur) => `<div class="tabs">${SET_TABS.map(([h, t]) => `<a href="#/${h}" class="${h === cur ? 'on' : ''}">${t}</a>`).join('')}</div>`;
 
 /* Shrink a photo on this device (canvas) so it fits the 64 KB limit; nothing is uploaded until it is small. */
@@ -1039,6 +1065,35 @@ route(/^settings\/numbering$/, async (el) => {
     };
     const rs = $('[data-reset]', f);
     if (rs) rs.onclick = async () => { await api('DELETE', '/api/settings/series/' + f.dataset.t); toast('Back to default'); render(); };
+  });
+});
+
+const CF_ENT = [['item', 'Items'], ['party', 'Customers & suppliers'], ['doc', 'Bills & documents']];
+const CF_TYPES = [['text', 'Text'], ['number', 'Number'], ['date', 'Date'], ['select', 'Dropdown']];
+route(/^settings\/fields$/, async (el) => {
+  const { rows } = await GET('/api/settings/fields');
+  const canEdit = ME.can.settings;
+  const refresh = async (r) => { ME.org.fields = r.rows; dirty('items', 'parties'); render(); };
+  const form = (entity, f = {}) => modal(f.id ? 'Edit field' : 'New field', [
+    { k: 'label', label: 'Field name', value: f.label, placeholder: entity === 'doc' ? 'e.g. Vehicle no' : entity === 'item' ? 'e.g. Size' : 'e.g. Drug licence no' },
+    { k: 'type', label: 'Type', type: 'select', options: CF_TYPES.map(([v, t]) => ({ v, t })), value: f.type || 'text' },
+    { k: 'options', label: 'Dropdown options (comma separated)', value: (f.options || []).join(', '), placeholder: 'S, M, L', wide: true },
+    ...(entity === 'doc' ? [{ k: 'side', label: 'Use on', type: 'select', options: [{ v: '', t: 'All documents' }, { v: 'sales', t: 'Sales only' }, { v: 'purchase', t: 'Purchase only' }], value: f.side || '' }] : []),
+    { k: 'required', label: 'Must fill', type: 'checkbox', value: f.required }, { k: 'on_print', label: 'Show on printed bill', type: 'checkbox', value: f.on_print },
+  ], async (v) => refresh(f.id ? await api('PUT', '/api/settings/fields/' + f.id, v) : await POST('/api/settings/fields', { ...v, entity })).then(() => toast('Field saved')));
+  el.innerHTML = head('Custom fields') + setTabs('settings/fields') + `
+    <p class="muted">Add your own fields, like Size, Batch, Vehicle no or Drug licence. They show in forms and lists, and can print on bills.</p>
+    ${CF_ENT.map(([e, t]) => { const list = rows.filter((f) => f.entity === e); return `<div class="panel flush"><div class="row" style="padding:12px 16px"><h2 style="margin:0">${t}</h2><span class="spacer"></span>
+      ${canEdit ? `<button class="btn sm" data-add="${e}">+ Add field</button>` : ''}</div>
+      ${table([{ h: 'Field', k: 'label' }, { h: 'Type', f: (f) => esc((CF_TYPES.find(([k]) => k === f.type) || [])[1] || f.type) + (f.type === 'select' ? `<div class="muted">${esc(f.options.join(', '))}</div>` : '') },
+        { h: 'Rules', f: (f) => [f.required ? 'must fill' : '', f.on_print ? 'on bill' : '', f.side ? f.side + ' only' : ''].filter(Boolean).join(' · ') },
+        { h: '', f: (f) => canEdit ? `<button class="btn sm" data-ed="${f.id}">Edit</button> <button class="btn sm danger" data-rm="${f.id}">Delete</button>` : '' }], list,
+      { empty: 'No fields yet.' })}</div>`; }).join('')}`;
+  $$('[data-add]', el).forEach((b) => b.onclick = () => form(b.dataset.add));
+  $$('[data-ed]', el).forEach((b) => b.onclick = () => { const f = rows.find((x) => x.id === +b.dataset.ed); form(f.entity, f); });
+  $$('[data-rm]', el).forEach((b) => b.onclick = async () => {
+    const f = rows.find((x) => x.id === +b.dataset.rm);
+    if (confirm(`Delete the field ${f.label}? Values already saved stay in old records but are hidden.`)) { await refresh(await api('DELETE', '/api/settings/fields/' + f.id)); toast('Field deleted'); }
   });
 });
 
@@ -1285,7 +1340,7 @@ route(/^pos$/, async (el) => {
         <div class="totals" id="ptot" style="width:100%"></div>
         <div class="seg" id="method">${[['cash', 'Cash'], ['upi', 'UPI'], ['bank', 'Card / Bank'], ['credit', 'Credit (udhaar)']].map(([k, t]) => `<button type="button" data-m="${k}" class="${k === method ? 'on' : ''}">${t}</button>`).join('')}</div>
         <label class="f" id="recvw">Amount received (₹)<input id="recv" type="number" step="any" min="0"></label>
-        <div id="change" class="muted"></div><div id="posqr"></div>
+        <div id="change" class="muted"></div><div id="posqr"></div>${cfDefs('doc', 'sales').length ? `<div class="form">${cfInputs('doc', {}, 'sales')}</div>` : ''}
         <button class="btn primary big" id="done">Complete sale <span class="hide-sm">(F9)</span></button>
         <div class="err" id="perr" hidden></div>
       </div>
@@ -1343,7 +1398,7 @@ route(/^pos$/, async (el) => {
     const lines = cart.filter((l) => l.qty > 0);
     if (!lines.length) return toast('The bill is empty.');
     const t = totals(), btn = $('#done'); btn.disabled = true; $('#perr').hidden = true;
-    const body = { type: 'INV', party_id: +$('#cust').value, warehouse_id: +$('#wh').value, date: ME.today, notes: 'POS sale',
+    const body = { type: 'INV', party_id: +$('#cust').value, warehouse_id: +$('#wh').value, date: ME.today, notes: 'POS sale', extra: cfRead($('.pos-pay')),
       lines: lines.map((l) => ({ item_id: l.item_id, qty: l.qty, rate: l.rate, gst_rate: l.gst_rate })) };
     if (method !== 'credit') body.payment = { amount: Math.min(+$('#recv').value || t.total, t.total), account_id: acc(method === 'upi' ? 'upi' : method === 'bank' ? 'bank' : 'cash') };
     try {

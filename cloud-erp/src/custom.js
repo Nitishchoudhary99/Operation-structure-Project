@@ -99,3 +99,74 @@ export function cleanSeries(b, org, d) {
   if (!prefix && pad < 3) throw bad('Without a prefix, use at least 3 digits.');
   return { prefix, pad, fy_reset, next };
 }
+
+/* ---------- custom fields on items, parties and documents ----------
+   Definitions: JSON array on orgs.fields: { id, entity, key, label, type, options[], required, on_print, side }.
+   Values: JSON object in the row's `extra` column, keyed by field key. */
+export const ENTITIES = ['item', 'party', 'doc'];
+export const FIELD_TYPES = ['text', 'number', 'date', 'select'];
+export const MAX_FIELDS = 15;
+export const fieldsOf = (org) => { const a = parse(org && org.fields, []); return Array.isArray(a) ? a : []; };
+export const extraOf = (s) => parse(s, {});
+
+export function cleanField(b, defs, cur) {
+  const entity = cur ? cur.entity : b.entity;
+  if (!ENTITIES.includes(entity)) throw bad('Choose where the field is used: item, party or document.');
+  const label = str(b.label, 40);
+  if (!label) throw bad('Field name is required.');
+  const type = b.type || 'text';
+  if (!FIELD_TYPES.includes(type)) throw bad(`Type must be one of: ${FIELD_TYPES.join(', ')}.`);
+  const options = type === 'select'
+    ? [...new Set((Array.isArray(b.options) ? b.options : String(b.options || '').split(',')).map((o) => str(o, 40)).filter(Boolean))].slice(0, 30) : [];
+  if (type === 'select' && options.length < 2) throw bad('A dropdown needs at least 2 options, separated by commas.');
+  const same = defs.filter((f) => f.entity === entity && (!cur || f.id !== cur.id));
+  if (same.some((f) => f.label.toLowerCase() === label.toLowerCase())) throw bad(`There is already a field called ${label}.`);
+  if (!cur && same.length >= MAX_FIELDS) throw bad(`At most ${MAX_FIELDS} custom fields per type.`);
+  let key = cur ? cur.key : (label.toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_+|_+$/g, '') || 'field').slice(0, 20);
+  if (!cur) {
+    if (!/^[a-z]/.test(key)) key = 'f_' + key;
+    const base = key; let n = 2;
+    while (defs.some((f) => f.entity === entity && f.key === key)) key = `${base}_${n++}`;
+  }
+  const side = entity === 'doc' && ['sales', 'purchase'].includes(b.side) ? b.side : '';
+  const flag = (v) => (v === true || v === 1 || v === '1' || v === 'true' || v === 'on' ? 1 : 0);
+  return { id: cur ? cur.id : Math.max(0, ...defs.map((f) => f.id || 0)) + 1, entity, key, label, type, options, required: flag(b.required), on_print: flag(b.on_print), side };
+}
+
+/* the custom values a write may store: unknown keys dropped, types converted, required and dropdown checked */
+export function cleanExtra(defs, entity, input, side = '') {
+  const src = input && typeof input === 'object' ? input : {}, out = {};
+  for (const f of defs) {
+    if (f.entity !== entity || (side && f.side && f.side !== side)) continue;
+    let v = src[f.key];
+    if (v === undefined || v === null || String(v).trim() === '') { if (f.required) throw bad(`${f.label} is required.`); continue; }
+    if (f.type === 'number') { v = Number(v); if (!Number.isFinite(v)) throw bad(`${f.label} must be a number.`); }
+    else if (f.type === 'date') { v = str(v, 10); if (!/^\d{4}-\d{2}-\d{2}$/.test(v)) throw bad(`${f.label} must be a date.`); }
+    else if (f.type === 'select') { v = str(v, 40); if (!f.options.includes(v)) throw bad(`${f.label}: choose one of ${f.options.join(', ')}.`); }
+    else v = str(v, 200);
+    out[f.key] = v;
+  }
+  const s = JSON.stringify(out);
+  if (s.length > 4096) throw bad('Custom fields are too long.');
+  return s;
+}
+
+/* SQL conditions for ?cf.<key>=value filters (keys come from the definitions, so they are safe to inline) */
+export function extraFilter(defs, entity, params, col) {
+  const where = [], args = [];
+  for (const [k, raw] of params) {
+    const f = k.startsWith('cf.') && raw !== '' && defs.find((x) => x.entity === entity && x.key === k.slice(3));
+    if (!f) continue;
+    const path = `json_extract(${col}, '$.${f.key}')`;
+    if (f.type === 'text') { where.push(`${path} LIKE ?`); args.push(`%${str(raw, 100)}%`); }
+    else { where.push(`${path} = ?`); args.push(f.type === 'number' ? Number(raw) : str(raw, 40)); }
+  }
+  return { sql: where.map((w) => ' AND ' + w).join(''), args };
+}
+
+/* fields marked "show on print", as label/value pairs */
+export const printExtra = (defs, entity, extra, side = '') => {
+  const x = typeof extra === 'string' ? extraOf(extra) : extra || {};
+  return defs.filter((f) => f.entity === entity && f.on_print && (!side || !f.side || f.side === side) && x[f.key] !== undefined && x[f.key] !== '')
+    .map((f) => ({ label: f.label, value: f.type === 'date' ? x[f.key].split('-').reverse().join('-') : String(x[f.key]) }));
+};
