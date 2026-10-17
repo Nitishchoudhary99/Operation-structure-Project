@@ -256,6 +256,10 @@ export async function dashboard(db, org) {
       ORDER BY d.due_date LIMIT 10`).bind(org.id, t));
   add('recent', db.prepare(`SELECT d.id, d.type, d.number, d.date, d.total, d.status, p.name AS party FROM docs d
       LEFT JOIN parties p ON p.id = d.party_id WHERE d.org_id = ? ORDER BY d.id DESC LIMIT 8`).bind(org.id));
+  // first-run checklist: has the business added an item, a real customer and an invoice yet?
+  add('setup', db.prepare(`SELECT EXISTS (SELECT 1 FROM items WHERE org_id = ?1) AS items,
+      EXISTS (SELECT 1 FROM parties WHERE org_id = ?1 AND kind != 'supplier' AND name != 'Walk-in Customer') AS customers,
+      EXISTS (SELECT 1 FROM docs WHERE org_id = ?1 AND type = 'INV') AS invoices`).bind(org.id));
   const res = await db.batch(st);
   const all = (k) => res.slice(at[k][0], at[k][0] + at[k][1]);
   const rows = (k) => all(k)[0].results;
@@ -273,7 +277,7 @@ export async function dashboard(db, org) {
   const sv = (m, ty) => (dm.find((s) => s.ym === m && s.type === ty) || { taxable: 0 }).taxable;
   const stock = rows('stock')[0];
   return {
-    today: t, fy_start: fy,
+    today: t, fy_start: fy, setup: Object.fromEntries(Object.entries(rows('setup')[0]).map(([k, v]) => [k, !!v])),
     sales_month: R(g(month, 'INV') - g(month, 'SRET')), sales_fy: R(g(year, 'INV') - g(year, 'SRET')), invoices_fy: g(year, 'INV', 'n'), purchases_fy: R(g(year, 'BILL')),
     gross_profit_fy: pl.gross_profit, net_profit_fy: pl.net_profit, gross_margin: pl.gross_margin,
     receivable: R(bySys.ar || 0), payable: R(-(bySys.ap || 0)), gst_payable: R(-(bySys.gst_output || 0) - (bySys.gst_input || 0)),

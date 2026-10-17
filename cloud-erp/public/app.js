@@ -16,7 +16,8 @@ const STATES = ['Andaman and Nicobar Islands', 'Andhra Pradesh', 'Arunachal Prad
   'Dadra and Nagar Haveli and Daman and Diu', 'Delhi', 'Goa', 'Gujarat', 'Haryana', 'Himachal Pradesh', 'Jammu and Kashmir', 'Jharkhand', 'Karnataka',
   'Kerala', 'Ladakh', 'Lakshadweep', 'Madhya Pradesh', 'Maharashtra', 'Manipur', 'Meghalaya', 'Mizoram', 'Nagaland', 'Odisha', 'Puducherry', 'Punjab',
   'Rajasthan', 'Sikkim', 'Tamil Nadu', 'Telangana', 'Tripura', 'Uttar Pradesh', 'Uttarakhand', 'West Bengal', 'Other Territory'];
-document.body.insertAdjacentHTML('beforeend', `<datalist id="states">${STATES.map((x) => `<option value="${x}">`).join('')}</datalist>`);
+document.body.insertAdjacentHTML('beforeend', `<datalist id="states">${STATES.map((x) => `<option value="${x}">`).join('')}</datalist>
+  <datalist id="units">${['Pcs', 'Kg', 'Gram', 'Litre', 'ml', 'Box', 'Pack', 'Bag', 'Dozen', 'Metre', 'Pair', 'Set', 'Bottle', 'Tin'].map((x) => `<option value="${x}">`).join('')}</datalist>`);
 
 let ME = null;                  // { user, org, can, doc_types, gst_rates, today }
 const cache = {};               // masters used by forms; cleared after writes
@@ -42,11 +43,16 @@ async function master(name) {
 }
 const dirty = (...names) => names.forEach((n) => delete cache[n]);
 
-function toast(msg) {
+/* Short message at the bottom. kind: 'ok' (green tick, default), 'err' (red), 'info' (plain) */
+function toast(msg, kind = 'ok') {
   const t = $('#toast');
-  t.textContent = msg; t.classList.add('show');
-  clearTimeout(toast.t); toast.t = setTimeout(() => t.classList.remove('show'), 2600);
+  t.className = 't-' + kind;
+  t.innerHTML = (kind === 'ok' ? '<b aria-hidden="true">&#10003;</b> ' : kind === 'err' ? '<b aria-hidden="true">!</b> ' : '') + esc(msg);
+  void t.offsetWidth; t.classList.add('show');
+  clearTimeout(toast.t); toast.t = setTimeout(() => t.classList.remove('show'), kind === 'err' ? 4000 : 2600);
 }
+/* An empty list that says what to do next, with a button */
+const emptyCta = (text, btn = '') => `<div class="empty-cta"><p>${text}</p>${btn}</div>`;
 
 function table(cols, rows, { onRow, foot, empty = 'Nothing here yet.' } = {}) {
   if (!rows.length) return `<div class="empty">${empty}</div>`;
@@ -78,15 +84,20 @@ function modal(title, fields, onSubmit, { submit = 'Save', intro = '' } = {}) {
     if (f.type === 'checkbox') return `<input type="checkbox" name="${f.k}" ${v ? 'checked' : ''}>`;
     return `<input name="${f.k}" type="${f.type || 'text'}" value="${esc(v)}" ${f.list ? `list="${f.list}" autocomplete="off"` : ''} ${f.step ? `step="${f.step}"` : f.type === 'number' ? 'step="any"' : ''} ${f.required ? 'required' : ''} ${f.placeholder ? `placeholder="${esc(f.placeholder)}"` : ''}>`;
   };
+  const lab = (f) => `<label class="f ${f.wide ? 'wide' : ''} ${f.type === 'checkbox' ? 'check' : ''}">${f.type === 'checkbox' ? input(f) + ' ' : ''}<span>${esc(f.label)}${f.required ? ' <i class="req">*</i>' : ''}</span>${f.type === 'checkbox' ? '' : input(f)}${f.help ? `<small class="help">${esc(f.help)}</small>` : ''}</label>`;
+  const main = fields.filter((f) => !f.more), more = fields.filter((f) => f.more);
   root.innerHTML = `<div class="modal-bg"><form class="modal" novalidate>
       <h2>${esc(title)}</h2>${intro}<div class="err" hidden></div>
-      <div class="form">${fields.map((f) => `<label class="f ${f.wide ? 'wide' : ''}">${esc(f.label)}${input(f)}</label>`).join('')}</div>
+      <div class="form">${main.map(lab).join('')}</div>
+      ${more.length ? `<details class="more"><summary>More details <span class="muted">(optional)</span></summary><div class="form">${more.map(lab).join('')}</div></details>` : ''}
       <div class="actions"><button type="button" class="btn" data-x>Cancel</button><button class="btn primary">${esc(submit)}</button></div>
     </form></div>`;
   const form = $('form', root), close = () => { root.innerHTML = ''; };
   $('[data-x]', root).onclick = close;
   $('.modal-bg', root).addEventListener('mousedown', (e) => { if (e.target.classList.contains('modal-bg')) close(); });
-  const first = $('input,select,textarea', form); if (first) first.focus();
+  const first = $('input,select,textarea', form); if (first && matchMedia('(pointer: fine)').matches) first.focus();
+  const esc1 = (e) => { if (e.key === 'Escape') { close(); document.removeEventListener('keydown', esc1); } };
+  document.addEventListener('keydown', esc1);
   form.onsubmit = async (e) => {
     e.preventDefault();
     const vals = {};
@@ -96,7 +107,7 @@ function modal(title, fields, onSubmit, { submit = 'Save', intro = '' } = {}) {
     }
     const btn = $('button.primary', form); btn.disabled = true;
     try { await onSubmit(vals, form); close(); } catch (err) {
-      const box = $('.err', form); box.hidden = false; box.textContent = err.message;
+      const box = $('.err', form); box.hidden = false; box.textContent = err.message; box.scrollIntoView({ block: 'nearest' });
     } finally { btn.disabled = false; }
   };
   return form;
@@ -149,6 +160,7 @@ function renderAuth(mode = /^#\/?signup/.test(location.hash) ? 'signup' : 'login
       <p class="seo-links"><a href="/gst-billing-software/">GST billing</a> · <a href="/khata-book-app/">Khata book</a> · <a href="/inventory-management-software/">Inventory</a> · <a href="/pricing/">Pricing: free plan</a></p>
     </div>
     <div class="box"><form id="auth-form">
+      <div class="brandline show-sm"><i>&#x2197;</i>SmartTrader ERP <span class="muted">· GST billing, stock &amp; khata</span></div>
       <h1>${mode === 'login' ? 'Sign in' : 'Create your business account'}</h1>
       <div class="err" hidden></div>
       ${mode === 'signup' ? `
@@ -196,24 +208,76 @@ const NAV = [
   ['Settings', [['settings', 'Settings'], ['plan', 'Plan & Billing']]],
 ];
 
+/* the + New menu: the everyday actions, only those the user's role may do */
+const NEW_MENU = [['new/INV', 'Sales invoice', 'sales'], ['pos', 'Quick bill (POS)', 'sales'], ['new/BILL', 'Purchase bill', 'purchase'], ['receipts?new=1', 'Receive payment', 'finance'],
+  ['expenses?new=1', 'Expense', 'finance'], ['khata?new=1', 'Khata entry', 'khata'], ['items?new=1', 'Item', 'items'], ['parties?new=1', 'Customer / supplier', 'masters']];
+
 function shell() {
+  const news = NEW_MENU.filter(([, , a]) => ME.can[a]);
   $('#app').innerHTML = `<div class="shell">
     <nav class="side" id="side">
-      <div class="brand"><i>&#x2197;</i>SmartTrader</div>
+      <div class="brand"><i>&#x2197;</i><span>SmartTrader<small>${esc(ME.org.name)}</small></span></div>
       ${NAV.map(([g, all]) => { const items = all.filter(([h]) => (!simple() || !ADVANCED.has(h)) && seen(h)); return items.length ? `${g ? `<div class="nav-group">${g}</div>` : ''}${items.map(([h, t]) => `<a href="#/${h}" data-h="${h}">${t}</a>`).join('')}` : ''; }).join('')}
+      <div class="side-foot"><div class="muted">${esc(ME.user.name)} &middot; ${esc(ME.user.role)}</div>
+        <button class="btn sm" id="install" hidden>Install app</button><button class="btn sm" id="logout">Sign out</button></div>
     </nav>
     <div class="main">
       <header class="top">
         <button class="btn sm burger" id="burger" aria-label="Menu">&#9776;</button>
-        <strong>${esc(ME.org.name)}</strong><span class="spacer" style="flex:1"></span>
-        <span class="who hide-sm">${esc(ME.user.name)} &middot; ${esc(ME.user.role)}</span>
-        <button class="btn sm" id="install" hidden>Install app</button>
-        <button class="btn sm" id="logout">Sign out</button>
+        <strong class="orgname">${esc(ME.org.name)}</strong>
+        <div class="gsearch"><input id="gq" type="search" placeholder="Search items, customers, bills…" autocomplete="off" aria-label="Search" enterkeyhint="search">
+          <div class="gres" id="gres" hidden></div></div>
+        ${news.length ? `<div class="newmenu"><button class="btn primary" id="newbtn" aria-haspopup="true" aria-expanded="false">+ <span>New</span></button>
+          <div class="menu" id="newmenu" hidden>${news.map(([h, t]) => `<a href="#/${h}">${t}</a>`).join('')}</div></div>` : ''}
       </header>
       <main class="page" id="page"></main>
     </div></div>`;
   $('#burger').onclick = () => $('#side').classList.toggle('open');
   $('#logout').onclick = async () => { await POST('/api/auth/logout'); ME = null; location.hash = ''; renderAuth(); };
+  const nb = $('#newbtn'), nm = $('#newmenu');
+  if (nb) {
+    nb.onclick = (e) => { e.stopPropagation(); nm.hidden = !nm.hidden; nb.setAttribute('aria-expanded', String(!nm.hidden)); };
+    nm.onclick = () => { nm.hidden = true; };
+  }
+  wireSearch();
+}
+document.addEventListener('click', (e) => {
+  const nm = $('#newmenu'); if (nm && !e.target.closest('.newmenu')) nm.hidden = true;
+  const gr = $('#gres'); if (gr && !e.target.closest('.gsearch')) gr.hidden = true;
+  $$('.more-menu[open]').forEach((d) => { if (!d.contains(e.target) || e.target.closest('.menu')) d.removeAttribute('open'); });
+});
+document.addEventListener('keydown', (e) => {
+  if (e.key === '/' && !e.target.closest('input,textarea,select') && $('#gq')) { e.preventDefault(); $('#gq').focus(); }
+});
+
+/* Search in the top bar: items, customers & suppliers, bills (one API call, after a short pause in typing) */
+function wireSearch() {
+  const q = $('#gq'), box = $('#gres');
+  let timer = 0, last = '';
+  const show = (r, text) => {
+    const doc = (d) => `<a href="#/doc/${d.id}"><b>${esc(d.number)}</b> <span class="muted">${esc(d.label)} &middot; ${esc(d.party || '')} &middot; ${inr(d.total)}</span></a>`;
+    const party = (p) => `<a href="#/${ME.view && ME.view.masters === false ? 'khata' : 'party'}/${p.id}"><b>${esc(p.name)}</b> <span class="muted">${esc(p.kind)}${p.phone ? ' &middot; ' + esc(p.phone) : ''}</span></a>`;
+    const item = (i) => `<a href="#/item/${i.id}"><b>${esc(i.name)}</b> <span class="muted">${inr(i.sale_price)}${i.is_service ? '' : ` &middot; ${qtyf(i.qty_on_hand)} ${esc(i.unit)} in stock`}</span></a>`;
+    const grp = (t, rows, f) => rows.length ? `<div class="g">${t}</div>${rows.map(f).join('')}` : '';
+    const html = grp('Bills & documents', r.docs, doc) + grp('Customers & suppliers', r.parties, party) + grp('Items', r.items, item);
+    box.innerHTML = html || `<div class="none">Nothing found for “${esc(text)}”.</div>`;
+    box.hidden = false;
+  };
+  q.oninput = () => {
+    clearTimeout(timer);
+    const text = q.value.trim();
+    if (text.length < 2) { box.hidden = true; return; }
+    timer = setTimeout(async () => {
+      if (text === last) { box.hidden = false; return; }
+      try { const r = await GET('/api/search?q=' + encodeURIComponent(text)); if (q.value.trim() === text) { last = text; show(r, text); } } catch (e) { /* offline: ignore */ }
+    }, 280);
+  };
+  q.onfocus = () => { if (q.value.trim().length >= 2 && box.innerHTML) box.hidden = false; };
+  q.onkeydown = (e) => {
+    if (e.key === 'Escape') { box.hidden = true; q.blur(); }
+    if (e.key === 'Enter') { const a = $('a', box); if (a) { e.preventDefault(); box.hidden = true; q.value = ''; last = ''; q.blur(); location.hash = a.getAttribute('href'); } }
+  };
+  box.onclick = (e) => { if (e.target.closest('a')) { box.hidden = true; q.value = ''; last = ''; } };
 }
 
 const ROUTES = [];
@@ -240,6 +304,12 @@ async function render() {
   page.innerHTML = '<div class="empty">Page not found.</div>';
 }
 const go = (h) => { location.hash = '#/' + h; };
+/* ?new=1 opens a form once; the flag is removed from the address so saving (which re-renders the page) does not open it again */
+function takeNew(q) {
+  if (!q.get('new')) return false;
+  history.replaceState(null, '', location.hash.replace(/([?&])new=1&?/, '$1').replace(/[?&]$/, ''));
+  return true;
+}
 const head = (title, actions = '') => `<div class="page-head"><h1>${title}</h1><span class="spacer"></span>${actions}</div>`;
 
 /* ======================================================================= dashboard */
@@ -253,7 +323,8 @@ route(/^dashboard$/, async (el) => {
       <rect x="${x + bw * 0.5}" y="${H - 20 - hp}" width="${bw * 0.33}" height="${hp}" fill="#94a3b8" rx="2"><title>Purchases ${m.month}: ${inr0(m.purchases)}</title></rect>
       <text x="${x + bw / 2}" y="${H - 5}" font-size="10" text-anchor="middle" fill="var(--muted)">${new Date(m.month + '-01').toLocaleString('en-IN', { month: 'short' })}</text>`;
   }).join('');
-  el.innerHTML = head('Dashboard', `<a class="btn" href="#/new/BILL">+ Purchase bill</a><a class="btn primary" href="#/new/INV">+ New invoice</a>`) + `
+  el.innerHTML = head('Dashboard', `${ME.can.purchase ? '<a class="btn hide-sm" href="#/new/BILL">+ Purchase bill</a>' : ''}${ME.can.sales ? '<a class="btn primary hide-sm" href="#/new/INV">+ New invoice</a>' : ''}`)
+    + getStarted(d.setup) + `
     <div class="kpis">
       <div class="kpi"><div class="l">Sales this month</div><div class="v">${inr0(d.sales_month)}</div><div class="s">FY: ${inr0(d.sales_fy)} &middot; ${d.invoices_fy} invoices</div></div>
       ${d.gross_profit_fy === undefined ? '' : `<div class="kpi"><div class="l">Gross profit (FY)</div><div class="v">${inr0(d.gross_profit_fy)}</div><div class="s">Margin ${d.gross_margin}% &middot; Net ${inr0(d.net_profit_fy)}</div></div>`}
@@ -280,6 +351,38 @@ route(/^dashboard$/, async (el) => {
       { h: 'Date', f: (r) => fdate(r.date) }, { h: 'Total', num: 1, f: (r) => inr(r.total) }, { h: 'Status', f: (r) => badge(r.status) }], d.recent, { empty: 'Create your first invoice or purchase to get started.' })}</div>`;
 });
 
+/* First-run checklist on the dashboard. Each step ticks itself from real data; it hides once all are done
+   (or when the owner taps Hide). */
+const lsGet = (k) => { try { return localStorage.getItem(k); } catch (e) { return null; } };
+const lsSet = (k, v) => { try { localStorage.setItem(k, v); } catch (e) { /* private mode */ } };
+const isInstalled = () => matchMedia('(display-mode: standalone)').matches || navigator.standalone || lsGet('st_installed') === '1';
+function getStarted(setup) {
+  if (!setup || !ME.can.sales || lsGet('st_gs_hide_' + ME.org.id)) return '';
+  const o = ME.org;
+  const steps = [
+    [!!(o.address && o.upi_id), 'Add business details and UPI ID', 'Address prints on bills; UPI lets customers pay you in one tap.', '#/settings', 'Open settings'],
+    [setup.items, 'Add your first item', 'Name, price and GST. Bills fill them in for you.', '#/items?new=1', 'Add item'],
+    [setup.customers, 'Add your first customer', 'Keep their bills, payments and balance together.', '#/parties?new=1', 'Add customer'],
+    [setup.invoices, 'Make your first invoice', 'Save it, then share on WhatsApp or print.', '#/new/INV', 'New invoice'],
+    [isInstalled(), 'Install the app on this phone or computer', 'Opens like any app, from your home screen.', '', 'Install'],
+  ];
+  const done = steps.filter((x) => x[0]).length;
+  if (done === steps.length) return '';
+  return `<div class="panel getstarted"><div class="row"><h2 style="margin:0">Get started</h2><span class="muted">${done} of ${steps.length} done</span><span class="spacer"></span>
+      <button class="btn sm" data-gshide>Hide</button></div>
+    <div class="gsbar"><i style="width:${Math.round(done / steps.length * 100)}%"></i></div>
+    <ol class="gs">${steps.map(([ok, t, h, href, b], i) => `<li class="${ok ? 'done' : ''}"><span class="tick" aria-hidden="true">${ok ? '&#10003;' : i + 1}</span>
+      <div><b>${t}</b><div class="muted">${h}</div></div>${ok ? '<span class="muted">Done</span>' : href ? `<a class="btn sm primary" href="${href}">${b}</a>` : `<button class="btn sm primary" data-install>${b}</button>`}</li>`).join('')}</ol></div>`;
+}
+document.addEventListener('click', async (e) => {
+  if (e.target.closest('[data-gshide]')) { lsSet('st_gs_hide_' + ME.org.id, '1'); e.target.closest('.getstarted').remove(); toast('Checklist hidden', 'info'); }
+  if (e.target.closest('[data-install]')) {
+    if (installEvt) { installEvt.prompt(); const c = await installEvt.userChoice; installEvt = null; if (c.outcome === 'accepted') { lsSet('st_installed', '1'); render(); } }
+    else if (/iphone|ipad|ipod/i.test(navigator.userAgent)) alert('In Safari: tap the Share button, then “Add to Home Screen”.');
+    else if (confirm('Open your browser menu (⋮) and choose “Install app” or “Add to Home screen”. Tap OK once done.')) { lsSet('st_installed', '1'); render(); }
+  }
+});
+
 /* ======================================================================= document lists */
 route(/^(sales|purchase)\/([A-Z]+)$/, async (el, m, q) => {
   const type = m[2], T = ME.doc_types[type];
@@ -298,18 +401,22 @@ route(/^(sales|purchase)\/([A-Z]+)$/, async (el, m, q) => {
     ...(money ? [{ h: 'Balance', k: 'balance', num: 1, f: (r) => inr(r.balance) }] : []), ...cfCols('doc', T.side),
     { h: 'Status', k: 'status', f: (r) => badge(r.status) }];
   el.innerHTML = head(esc(T.label) + 's', `<button class="btn" id="csv">Export CSV</button>${make ? `<a class="btn primary" href="#/new/${type}">+ New ${esc(T.label)}</a>` : ''}`) + `
-    <div class="panel"><form class="row" id="flt">
-      <input name="q" placeholder="Search number or party" value="${esc(q.get('q') || '')}" style="max-width:260px">
+    <div class="panel"><form class="row flt" id="flt">
+      <input name="q" type="search" placeholder="Search number or party" value="${esc(q.get('q') || '')}" style="max-width:260px">
+      <button type="button" class="btn sm show-sm" id="moref" aria-expanded="false">More filters</button>
       <select name="status" style="max-width:160px"><option value="">All statuses</option>${['open', 'partial', 'closed', 'unpaid', 'paid', 'converted', 'cancelled'].map((s) => `<option ${q.get('status') === s ? 'selected' : ''}>${s}</option>`).join('')}</select>
       <input type="date" name="from" value="${esc(q.get('from') || '')}" style="max-width:160px"><input type="date" name="to" value="${esc(q.get('to') || '')}" style="max-width:160px">
       ${cfF.map((f) => f.type === 'select' ? `<select name="cf.${f.key}" style="max-width:160px"><option value="">${esc(f.label)}: all</option>${f.options.map((o) => `<option ${q.get('cf.' + f.key) === o ? 'selected' : ''}>${esc(o)}</option>`).join('')}</select>`
         : `<input name="cf.${f.key}" placeholder="${esc(f.label)}" value="${esc(q.get('cf.' + f.key) || '')}" style="max-width:160px">`).join('')}
-      <button class="btn">Filter</button></form>
+      <button class="btn">Search</button></form>
       ${!make ? `<p class="muted" style="margin:10px 0 0">To make a ${esc(T.label.toLowerCase())}, open the original ${type === 'SRET' ? 'invoice' : 'bill'} and choose <b>Return goods</b>.</p>` : ''}
       ${ME.doc_types[type].note ? `<p class="muted" style="margin:10px 0 0">Tip: open the ${T.side === 'sales' ? 'invoice' : 'bill'} and choose <b>${T.side === 'sales' ? 'Credit note' : 'Debit note'}</b> to adjust it line by line; it is then settled against that ${T.side === 'sales' ? 'invoice' : 'bill'}.</p>` : ''}</div>
-    <div class="panel flush">${table(cols, rows, { onRow: true, empty: `No ${esc(T.label.toLowerCase())}s yet.` })}</div>`;
+    <div class="panel flush">${table(cols, rows, { onRow: true, empty: [...q.keys()].length ? 'Nothing matches these filters.' : emptyCta(`No ${esc(T.label.toLowerCase())}s yet.${type === 'INV' ? ' Make your first bill: choose a customer, add items, save. You can share it on WhatsApp.' : ''}`,
+      make && ME.can[T.side] ? `<a class="btn primary" href="#/new/${type}">+ New ${esc(T.label)}</a>` : '') })}</div>`;
   bindRows(el, rows, (r) => go('doc/' + r.id));
-  $('#flt').onsubmit = (e) => { e.preventDefault(); const f = new URLSearchParams(new FormData(e.target)); go(`${m[1]}/${type}?${f}`); };
+  $('#flt').onsubmit = (e) => { e.preventDefault(); const f = new URLSearchParams([...new FormData(e.target)].filter(([, v]) => v !== '')); go(`${m[1]}/${type}?${f}`); };
+  $('#moref').onclick = () => { const o = $('#flt').classList.toggle('open'); $('#moref').setAttribute('aria-expanded', String(o)); };
+  if ([...q.keys()].some((k) => k !== 'q')) $('#flt').classList.add('open');
   $('#csv').onclick = () => download(`${type}-register.csv`, toCsv(cols.map((c) => ({ ...c, csv: undefined })), rows));
 });
 
@@ -337,17 +444,17 @@ route(/^new\/([A-Z]+)$/, async (el, m, q) => {
   const fromDoc = !!draft.ref_id;
   const isNote = !!T.note;
   const isSale = T.side === 'sales', money = ['INV', 'BILL'].includes(type);
-  const itemOpt = (sel) => `<option value="">— free text / service —</option>` + items.map((i) => `<option value="${i.id}" ${+sel === i.id ? 'selected' : ''}>${esc(i.name)}${i.is_service ? '' : ` (${qtyf(i.qty_on_hand)} ${esc(i.unit)})`}</option>`).join('');
+  const itemOpt = (sel) => `<option value="">Choose item…</option>` + items.map((i) => `<option value="${i.id}" ${+sel === i.id ? 'selected' : ''}>${esc(i.name)}${i.is_service ? '' : ` (${qtyf(i.qty_on_hand)} ${esc(i.unit)})`}</option>`).join('');
   const gstOpt = (sel) => ME.gst_rates.map((g) => `<option value="${g}" ${+sel === g ? 'selected' : ''}>${g}%</option>`).join('');
   const lineRow = (l) => `<tr>
       <td class="c-item">${fromDoc ? `<b>${esc(l.item || l.description)}</b>${isNote && l.orig_rate !== undefined ? `<div class="muted">billed at ${inr(l.orig_rate)}</div>` : ''}<input type="hidden" name="item_id" value="${esc(l.item_id || '')}"><input type="hidden" name="src_line_id" value="${esc(l.src_line_id || '')}"><input type="hidden" name="description" value="${esc(l.description || '')}">`
-        : `<select name="item_id">${itemOpt(l.item_id)}</select><input name="description" placeholder="Description" value="${esc(l.description || '')}" style="margin-top:4px">`}</td>
-      <td class="c-n"><input name="qty" type="number" step="any" min="0" value="${esc(l.qty ?? 1)}"></td>
-      <td class="c-n"><input name="rate" type="number" step="any" min="0" value="${esc(l.rate ?? '')}"></td>
-      <td class="c-n"><input name="discount_pct" type="number" step="any" min="0" max="100" value="${esc(l.discount_pct ?? 0)}"></td>
-      <td class="c-n"><select name="gst_rate">${gstOpt(l.gst_rate ?? 0)}</select></td>
-      <td class="num" data-amt></td>
-      <td>${fromDoc && !isNote && ['SRET', 'PRET'].includes(type) ? '' : '<button type="button" class="btn sm danger" data-del>&times;</button>'}</td></tr>`;
+        : `<select name="item_id" aria-label="Item">${itemOpt(l.item_id)}</select><input name="description" placeholder="or type a name / note" value="${esc(l.description || '')}" style="margin-top:4px">`}</td>
+      <td class="c-n" data-l="Qty"><input name="qty" type="number" step="any" min="0" inputmode="decimal" value="${esc(l.qty ?? 1)}" aria-label="Quantity"></td>
+      <td class="c-n" data-l="${isNote ? 'Rate diff ₹' : 'Rate ₹'}"><input name="rate" type="number" step="any" min="0" inputmode="decimal" value="${esc(l.rate ?? '')}" aria-label="Rate"></td>
+      <td class="c-n" data-l="Disc %"><input name="discount_pct" type="number" step="any" min="0" max="100" inputmode="decimal" value="${esc(l.discount_pct ?? 0)}" aria-label="Discount percent"></td>
+      <td class="c-n" data-l="GST"><select name="gst_rate" aria-label="GST rate">${gstOpt(l.gst_rate ?? 0)}</select></td>
+      <td class="num c-amt" data-amt data-l="Amount"></td>
+      <td class="c-del">${fromDoc && !isNote && ['SRET', 'PRET'].includes(type) ? '' : '<button type="button" class="btn sm danger" data-del aria-label="Remove line">&times;</button>'}</td></tr>`;
   el.innerHTML = head(`New ${esc(T.label)}${fromDoc ? ` <span class="muted">from ${esc(draft.ref_number)}</span>` : ''}`) + `
     <form id="docf"><div class="err" hidden></div>
     ${ge ? `<div class="panel warnbox">Receiving against gate entry <b>${esc(ge.number)}</b>: vehicle ${esc(ge.vehicle_no)}${ge.challan_no ? `, challan ${esc(ge.challan_no)}` : ''}${ge.packages ? `, ${ge.packages} packages` : ''}.</div>` : ''}
@@ -359,7 +466,8 @@ route(/^new\/([A-Z]+)$/, async (el, m, q) => {
       ${fromDoc ? '' : `<label class="f">&nbsp;<button type="button" class="btn" id="newparty">+ New ${side}</button></label>`}
       <label class="f">Date<input type="date" name="date" value="${esc(draft.date)}"></label>
       ${money || type === 'PO' || type === 'SO' || type === 'QUOTE' ? `<label class="f">${money ? 'Due date' : type === 'QUOTE' ? 'Valid until' : 'Expected by'}<input type="date" name="due_date" placeholder="auto"></label>` : ''}
-      <label class="f">Godown<select name="warehouse_id">${whs.map((w) => `<option value="${w.id}" ${w.id === +draft.warehouse_id ? 'selected' : ''}>${esc(w.name)}</option>`).join('')}</select></label>
+      ${whs.length > 1 ? `<label class="f">Godown<select name="warehouse_id">${whs.map((w) => `<option value="${w.id}" ${w.id === +draft.warehouse_id ? 'selected' : ''}>${esc(w.name)}</option>`).join('')}</select></label>`
+        : `<input type="hidden" name="warehouse_id" value="${whs[0] ? whs[0].id : ''}">`}
       ${cfInputs('doc', draft.extra || {}, T.side)}
     </div></div>
     <div class="panel flush"><div class="tbl-wrap"><table class="t lines"><thead><tr><th>Item</th><th>Qty</th><th>${isNote ? 'Rate diff (₹/unit)' : 'Rate (₹)'}</th><th>Disc %</th><th>GST</th><th class="num">Amount</th><th></th></tr></thead>
@@ -367,11 +475,11 @@ route(/^new\/([A-Z]+)$/, async (el, m, q) => {
       ${fromDoc ? '' : '<div style="padding:10px"><button type="button" class="btn sm" id="addline">+ Add line</button></div>'}</div>
     <div class="grid g2">
       <div class="panel"><label class="f">Notes / terms<textarea name="notes" rows="3"></textarea></label>
-        ${money ? `<div class="form" style="margin-top:12px"><label class="f">${isSale ? 'Received now' : 'Paid now'} (₹)<input type="number" step="any" min="0" name="pay_amount" placeholder="0"></label>
-          <label class="f">Into / from<select name="pay_account">${cashAccts.map((o) => `<option value="${o.v}">${esc(o.t)}</option>`).join('')}</select></label></div>` : ''}</div>
+        ${money ? `<div class="form" style="margin-top:12px"><label class="f">${isSale ? 'Amount received now' : 'Amount paid now'} (₹)<input type="number" step="any" min="0" inputmode="decimal" name="pay_amount" placeholder="0"><small class="help">Leave empty for credit (udhaar).</small></label>
+          <label class="f">${isSale ? 'Money went into' : 'Paid from'}<select name="pay_account">${cashAccts.map((o) => `<option value="${o.v}">${esc(o.t)}</option>`).join('')}</select></label></div>` : ''}</div>
       <div class="panel"><div class="totals" id="totals"></div></div>
     </div>
-    <div class="row"><span class="spacer"></span><a class="btn" href="javascript:history.back()">Cancel</a><button class="btn primary" id="save">Save ${esc(T.label)}</button></div></form>`;
+    <div class="row savebar"><span class="sb-total" id="sbtotal"></span><span class="spacer"></span><a class="btn hide-sm" href="javascript:history.back()">Cancel</a><button class="btn primary" id="save">Save ${esc(T.label)}</button></div></form>`;
 
   const form = $('#docf'), tbody = $('#lines');
   const partyOf = () => parties.find((p) => p.id === +form.elements.party_id.value);
@@ -388,6 +496,7 @@ route(/^new\/([A-Z]+)$/, async (el, m, q) => {
       ${inter ? `<div><span>IGST</span><span>${inr(tax)}</span></div>` : `<div><span>CGST</span><span>${inr(tax / 2)}</span></div><div><span>SGST</span><span>${inr(tax / 2)}</span></div>`}
       ${total !== exact ? `<div><span>Round off</span><span>${inr(total - exact)}</span></div>` : ''}
       <div class="grand"><span>Total</span><span>${inr(total)}</span></div>`;
+    $('#sbtotal').innerHTML = `Total <b>${inr(total)}</b>`;
   };
   const wireRow = (tr) => {
     const sel = $('select[name=item_id]', tr);
@@ -476,18 +585,19 @@ route(/^doc\/(\d+)$/, async (el, m) => {
   const T = ME.doc_types[d.type], o = d.org, p = d.party || {};
   const next = Object.entries(ME.doc_types).filter(([k, v]) => v.from.includes(d.type) && !(simple() && ADV_DOCS.includes(k)));
   const hasOpen = d.lines.some((l) => l.remaining > 0.0005);
-  const actions = [];
+  const main = [], more = [];   // main: the few big buttons; more: everything else, in a menu
   if (d.status !== 'cancelled') {
-    for (const [k, v] of next) if (hasOpen || v.note) actions.push(`<a class="btn" href="#/new/${k}?from=${d.id}">${['SRET', 'PRET'].includes(k) ? 'Return goods' : v.note ? (k === 'CNOTE' ? 'Credit note' : 'Debit note') : 'Make ' + esc(v.label)}</a>`);
-    if (!simple() && ['SO', 'DN'].includes(d.type)) actions.push(`<a class="btn" href="#/picklist/${d.id}">Pick list</a>`);
-    if (['INV', 'BILL'].includes(d.type) && d.balance > 0) actions.push(`<button class="btn" id="pay">${d.type === 'INV' ? 'Receive payment' : 'Record payment'}</button>`);
-    if (['INV', 'SRET', 'CNOTE', 'QUOTE', 'SO'].includes(d.type)) actions.push(`<button class="btn got" id="wa">WhatsApp</button>`, ...(p.phone ? ['<button class="btn" id="sms">SMS</button>'] : []), `<button class="btn" id="link">Copy link</button>`);
-    if (!simple() && ['INV', 'SRET', 'CNOTE'].includes(d.type)) actions.push(`<a class="btn" href="/api/docs/${d.id}/einvoice" id="einv">E-invoice JSON</a>`);
-    if (!simple() && ['INV', 'DN'].includes(d.type)) actions.push(`<button class="btn" id="ewb">E-way bill</button>`);
-    if (!simple() && ['INV', 'SRET', 'DN'].includes(d.type)) actions.push(`<button class="btn" id="refs">${d.irn || d.ewb_no ? 'Edit' : 'Add'} IRN / EWB no.</button>`);
-    actions.push(`<button class="btn danger" id="cancel">Cancel</button>`);
+    if (['INV', 'BILL'].includes(d.type) && d.balance > 0) main.push(`<button class="btn" id="pay">${d.type === 'INV' ? 'Receive payment' : 'Record payment'}</button>`);
+    if (['INV', 'SRET', 'CNOTE', 'QUOTE', 'SO'].includes(d.type)) { main.push(`<button class="btn got" id="wa">WhatsApp</button>`); more.push(...(p.phone ? ['<button class="btn" id="sms">Send SMS</button>'] : []), `<button class="btn" id="link">Copy customer link</button>`); }
+    for (const [k, v] of next) if (hasOpen || v.note) more.push(`<a class="btn" href="#/new/${k}?from=${d.id}">${['SRET', 'PRET'].includes(k) ? 'Return goods' : v.note ? (k === 'CNOTE' ? 'Credit note' : 'Debit note') : 'Make ' + esc(v.label)}</a>`);
+    if (!simple() && ['SO', 'DN'].includes(d.type)) more.push(`<a class="btn" href="#/picklist/${d.id}">Pick list</a>`);
+    if (!simple() && ['INV', 'SRET', 'CNOTE'].includes(d.type)) more.push(`<a class="btn" href="/api/docs/${d.id}/einvoice" id="einv">E-invoice JSON</a>`);
+    if (!simple() && ['INV', 'DN'].includes(d.type)) more.push(`<button class="btn" id="ewb">E-way bill</button>`);
+    if (!simple() && ['INV', 'SRET', 'DN'].includes(d.type)) more.push(`<button class="btn" id="refs">${d.irn || d.ewb_no ? 'Edit' : 'Add'} IRN / EWB no.</button>`);
+    more.push(`<button class="btn danger" id="cancel">Cancel ${esc((T && T.label) || 'document')}</button>`);
   }
-  actions.push(`<button class="btn primary" onclick="print()">Print / PDF</button>`);
+  main.push(`<button class="btn primary" onclick="print()">Print / PDF</button>`);
+  const actions = [...main, more.length ? `<details class="more-menu"><summary class="btn" aria-label="More actions">More &#9662;</summary><div class="menu">${more.join('')}</div></details>` : ''];
   el.innerHTML = head(`${esc(d.number)} ${badge(d.status)}`, actions.join('')) + `
     <div class="panel no-print"><div class="row">
       ${d.parent ? `<span>From <a href="#/doc/${d.parent.id}">${esc(d.parent.number)}</a></span>` : ''}
@@ -512,13 +622,13 @@ route(/^doc\/(\d+)$/, async (el, m) => {
   const c = $('#cancel');
   if (c) c.onclick = async () => {
     if (!confirm(`Cancel ${d.number}? Its stock and accounting entries will be reversed.`)) return;
-    try { await POST(`/api/docs/${d.id}/cancel`); dirty('items', 'accounts', 'parties'); toast('Cancelled'); render(); } catch (e) { alert(e.message); }
+    try { await POST(`/api/docs/${d.id}/cancel`); dirty('items', 'accounts', 'parties'); toast('Cancelled'); render(); } catch (e) { toast(e.message, 'err'); }
   };
   if ($('#pay')) $('#pay').onclick = () => paymentForm(d.type === 'INV' ? 'receipt' : 'payment', { party_id: d.party_id, amount: d.balance, doc: d });
   if ($('#wa')) $('#wa').onclick = async () => {
     const w = window.open('', '_blank');                 // open now, inside the tap; filled in once the link is ready
     try { const r = await GET(`/api/docs/${d.id}/share`); if (w) w.location = r.whatsapp_url; else location.href = r.whatsapp_url; }
-    catch (e) { if (w) w.close(); alert(e.message); }
+    catch (e) { if (w) w.close(); toast(e.message, 'err'); }
   };
   if ($('#sms')) $('#sms').onclick = async () => { const r = await GET(`/api/docs/${d.id}/share`); location.href = r.sms_url; };
   if ($('#link')) $('#link').onclick = async () => {
@@ -532,12 +642,12 @@ async function paymentForm(kind, { party_id = '', amount = '', doc } = {}) {
   const parties = (await master('parties')).filter((p) => kind === 'receipt' ? p.kind !== 'supplier' : p.kind !== 'customer');
   const accts = await cashOpts();
   modal(kind === 'receipt' ? 'Receive payment' : 'Pay supplier', [
-    { k: 'party_id', label: kind === 'receipt' ? 'From customer' : 'To supplier', type: 'select', options: [{ v: '', t: 'Choose…' }, ...opts(parties, (p) => `${p.name} (bal ${inr(p.balance)})`)], value: party_id },
+    { k: 'party_id', label: kind === 'receipt' ? 'From customer' : 'To supplier', type: 'select', options: [{ v: '', t: 'Choose…' }, ...opts(parties, (p) => `${p.name} (bal ${inr(p.balance)})`)], value: party_id, required: true },
     { k: 'amount', label: 'Amount (₹)', type: 'number', value: amount, required: true },
-    { k: 'account_id', label: kind === 'receipt' ? 'Received in' : 'Paid from', type: 'select', options: accts },
+    { k: 'account_id', label: kind === 'receipt' ? 'Money went into' : 'Paid from', type: 'select', options: accts, help: 'Cash, bank or UPI.' },
     { k: 'date', label: 'Date', type: 'date', value: ME.today },
-    { k: 'reference', label: 'Reference (UTR / cheque no.)' },
-    { k: 'notes', label: 'Notes' },
+    { k: 'reference', label: 'UTR / cheque no.', more: true, help: 'From the bank or UPI app, to find it later.' },
+    { k: 'notes', label: 'Notes', more: true },
   ], async (v) => {
     const body = { ...v, kind, party_id: +v.party_id, account_id: +v.account_id };
     if (doc) body.allocations = [{ doc_id: doc.id, amount: Math.min(+v.amount, doc.balance) }];
@@ -550,33 +660,39 @@ const payList = (kind) => async (el, m, q) => {
   el.innerHTML = head(kind === 'receipt' ? 'Receipts' : 'Payments', `<button class="btn primary" id="new">+ ${kind === 'receipt' ? 'Receive payment' : 'Pay supplier'}</button>`) +
     `<div class="panel flush">${table([{ h: 'Number', k: 'number' }, { h: 'Date', f: (r) => fdate(r.date) }, { h: 'Party', k: 'party' }, { h: 'Account', k: 'account' },
       { h: 'Reference', k: 'reference', cls: 'hide-sm' }, { h: 'Amount', num: 1, f: (r) => inr(r.amount) },
-      { h: '', f: (r) => r.void ? badge('cancelled') : `<button class="btn sm danger" data-void="${r.id}">Void</button>` }], rows)}</div>`;
+      { h: '', f: (r) => r.void ? badge('cancelled') : `<button class="btn sm danger" data-void="${r.id}">Void</button>` }], rows,
+    { empty: emptyCta(kind === 'receipt' ? 'Money you get from customers shows here. Record it to clear their bills.' : 'Money you pay to suppliers shows here.',
+      `<button class="btn primary" data-np>${kind === 'receipt' ? '+ Receive payment' : '+ Pay supplier'}</button>`) })}</div>`;
   $('#new').onclick = () => paymentForm(kind);
+  if ($('[data-np]', el)) $('[data-np]', el).onclick = () => paymentForm(kind);
   $$('[data-void]', el).forEach((b) => b.onclick = async () => {
     if (!confirm('Void this entry? Its accounting will be reversed and the invoices/bills re-opened.')) return;
-    try { await POST(`/api/payments/${b.dataset.void}/void`); dirty('accounts', 'parties'); render(); } catch (e) { alert(e.message); }
+    try { await POST(`/api/payments/${b.dataset.void}/void`); dirty('accounts', 'parties'); toast('Entry voided'); render(); } catch (e) { toast(e.message, 'err'); }
   });
-  if (q.get('new')) paymentForm(kind);
+  if (takeNew(q)) paymentForm(kind);
 };
 route(/^receipts$/, payList('receipt'));
 route(/^payments$/, payList('payment'));
 
 /* ======================================================================= parties */
 function partyForm(p = {}, after) {
-  return modal(p.id ? 'Edit ' + p.name : 'New contact', [
-    { k: 'name', label: 'Name', value: p.name, required: true },
-    { k: 'kind', label: 'Type', type: 'select', options: [{ v: 'customer', t: 'Customer' }, { v: 'supplier', t: 'Supplier' }, { v: 'both', t: 'Both' }], value: p.kind || 'customer' },
-    { k: 'phone', label: 'Mobile', value: p.phone, type: 'tel' }, { k: 'email', label: 'Email', value: p.email, type: 'email' },
-    { k: 'gstin', label: 'GSTIN', value: p.gstin }, { k: 'state', label: 'State', value: p.state ?? ME.org.state, list: 'states' },
-    { k: 'city', label: 'City', value: p.city }, { k: 'pincode', label: 'PIN code', value: p.pincode, placeholder: 'needed for e-invoice / e-way bill' },
-    { k: 'credit_days', label: 'Credit days', type: 'number', value: p.credit_days ?? 0 }, { k: 'credit_limit', label: 'Credit limit (₹)', type: 'number', value: p.credit_limit ?? 0 },
-    { k: 'address', label: 'Address', type: 'textarea', value: p.address, wide: true }, ...cfModal('party', p.extra),
+  return modal(p.id ? 'Edit ' + p.name : 'New customer / supplier', [
+    { k: 'name', label: 'Name', value: p.name, required: true, placeholder: 'Shop or person name' },
+    { k: 'phone', label: 'Mobile', value: p.phone, type: 'tel', placeholder: '10-digit mobile', help: 'Used to send bills and reminders on WhatsApp.' },
+    { k: 'kind', label: 'This is a', type: 'select', options: [{ v: 'customer', t: 'Customer (buys from you)' }, { v: 'supplier', t: 'Supplier (you buy from)' }, { v: 'both', t: 'Both' }], value: p.kind || 'customer' },
+    { k: 'state', label: 'State', value: p.state ?? ME.org.state, list: 'states', help: 'Decides CGST + SGST or IGST.' },
+    { k: 'gstin', label: 'GSTIN', value: p.gstin, placeholder: '15 characters, if registered', more: true },
+    { k: 'email', label: 'Email', value: p.email, type: 'email', more: true },
+    { k: 'city', label: 'City', value: p.city, more: true }, { k: 'pincode', label: 'PIN code', value: p.pincode, more: true, help: 'Needed for e-invoice / e-way bill.' },
+    { k: 'credit_days', label: 'Payment due in (days)', type: 'number', value: p.credit_days ?? 0, more: true, help: 'Sets the due date on their bills.' },
+    { k: 'credit_limit', label: 'Credit limit (₹)', type: 'number', value: p.credit_limit ?? 0, more: true, help: '0 = no limit. You get a warning above it.' },
+    { k: 'address', label: 'Address', type: 'textarea', value: p.address, wide: true, more: true }, ...cfModal('party', p.extra),
   ], async (v) => {
     v = splitCf(v);
     const r = p.id ? await api('PUT', '/api/parties/' + p.id, v) : await POST('/api/parties', v);
-    dirty('parties'); toast('Saved');
+    dirty('parties'); toast(p.id ? 'Contact saved' : `${v.name} added`);
     if (after) after(r); else render();
-  });
+  }, { submit: p.id ? 'Save' : 'Add' });
 }
 route(/^parties$/, async (el, m, q) => {
   const kind = q.get('kind') || '';
@@ -590,6 +706,9 @@ route(/^parties$/, async (el, m, q) => {
   const draw = (f) => { const r = rows.filter((x) => !f || [x.name, x.phone, x.gstin, x.city, ...Object.values(x.extra || {})].join(' ').toLowerCase().includes(f));
     $('#list').innerHTML = table(cols, r, { onRow: true, empty: f ? 'No match.' : 'Add your customers and suppliers.' }); bindRows($('#list'), r, (x) => go('party/' + x.id)); };
   draw('');
+  if (rows.length <= 1 && !kind) $('#list').insertAdjacentHTML('afterend', `<div class="panel tip">${emptyCta('Add your regular customers and suppliers. Their bills, payments and balance stay in one place.', '<button class="btn primary" data-np>+ Add customer</button>')}</div>`);
+  if ($('[data-np]', el)) $('[data-np]', el).onclick = () => partyForm();
+  if (takeNew(q)) partyForm();
   if ($('#search')) $('#search').oninput = (e) => draw(e.target.value.toLowerCase());
   $('#new').onclick = () => partyForm();
 });
@@ -609,26 +728,31 @@ route(/^party\/(\d+)$/, async (el, m, q) => {
   $('#edit').onclick = () => partyForm(p);
   $('#open').onclick = () => modal('Opening balance', [{ k: 'amount', label: 'Amount (₹): positive = they owe you, negative = you owe them', type: 'number', wide: true }, { k: 'date', label: 'As on', type: 'date', value: ME.today }],
     async (v) => { await POST(`/api/parties/${p.id}/opening`, v); dirty('parties', 'accounts'); render(); });
-  $('#del').onclick = async () => { if (confirm('Delete ' + p.name + '?')) { try { await api('DELETE', '/api/parties/' + p.id); dirty('parties'); go('parties'); } catch (e) { alert(e.message); } } };
+  $('#del').onclick = async () => { if (confirm('Delete ' + p.name + '?')) { try { await api('DELETE', '/api/parties/' + p.id); dirty('parties'); go('parties'); } catch (e) { toast(e.message, 'err'); } } };
 });
 
 /* ======================================================================= items & stock */
 function itemForm(i = {}) {
   modal(i.id ? 'Edit ' + i.name : 'New item', [
-    { k: 'name', label: 'Item name', value: i.name, required: true }, { k: 'sku', label: 'SKU / code', value: i.sku },
-    { k: 'category', label: 'Category', value: i.category }, { k: 'unit', label: 'Unit', value: i.unit || 'Pcs' },
-    { k: 'hsn', label: 'HSN / SAC', value: i.hsn }, { k: 'gst_rate', label: 'GST rate', type: 'select', options: ME.gst_rates.map((g) => ({ v: g, t: g + '%' })), value: i.gst_rate ?? 18 },
-    { k: 'purchase_price', label: 'Purchase price (₹)', type: 'number', value: i.purchase_price }, { k: 'sale_price', label: 'Sale price (₹)', type: 'number', value: i.sale_price },
-    { k: 'reorder_level', label: 'Reorder level', type: 'number', value: i.reorder_level ?? 0 },
-    { k: 'barcode', label: 'Barcode (scan or leave blank)', value: i.barcode, placeholder: 'blank = auto label code' },
-    { k: 'location', label: 'Bin / rack location', value: i.location, placeholder: 'e.g. A-03-2' },
-    ...(i.id ? [] : [{ k: 'is_service', label: 'Service (no stock)', type: 'checkbox' }, { k: 'opening_qty', label: 'Opening stock qty', type: 'number' }, { k: 'opening_rate', label: 'Opening rate (₹)', type: 'number' }]),
+    { k: 'name', label: 'Item name', value: i.name, required: true, placeholder: 'e.g. Tata Salt 1kg', wide: true },
+    { k: 'sale_price', label: 'Selling price (₹)', type: 'number', value: i.sale_price, help: 'Price before GST.' },
+    ...(ME.costs === false ? [] : [{ k: 'purchase_price', label: 'Buying price (₹)', type: 'number', value: i.purchase_price, help: 'Used for profit.' }]),
+    { k: 'gst_rate', label: 'GST rate', type: 'select', options: ME.gst_rates.map((g) => ({ v: g, t: g + '%' })), value: i.gst_rate ?? 18 },
+    { k: 'unit', label: 'Unit', value: i.unit || 'Pcs', list: 'units', help: 'Pcs, Kg, Box, Litre…' },
+    ...(i.id ? [] : [{ k: 'opening_qty', label: 'Stock you have now', type: 'number', help: 'Leave empty if none.' }]),
+    { k: 'hsn', label: 'HSN / SAC code', value: i.hsn, more: true, help: 'From your purchase bill. Needed on GST invoices.' },
+    { k: 'sku', label: 'Item code (SKU)', value: i.sku, more: true }, { k: 'category', label: 'Category', value: i.category, more: true },
+    { k: 'reorder_level', label: 'Low stock alert at', type: 'number', value: i.reorder_level ?? 0, more: true, help: 'Warn me when stock falls to this.' },
+    { k: 'barcode', label: 'Barcode', value: i.barcode, placeholder: 'Scan, or leave empty', more: true },
+    { k: 'location', label: 'Rack / shelf', value: i.location, placeholder: 'e.g. A-03-2', more: true },
+    ...(i.id ? [] : [{ k: 'opening_rate', label: 'Cost of current stock (₹ per unit)', type: 'number', more: true, help: 'Empty = buying price.' },
+      { k: 'is_service', label: 'This is a service (no stock)', type: 'checkbox', more: true }]),
     ...cfModal('item', i.extra),
   ], async (v) => {
     v = splitCf(v);
     if (i.id) await api('PUT', '/api/items/' + i.id, v); else await POST('/api/items', v);
-    dirty('items', 'accounts'); toast('Saved'); render();
-  });
+    dirty('items', 'accounts'); toast(i.id ? 'Item saved' : `${v.name} added`); render();
+  }, { submit: i.id ? 'Save' : 'Add item' });
 }
 route(/^items$/, async (el, m, q) => {
   dirty('items');
@@ -638,10 +762,13 @@ route(/^items$/, async (el, m, q) => {
     { h: 'In stock', k: 'qty_on_hand', num: 1, f: (r) => r.is_service ? '<span class="muted">service</span>' : `${qtyf(r.qty_on_hand)} ${esc(r.unit)}` }, ...(ME.costs === false ? [] : [{ h: 'Value', k: 'stock_value', num: 1, f: (r) => inr(r.stock_value) }]), ...cfCols('item')];
   el.innerHTML = head('Items', `<button class="btn" id="csv">Export CSV</button><button class="btn primary" id="new">+ New item</button>`) +
     `<div class="panel"><input id="search" placeholder="Search items…" style="max-width:320px"></div><div class="panel flush" id="list"></div>`;
-  const draw = (f) => { const r = rows.filter((x) => !f || (x.name + ' ' + x.sku + ' ' + x.category + ' ' + Object.values(x.extra || {}).join(' ')).toLowerCase().includes(f)); $('#list').innerHTML = table(cols, r, { onRow: true, empty: 'Add the products you buy and sell.' }); bindRows($('#list'), r, (x) => go('item/' + x.id)); };
+  const draw = (f) => { const r = rows.filter((x) => !f || (x.name + ' ' + x.sku + ' ' + x.category + ' ' + Object.values(x.extra || {}).join(' ')).toLowerCase().includes(f));
+    $('#list').innerHTML = table(cols, r, { onRow: true, empty: f ? 'No item matches your search.' : emptyCta('Add the products you sell. Then they come up in bills with price and GST filled in.', ME.can.items ? '<button class="btn primary" data-newitem>+ Add your first item</button>' : '') });
+    bindRows($('#list'), r, (x) => go('item/' + x.id)); const b = $('[data-newitem]', el); if (b) b.onclick = () => itemForm(); };
   draw('');
   $('#search').oninput = (e) => draw(e.target.value.toLowerCase());
   $('#new').onclick = () => itemForm();
+  if (takeNew(q)) itemForm();
   $('#csv').onclick = () => download('items.csv', toCsv(cols.map((c) => ({ ...c })), rows));
 });
 route(/^item\/(\d+)$/, async (el, m) => {
@@ -657,7 +784,7 @@ route(/^item\/(\d+)$/, async (el, m) => {
       { h: 'Godown', k: 'warehouse' }, { h: 'Note', k: 'note', cls: 'hide-sm' }, { h: 'In', num: 1, f: (r) => r.qty > 0 ? qtyf(r.qty) : '' }, { h: 'Out', num: 1, f: (r) => r.qty < 0 ? qtyf(-r.qty) : '' },
       { h: 'Unit cost', num: 1, f: (r) => inr(r.unit_cost), cls: 'hide-sm' }, { h: 'Balance', num: 1, f: (r) => qtyf(r.balance) }], rows.slice().reverse(), { empty: 'No movements yet.' })}</div>`;
   $('#edit').onclick = () => itemForm(it);
-  $('#del').onclick = async () => { if (confirm('Delete ' + it.name + '?')) { try { await api('DELETE', '/api/items/' + it.id); dirty('items'); go('items'); } catch (e) { alert(e.message); } } };
+  $('#del').onclick = async () => { if (confirm('Delete ' + it.name + '?')) { try { await api('DELETE', '/api/items/' + it.id); dirty('items'); go('items'); } catch (e) { toast(e.message, 'err'); } } };
 });
 route(/^stock$/, async (el) => {
   dirty('warehouses');
@@ -681,7 +808,7 @@ route(/^stock$/, async (el) => {
 });
 
 /* ======================================================================= khata */
-route(/^khata$/, async (el) => {
+route(/^khata$/, async (el, m, q) => {
   const k = await GET('/api/khata');
   const pend = k.rows.reduce((s, r) => s + (r.pending || 0), 0);
   el.innerHTML = head('Khata Book', `<button class="btn primary" id="new">+ Add entry</button>`) + `
@@ -694,13 +821,15 @@ ${ME.org.upi_id ? '' : '<div class="panel warnbox">Add your <b>UPI ID</b> in <a 
   const cols = [{ h: 'Name', f: (r) => `<b>${esc(r.name)}</b><div class="muted">${esc(r.phone || '')}</div>${r.pending ? ` <span class="badge b-partial">${r.pending} not sent</span>` : ''}${r.disputed ? ` <span class="badge b-unpaid">${r.disputed} disputed</span>` : ''}` },
     { h: 'Last entry', f: (r) => fdate(r.last_date), cls: 'hide-sm' },
     { h: 'Balance', num: 1, f: (r) => r.balance === 0 ? '<span class="muted">settled</span>' : `<span class="${r.balance > 0 ? 'pos' : 'neg'}">${inr(Math.abs(r.balance))}</span><div class="muted">${r.balance > 0 ? "you'll get" : "you'll give"}</div>` }];
-  const draw = (f) => { const r = k.rows.filter((x) => !f || (x.name + ' ' + x.phone).toLowerCase().includes(f)); $('#list').innerHTML = table(cols, r, { onRow: true, empty: 'No khata entries yet. Tap “Add entry”.' }); bindRows($('#list'), r, (x) => go('khata/' + x.id)); };
+  const draw = (f) => { const r = k.rows.filter((x) => !f || (x.name + ' ' + x.phone).toLowerCase().includes(f)); $('#list').innerHTML = table(cols, r, { onRow: true, empty: f ? 'No match.' : emptyCta('Write down udhaar here. Each entry goes to the customer on WhatsApp, so both sides agree.', '<button class="btn primary" data-nk>+ Add first entry</button>') });
+    if ($('[data-nk]', el)) $('[data-nk]', el).onclick = () => $('#new').click(); bindRows($('#list'), r, (x) => go('khata/' + x.id)); };
   draw('');
   $('#search').oninput = (e) => draw(e.target.value.toLowerCase());
   $('#new').onclick = () => modal('New khata entry', [{ k: 'name', label: 'Name', required: true }, { k: 'phone', label: 'Mobile (to send the entry)', type: 'tel' },
     { k: 'kind', label: 'Entry', type: 'select', options: [{ v: 'gave', t: 'You gave (udhaar diya)' }, { v: 'got', t: 'You got (paise mile)' }] },
     { k: 'amount', label: 'Amount (₹)', type: 'number' }, { k: 'note', label: 'Note', wide: true }, { k: 'date', label: 'Date', type: 'date', value: ME.today }],
   async (v) => { const r = await POST('/api/khata', v); dirty('parties'); setTimeout(() => sendEntry(r, () => go('khata/' + r.party_id)), 0); }, { submit: 'Next: send to customer' });
+  if (takeNew(q)) $('#new').click();
 });
 
 /* Shows the message for an entry and sends it. The entry counts only once it has been sent. */
@@ -721,7 +850,7 @@ function sendEntry(r, after) {
   $$('[data-via]', root).forEach((b) => b.onclick = async () => {
     const via = b.dataset.via;
     window.open(via === 'whatsapp' ? r.whatsapp_url : r.sms_url, '_blank');     // open first: browsers allow it only inside the tap
-    try { await POST(`/api/khata/entries/${r.entry_id}/send`, { via }); toast('Entry sent and saved'); } catch (e) { alert(e.message); }
+    try { await POST(`/api/khata/entries/${r.entry_id}/send`, { via }); toast('Entry sent and saved'); } catch (e) { toast(e.message, 'err'); }
     close();
   });
 }
@@ -831,13 +960,14 @@ route(/^expenses$/, async (el, m, q) => {
   const rows = dbk.entries.filter((e) => e.ref_type === 'EXP');
   el.innerHTML = head('Expenses', `<button class="btn primary" id="new">+ Add expense</button>`) +
     `<div class="kpis">${exp.filter((a) => a.balance).map((a) => `<div class="kpi"><div class="l">${esc(a.name)}</div><div class="v">${inr0(a.balance)}</div></div>`).join('')}</div>
-    <div class="panel flush">${table([{ h: 'Date', f: (r) => fdate(r.date) }, { h: 'Expense', k: 'narration' }, { h: 'Amount', num: 1, f: (r) => inr(r.lines.reduce((s, l) => s + l.credit, 0)) }], rows, { empty: 'No expenses this year.' })}</div>`;
+    <div class="panel flush">${table([{ h: 'Date', f: (r) => fdate(r.date) }, { h: 'Expense', k: 'narration' }, { h: 'Amount', num: 1, f: (r) => inr(r.lines.reduce((s, l) => s + l.credit, 0)) }], rows, { empty: emptyCta('No expenses this year. Add rent, salary, electricity and more to see your real profit.', '<button class="btn primary" data-ne>+ Add expense</button>') })}</div>`;
   const form = async () => modal('Add expense', [{ k: 'account_id', label: 'Expense head', type: 'select', options: opts(exp, (a) => a.name) },
     { k: 'amount', label: 'Amount before GST (₹)', type: 'number', required: true }, { k: 'gst_amount', label: 'GST paid (input credit, ₹)', type: 'number', value: 0 },
     { k: 'paid_from', label: 'Paid from', type: 'select', options: await cashOpts() }, { k: 'date', label: 'Date', type: 'date', value: ME.today }, { k: 'notes', label: 'Notes', wide: true }],
   async (v) => { await POST('/api/expenses', { ...v, account_id: +v.account_id, paid_from: +v.paid_from }); dirty('accounts'); toast('Expense saved'); render(); });
   $('#new').onclick = form;
-  if (q.get('new')) form();
+  if ($('[data-ne]', el)) $('[data-ne]', el).onclick = form;
+  if (takeNew(q)) form();
 });
 route(/^accounts$/, async (el) => {
   dirty('accounts');
@@ -1022,7 +1152,7 @@ route(/^settings\/print$/, async (el) => {
       try {
         const data = await shrinkImage(file, kind === 'logo' ? 360 : 480, kind === 'logo' ? 360 : 180);
         took(await api('PUT', '/api/org/files/' + kind, { data }), kind === 'logo' ? 'Logo saved' : 'Signature saved');
-      } catch (err) { alert(err.message); }
+      } catch (err) { toast(err.message, 'err'); }
     });
     $$('[data-rm]', el).forEach((b) => b.onclick = async () => {
       if (confirm('Remove this image?')) took(await api('DELETE', '/api/org/files/' + b.dataset.rm), 'Removed');
@@ -1126,7 +1256,7 @@ route(/^settings\/roles$/, async (el) => {
   $$('[data-ed]', el).forEach((b) => b.onclick = () => form(rows.find((r) => r.id === +b.dataset.ed)));
   $$('[data-rm]', el).forEach((b) => b.onclick = async () => {
     if (!confirm('Delete this role?')) return;
-    try { await api('DELETE', '/api/roles/' + b.dataset.rm); toast('Role deleted'); render(); } catch (e) { alert(e.message); }
+    try { await api('DELETE', '/api/roles/' + b.dataset.rm); toast('Role deleted'); render(); } catch (e) { toast(e.message, 'err'); }
   });
 });
 
@@ -1137,15 +1267,15 @@ route(/^settings$/, async (el) => {
   const audit = canUsers ? (await GET('/api/audit')).rows : [];
   el.innerHTML = head('Settings') + setTabs('settings') + `
     <div class="panel"><h2>Features</h2><div class="row">
-      <label class="row" style="gap:8px"><input type="radio" name="mode" value="simple" ${simple() ? 'checked' : ''}> <span><b>Simple</b><br><span class="muted">Billing, purchase bills, returns, credit notes, stock, khata, POS, accounts. Best for most shops.</span></span></label>
-      <label class="row" style="gap:8px"><input type="radio" name="mode" value="advanced" ${simple() ? '' : 'checked'}> <span><b>Advanced</b><br><span class="muted">Adds quotations, sales/purchase orders, delivery notes, GRN, gate entry & gate pass, stock count, pick lists, e-invoice & e-way bill.</span></span></label>
+      <label class="mode-opt"><input type="radio" name="mode" value="simple" ${simple() ? 'checked' : ''}> <span><b>Simple</b><br><span class="muted">Billing, purchase bills, returns, credit notes, stock, khata, POS, accounts. Best for most shops.</span></span></label>
+      <label class="mode-opt"><input type="radio" name="mode" value="advanced" ${simple() ? '' : 'checked'}> <span><b>Advanced</b><br><span class="muted">Adds quotations, sales/purchase orders, delivery notes, GRN, gate entry & gate pass, stock count, pick lists, e-invoice & e-way bill.</span></span></label>
     </div><p class="muted">Switching only shows or hides menus. No data is deleted.</p></div>
     <form class="panel" id="org"><h2>Business profile</h2><div class="err" hidden></div><div class="form">
-      <label class="f">Business name<input name="name" value="${esc(o.name)}"></label><label class="f">GSTIN<input name="gstin" value="${esc(o.gstin)}" maxlength="15"></label>
+      <label class="f">Business name<input name="name" value="${esc(o.name)}"></label><label class="f">GSTIN<input name="gstin" value="${esc(o.gstin)}" maxlength="15" placeholder="Leave empty if not registered"></label>
       <label class="f">State<input name="state" list="states" autocomplete="off" value="${esc(o.state)}"></label>
       <label class="f">City<input name="city" value="${esc(o.city || '')}"></label><label class="f">PIN code<input name="pincode" value="${esc(o.pincode || '')}" maxlength="6" inputmode="numeric"></label>
       <label class="f">Business email<input name="email" type="email" value="${esc(o.email || '')}"></label><label class="f">Phone<input name="phone" value="${esc(o.phone)}"></label>
-      <label class="f">UPI ID (for payment links)<input name="upi_id" value="${esc(o.upi_id)}" placeholder="shop@okhdfcbank"></label>
+      <label class="f">UPI ID<input name="upi_id" value="${esc(o.upi_id)}" placeholder="shop@okhdfcbank"><small class="help">Customers pay you here. Shown as a QR on bills.</small></label>
       <label class="f">Financial year starts (MM-DD)<input name="fy_start" value="${esc(o.fy_start)}"></label>
       <label class="f wide">Address (printed on invoices)<textarea name="address" rows="2">${esc(o.address)}</textarea></label></div>
       <div class="row" style="margin-top:12px"><span class="spacer"></span><button class="btn primary" ${ME.can.settings ? '' : 'disabled'}>Save profile</button></div></form>
@@ -1160,7 +1290,7 @@ route(/^settings$/, async (el) => {
     ${canUsers ? `<div class="panel flush"><div style="padding:14px 16px 0"><h3>Audit trail</h3></div>${table([{ h: 'When', f: (a) => new Date(a.at).toLocaleString('en-IN') }, { h: 'User', k: 'user' }, { h: 'Action', k: 'action' }, { h: 'Detail', k: 'detail', cls: 'hide-sm' }], audit.slice(0, 100))}</div>` : ''}`;
   $$('[name=mode]', el).forEach((r) => r.onchange = async () => {
     try { await api('PUT', '/api/org/mode', { mode: r.value }); ME = await GET('/api/me'); shell(); wireInstall(); toast(r.value === 'simple' ? 'Simple mode on' : 'Advanced features on'); render(); }
-    catch (e) { alert(e.message); render(); }
+    catch (e) { toast(e.message, 'err'); render(); }
   });
   const sub = (id, fn) => { $(id).onsubmit = async (e) => { e.preventDefault(); const b = $('.err', e.target); b.hidden = true; try { await fn(Object.fromEntries(new FormData(e.target))); } catch (err) { b.hidden = false; b.textContent = err.message; } }; };
   sub('#org', async (v) => { await api('PUT', '/api/org', v); ME = await GET('/api/me'); shell(); wireInstall(); toast('Profile saved'); render(); });
@@ -1169,7 +1299,7 @@ route(/^settings$/, async (el) => {
     { k: 'role', label: 'Role', type: 'select', options: roleOpts }, { k: 'password', label: 'Temporary password (8+ chars)', type: 'password' }],
   async (v) => { await POST('/api/users', v); toast('User added. Share the email and password with them.'); render(); });
   $$('[data-u]', el).forEach((b) => b.onclick = async () => { await api('PUT', '/api/users/' + b.dataset.u, { active: b.dataset.a !== '1' }); render(); });
-  $$('[data-role]', el).forEach((s) => s.onchange = async () => { try { await api('PUT', '/api/users/' + s.dataset.role, { role: s.value }); toast('Role changed'); } catch (e) { alert(e.message); render(); } });
+  $$('[data-role]', el).forEach((s) => s.onchange = async () => { try { await api('PUT', '/api/users/' + s.dataset.role, { role: s.value }); toast('Role changed'); } catch (e) { toast(e.message, 'err'); render(); } });
 });
 
 /* ======================================================================= gate entry (inward) / gate pass (outward) */
@@ -1303,7 +1433,7 @@ route(/^reminders$/, async (el) => {
       if (!url) { if (w) w.close(); return alert('Save a mobile number for this contact first.'); }
       if (w) w.location = url; else location.href = url;
       mark(k); b.closest('td').insertAdjacentHTML('afterbegin', '<span class="badge b-paid">sent</span> ');
-    } catch (e) { if (w) w.close(); alert(e.message); }
+    } catch (e) { if (w) w.close(); toast(e.message, 'err'); }
   };
   $$('[data-wa]', el).forEach((b) => b.onclick = () => go2(b.dataset.wa, 'wa', b));
   $$('[data-sms]', el).forEach((b) => b.onclick = () => go2(b.dataset.sms, 'sms', b));
@@ -1584,7 +1714,7 @@ route(/^plan$/, async (el, m, q) => {
       });
       rzp.on('payment.failed', (r) => state(`<div class="panel err">Payment failed: ${esc((r.error && r.error.description) || 'please try again')}.</div>`));
       rzp.open();
-    } catch (e) { alert(e.message); } finally { b.disabled = false; }
+    } catch (e) { toast(e.message, 'err'); } finally { b.disabled = false; }
   });
 });
 
@@ -1633,7 +1763,7 @@ route(/^admin$/, adminPage);
 /* ======================================================================= PWA: service worker + install button */
 let installEvt = null;
 window.addEventListener('beforeinstallprompt', (e) => { e.preventDefault(); installEvt = e; const b = $('#install'); if (b) b.hidden = false; });
-window.addEventListener('appinstalled', () => { installEvt = null; const b = $('#install'); if (b) b.hidden = true; toast('SmartTrader installed'); });
+window.addEventListener('appinstalled', () => { installEvt = null; lsSet('st_installed', '1'); const b = $('#install'); if (b) b.hidden = true; toast('SmartTrader installed'); });
 function wireInstall() {
   const b = $('#install');
   if (!b) return;
@@ -1673,5 +1803,9 @@ async function boot() {
   wireInstall();
   await render();
 }
-window.addEventListener('hashchange', render);
+window.addEventListener('hashchange', () => {
+  $('#modal-root').innerHTML = '';
+  ['#gres', '#newmenu'].forEach((x) => { const e = $(x); if (e) e.hidden = true; });
+  render();
+});
 boot();

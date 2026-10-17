@@ -346,7 +346,7 @@ const itemFields = (b, c) => ({
   extra: b.extra === undefined ? null : cleanExtra(fieldsOf(c.org), 'item', b.extra),
   name: reqStr(b.name, 'Item name', 120), sku: str(b.sku, 40), category: str(b.category, 60), unit: str(b.unit, 12) || 'Pcs', hsn: str(b.hsn, 10),
   gst_rate: num(b.gst_rate, 'GST rate', { min: 0, max: 100, def: 0 }),
-  purchase_price: toPaise(num(b.purchase_price, 'Purchase price', { min: 0, def: 0 })), sale_price: toPaise(num(b.sale_price, 'Sale price', { min: 0, def: 0 })),
+  purchase_price: b.purchase_price === undefined ? null : toPaise(num(b.purchase_price, 'Purchase price', { min: 0, def: 0 })), sale_price: toPaise(num(b.sale_price, 'Sale price', { min: 0, def: 0 })),
   reorder_level: num(b.reorder_level, 'Reorder level', { min: 0, def: 0 }), is_service: b.is_service ? 1 : 0,
   barcode: str(b.barcode, 48).replace(/\s+/g, ''), location: str(b.location, 30),
 });
@@ -373,10 +373,10 @@ router.add('POST', '/api/items', async (c) => {
   await barcodeTaken(c, f.barcode);
   const r = await c.db.prepare(`INSERT INTO items (org_id, sku, name, category, unit, hsn, gst_rate, purchase_price, sale_price, reorder_level, is_service, avg_cost, barcode, location, extra, created_at)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING *`)
-    .bind(c.org.id, f.sku, f.name, f.category, f.unit, f.hsn, f.gst_rate, f.purchase_price, f.sale_price, f.reorder_level, f.is_service, f.purchase_price, f.barcode, f.location,
+    .bind(c.org.id, f.sku, f.name, f.category, f.unit, f.hsn, f.gst_rate, f.purchase_price ?? 0, f.sale_price, f.reorder_level, f.is_service, f.purchase_price ?? 0, f.barcode, f.location,
       f.extra ?? cleanExtra(fieldsOf(c.org), 'item', {}), nowIso()).first();
   if (c.body.opening_qty && +c.body.opening_qty > 0 && !f.is_service) {
-    await stockAdjust(c, { item_id: r.id, qty: c.body.opening_qty, rate: c.body.opening_rate ?? R(f.purchase_price), reason: 'opening', warehouse_id: c.body.warehouse_id });
+    await stockAdjust(c, { item_id: r.id, qty: c.body.opening_qty, rate: c.body.opening_rate === undefined || c.body.opening_rate === '' ? R(f.purchase_price ?? 0) : c.body.opening_rate, reason: 'opening', warehouse_id: c.body.warehouse_id });
   }
   return json(itemOut(await c.db.prepare(`SELECT * FROM items WHERE id = ?`).bind(r.id).first(), c));
 });
@@ -386,7 +386,7 @@ router.add('PUT', '/api/items/:id', async (c) => {
   const dup = await c.db.prepare(`SELECT id FROM items WHERE org_id = ? AND name = ? AND id != ?`).bind(c.org.id, f.name, +c.params.id).first();
   if (dup) throw bad(`An item called ${f.name} already exists.`);
   await barcodeTaken(c, f.barcode, +c.params.id);
-  const r = await c.db.prepare(`UPDATE items SET sku = ?, name = ?, category = ?, unit = ?, hsn = ?, gst_rate = ?, purchase_price = ?, sale_price = ?, reorder_level = ?, barcode = ?, location = ?,
+  const r = await c.db.prepare(`UPDATE items SET sku = ?, name = ?, category = ?, unit = ?, hsn = ?, gst_rate = ?, purchase_price = COALESCE(?, purchase_price), sale_price = ?, reorder_level = ?, barcode = ?, location = ?,
       extra = COALESCE(?, extra) WHERE id = ? AND org_id = ?`).bind(f.sku, f.name, f.category, f.unit, f.hsn, f.gst_rate, f.purchase_price, f.sale_price, f.reorder_level, f.barcode, f.location, f.extra, +c.params.id, c.org.id).run();
   if (!r.meta.changes) throw notFound('Item not found.');
   return json({ ok: true });
@@ -946,6 +946,36 @@ router.add('GET', '/api/reports/:name', async (c) => {
   if (!fn) throw notFound('Unknown report.');
   return json(await fn(c));
 });
+/* Search box in the top bar: items, contacts and documents in one D1 call (only what the user's role may see) */
+router.add('GET', '/api/search', async (c) => {
+  const q = str(c.url.searchParams.get('q'), 60);
+  const out = { items: [], parties: [], docs: [] };
+  if (q.length < 2) return json(out);
+  const like = `%${q.replace(/[%_]/g, '')}%`, db = c.db, st = [], keys = [];
+  if (canView(c.user, 'items') || canView(c.user, 'sales') || canView(c.user, 'purchase')) {
+    keys.push('items');
+    st.push(db.prepare(`SELECT id, name, unit, qty_on_hand, sale_price, is_service FROM items WHERE org_id = ? AND (name LIKE ? OR sku = ? OR barcode = ?) ORDER BY name LIMIT 6`).bind(c.org.id, like, q, q));
+  }
+  if (canView(c.user, 'masters') || canView(c.user, 'khata')) {
+    keys.push('parties');
+    st.push(db.prepare(`SELECT id, name, kind, phone FROM parties WHERE org_id = ? AND (name LIKE ? OR phone LIKE ?) ORDER BY name LIMIT 6`).bind(c.org.id, like, like));
+  }
+  const types = Object.keys(DOC_TYPES).filter((t) => canView(c.user, DOC_TYPES[t].side));
+  if (types.length) {
+    keys.push('docs');
+    // numbers are searched only when the text has a digit; otherwise documents of matching parties (uses the party index)
+    st.push(db.prepare(`SELECT d.id, d.type, d.number, d.date, d.total, d.status, p.name AS party FROM docs d LEFT JOIN parties p ON p.id = d.party_id
+        WHERE d.org_id = ?1 AND d.type IN (${types.map((t) => `'${t}'`).join(',')})
+          AND (${/\d/.test(q) ? 'd.number LIKE ?2 OR ' : ''}d.party_id IN (SELECT id FROM parties WHERE org_id = ?1 AND name LIKE ?2 LIMIT 3))
+        ORDER BY d.id DESC LIMIT 6`).bind(c.org.id, like));
+  }
+  const res = await db.batch(st);
+  keys.forEach((k, i) => { out[k] = res[i].results; });
+  out.items = out.items.map((i) => ({ ...i, sale_price: R(i.sale_price) }));
+  out.docs = out.docs.map((d) => ({ ...d, label: DOC_TYPES[d.type].label, total: R(d.total) }));
+  return json(out);
+});
+
 router.add('GET', '/api/audit', async (c) => {
   requireCan(c.user, 'users');
   const { results } = await c.db.prepare(`SELECT a.at, a.action, a.detail, u.name AS user FROM audit a LEFT JOIN users u ON u.id = a.user_id

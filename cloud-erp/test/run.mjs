@@ -519,5 +519,26 @@ else {
   check('role can be deleted once unused', (await api('DELETE', `/api/roles/${role.id}`)).ok);
 }
 
+/* --- global search and first-run checklist --- */
+{
+  const sr = await api('GET', '/api/search?q=' + encodeURIComponent('Basmati'));
+  check('search finds items', sr.items.some((i) => i.id === rice.id) && Array.isArray(sr.parties) && Array.isArray(sr.docs));
+  const sp = await api('GET', '/api/search?q=Mehta');
+  check('search finds parties and their documents', sp.parties.some((p) => p.id === cust.id) && sp.docs.length > 0 && sp.docs.every((d) => d.party === 'Mehta Stores' && d.label));
+  const sd = await api('GET', '/api/search?q=' + encodeURIComponent(inv.number));
+  check('search finds a document by number', sd.docs.some((d) => d.id === inv.id));
+  check('one-letter search returns nothing', (await api('GET', '/api/search?q=a')).items.length === 0);
+  const sq = await qc('GET', '/api/search?q=Mehta');
+  check('search is one D1 call', sq.n <= 3, String(sq.n));
+  cookie = '';
+  await api('POST', '/api/auth/signup', { business: 'Fresh Shop', name: 'F', email: 'fresh' + email, password: 'Fresh-pass-1' });
+  const s0 = (await api('GET', '/api/reports/dashboard')).setup;
+  check('new business: checklist all open', s0 && !s0.items && !s0.customers && !s0.invoices, JSON.stringify(s0));
+  check('search cannot see another business', (await api('GET', '/api/search?q=Mehta')).parties.length === 0);
+  cookie = ownerCookie;
+  const s1 = (await api('GET', '/api/reports/dashboard')).setup;
+  check('busy business: checklist done', s1.items && s1.customers && s1.invoices, JSON.stringify(s1));
+}
+
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);
