@@ -79,7 +79,8 @@ export async function sessionFromRequest(env, request) {
   try { p = JSON.parse(b64urlDecode(body)); } catch (e) { return null; }
   return p && p.e >= Date.now() ? p : null;
 }
-export const USER_SQL = `SELECT id, org_id, email, name, role, active, pw_changed_at FROM users WHERE id = ?`;
+export const USER_SQL = `SELECT u.id, u.org_id, u.email, u.name, u.role, u.active, u.pw_changed_at, u.role_id, r.name AS role_name, r.perms
+  FROM users u LEFT JOIN roles r ON r.id = u.role_id AND r.org_id = u.org_id WHERE u.id = ?`;
 /* the user row still matches the session: active, same business, password not changed since */
 export const sessionValid = (user, p) => !!(user && user.active && user.org_id === p.o && user.pw_changed_at === p.v);
 
@@ -99,7 +100,23 @@ const WRITE = {
   finance: ['owner', 'admin', 'accountant'],
   khata: ['owner', 'admin', 'accountant', 'sales'],
 };
-export function can(user, area) { return !!(WRITE[area] && WRITE[area].includes(user.role)); }
+/* Custom roles (role = 'custom', role_id -> roles): per-area "view" and "edit" switches.
+   Built-in roles keep the table above and can view everything, as before. Only owner/admin manage users and roles. */
+export const AREAS = ['sales', 'purchase', 'items', 'masters', 'finance', 'khata', 'reports', 'settings'];
+const AREA_OF = { stock: 'items' };
+export function permsOf(user) {
+  let p = {};
+  try { p = JSON.parse(user.perms || '{}') || {}; } catch (e) { /* bad JSON = no rights */ }
+  const edit = AREAS.filter((a) => Array.isArray(p.edit) && p.edit.includes(a));
+  return { edit, view: AREAS.filter((a) => edit.includes(a) || (Array.isArray(p.view) && p.view.includes(a))) };
+}
+export function can(user, area) {
+  if (user.role === 'custom') return area !== 'users' && permsOf(user).edit.includes(AREA_OF[area] || area);
+  return !!(WRITE[area] && WRITE[area].includes(user.role));
+}
+export const canView = (user, area) => !user || user.role !== 'custom' || permsOf(user).view.includes(AREA_OF[area] || area);
+/* purchase rates, average cost, stock value and profit: hidden from custom roles that see neither reports nor purchase */
+export const seesCosts = (user) => canView(user, 'reports') || canView(user, 'purchase');
 export function requireCan(user, area) { if (!can(user, area)) throw forbidden(); }
 
 /* Fixed-window rate limit kept in D1. */

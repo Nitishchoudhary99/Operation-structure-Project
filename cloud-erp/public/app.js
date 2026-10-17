@@ -180,6 +180,11 @@ function renderAuth(mode = /^#\/?signup/.test(location.hash) ? 'signup' : 'login
 const ADVANCED = new Set(['sales/SO', 'sales/DN', 'sales/QUOTE', 'purchase/PO', 'gate/in', 'purchase/GRN', 'gate/out', 'stockcount', 'pending']);
 const ADV_DOCS = ['QUOTE', 'SO', 'DN', 'PO', 'GRN'];
 const simple = () => !ME || (ME.org.mode || 'simple') !== 'advanced';
+/* which permission area a menu entry needs (custom roles may not see every area) */
+const navArea = (h) => /^(receipts|payments|expenses|accounts|journal)$/.test(h) ? 'finance' : /^(sales\/|pos$)/.test(h) ? 'sales' : /^(purchase\/|gate\/in$)/.test(h) ? 'purchase'
+  : /^(items|stock|stockcount|gate\/out|pending)$/.test(h) ? 'items' : /^(parties|reminders)$/.test(h) ? 'masters' : h === 'khata' ? 'khata'
+  : /^(reports\/|tally$|daybook$)/.test(h) ? 'reports' : '';
+const seen = (h) => { const a = navArea(h); return !a || !ME.view || ME.view[a] !== false; };
 const NAV = [
   ['', [['dashboard', 'Dashboard']]],
   ['Sales', [['pos', 'Quick Bill (POS)'], ['sales/INV', 'Invoices'], ['sales/SO', 'Sales Orders'], ['sales/DN', 'Delivery Notes'], ['sales/QUOTE', 'Quotations'], ['sales/SRET', 'Sales Returns'], ['sales/CNOTE', 'Credit Notes (rate diff)'], ['receipts', 'Receipts']]],
@@ -195,7 +200,7 @@ function shell() {
   $('#app').innerHTML = `<div class="shell">
     <nav class="side" id="side">
       <div class="brand"><i>&#x2197;</i>SmartTrader</div>
-      ${NAV.map(([g, all]) => { const items = all.filter(([h]) => !simple() || !ADVANCED.has(h)); return items.length ? `${g ? `<div class="nav-group">${g}</div>` : ''}${items.map(([h, t]) => `<a href="#/${h}" data-h="${h}">${t}</a>`).join('')}` : ''; }).join('')}
+      ${NAV.map(([g, all]) => { const items = all.filter(([h]) => (!simple() || !ADVANCED.has(h)) && seen(h)); return items.length ? `${g ? `<div class="nav-group">${g}</div>` : ''}${items.map(([h, t]) => `<a href="#/${h}" data-h="${h}">${t}</a>`).join('')}` : ''; }).join('')}
     </nav>
     <div class="main">
       <header class="top">
@@ -226,7 +231,7 @@ async function render() {
     const m = path.match(re);
     if (!m) continue;
     page.innerHTML = '<div class="muted">Loading&hellip;</div>';
-    try { await fn(page, m, q); const tab = $('.tabs a.on', page); if (tab && tab.parentNode.scrollWidth > tab.parentNode.clientWidth) tab.parentNode.scrollLeft = tab.offsetLeft - 16; } catch (e) {
+    try { await fn(page, m, q); const tab = $('.tabs a.on', page); if (tab && tab.parentNode.scrollWidth > tab.parentNode.clientWidth) tab.parentNode.scrollLeft = tab.offsetLeft - tab.parentNode.offsetLeft - 16; } catch (e) {
       if (e.status !== 401) page.innerHTML = `<div class="err">${esc(e.message)}</div>`;
     }
     window.scrollTo(0, 0);
@@ -251,10 +256,10 @@ route(/^dashboard$/, async (el) => {
   el.innerHTML = head('Dashboard', `<a class="btn" href="#/new/BILL">+ Purchase bill</a><a class="btn primary" href="#/new/INV">+ New invoice</a>`) + `
     <div class="kpis">
       <div class="kpi"><div class="l">Sales this month</div><div class="v">${inr0(d.sales_month)}</div><div class="s">FY: ${inr0(d.sales_fy)} &middot; ${d.invoices_fy} invoices</div></div>
-      <div class="kpi"><div class="l">Gross profit (FY)</div><div class="v">${inr0(d.gross_profit_fy)}</div><div class="s">Margin ${d.gross_margin}% &middot; Net ${inr0(d.net_profit_fy)}</div></div>
+      ${d.gross_profit_fy === undefined ? '' : `<div class="kpi"><div class="l">Gross profit (FY)</div><div class="v">${inr0(d.gross_profit_fy)}</div><div class="s">Margin ${d.gross_margin}% &middot; Net ${inr0(d.net_profit_fy)}</div></div>`}
       <div class="kpi"><div class="l">To receive</div><div class="v pos">${inr0(d.receivable)}</div><div class="s"><a href="#/reports/ageing">${d.overdue.length} overdue</a></div></div>
       <div class="kpi"><div class="l">To pay</div><div class="v neg">${inr0(d.payable)}</div><div class="s"><a href="#/reports/ageing?kind=payable">Payables</a></div></div>
-      <div class="kpi"><div class="l">Stock value</div><div class="v">${inr0(d.stock_value)}</div><div class="s"><a href="#/stock">${d.reorder_count} items to reorder</a></div></div>
+      <div class="kpi"><div class="l">${d.stock_value === undefined ? 'Stock' : 'Stock value'}</div><div class="v">${d.stock_value === undefined ? d.reorder_count : inr0(d.stock_value)}</div><div class="s"><a href="#/stock">${d.reorder_count} items to reorder</a></div></div>
       <div class="kpi"><div class="l">GST payable (net)</div><div class="v">${inr0(d.gst_payable)}</div><div class="s"><a href="#/reports/gst">GST summary</a></div></div>
     </div>
     <div class="grid g2">
@@ -629,8 +634,8 @@ route(/^items$/, async (el, m, q) => {
   dirty('items');
   const rows = await master('items');
   const cols = [{ h: 'Item', k: 'name' }, { h: 'SKU', k: 'sku', cls: 'hide-sm' }, { h: 'Category', k: 'category', cls: 'hide-sm' }, { h: 'GST', k: 'gst_rate', f: (r) => r.gst_rate + '%', cls: 'hide-sm' },
-    { h: 'Sale price', k: 'sale_price', num: 1, f: (r) => inr(r.sale_price) }, { h: 'Avg cost', k: 'avg_cost', num: 1, f: (r) => inr(r.avg_cost), cls: 'hide-sm' },
-    { h: 'In stock', k: 'qty_on_hand', num: 1, f: (r) => r.is_service ? '<span class="muted">service</span>' : `${qtyf(r.qty_on_hand)} ${esc(r.unit)}` }, { h: 'Value', k: 'stock_value', num: 1, f: (r) => inr(r.stock_value) }, ...cfCols('item')];
+    { h: 'Sale price', k: 'sale_price', num: 1, f: (r) => inr(r.sale_price) }, ...(ME.costs === false ? [] : [{ h: 'Avg cost', k: 'avg_cost', num: 1, f: (r) => inr(r.avg_cost), cls: 'hide-sm' }]),
+    { h: 'In stock', k: 'qty_on_hand', num: 1, f: (r) => r.is_service ? '<span class="muted">service</span>' : `${qtyf(r.qty_on_hand)} ${esc(r.unit)}` }, ...(ME.costs === false ? [] : [{ h: 'Value', k: 'stock_value', num: 1, f: (r) => inr(r.stock_value) }]), ...cfCols('item')];
   el.innerHTML = head('Items', `<button class="btn" id="csv">Export CSV</button><button class="btn primary" id="new">+ New item</button>`) +
     `<div class="panel"><input id="search" placeholder="Search items…" style="max-width:320px"></div><div class="panel flush" id="list"></div>`;
   const draw = (f) => { const r = rows.filter((x) => !f || (x.name + ' ' + x.sku + ' ' + x.category + ' ' + Object.values(x.extra || {}).join(' ')).toLowerCase().includes(f)); $('#list').innerHTML = table(cols, r, { onRow: true, empty: 'Add the products you buy and sell.' }); bindRows($('#list'), r, (x) => go('item/' + x.id)); };
@@ -941,8 +946,8 @@ route(/^reports\/([a-z-]+)$/, async (el, m, q) => {
 });
 
 /* ======================================================================= settings */
-const SET_TABS = [['settings', 'Business & users'], ['settings/print', 'Branding & print'], ['settings/numbering', 'Numbering'], ['settings/fields', 'Custom fields']];
-const setTabs = (cur) => `<div class="tabs">${SET_TABS.map(([h, t]) => `<a href="#/${h}" class="${h === cur ? 'on' : ''}">${t}</a>`).join('')}</div>`;
+const SET_TABS = [['settings', 'Business & users'], ['settings/print', 'Branding & print'], ['settings/numbering', 'Numbering'], ['settings/fields', 'Custom fields'], ['settings/roles', 'Roles']];
+const setTabs = (cur) => `<div class="tabs">${SET_TABS.filter(([h]) => h !== 'settings/roles' || ME.can.users).map(([h, t]) => `<a href="#/${h}" class="${h === cur ? 'on' : ''}">${t}</a>`).join('')}</div>`;
 
 /* Shrink a photo on this device (canvas) so it fits the 64 KB limit; nothing is uploaded until it is small. */
 async function shrinkImage(file, maxW, maxH) {
@@ -1097,9 +1102,38 @@ route(/^settings\/fields$/, async (el) => {
   });
 });
 
+const AREA_LABEL = { sales: 'Sales & POS', purchase: 'Purchase', items: 'Items & stock', masters: 'Customers & suppliers', finance: 'Money (receipts, payments, expenses)',
+  khata: 'Khata book', reports: 'Reports, profit & costs', settings: 'Settings' };
+route(/^settings\/roles$/, async (el) => {
+  const { rows, areas } = await GET('/api/roles');
+  const grid = (p = { view: [], edit: [] }) => `<div class="tbl-wrap"><table class="t perm"><thead><tr><th>Area</th><th>See</th><th>Add &amp; edit</th></tr></thead><tbody>${areas.map((a) => `<tr><td>${esc(AREA_LABEL[a] || a)}</td>
+      <td><input type="checkbox" data-v="${a}" ${p.view.includes(a) ? 'checked' : ''} aria-label="See ${esc(a)}"></td><td><input type="checkbox" data-e="${a}" ${p.edit.includes(a) ? 'checked' : ''} aria-label="Edit ${esc(a)}"></td></tr>`).join('')}</tbody></table></div>`;
+  const form = (r = {}) => {
+    const f = modal(r.id ? 'Edit role' : 'New role', [{ k: 'name', label: 'Role name', value: r.name, placeholder: 'e.g. Counter staff', wide: true }], async (v, fm) => {
+      const perms = { view: $$('[data-v]', fm).filter((x) => x.checked).map((x) => x.dataset.v), edit: $$('[data-e]', fm).filter((x) => x.checked).map((x) => x.dataset.e) };
+      if (r.id) await api('PUT', '/api/roles/' + r.id, { name: v.name, perms }); else await POST('/api/roles', { name: v.name, perms });
+      toast('Role saved'); render();
+    }, { intro: '' });
+    $('.form', f).insertAdjacentHTML('afterend', `<div style="margin-top:12px">${grid(r.perms)}</div><p class="muted">“Add &amp; edit” also lets them see it. Without “Reports, profit &amp; costs” (or Purchase) they do not see purchase rates or profit.</p>`);
+    $$('[data-e]', f).forEach((x) => x.onchange = () => { if (x.checked) $(`[data-v="${x.dataset.e}"]`, f).checked = true; });
+  };
+  el.innerHTML = head('Roles', `<button class="btn primary" id="newrole">+ New role</button>`) + setTabs('settings/roles') + `
+    <p class="muted">Make your own roles, like Counter staff or Godown manager, and choose what each can see and change. Give a role to a user in <a href="#/settings">Business &amp; users</a>.</p>
+    <div class="panel flush">${table([{ h: 'Role', k: 'name' }, { h: 'Can change', f: (r) => esc(r.perms.edit.map((a) => AREA_LABEL[a] || a).join(', ') || '—') },
+      { h: 'Users', k: 'users', num: 1 }, { h: '', f: (r) => `<button class="btn sm" data-ed="${r.id}">Edit</button> <button class="btn sm danger" data-rm="${r.id}">Delete</button>` }], rows,
+    { empty: 'No custom roles yet. Built-in roles: admin, accountant, store, sales.' })}</div>`;
+  $('#newrole').onclick = () => form();
+  $$('[data-ed]', el).forEach((b) => b.onclick = () => form(rows.find((r) => r.id === +b.dataset.ed)));
+  $$('[data-rm]', el).forEach((b) => b.onclick = async () => {
+    if (!confirm('Delete this role?')) return;
+    try { await api('DELETE', '/api/roles/' + b.dataset.rm); toast('Role deleted'); render(); } catch (e) { alert(e.message); }
+  });
+});
+
 route(/^settings$/, async (el) => {
   const o = ME.org, canUsers = ME.can.users;
-  const users = canUsers ? await GET('/api/users') : { rows: [], roles: [] };
+  const users = canUsers ? await GET('/api/users') : { rows: [], roles: [], custom_roles: [] };
+  const roleOpts = [...users.roles.filter((r) => r !== 'owner').map((r) => ({ v: r, t: r })), ...(users.custom_roles || []).map((r) => ({ v: 'c:' + r.id, t: r.name }))];
   const audit = canUsers ? (await GET('/api/audit')).rows : [];
   el.innerHTML = head('Settings') + setTabs('settings') + `
     <div class="panel"><h2>Features</h2><div class="row">
@@ -1116,9 +1150,10 @@ route(/^settings$/, async (el) => {
       <label class="f wide">Address (printed on invoices)<textarea name="address" rows="2">${esc(o.address)}</textarea></label></div>
       <div class="row" style="margin-top:12px"><span class="spacer"></span><button class="btn primary" ${ME.can.settings ? '' : 'disabled'}>Save profile</button></div></form>
     ${canUsers ? `<div class="panel flush"><div class="row" style="padding:14px 16px"><h2 style="margin:0">Users</h2><span class="spacer"></span><button class="btn" id="adduser">+ Add user</button></div>
-      ${table([{ h: 'Name', k: 'name' }, { h: 'Email', k: 'email' }, { h: 'Role', k: 'role' }, { h: 'Status', f: (u) => u.active ? badge('ok') : badge('cancelled') },
+      ${table([{ h: 'Name', k: 'name' }, { h: 'Email', k: 'email', cls: 'hide-sm' }, { h: 'Role', f: (u) => u.role_key === 'owner' ? 'owner' : `<select data-role="${u.id}" aria-label="Role">${roleOpts.map((o) => `<option value="${esc(o.v)}" ${o.v === u.role_key ? 'selected' : ''}>${esc(o.t)}</option>`).join('')}</select>` },
+        { h: 'Status', f: (u) => u.active ? badge('ok') : badge('cancelled') },
         { h: '', f: (u) => u.role === 'owner' ? '' : `<button class="btn sm" data-u="${u.id}" data-a="${u.active}">${u.active ? 'Disable' : 'Enable'}</button>` }], users.rows)}
-      <div class="muted" style="padding:10px 16px">Roles: <b>admin</b> everything · <b>accountant</b> money, bills, reports · <b>store</b> stock, items, purchase · <b>sales</b> quotes, orders, invoices, khata.</div></div>` : ''}
+      <div class="muted" style="padding:10px 16px">Need your own role? <a href="#/settings/roles">Make one in Roles</a>. Built-in: <b>admin</b> everything · <b>accountant</b> money, bills, reports · <b>store</b> stock, items, purchase · <b>sales</b> quotes, orders, invoices, khata.</div></div>` : ''}
     <form class="panel" id="pw"><h2>Change your password</h2><div class="err" hidden></div><div class="form"><label class="f">Current password<input type="password" name="current" autocomplete="current-password"></label>
       <label class="f">New password<input type="password" name="password" autocomplete="new-password" minlength="8"></label></div><div class="row" style="margin-top:12px"><span class="spacer"></span><button class="btn">Change password</button></div></form>
     <p class="muted">Selling SmartTrader to other businesses? <a href="#/admin">Open the admin panel</a> (needs the ADMIN_KEY secret).</p>
@@ -1131,9 +1166,10 @@ route(/^settings$/, async (el) => {
   sub('#org', async (v) => { await api('PUT', '/api/org', v); ME = await GET('/api/me'); shell(); wireInstall(); toast('Profile saved'); render(); });
   sub('#pw', async (v) => { await POST('/api/me/password', v); toast('Password changed'); $('#pw').reset(); });
   if ($('#adduser')) $('#adduser').onclick = () => modal('Add user', [{ k: 'name', label: 'Name' }, { k: 'email', label: 'Email', type: 'email' },
-    { k: 'role', label: 'Role', type: 'select', options: users.roles.filter((r) => r !== 'owner').map((r) => ({ v: r, t: r })) }, { k: 'password', label: 'Temporary password (8+ chars)', type: 'password' }],
+    { k: 'role', label: 'Role', type: 'select', options: roleOpts }, { k: 'password', label: 'Temporary password (8+ chars)', type: 'password' }],
   async (v) => { await POST('/api/users', v); toast('User added. Share the email and password with them.'); render(); });
   $$('[data-u]', el).forEach((b) => b.onclick = async () => { await api('PUT', '/api/users/' + b.dataset.u, { active: b.dataset.a !== '1' }); render(); });
+  $$('[data-role]', el).forEach((s) => s.onchange = async () => { try { await api('PUT', '/api/users/' + s.dataset.role, { role: s.value }); toast('Role changed'); } catch (e) { alert(e.message); render(); } });
 });
 
 /* ======================================================================= gate entry (inward) / gate pass (outward) */

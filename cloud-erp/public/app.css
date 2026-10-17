@@ -327,3 +327,4 @@ label.f.check input { width: 20px; height: 20px; }
 .series .form { grid-template-columns: repeat(auto-fill, minmax(120px, 1fr)); margin-top: 8px; }
 .series .pvw { font-family: ui-monospace, monospace; }
 .doc-paper .cfp { display: flex; flex-wrap: wrap; gap: 4px 18px; margin: -4px 0 12px; font-size: 13px; }
+.perm input { width: 22px; height: 22px; }

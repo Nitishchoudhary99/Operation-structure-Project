@@ -476,5 +476,48 @@ else {
   check('fields removed', (await api('GET', '/api/settings/fields')).rows.length === 0);
 }
 
+/* --- custom roles --- */
+{
+  const role = await api('POST', '/api/roles', { name: 'Counter staff', perms: { view: ['items', 'masters', 'bogus'], edit: ['sales', 'khata'] } });
+  check('role saved, edit implies view, unknown areas dropped', role.perms.edit.join() === 'sales,khata' && role.perms.view.includes('sales') && !role.perms.view.includes('bogus'), JSON.stringify(role.perms));
+  check('duplicate role name refused', (await api('POST', '/api/roles', { name: 'Counter staff', perms: {} }, true)).status === 400);
+  check('bad role refused for a user', (await api('POST', '/api/users', { email: 'z' + email, name: 'Z', role: 'c:999999', password: 'Counter-pass-1' }, true)).status === 400);
+  await api('POST', '/api/users', { email: 'counter' + email, name: 'Counter Boy', role: `c:${role.id}`, password: 'Counter-pass-1' });
+  const ul = await api('GET', '/api/users');
+  check('user list shows the custom role', ul.rows.some((u) => u.role === 'Counter staff' && u.role_key === `c:${role.id}`) && ul.custom_roles.some((r) => r.id === role.id));
+  cookie = storeCookie;
+  check('store user cannot manage roles', (await api('POST', '/api/roles', { name: 'X', perms: {} }, true)).status === 403);
+  cookie = '';
+  await api('POST', '/api/auth/login', { email: 'counter' + email, password: 'Counter-pass-1' });
+  const cm = await api('GET', '/api/me');
+  check('custom role permissions in /api/me', cm.user.role === 'Counter staff' && cm.can.sales && cm.can.khata && !cm.can.purchase && !cm.can.settings && !cm.can.users
+    && cm.view.items && !cm.view.reports && !cm.view.finance && cm.costs === false, JSON.stringify({ can: cm.can, view: cm.view }));
+  const its = (await api('GET', '/api/items')).rows;
+  check('costs hidden from counter staff', its.length && its.every((i) => i.purchase_price === undefined && i.avg_cost === undefined && i.stock_value === undefined && i.sale_price !== undefined));
+  check('P&L blocked', (await api('GET', '/api/reports/pnl', null, true)).status === 403);
+  check('payments list blocked', (await api('GET', '/api/payments', null, true)).status === 403);
+  check('receipt blocked', (await api('POST', '/api/payments', { kind: 'receipt', party_id: cust.id, account_id: accts.cash.id, amount: 1 }, true)).status === 403);
+  check('purchase bills blocked', (await api('GET', '/api/docs?type=BILL', null, true)).status === 403);
+  check('a purchase bill cannot be opened', (await api('GET', `/api/docs/${po.id}`, null, true)).status === 403);
+  check('document list shows only sales', (await api('GET', '/api/docs?limit=500')).rows.every((d) => ['QUOTE', 'SO', 'DN', 'INV', 'SRET', 'CNOTE'].includes(d.type)));
+  check('purchase order refused', (await api('POST', '/api/docs', { type: 'PO', party_id: sup.id, lines: [{ description: 'x', qty: 1, rate: 1 }] }, true)).status === 403);
+  const csale = await api('POST', '/api/docs', { type: 'INV', party_id: cust.id, lines: [{ description: 'Counter sale', qty: 1, rate: 50 }] });
+  check('counter staff can bill', /^INV-/.test(csale.number) && csale.lines.every((l) => l.cost === undefined));
+  const dsh = await api('GET', '/api/reports/dashboard');
+  check('dashboard hides profit', dsh.net_profit_fy === undefined && dsh.stock_value === undefined);
+  check('settings blocked', (await api('PUT', '/api/settings/print', { layout: 'modern' }, true)).status === 403 && (await api('GET', '/api/users', null, true)).status === 403);
+  cookie = ownerCookie;
+  check('owner still sees everything', (await api('GET', '/api/reports/pnl')).net_profit !== undefined && (await api('GET', '/api/items')).rows[0].avg_cost !== undefined);
+  check('role in use cannot be deleted', (await api('DELETE', `/api/roles/${role.id}`, null, true)).status === 400);
+  await api('PUT', `/api/roles/${role.id}`, { name: 'Counter staff', perms: { edit: ['sales', 'khata', 'finance'], view: ['reports'] } });
+  cookie = '';
+  await api('POST', '/api/auth/login', { email: 'counter' + email, password: 'Counter-pass-1' });
+  check('role change applies at once', (await api('GET', '/api/payments')).rows !== undefined && (await api('GET', '/api/reports/pnl')).net_profit !== undefined);
+  cookie = ownerCookie;
+  const cu = ul.rows.find((u) => u.role === 'Counter staff');
+  await api('PUT', `/api/users/${cu.id}`, { role: 'sales' });
+  check('role can be deleted once unused', (await api('DELETE', `/api/roles/${role.id}`)).ok);
+}
+
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

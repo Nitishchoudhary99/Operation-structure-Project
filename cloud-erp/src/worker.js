@@ -7,6 +7,7 @@ import {
 } from './lib.js';
 import {
   hashPassword, randomHex, sameText, passwordProblem, issueSession, sessionCookie, clearCookie, sessionFromRequest, sessionValid, USER_SQL, ROLES, can, requireCan, rateLimit,
+  AREAS, canView, seesCosts, permsOf,
 } from './auth.js';
 import {
   DOC_TYPES, NOTE_TYPES, stockCount, loadByIds, SYS_SQL, sysMap, createDoc, cancelDoc, createPayment, voidPayment, stockAdjust, stockTransfer, createExpense, createJournal, partyOpening,
@@ -70,7 +71,8 @@ router.add('POST', '/api/auth/logout', async () => json({ ok: true }, 200, { 'Se
 
 router.add('GET', '/api/me', async (c) => json({
   user: publicUser(c.user), org: orgOut(c.org),
-  can: Object.fromEntries(['settings', 'users', 'items', 'purchase', 'sales', 'stock', 'finance', 'khata'].map((a) => [a, can(c.user, a)])),
+  can: Object.fromEntries(['settings', 'users', 'items', 'purchase', 'sales', 'stock', 'finance', 'khata', 'masters'].map((a) => [a, can(c.user, a)])),
+  view: Object.fromEntries(AREAS.map((a) => [a, canView(c.user, a)])), costs: seesCosts(c.user),
   doc_types: Object.fromEntries(Object.entries(DOC_TYPES).map(([k, v]) => [k, { label: v.label, side: v.side, from: v.from, prefix: v.prefix, note: !!v.note, stock: v.stock || '' }])),
   gst_rates: GST_RATES, today: today(), states: STATES.map(([, n]) => n), plan: planOut(c.org),
 }));
@@ -86,7 +88,7 @@ router.add('POST', '/api/me/password', async (c) => {
   return json({ ok: true }, 200, { 'Set-Cookie': sessionCookie(token, c.request) });
 });
 
-const publicUser = (u) => ({ id: u.id, email: u.email, name: u.name, role: u.role });
+const publicUser = (u) => ({ id: u.id, email: u.email, name: u.name, role: u.role === 'custom' ? u.role_name || 'custom' : u.role });
 
 /* ======================================================================= business settings & users */
 router.add('PUT', '/api/org', async (c) => {
@@ -211,21 +213,69 @@ router.add('DELETE', '/api/settings/fields/:id', async (c) => {
 
 router.add('GET', '/api/users', async (c) => {
   requireCan(c.user, 'users');
-  const { results } = await c.db.prepare(`SELECT id, email, name, role, active, created_at FROM users WHERE org_id = ? ORDER BY id`).bind(c.org.id).all();
-  return json({ rows: results, roles: ROLES });
+  const [u, r] = await c.db.batch([c.db.prepare(`SELECT u.id, u.email, u.name, u.role, u.role_id, r.name AS role_name, u.active, u.created_at FROM users u
+      LEFT JOIN roles r ON r.id = u.role_id WHERE u.org_id = ? ORDER BY u.id`).bind(c.org.id), c.db.prepare(`SELECT id, name FROM roles WHERE org_id = ? ORDER BY name`).bind(c.org.id)]);
+  return json({ rows: u.results.map((x) => ({ ...x, role_key: x.role === 'custom' ? 'c:' + x.role_id : x.role, role: x.role === 'custom' ? x.role_name : x.role })),
+    roles: ROLES, custom_roles: r.results });
 });
+/* Custom roles: a name and per-area view / edit switches */
+const cleanPerms = (b) => {
+  const pick = (v) => [...new Set((Array.isArray(v) ? v : []).filter((a) => AREAS.includes(a)))];
+  const edit = pick(b && b.edit);
+  return { view: [...new Set([...pick(b && b.view), ...edit])], edit };
+};
+router.add('GET', '/api/roles', async (c) => {
+  requireCan(c.user, 'users');
+  const { results } = await c.db.prepare(`SELECT r.id, r.name, r.perms, (SELECT COUNT(*) FROM users u WHERE u.role_id = r.id AND u.org_id = r.org_id) AS users
+      FROM roles r WHERE r.org_id = ? ORDER BY r.name`).bind(c.org.id).all();
+  return json({ rows: results.map((r) => ({ ...r, perms: permsOf(r) })), areas: AREAS });
+});
+router.add('POST', '/api/roles', async (c) => {
+  requireCan(c.user, 'users');
+  const name = reqStr(c.body.name, 'Role name', 40), perms = cleanPerms(c.body.perms);
+  if (await c.db.prepare(`SELECT 1 FROM roles WHERE org_id = ? AND name = ?`).bind(c.org.id, name).first()) throw bad(`A role called ${name} already exists.`);
+  if ((await c.db.prepare(`SELECT COUNT(*) AS n FROM roles WHERE org_id = ?`).bind(c.org.id).first()).n >= 20) throw bad('At most 20 roles.');
+  const [r] = await c.db.batch([c.db.prepare(`INSERT INTO roles (org_id, name, perms, created_at) VALUES (?, ?, ?, ?) RETURNING id`).bind(c.org.id, name, JSON.stringify(perms), nowIso()),
+    auditStatement(c, 'add role', `${name}: edit ${perms.edit.join(',')}; view ${perms.view.join(',')}`)]);
+  return json({ id: r.results[0].id, name, perms });
+});
+router.add('PUT', '/api/roles/:id', async (c) => {
+  requireCan(c.user, 'users');
+  const name = reqStr(c.body.name, 'Role name', 40), perms = cleanPerms(c.body.perms);
+  if (await c.db.prepare(`SELECT 1 FROM roles WHERE org_id = ? AND name = ? AND id != ?`).bind(c.org.id, name, +c.params.id).first()) throw bad(`A role called ${name} already exists.`);
+  const [r] = await c.db.batch([c.db.prepare(`UPDATE roles SET name = ?, perms = ? WHERE id = ? AND org_id = ?`).bind(name, JSON.stringify(perms), +c.params.id, c.org.id),
+    auditStatement(c, 'edit role', `${name}: edit ${perms.edit.join(',')}; view ${perms.view.join(',')}`)]);
+  if (!r.meta.changes) throw notFound('Role not found.');
+  return json({ id: +c.params.id, name, perms });
+});
+router.add('DELETE', '/api/roles/:id', async (c) => {
+  requireCan(c.user, 'users');
+  if (await c.db.prepare(`SELECT 1 FROM users WHERE org_id = ? AND role_id = ?`).bind(c.org.id, +c.params.id).first()) throw bad('Some users have this role. Give them another role first.');
+  const r = await c.db.prepare(`DELETE FROM roles WHERE id = ? AND org_id = ?`).bind(+c.params.id, c.org.id).run();
+  if (!r.meta.changes) throw notFound('Role not found.');
+  return json({ ok: true });
+});
+
+/* 'admin' | 'accountant' | 'store' | 'sales', or 'c:<id>' for a custom role of this business */
+async function roleOf(c, v) {
+  const m = String(v || '').match(/^c:(\d+)$/);
+  if (!m) return { role: oneOf(v, ROLES.filter((r) => r !== 'owner'), 'Role'), role_id: null };
+  const r = await c.db.prepare(`SELECT id FROM roles WHERE id = ? AND org_id = ?`).bind(+m[1], c.org.id).first();
+  if (!r) throw bad('Unknown role.');
+  return { role: 'custom', role_id: r.id };
+}
 router.add('POST', '/api/users', async (c) => {
   requireCan(c.user, 'users');
   const email = reqStr(c.body.email, 'Email', 120).toLowerCase();
-  const role = oneOf(c.body.role, ROLES.filter((r) => r !== 'owner'), 'Role');
+  const { role, role_id } = await roleOf(c, c.body.role);
   const prob = passwordProblem(c.body.password);
   if (prob) throw bad(prob);
   if (await c.db.prepare(`SELECT 1 FROM users WHERE email = ?`).bind(email).first()) throw bad('This email is already in use.');
   await checkCount(c.db, c.org, 'users');
   const salt = randomHex(16);
-  await c.db.batch([c.db.prepare(`INSERT INTO users (org_id, email, name, role, pw_hash, salt, pw_changed_at, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`)
-    .bind(c.org.id, email, reqStr(c.body.name, 'Name', 80), role, await hashPassword(c.body.password, salt), salt, Date.now(), nowIso()),
-  auditStatement(c, 'add user', `${email} ${role}`)]);
+  await c.db.batch([c.db.prepare(`INSERT INTO users (org_id, email, name, role, role_id, pw_hash, salt, pw_changed_at, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+    .bind(c.org.id, email, reqStr(c.body.name, 'Name', 80), role, role_id, await hashPassword(c.body.password, salt), salt, Date.now(), nowIso()),
+  auditStatement(c, 'add user', `${email} ${role}${role_id ? ' ' + role_id : ''}`)]);
   return json({ ok: true });
 });
 router.add('PUT', '/api/users/:id', async (c) => {
@@ -233,11 +283,11 @@ router.add('PUT', '/api/users/:id', async (c) => {
   const u = await c.db.prepare(`SELECT * FROM users WHERE id = ? AND org_id = ?`).bind(+c.params.id, c.org.id).first();
   if (!u) throw notFound('User not found.');
   if (u.role === 'owner') throw bad('The owner cannot be changed here.');
-  const role = c.body.role ? oneOf(c.body.role, ROLES.filter((r) => r !== 'owner'), 'Role') : u.role;
+  const { role, role_id } = c.body.role ? await roleOf(c, c.body.role) : { role: u.role, role_id: u.role_id };
   const active = c.body.active === undefined ? u.active : (c.body.active ? 1 : 0);
   if (active && !u.active) await checkCount(c.db, c.org, 'users');
-  await c.db.prepare(`UPDATE users SET role = ?, active = ?, pw_changed_at = CASE WHEN ? != active THEN ? ELSE pw_changed_at END WHERE id = ?`)
-    .bind(role, active, active, Date.now(), u.id).run();
+  await c.db.batch([c.db.prepare(`UPDATE users SET role = ?, role_id = ?, active = ?, pw_changed_at = CASE WHEN ? != active THEN ? ELSE pw_changed_at END WHERE id = ?`)
+    .bind(role, role_id, active, active, Date.now(), u.id), auditStatement(c, 'edit user', `${u.email} ${role}${role_id ? ' ' + role_id : ''} ${active ? 'on' : 'off'}`)]);
   return json({ ok: true });
 });
 
@@ -305,12 +355,16 @@ async function barcodeTaken(c, code, exceptId = 0) {
   const hit = await c.db.prepare(`SELECT name FROM items WHERE org_id = ? AND id != ? AND (barcode = ? OR (sku != '' AND sku = ?))`).bind(c.org.id, exceptId, code, code).first();
   if (hit) throw bad(`Barcode ${code} is already used by ${hit.name}.`);
 }
-const itemOut = (i) => ({ ...i, extra: extraOf(i.extra), purchase_price: R(i.purchase_price), sale_price: R(i.sale_price), avg_cost: R(i.avg_cost), stock_value: R(Math.max(0, i.qty_on_hand) * i.avg_cost) });
+const itemOut = (i, c) => {
+  const o = { ...i, extra: extraOf(i.extra), purchase_price: R(i.purchase_price), sale_price: R(i.sale_price), avg_cost: R(i.avg_cost), stock_value: R(Math.max(0, i.qty_on_hand) * i.avg_cost) };
+  if (c && !seesCosts(c.user)) { delete o.purchase_price; delete o.avg_cost; delete o.stock_value; }
+  return o;
+};
 router.add('GET', '/api/items', async (c) => {
   const q = c.url.searchParams.get('q') || '', cf = extraFilter(fieldsOf(c.org), 'item', c.url.searchParams, 'extra');
   const { results } = await c.db.prepare(`SELECT * FROM items WHERE org_id = ? AND (? = '' OR name LIKE ? OR sku LIKE ?)${cf.sql} ORDER BY name LIMIT 2000`)
     .bind(c.org.id, q, `%${q}%`, `%${q}%`, ...cf.args).all();
-  return json({ rows: results.map(itemOut) });
+  return json({ rows: results.map((i) => itemOut(i, c)) });
 });
 router.add('POST', '/api/items', async (c) => {
   requireCan(c.user, 'items');
@@ -324,7 +378,7 @@ router.add('POST', '/api/items', async (c) => {
   if (c.body.opening_qty && +c.body.opening_qty > 0 && !f.is_service) {
     await stockAdjust(c, { item_id: r.id, qty: c.body.opening_qty, rate: c.body.opening_rate ?? R(f.purchase_price), reason: 'opening', warehouse_id: c.body.warehouse_id });
   }
-  return json(itemOut(await c.db.prepare(`SELECT * FROM items WHERE id = ?`).bind(r.id).first()));
+  return json(itemOut(await c.db.prepare(`SELECT * FROM items WHERE id = ?`).bind(r.id).first(), c));
 });
 router.add('PUT', '/api/items/:id', async (c) => {
   requireCan(c.user, 'items');
@@ -353,9 +407,12 @@ router.add('GET', '/api/items/lookup', async (c) => {
   const it = await c.db.prepare(`SELECT * FROM items WHERE org_id = ? AND (barcode = ? OR (sku != '' AND sku = ?) OR id = ?) ORDER BY barcode = ? DESC LIMIT 1`)
     .bind(c.org.id, code, code, m ? +m[1] : -1, code).first();
   if (!it) throw notFound(`No item with code ${code}.`);
-  return json(itemOut(it));
+  return json(itemOut(it, c));
 });
-router.add('GET', '/api/items/:id/moves', async (c) => json({ rows: await rep.itemMoves(c.db, c.org, +c.params.id) }));
+router.add('GET', '/api/items/:id/moves', async (c) => {
+  const rows = await rep.itemMoves(c.db, c.org, +c.params.id);
+  return json({ rows: seesCosts(c.user) ? rows : rows.map((r) => noCosts({ ...r }, ['unit_cost', 'value'])) });
+});
 
 router.add('GET', '/api/warehouses', async (c) => {
   const { results } = await c.db.prepare(`SELECT w.*, COALESCE((SELECT SUM(s.qty * i.avg_cost) FROM stock s JOIN items i ON i.id = s.item_id WHERE s.org_id = w.org_id AND s.warehouse_id = w.id AND s.qty > 0), 0) AS value
@@ -396,6 +453,10 @@ router.add('GET', '/api/docs', async (c) => {
   if (q.get('to')) { where.push('d.date <= ?'); args.push(date(q.get('to'))); }
   if (q.get('q')) { where.push('(d.number LIKE ? OR p.name LIKE ?)'); args.push(`%${q.get('q')}%`, `%${q.get('q')}%`); }
   const cf = extraFilter(fieldsOf(c.org), 'doc', q, 'd.extra');
+  if (c.user.role === 'custom') {      // custom role: only the sides it may see
+    const types = Object.keys(DOC_TYPES).filter((t) => canView(c.user, DOC_TYPES[t].side));
+    where.push(`d.type IN (${types.map((t) => `'${t}'`).join(',') || "''"})`);
+  }
   const limit = Math.min(500, +q.get('limit') || 100), offset = Math.max(0, +q.get('offset') || 0);
   const { results } = await c.db.prepare(`SELECT d.id, d.type, d.number, d.date, d.due_date, d.status, d.total, d.paid, d.taxable, d.ref_id, d.extra, p.name AS party
       FROM docs d LEFT JOIN parties p ON p.id = d.party_id WHERE ${where.join(' AND ')}${cf.sql} ORDER BY d.date DESC, d.id DESC LIMIT ? OFFSET ?`)
@@ -406,6 +467,7 @@ router.add('GET', '/api/docs', async (c) => {
 async function docDetail(c, id) {
   const d = await c.db.prepare(`SELECT d.*, w.name AS warehouse FROM docs d LEFT JOIN warehouses w ON w.id = d.warehouse_id WHERE d.id = ? AND d.org_id = ?`).bind(id, c.org.id).first();
   if (!d) throw notFound('Document not found.');
+  if (c.user && !canView(c.user, DOC_TYPES[d.type].side)) throw forbidden('Your role cannot see this document.');
   const [lines, party, children, parent, pays] = await Promise.all([
     c.db.prepare(`SELECT l.*, i.name AS item, i.unit, i.hsn, i.is_service, i.location, i.extra AS item_extra FROM doc_lines l LEFT JOIN items i ON i.id = l.item_id WHERE l.doc_id = ? ORDER BY l.id`).bind(id).all(),
     c.db.prepare(`SELECT * FROM parties WHERE id = ?`).bind(d.party_id).first(),
@@ -421,7 +483,7 @@ async function docDetail(c, id) {
     party: party && { ...party, extra: extraOf(party.extra) }, parent, children: children.results.map((x) => ({ ...x, total: money(x.total) })),
     settlements: pays.results.map((p) => ({ ...p, amount: money(p.amount), number: p.number || p.note_number })),
     lines: lines.results.map(({ item_extra, ...l }) => ({ ...l, print_extra: printExtra(defs, 'item', item_extra).map((x) => `${x.label}: ${x.value}`).join(' · '), rate: money(l.rate), taxable: money(l.taxable), cgst: money(l.cgst), sgst: money(l.sgst), igst: money(l.igst),
-      total: money(l.total), cost: money(l.cost), remaining: Math.round((l.qty - l.done_qty) * 1000) / 1000 })),
+      total: money(l.total), cost: c.user && !seesCosts(c.user) ? undefined : money(l.cost), remaining: Math.round((l.qty - l.done_qty) * 1000) / 1000 })),
     org: orgOut(c.org), ...fileUrls(printOf(c.org), '/api/org/files'),
   };
 }
@@ -867,14 +929,15 @@ router.add('POST', '/api/public/khata/:token/ack', async (c) => {
 }, { public: true });
 
 /* ======================================================================= reports */
+const noCosts = (o, keys) => { keys.forEach((k) => delete o[k]); return o; };
 const REPORTS = {
-  dashboard: (c) => rep.dashboard(c.db, c.org),
+  dashboard: async (c) => { const d = await rep.dashboard(c.db, c.org); return seesCosts(c.user) ? d : noCosts(d, ['gross_profit_fy', 'net_profit_fy', 'gross_margin', 'stock_value']); },
   'trial-balance': (c) => rep.trialBalance(c.db, c.org, c.url.searchParams),
   pnl: (c) => rep.profitLoss(c.db, c.org, c.url.searchParams),
   'balance-sheet': (c) => rep.balanceSheet(c.db, c.org, c.url.searchParams),
   gst: (c) => rep.gstSummary(c.db, c.org, c.url.searchParams),
   ageing: (c) => rep.ageing(c.db, c.org, c.url.searchParams),
-  stock: (c) => rep.stockReport(c.db, c.org),
+  stock: async (c) => { const s = await rep.stockReport(c.db, c.org); if (!seesCosts(c.user)) { s.rows.forEach((r) => noCosts(r, ['avg_cost', 'value'])); delete s.total_value; } return s; },
   daybook: (c) => rep.dayBook(c.db, c.org, c.url.searchParams),
   register: (c) => rep.register(c.db, c.org, c.url.searchParams),
 };
@@ -901,6 +964,20 @@ function countingDb(db, counter) {
     all: () => { counter.n++; return st.all().then(meta); },
     run: () => { counter.n++; return st.run().then(meta); }, raw: (...a) => { counter.n++; return st.raw(...a); } });
   return { prepare: (sql) => wrap(db.prepare(sql)), batch: (list) => { counter.n++; return db.batch(list.map((x) => x.__raw || x)).then((rs) => { rs.forEach(meta); return rs; }); }, exec: (q) => db.exec(q) };
+}
+
+/* which area a GET belongs to, for custom roles (documents are checked by their side in docDetail) */
+function readArea(url) {
+  const p = url.pathname, t = (url.searchParams.get('type') || '').toUpperCase();
+  if (/^\/api\/reports\/(pnl|balance-sheet|trial-balance|gst|daybook|register|ageing)/.test(p) || p.startsWith('/api/export/')) return 'reports';
+  if (p === '/api/reports/stock' || /^\/api\/items\/\d+\/moves/.test(p)) return 'items';
+  if (p.startsWith('/api/payments') || /^\/api\/accounts\/\d+\/ledger/.test(p)) return 'finance';
+  if (p.startsWith('/api/khata')) return 'khata';
+  if (p.startsWith('/api/gate')) return 'purchase';
+  if (/^\/api\/parties\/\d+\/(ledger|reminder)/.test(p)) return 'masters';
+  if (p === '/api/docs' && DOC_TYPES[t]) return DOC_TYPES[t].side;
+  if (p === '/api/audit' || p === '/api/users' || p === '/api/roles') return 'settings';
+  return null;
 }
 
 async function handleApi(request, env, counter) {
@@ -934,6 +1011,10 @@ async function handleApi(request, env, counter) {
     c.org = o.results[0];
     if (!sessionValid(c.user, p) || !c.org) throw new HttpError(401, 'Please sign in.');
     c.sys = s ? sysMap(s.results) : null;
+    if (c.user.role === 'custom' && request.method === 'GET') {
+      const area = readArea(url);
+      if (area && !canView(c.user, area)) throw forbidden('Your role cannot see this. Ask the owner.');
+    }
   }
   return m.route.handler(c);
 }

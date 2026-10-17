@@ -3,7 +3,7 @@
    Every business table carries org_id: one database serves many businesses (multi-tenant).
    migrate() runs on the first request after each deploy, so no manual migration step is needed. */
 
-export const SCHEMA_VERSION = 12;
+export const SCHEMA_VERSION = 13;
 
 // document types whose monthly totals doc_month keeps (sales and purchase money documents)
 const MONTH_TYPES = `('INV','SRET','CNOTE','BILL','PRET','DNOTE')`;
@@ -277,6 +277,12 @@ export const MIGRATIONS = {
     `ALTER TABLE items ADD COLUMN extra TEXT NOT NULL DEFAULT '{}'`,
     `ALTER TABLE parties ADD COLUMN extra TEXT NOT NULL DEFAULT '{}'`,
     `ALTER TABLE docs ADD COLUMN extra TEXT NOT NULL DEFAULT '{}'`,
+  ],
+  // custom roles: named sets of per-area view / edit switches, given to users through users.role_id
+  13: [
+    `CREATE TABLE IF NOT EXISTS roles (id INTEGER PRIMARY KEY, org_id INTEGER NOT NULL, name TEXT NOT NULL, perms TEXT NOT NULL DEFAULT '{}',
+       created_at TEXT NOT NULL, UNIQUE (org_id, name))`,
+    `ALTER TABLE users ADD COLUMN role_id INTEGER`,
   ],
 };
 
