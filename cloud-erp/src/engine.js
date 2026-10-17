@@ -3,12 +3,13 @@
    D1 batch, which runs as a single transaction: it all happens or none of it does.
    Rows created inside a batch are found again through their unique `txk` key. */
 import {
-  bad, notFound, str, reqStr, num, date, addDays, nowIso, uid, lineCalc, toPaise, roundQty,
+  HttpError, bad, notFound, str, reqStr, num, date, addDays, nowIso, uid, lineCalc, toPaise, roundQty, today,
   counterStatements, counterValueSql,
 } from './lib.js';
-import { requireCan } from './auth.js';
+import { requireCan, can } from './auth.js';
 import { stateCode } from './gst.js';
-import { checkInvoiceLimit } from './saas.js';
+import { checkInvoiceLimit, hasFeature } from './saas.js';
+import { cleanVaada, risk, riskStatements, riskInput } from './vaada.js';
 import { numberSpec, fieldsOf, cleanExtra } from './custom.js';
 
 export const DOC_TYPES = {
@@ -341,21 +342,44 @@ export async function createDoc(ctx, body) {
   }
 
   // cash sale / cash purchase: settle immediately
+  let paidNow = 0;
   if (['INV', 'BILL'].includes(type) && body.payment && +body.payment.amount > 0) {
     const acct = await cashAccount(db, orgId, +body.payment.account_id);
     const amt = Math.min(toPaise(body.payment.amount), total);
+    paidNow = amt;
     st.push(...paymentStatements(ctx, {
       kind: type === 'INV' ? 'receipt' : 'payment', party, account: acct.id, date: d, amount: amt,
       reference: str(body.payment.reference, 80), allocs: [{ txk, amount: amt, total }],
     }));
   }
 
+  if (type === 'INV') await creditGate(ctx, party, total - paidNow, body, st);
   st.push(auditStatement(ctx, `create ${type}`, `${party.name} ${total / 100}`));
   try { await db.batch(st); } catch (e) {
     if (/UNIQUE constraint failed: docs\.org_id, docs\.type, docs\.number/.test(String(e && e.message))) throw bad('This document number is already used. Change the next number in Settings > Numbering.');
     throw e;
   }
   return db.prepare(`SELECT * FROM docs WHERE txk = ?`).bind(txk).first();
+}
+
+/* Udhaar check before a credit sale (Vaada Pakka §5.3): old dues, credit limit and broken promises.
+   'warn' mode is advisory, so it applies to clients that ask for it (the app sends credit_ok: false first);
+   API clients and older app versions that do not know about it keep working as before. 'stop' mode is always
+   enforced: only owner/admin may give udhaar then. An allowed override is audited in the invoice's own batch. */
+export const CREDIT_STOP_TEXT = 'Is grahak ka udhaar abhi band hai. Owner ya admin se approve karayein.';
+async function creditGate(ctx, party, unpaid, body, st) {
+  if (unpaid <= 0) return;
+  const s = cleanVaada(ctx.org.vaada);
+  if (s.credit_check === 'off' || !hasFeature(ctx.org, 'vaada')) return;
+  if (s.credit_check === 'warn' && !Object.prototype.hasOwnProperty.call(body, 'credit_ok')) return;
+  const t = today();
+  const r = risk(riskInput(await ctx.db.batch(riskStatements(ctx.db, ctx.org.id, party.id, t, s.grace)), party, unpaid, t), s);
+  if (!r.risky) return;
+  const canOverride = s.credit_check === 'warn' || can(ctx.user, 'settings');
+  const cw = { name: party.name, text: r.text, reasons: r.reasons, mode: s.credit_check, can_override: canOverride, kept_pct: r.kept_pct };
+  if (body.credit_ok !== true) throw new HttpError(409, r.text, { credit_warning: cw });
+  if (!canOverride) throw new HttpError(409, CREDIT_STOP_TEXT, { credit_warning: { ...cw, text: CREDIT_STOP_TEXT } });
+  st.push(auditStatement(ctx, 'credit override', `${party.name} ₹${unpaid / 100}: ${r.reasons.join(', ')}`));
 }
 
 export const auditStatement = (ctx, action, detail = '') =>

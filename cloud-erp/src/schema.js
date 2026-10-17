@@ -3,7 +3,7 @@
    Every business table carries org_id: one database serves many businesses (multi-tenant).
    migrate() runs on the first request after each deploy, so no manual migration step is needed. */
 
-export const SCHEMA_VERSION = 13;
+export const SCHEMA_VERSION = 14;
 
 // document types whose monthly totals doc_month keeps (sales and purchase money documents)
 const MONTH_TYPES = `('INV','SRET','CNOTE','BILL','PRET','DNOTE')`;
@@ -283,6 +283,42 @@ export const MIGRATIONS = {
     `CREATE TABLE IF NOT EXISTS roles (id INTEGER PRIMARY KEY, org_id INTEGER NOT NULL, name TEXT NOT NULL, perms TEXT NOT NULL DEFAULT '{}',
        created_at TEXT NOT NULL, UNIQUE (org_id, name))`,
     `ALTER TABLE users ADD COLUMN role_id INTEGER`,
+  ],
+  // payment promises (vaade): the customer picks a date or instalments on their link; kept/broken from receipts
+  14: [
+    `ALTER TABLE orgs ADD COLUMN vaada TEXT NOT NULL DEFAULT '{}'`,
+    `CREATE TABLE IF NOT EXISTS vaade (
+       id INTEGER PRIMARY KEY, org_id INTEGER NOT NULL, party_id INTEGER NOT NULL,
+       book TEXT NOT NULL CHECK (book IN ('khata','inv')), doc_id INTEGER,
+       kind TEXT NOT NULL CHECK (kind IN ('date','plan')), amount INTEGER NOT NULL CHECK (amount > 0),
+       due_at_start INTEGER NOT NULL, made_on TEXT NOT NULL,
+       made_by TEXT NOT NULL CHECK (made_by IN ('customer','shop')), user_id INTEGER, cust_name TEXT DEFAULT '',
+       note TEXT DEFAULT '', status TEXT NOT NULL DEFAULT 'open' CHECK (status IN ('open','done','replaced','cancelled')),
+       closed_on TEXT, changes INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL, txk TEXT UNIQUE)`,
+    // at most ONE open promise per party per book, enforced by the database even under concurrent requests
+    `CREATE UNIQUE INDEX IF NOT EXISTS ux_vaade_open ON vaade (org_id, party_id, book) WHERE status = 'open'`,
+    `CREATE INDEX IF NOT EXISTS ix_vaade_org ON vaade (org_id, status, closed_on)`,
+    `CREATE INDEX IF NOT EXISTS ix_vaade_party ON vaade (org_id, party_id, id)`,
+    `CREATE TABLE IF NOT EXISTS vaada_kisht (
+       id INTEGER PRIMARY KEY, vaada_id INTEGER NOT NULL, org_id INTEGER NOT NULL, party_id INTEGER NOT NULL,
+       n INTEGER NOT NULL, due TEXT NOT NULL, amount INTEGER NOT NULL CHECK (amount > 0),
+       outcome TEXT CHECK (outcome IN ('kept','broken')), settled_on TEXT, UNIQUE (vaada_id, n))`,
+    `CREATE INDEX IF NOT EXISTS ix_kisht_party ON vaada_kisht (org_id, party_id, due)`,
+    `CREATE INDEX IF NOT EXISTS ix_kisht_open ON vaada_kisht (org_id, due) WHERE outcome IS NULL`,
+    `CREATE TABLE IF NOT EXISTS vaada_stats (org_id INTEGER NOT NULL, party_id INTEGER NOT NULL,
+       kept INTEGER NOT NULL DEFAULT 0, broken INTEGER NOT NULL DEFAULT 0, PRIMARY KEY (org_id, party_id)) WITHOUT ROWID`,
+    // counts follow every outcome change (NULL->kept, kept->broken after a void, broken->kept after a back-dated receipt...)
+    `CREATE TRIGGER IF NOT EXISTS trg_kisht_outcome AFTER UPDATE OF outcome ON vaada_kisht
+       WHEN OLD.outcome IS NOT NEW.outcome BEGIN
+       INSERT INTO vaada_stats (org_id, party_id, kept, broken)
+       VALUES (NEW.org_id, NEW.party_id, (NEW.outcome IS 'kept') - (OLD.outcome IS 'kept'), (NEW.outcome IS 'broken') - (OLD.outcome IS 'broken'))
+       ON CONFLICT (org_id, party_id) DO UPDATE SET kept = kept + excluded.kept, broken = broken + excluded.broken;
+     END`,
+    // receipts of one party since a date (promise evaluation), and receipts by date (Kal ka Cash late-days history)
+    `CREATE INDEX IF NOT EXISTS ix_pay_party ON payments (org_id, party_id, date)`,
+    `CREATE INDEX IF NOT EXISTS ix_pay_kind_date ON payments (org_id, kind, date)`,
+    // Kal ka Cash: one cached result per business per day
+    `CREATE TABLE IF NOT EXISTS vaada_cache (org_id INTEGER PRIMARY KEY, d TEXT NOT NULL, at TEXT NOT NULL, data TEXT NOT NULL)`,
   ],
 };
 

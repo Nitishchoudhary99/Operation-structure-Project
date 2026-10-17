@@ -1,7 +1,7 @@
 /* SmartTrader service worker: makes the app installable and lets the app shell open offline.
    Business data (/api/*) is never cached: it always comes live from the server.
    Files are fetched from the network first so a new deploy shows up at once; the saved copy is only used offline. */
-const CACHE = 'smarttrader-shell-v4';
+const CACHE = 'smarttrader-shell-v5';
 const SHELL = ['/', '/app.js', '/app.css', '/manifest.webmanifest', '/icons/icon-192.png', '/icons/icon-512.png',
   '/vendor/qrcode.mjs', '/vendor/JsBarcode.all.min.js'];
 

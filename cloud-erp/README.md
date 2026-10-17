@@ -30,6 +30,14 @@ Market research and pricing advice: see [docs/COMPETITORS.md](docs/COMPETITORS.m
 | **Dashboard** | Sales, profit, receivables, payables, stock value, GST due, 12-month chart, overdue invoices, low stock. |
 | **Documents** | Printable GST tax invoice with the amount in words, UPI ID and signature block (Print → Save as PDF). WhatsApp invoice sharing. CSV export of every list and report. |
 
+### Vaada Pakka (payment promises) and Kal ka Cash
+- Every khata link (`/k/`) and invoice link (`/i/`) asks the customer **"Kab tak denge?"**: pick a pay date (full or part) or, on Starter and above, an instalment plan the shop allows. The shop can also write down a promise made on the phone.
+- Each instalment is marked **kept** or **broken** from the receipts (invoice receipts, or sent khata "got" entries) whenever a screen is opened. Voids and back-dated receipts correct it within 30 days. No interest or late fee is ever charged.
+- `#/vaade` lists today's, upcoming and broken promises; the dashboard shows **Aaj ke Vaade**; reminders change their tone with the promise.
+- **Udhaar check** at billing (Starter and above): old dues, credit limit and broken promises give a warning, or a stop that only owner/admin can override (audited).
+- **Kal ka Cash** (`#/cash`, Growth and above): a deterministic 4-week cash view and whom to remind today.
+- Privacy: payment promises a customer makes on a shop's link are visible only to that shop. Only the date, the amount and an optional name are stored (no IP or device id). It is never shared across businesses and never called a score.
+
 ### How each document hits the books
 
 | Document | Stock | Ledger |

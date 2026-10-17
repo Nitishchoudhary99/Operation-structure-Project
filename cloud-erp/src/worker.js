@@ -4,6 +4,7 @@
 import { migrate, DEFAULT_ACCOUNTS } from './schema.js';
 import {
   HttpError, bad, notFound, forbidden, json, readJson, str, reqStr, num, int, date, nowIso, oneOf, toPaise, Router, GST_RATES, today, counterStatements, counterValueSql,
+  addDays, uid,
 } from './lib.js';
 import {
   hashPassword, randomHex, sameText, passwordProblem, issueSession, sessionCookie, clearCookie, sessionFromRequest, sessionValid, USER_SQL, ROLES, can, requireCan, rateLimit,
@@ -14,7 +15,9 @@ import {
   auditStatement, cashAccount,
 } from './engine.js';
 import * as rep from './reports.js';
-import { PLANS, planOut, usage, checkCount, requireFeature, extendPlan, adminKey, trialUntil } from './saas.js';
+import { PLANS, planOut, usage, checkCount, requireFeature, extendPlan, adminKey, trialUntil, hasFeature } from './saas.js';
+import { cleanVaada, splitPlan, planOptions, minPart, risk, riskStatements, riskInput, setStatements, evalSet, writeBackStatements, promiseOut, pctOf,
+  forecast, inr0, FREE_OPEN_MAX } from './vaada.js';
 import { STATES, einvoiceJson, ewaybillJson } from './gst.js';
 import { tallyXml } from './tally.js';
 import { printOf, cleanPrint, imageFromDataUrl, shortHash, imageResponse, FILE_KINDS, seriesOf, numberSpec, formatNumber, cleanSeries, fyParts,
@@ -108,7 +111,7 @@ router.add('PUT', '/api/org/mode', async (c) => {
   return json({ ok: true, mode });
 });
 /* business row for the app: settings JSON parsed, image URLs ready for <img> */
-const orgOut = (o) => ({ ...o, print: printOf(o), series: seriesOf(o), fields: fieldsOf(o) });
+const orgOut = (o) => ({ ...o, print: printOf(o), series: seriesOf(o), fields: fieldsOf(o), vaada: cleanVaada(o.vaada) });
 const fileUrls = (P, base) => ({ logo_url: P.logo ? `${base}/logo?v=${P.logo}` : '', sign_url: P.signature ? `${base}/signature?v=${P.signature}` : '' });
 
 /* Branding & print: layout, colour, title, terms, bank, UPI on bill, signatory, footer */
@@ -333,7 +336,8 @@ router.add('DELETE', '/api/parties/:id', async (c) => {
   requireCan(c.user, 'masters');
   const id = +c.params.id;
   const used = await c.db.prepare(`SELECT EXISTS (SELECT 1 FROM docs WHERE org_id = ?1 AND party_id = ?2) + EXISTS (SELECT 1 FROM journal_lines WHERE org_id = ?1 AND party_id = ?2)
-      + EXISTS (SELECT 1 FROM khata WHERE party_id = ?2) + EXISTS (SELECT 1 FROM payments WHERE org_id = ?1 AND party_id = ?2) AS n`).bind(c.org.id, id).first();
+      + EXISTS (SELECT 1 FROM khata WHERE party_id = ?2) + EXISTS (SELECT 1 FROM payments WHERE org_id = ?1 AND party_id = ?2)
+      + EXISTS (SELECT 1 FROM vaade WHERE org_id = ?1 AND party_id = ?2) AS n`).bind(c.org.id, id).first();
   if (used.n) throw bad('This party has transactions and cannot be deleted.');
   await c.db.prepare(`DELETE FROM parties WHERE id = ? AND org_id = ?`).bind(id, c.org.id).run();
   return json({ ok: true });
@@ -554,13 +558,14 @@ const PUBLIC_DOCS = ['INV', 'SRET', 'CNOTE', 'QUOTE', 'SO', 'DN'];
 router.add('GET', '/api/public/doc/:token', async (c) => {
   await rateLimit(c.env, 'dview:' + (c.request.headers.get('CF-Connecting-IP') || 'local'), 120, 600);
   const t = String(c.params.token || '');
-  const row = /^[0-9a-f]{24}$/.test(t) ? await c.db.prepare(`SELECT id, org_id FROM docs WHERE share_token = ?`).bind(t).first() : null;
+  const row = /^[0-9a-f]{24}$/.test(t) ? await c.db.prepare(`SELECT id, org_id, party_id FROM docs WHERE share_token = ?`).bind(t).first() : null;
   if (!row) throw notFound('This link is not valid.');
   c.org = await c.db.prepare(`SELECT * FROM orgs WHERE id = ?`).bind(row.org_id).first();
   const d = await docDetail(c, row.id);
   if (!PUBLIC_DOCS.includes(d.type)) throw notFound('This link is not valid.');
   const o = d.org, p = d.party || {};
-  return json({   // only what is printed on the document: no costs, margins, links to other records or internal ids
+  const vaada = d.type === 'INV' && d.status !== 'cancelled' && row.party_id ? await publicVaada(c, c.org, row.party_id, 'inv') : null;
+  return json({ vaada,   // only what is printed on the document: no costs, margins, links to other records or internal ids
     type: d.type, label: d.label, side: d.side, number: d.number, date: d.date, due_date: d.due_date, status: d.status, place_of_supply: d.place_of_supply,
     inter_state: d.inter_state, taxable: d.taxable, cgst: d.cgst, sgst: d.sgst, igst: d.igst, round_off: d.round_off, total: d.total, paid: d.paid, balance: d.balance,
     notes: d.notes, print_fields: d.print_fields, irn: d.irn, ack_no: d.ack_no, ack_date: d.ack_date, ewb_no: d.ewb_no, ewb_date: d.ewb_date, warehouse: '',
@@ -725,10 +730,11 @@ router.add('GET', '/api/parties/:id/reminder', async (c) => {
   const due = results.reduce((t, r) => t + r.bal, 0);
   if (!due) throw bad(`${p.name} has no unpaid invoices.`);
   const link = `${c.url.origin}/i/${await shareToken(c, results[0].id)}`;
+  const v = await vaadaReminder(c, p.id, 'inv');
   const listW = results.slice(0, 8).map((r) => `• ${r.number} (${fd(r.date)}): ${inrW(r.bal)}`).join('\n') + (results.length > 8 ? `\n• …and ${results.length - 8} more` : '');
   const wa = [`*${c.org.name}*`, '⏰ Payment reminder', '', `Namaste ${p.name} ji,`, 'Ye bills baaki hain:', listW, '', `Total baaki: *${inrW(due)}*`,
-    ...(c.org.upi_id ? [`UPI: ${c.org.upi_id}`] : []), '', c.org.upi_id ? 'Bill dekhein aur UPI se pay karein ⬇' : 'Bill yahan dekhein ⬇', link, '', `_Sent via ${BRAND}_`].join('\n');
-  const sms = `${c.org.name}: Namaste ${p.name}, ${results.length} bill(s) baaki, total ${rs(due)}. Kripya bhugtan karein: ${link} -${BRAND}`;
+    ...(c.org.upi_id ? [`UPI: ${c.org.upi_id}`] : []), '', ...(v ? [...v.wa, ''] : []), c.org.upi_id ? 'Bill dekhein aur UPI se pay karein ⬇' : 'Bill yahan dekhein ⬇', link, '', `_Sent via ${BRAND}_`].join('\n');
+  const sms = `${c.org.name}: Namaste ${p.name}, ${results.length} bill(s) baaki, total ${rs(due)}. ${v && v.sms ? v.sms + ' ' : ''}Kripya bhugtan karein: ${link} -${BRAND}`;
   return json({ party: p.name, due: R(due), invoices: results.length, ...sendLinks(p.phone, wa, sms) });
 });
 
@@ -891,11 +897,12 @@ router.add('GET', '/api/khata/:party/reminder', async (c) => {
   const bal = await khataBalance(c, p.id), amt = R(bal);
   const link = await khataLink(c, p.id);
   const upi = c.org.upi_id && amt > 0 ? `upi://pay?pa=${encodeURIComponent(c.org.upi_id)}&pn=${encodeURIComponent(c.org.name)}&am=${amt.toFixed(2)}&cu=INR` : '';
+  const v = bal > 0 ? await vaadaReminder(c, p.id, 'khata') : null;
   const wa = bal > 0
     ? [`*${c.org.name}*`, '⏰ Payment reminder', '', `Namaste ${p.name} ji,`, `Aapka baaki: *${inrW(bal)}*`, 'Kripya jaldi bhugtan karein.', ...(c.org.upi_id ? [`UPI: ${c.org.upi_id}`] : []),
-      '', c.org.upi_id ? 'Khata dekhein aur UPI se pay karein ⬇' : 'Poora khata yahan dekhein ⬇', link, '', `_Sent via ${BRAND}_`].join('\n')
+      '', ...(v ? [...v.wa, ''] : []), c.org.upi_id ? 'Khata dekhein aur UPI se pay karein ⬇' : 'Poora khata yahan dekhein ⬇', link, '', `_Sent via ${BRAND}_`].join('\n')
     : [`*${c.org.name}*`, '', `Namaste ${p.name} ji, aapka khata clear hai ✅`, 'Dhanyavaad!', '', link, '', `_Sent via ${BRAND}_`].join('\n');
-  const sms = bal > 0 ? `${c.org.name}: Namaste ${p.name}, aapka baaki ${rs(bal)} hai. Kripya jaldi bhugtan karein. Khata/pay: ${link} -${BRAND}`
+  const sms = bal > 0 ? `${c.org.name}: Namaste ${p.name}, aapka baaki ${rs(bal)} hai. ${v && v.sms ? v.sms + ' ' : ''}Kripya jaldi bhugtan karein. Khata/pay: ${link} -${BRAND}`
     : `${c.org.name}: Namaste ${p.name}, aapka khata clear hai. Dhanyavaad! ${link} -${BRAND}`;
   return json({ ...sendLinks(p.phone, wa, sms), upi_url: upi });
 });
@@ -904,8 +911,8 @@ router.add('GET', '/api/khata/:party/reminder', async (c) => {
 async function khataByToken(c) {
   const t = String(c.params.token || '');
   if (!/^[0-9a-f]{24}$/.test(t)) throw notFound('This khata link is not valid.');
-  const p = await c.db.prepare(`SELECT p.id, p.name, p.org_id, o.name AS org_name, o.phone AS org_phone, o.upi_id, o.address AS org_address
-      FROM parties p JOIN orgs o ON o.id = p.org_id WHERE p.khata_token = ?`).bind(t).first();
+  const p = await c.db.prepare(`SELECT p.id, p.name, p.org_id, o.name AS org_name, o.phone AS org_phone, o.upi_id, o.address AS org_address,
+        o.vaada, o.plan, o.plan_until FROM parties p JOIN orgs o ON o.id = p.org_id WHERE p.khata_token = ?`).bind(t).first();
   if (!p) throw notFound('This khata link is not valid.');
   return p;
 }
@@ -916,7 +923,8 @@ router.add('GET', '/api/public/khata/:token', async (c) => {
       WHERE party_id = ? AND status = 'sent' ORDER BY date, id`).bind(p.id).all();
   let bal = 0;
   const rows = results.map((r) => ({ ...r, amount: R(r.amount), balance: R(bal += r.kind === 'gave' ? r.amount : -r.amount) })).reverse();
-  return json({ shop: { name: p.org_name, phone: p.org_phone, upi_id: p.upi_id, address: p.org_address }, customer: p.name, balance: R(bal), rows });
+  const vaada = await publicVaada(c, khataOrg(p), p.id, 'khata');
+  return json({ shop: { name: p.org_name, phone: p.org_phone, upi_id: p.upi_id, address: p.org_address }, customer: p.name, balance: R(bal), rows, vaada });
 }, { public: true });
 router.add('POST', '/api/public/khata/:token/ack', async (c) => {
   await rateLimit(c.env, 'kack:' + (c.request.headers.get('CF-Connecting-IP') || 'local'), 60, 600);
@@ -927,6 +935,317 @@ router.add('POST', '/api/public/khata/:token/ack', async (c) => {
   if (!r.meta.changes) throw notFound('Entry not found.');
   return json({ ok: true });
 }, { public: true });
+
+/* ======================================================================= Vaada Pakka: payment promises
+   The customer picks a pay date or instalments on their own khata / invoice link (or the shop writes down a promise
+   made on the phone). Each instalment becomes kept or broken from the receipts when a screen is opened (no cron):
+   receipts are never edited silently (void and reverse only), so the record is fair to both sides. Data stays with
+   the shop: never shared across businesses, never called a score. Algorithms: src/vaada.js. */
+const VAADA_429 = 'Aaj bahut baar koshish hui. Kal dobara try karein.';
+const clientIp = (c) => c.request.headers.get('CF-Connecting-IP') || 'local';
+async function limitHi(c, key, max, win, msg = VAADA_429) {
+  try { await rateLimit(c.env, key, max, win); } catch (e) { if (e instanceof HttpError && e.status === 429) throw new HttpError(429, msg); throw e; }
+}
+const dueSql = (book) => book === 'inv'
+  ? `SELECT COALESCE(SUM(total - paid), 0) AS due FROM docs WHERE org_id = ? AND party_id = ? AND type = 'INV' AND status IN ('unpaid','partial')`
+  : `SELECT ${KHATA_BAL} AS due FROM khata k WHERE k.org_id = ? AND k.party_id = ?`;
+const khataOrg = (p) => ({ id: p.org_id, name: p.org_name, phone: p.org_phone, vaada: p.vaada, plan: p.plan, plan_until: p.plan_until });
+const bookSeen = (u) => ({ khata: canView(u, 'khata'), inv: canView(u, 'sales') || canView(u, 'finance') });
+
+/* read a set of promises (one D1 call, plus `extra` statements in the same batch), evaluate, write back the changes (≤ 1 call) */
+async function vaadaSet(c, orgId, o, extra = []) {
+  const res = await c.db.batch([...setStatements(c.db, { orgId, today: o.today, partyId: o.partyId, book: o.book }), ...extra]);
+  const ev = evalSet(res.slice(0, 6), o.today, o.s.grace);
+  const wb = writeBackStatements(c.db, orgId, o.today, ev.diffs, ev.doneIds);
+  if (wb.length) await c.db.batch(wb);
+  return { ...ev, extra: res.slice(6) };
+}
+
+/* the `vaada` block of the customer's khata / invoice link */
+async function publicVaada(c, org, partyId, book) {
+  try {
+    const s = cleanVaada(org.vaada), t = today();
+    if (!s.on) return { enabled: false, book };
+    const set = await vaadaSet(c, org.id, { today: t, partyId, book, s }, [
+      c.db.prepare(dueSql(book)).bind(org.id, partyId),
+      c.db.prepare(`SELECT COUNT(*) AS n FROM vaade WHERE org_id = ? AND status = 'open'`).bind(org.id)]);
+    const due = Math.max(0, set.extra[0].results[0].due || 0), openN = set.extra[1].results[0].n;
+    const open = set.list.find((p) => p.status === 'open' && p.book === book) || null;
+    const feat = hasFeature(org, 'vaada');
+    // a gated option is simply not offered: no upgrade text ever reaches the customer
+    const enabled = (due > 0 || !!open) && (feat || openN < FREE_OPEN_MAX || !!open);
+    return { enabled, book, due: R(due), today: t, open: open ? promiseOut(open) : null,
+      options: { max_date: addDays(t, s.max_days), min_amount: R(s.part ? minPart(due, s) : due), part: s.part, plans: feat && due > 0 ? planOptions(due, s, t) : [] } };
+  } catch (e) {
+    console.error(e && e.stack || e);
+    return { enabled: false, book };     // never break the customer's link
+  }
+}
+
+/* create (or replace) the open promise of a party in one book. by: 'customer' (link) | 'shop' (phone par) */
+async function makePromise(c, { org, partyId, partyName, book, docId, by, body }) {
+  const s = cleanVaada(org.vaada), t = today(), db = c.db, shop = by === 'shop';
+  if (!s.on) throw notFound(shop ? 'Vaade band hain. Settings mein chalu karein.' : 'Ye link sahi nahi hai.');
+  const kind = body.kind;
+  if (kind !== 'date' && kind !== 'plan') throw bad('Tareekh ya kisht chunein.');
+  const feat = hasFeature(org, 'vaada');
+  if (kind === 'plan' && !feat) throw new HttpError(402, shop ? 'Kisht ke liye Starter plan lein (Settings → Plan & billing).' : 'Kisht ka option abhi nahi hai. Shop se baat karein.', { upgrade: shop });
+  const [dueR, openR, kR, cntR] = await db.batch([
+    db.prepare(dueSql(book)).bind(org.id, partyId),
+    db.prepare(`SELECT * FROM vaade WHERE org_id = ? AND party_id = ? AND book = ? AND status = 'open'`).bind(org.id, partyId, book),
+    db.prepare(`SELECT k.outcome, k.due FROM vaada_kisht k JOIN vaade v ON v.id = k.vaada_id WHERE v.org_id = ? AND v.party_id = ? AND v.book = ? AND v.status = 'open'`).bind(org.id, partyId, book),
+    db.prepare(`SELECT COUNT(*) AS n FROM vaade WHERE org_id = ? AND status = 'open'`).bind(org.id)]);
+  const due = dueR.results[0].due || 0, old = openR.results[0] || null;
+  if (!feat && !old && cntR.results[0].n >= FREE_OPEN_MAX) {
+    throw new HttpError(402, shop ? `${FREE_OPEN_MAX} se zyada vaade ke liye Starter plan lein.` : 'Abhi vaada nahi le sakte. Shop se baat karein.', { upgrade: shop });
+  }
+  if (due <= 0) throw bad('Koi baaki nahi hai.');
+  if (old && !shop) {      // the customer may change their own promise once, and only before anything is broken
+    const brokenAny = kR.results.some((k) => k.outcome === 'broken' || (!k.outcome && addDays(k.due, s.grace) < t));
+    if (old.made_by !== 'customer' || old.changes || brokenAny) throw new HttpError(409, 'Ye vaada pehle hi badla ja chuka hai. Shop se baat karein.');
+  }
+  let kisht, amount;
+  if (kind === 'date') {
+    const d = str(body.date, 10), max = addDays(t, s.max_days);
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(d) || isNaN(Date.parse(d + 'T00:00:00Z'))) throw bad('Tareekh chunein.');
+    if (d < t) throw bad('Aaj ya aage ki tareekh chunein.');
+    if (d > max) throw bad(`Tareekh ${fd(max)} ya usse pehle ki chunein.`);
+    if (body.amount === undefined || body.amount === null || body.amount === '') amount = due;
+    else {
+      const a = Number(body.amount);
+      if (!Number.isFinite(a) || a <= 0) throw bad('Rakam sahi likhein.');
+      amount = toPaise(a);
+    }
+    const minAmt = s.part ? minPart(due, s) : due;
+    if (amount > due) throw bad(`Baaki se zyada ka vaada nahi ho sakta (${inrW(due)}).`);
+    if (amount < minAmt) throw bad(s.part ? `Kam se kam ${inr0(minAmt)} ka vaada karein.` : `Poore ${inrW(due)} ka vaada karein.`);
+    kisht = [{ n: 1, d, a: amount }];
+  } else {
+    const key = str(body.plan, 4);
+    if (!s.plans.includes(key)) throw bad('Ye kisht plan abhi chalu nahi hai.');
+    amount = due;                                   // instalments always cover the full due
+    kisht = splitPlan(due, key, t, s.min_kisht);
+  }
+  const name = str(body.name, 60), note = shop ? str(body.note, 200) : '';
+  if (shop) await limitHi(c, 'vshop:' + org.id, 300, 3600, 'Bahut zyada vaade ek saath. Thodi der baad try karein.');
+  else await limitHi(c, `vparty:${org.id}:${partyId}`, 3, 86400);
+  const txk = uid(), now = nowIso(), last = kisht[kisht.length - 1].d, changes = old && !shop ? (old.changes || 0) + 1 : 0;
+  const st = [];
+  if (old) st.push(db.prepare(`UPDATE vaade SET status = 'replaced', closed_on = ? WHERE id = ? AND org_id = ? AND status = 'open'`).bind(t, old.id, org.id));
+  st.push(db.prepare(`INSERT INTO vaade (org_id, party_id, book, doc_id, kind, amount, due_at_start, made_on, made_by, user_id, cust_name, note, changes, created_at, txk)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id`)
+    .bind(org.id, partyId, book, docId || null, kind, amount, due, t, by, shop ? c.user.id : null, name, note, changes, now, txk));
+  st.push(db.prepare(`INSERT INTO vaada_kisht (vaada_id, org_id, party_id, n, due, amount)
+      SELECT (SELECT id FROM vaade WHERE txk = ?), ?, ?, CAST(j.key AS INTEGER) + 1, json_extract(j.value, '$.d'), json_extract(j.value, '$.a') FROM json_each(?) j`)
+    .bind(txk, org.id, partyId, JSON.stringify(kisht.map((k) => ({ d: k.d, a: k.a })))));
+  st.push(db.prepare(`INSERT INTO audit (org_id, user_id, at, action, detail) VALUES (?, ?, ?, ?, ?)`)
+    .bind(org.id, shop ? c.user.id : null, now, `vaada by ${by}`, `${partyName} ${amount / 100} ${kind} ${last}`.slice(0, 300)));
+  let res;
+  try { res = await db.batch(st); } catch (e) {
+    if (/UNIQUE constraint failed: vaade\./.test(String(e && e.message))) throw new HttpError(409, 'Vaada abhi save ho chuka hai. Page refresh karein.');
+    throw e;
+  }
+  let id = ((res[old ? 1 : 0].results || [])[0] || {}).id;
+  if (!id) id = (await db.prepare(`SELECT id FROM vaade WHERE txk = ?`).bind(txk).first()).id;
+  const p = { id, book, kind, amount, made_on: t, made_by: by, status: 'open', doc_id: docId, cust_name: name, note, changes, paid_since: 0, broken_any: false,
+    kisht: kisht.map((k) => ({ n: k.n, due: k.d, amount: k.a, state: t >= k.d ? 'due' : 'upcoming' })) };
+  return { vaada: promiseOut(p), kisht, amount, last, due };
+}
+/* the customer's "tell the shop" WhatsApp link */
+function shopWhatsapp(org, r, who) {
+  const phone = String(org.phone || '').replace(/\D/g, '');
+  if (!phone) return '';
+  const text = `Namaste, maine ${org.name} ko ${fd(r.last)} tak ${inrW(r.amount)} dene ka vaada kiya hai. – ${who}`;
+  return `https://wa.me/${phone.length === 10 ? '91' + phone : phone}?text=${encodeURIComponent(text)}`;
+}
+router.add('POST', '/api/public/khata/:token/vaada', async (c) => {
+  await limitHi(c, 'vpost:' + clientIp(c), 10, 600);
+  const p = await khataByToken(c);
+  const org = khataOrg(p);
+  const r = await makePromise(c, { org, partyId: p.id, partyName: p.name, book: 'khata', docId: null, by: 'customer', body: c.body });
+  return json({ ok: true, vaada: r.vaada, shop_whatsapp_url: shopWhatsapp(org, r, str(c.body.name, 60) || p.name) });
+}, { public: true });
+router.add('POST', '/api/public/doc/:token/vaada', async (c) => {
+  await limitHi(c, 'vpost:' + clientIp(c), 10, 600);
+  const t = String(c.params.token || '');
+  const row = /^[0-9a-f]{24}$/.test(t) ? await c.db.prepare(`SELECT d.id AS doc_id, d.type, d.status, d.party_id, d.org_id, p.name AS party,
+      o.name AS org_name, o.phone AS org_phone, o.vaada, o.plan, o.plan_until FROM docs d JOIN parties p ON p.id = d.party_id JOIN orgs o ON o.id = d.org_id
+      WHERE d.share_token = ?`).bind(t).first() : null;
+  if (!row || row.type !== 'INV' || row.status === 'cancelled') throw notFound('Ye link sahi nahi hai.');
+  const org = khataOrg(row);
+  const r = await makePromise(c, { org, partyId: row.party_id, partyName: row.party, book: 'inv', docId: row.doc_id, by: 'customer', body: c.body });
+  return json({ ok: true, vaada: r.vaada, shop_whatsapp_url: shopWhatsapp(org, r, str(c.body.name, 60) || row.party) });
+}, { public: true });
+
+/* Reminder lines (§5.4): the tone follows the party's open promise in that book. Read-only. */
+async function vaadaReminder(c, partyId, book) {
+  const s = cleanVaada(c.org.vaada);
+  if (!s.on) return null;
+  try {
+    const t = today();
+    const res = await c.db.batch([...setStatements(c.db, { orgId: c.org.id, today: t, partyId, book }),
+      c.db.prepare(`SELECT COUNT(*) AS n FROM vaada_kisht WHERE org_id = ? AND party_id = ? AND outcome = 'broken' AND due >= ?`).bind(c.org.id, partyId, addDays(t, -90))]);
+    const ev = evalSet(res.slice(0, 6), t, s.grace);
+    const p = ev.list.find((x) => x.status === 'open');
+    if (!p) return { wa: ['Kab tak denge? Link par khud tareekh chunein ⬇'], sms: '' };
+    const b90 = res[6].results[0].n + ev.diffs.filter((d) => d.due >= addDays(t, -90)).reduce((n, d) => n + (d.o === 'broken') - (d.from === 'broken'), 0);
+    const br = p.kisht.find((k) => k.state === 'broken'), now = p.kisht.find((k) => k.state === 'due'), up = p.kisht.find((k) => k.state === 'upcoming');
+    if (br) {
+      const firm = `Aapne *${fd(br.due)}* tak *${inrW(br.amount)}* dene ka vaada kiya tha. Kripya aaj bhugtan karein.`;
+      return { wa: b90 >= s.broken_max ? [firm, 'Agla udhaar tabhi milega jab purana baaki clear ho.'] : [firm], sms: `Vaada toota (${fd(br.due)}).` };
+    }
+    if (now) return { wa: [`Aaj aapke vaade ka din hai: *${inrW(now.amount)}*`], sms: `Vaada: ${fd(now.due)} ${rs(now.amount)}.` };
+    if (up) return { wa: [`Aapka vaada: *${fd(up.due)}* tak *${inrW(up.amount)}* 🙏`], sms: `Vaada: ${fd(up.due)} ${rs(up.amount)}.` };
+    return null;
+  } catch (e) { console.error(e && e.stack || e); return null; }
+}
+
+/* ---------- the shop's side ---------- */
+async function vaadaList(c) {
+  const s = cleanVaada(c.org.vaada), t = today(), seen = bookSeen(c.user);
+  const set = await vaadaSet(c, c.org.id, { today: t, s });
+  const tabs = { today: [], upcoming: [], broken: [], all: [] }, soon = addDays(t, 7), since = addDays(t, -30);
+  for (const p of set.list) {
+    if (!seen[p.book]) continue;
+    const st = set.stats.get(p.party_id) || { kept: 0, broken: 0 };
+    const base = { id: p.id, party_id: p.party_id, name: p.name, phone: p.phone || '', book: p.book, doc_id: p.doc_id, kind: p.kind, made_by: p.made_by,
+      status: p.status, amount: R(p.amount), paid_since: R(p.paid_since), of: p.kisht.length, kept: st.kept, broken: st.broken, pct: pctOf(st) };
+    let need = 0;
+    for (const k of p.kisht) {
+      need += k.amount;
+      const row = { ...base, n: k.n, due: k.due, state: k.state, kamount: R(k.amount), due_amount: R(Math.max(0, Math.min(k.amount, need - p.paid_since))) };
+      if (p.status === 'open' && k.state === 'due') tabs.today.push(row);
+      else if (p.status === 'open' && k.state === 'upcoming' && k.due <= soon) tabs.upcoming.push(row);
+      else if (k.state === 'broken' && (p.status === 'open' || (k.settled_on && k.settled_on >= since))) tabs.broken.push(row);
+    }
+    const cur = p.kisht.find((k) => k.state !== 'kept') || p.kisht[p.kisht.length - 1];
+    tabs.all.push({ ...base, n: cur.n, due: cur.due, state: p.status === 'done' ? 'done' : cur.state, kamount: R(cur.amount), due_amount: R(Math.max(0, p.amount - p.paid_since)) });
+  }
+  const asc = (a, b) => (a.due < b.due ? -1 : a.due > b.due ? 1 : a.id - b.id);
+  tabs.today.sort((a, b) => b.due_amount - a.due_amount || asc(a, b));
+  tabs.upcoming.sort(asc); tabs.broken.sort(asc);
+  tabs.all.sort((a, b) => (a.status === 'open' ? 0 : 1) - (b.status === 'open' ? 0 : 1) || asc(a, b));
+  const openN = set.list.filter((p) => p.status === 'open').length;
+  const summary = { today_n: tabs.today.length, today_amount: R(tabs.today.reduce((x, r) => x + Math.round(r.due_amount * 100), 0)), upcoming_n: tabs.upcoming.length,
+    broken_n: tabs.broken.length, open_n: openN, free_cap: !hasFeature(c.org, 'vaada') && openN >= FREE_OPEN_MAX };
+  return { tabs, summary };
+}
+router.add('GET', '/api/vaade', async (c) => {
+  const v = c.url.searchParams.get('view');
+  const view = ['today', 'upcoming', 'broken', 'all'].includes(v) ? v : 'today';
+  const L = await vaadaList(c);
+  return json({ view, rows: L.tabs[view], counts: { today: L.tabs.today.length, upcoming: L.tabs.upcoming.length, broken: L.tabs.broken.length, all: L.tabs.all.length }, summary: L.summary });
+});
+router.add('GET', '/api/vaade/summary', async (c) => json((await vaadaList(c)).summary));
+router.add('GET', '/api/vaade/party/:id', async (c) => {
+  const id = +c.params.id || 0, s = cleanVaada(c.org.vaada), t = today();
+  const set = await vaadaSet(c, c.org.id, { today: t, partyId: id, s }, [
+    c.db.prepare(`SELECT id, name, phone FROM parties WHERE id = ? AND org_id = ?`).bind(id, c.org.id),
+    c.db.prepare(`SELECT ${KHATA_BAL} AS b FROM khata k WHERE k.org_id = ? AND k.party_id = ?`).bind(c.org.id, id),
+    c.db.prepare(`SELECT COUNT(*) AS n FROM vaada_kisht WHERE org_id = ? AND party_id = ? AND outcome = 'broken' AND due >= ?`).bind(c.org.id, id, addDays(t, -90))]);
+  const party = set.extra[0].results[0];
+  if (!party) throw notFound('Contact not found.');
+  const seen = bookSeen(c.user), st = set.stats.get(id) || { kept: 0, broken: 0 };
+  const due = { khata: Math.max(0, set.extra[1].results[0].b || 0), inv: Math.max(0, set.dueOf.get(id) || 0) };
+  const open = {}, plans = {}, feat = hasFeature(c.org, 'vaada');
+  for (const b of ['khata', 'inv']) {
+    const p = set.list.find((x) => x.book === b && x.status === 'open');
+    open[b] = p && seen[b] ? promiseOut(p) : null;
+    plans[b] = feat && due[b] > 0 ? planOptions(due[b], s, t) : [];
+  }
+  const b90 = set.extra[2].results[0].n + set.diffs.filter((d) => d.due >= addDays(t, -90)).reduce((n, d) => n + (d.o === 'broken') - (d.from === 'broken'), 0);
+  return json({ party, on: s.on, today: t, max_date: addDays(t, s.max_days), stats: { kept: st.kept, broken: st.broken, pct: pctOf(st), broken90: Math.max(0, b90) },
+    open, due: { khata: R(due.khata), inv: R(due.inv) }, plans, can_plan: feat });
+});
+/* a promise the customer made on the phone, written down by the shop */
+router.add('POST', '/api/vaade', async (c) => {
+  requireCan(c.user, 'khata');
+  const b = c.body, book = b.book === 'inv' ? 'inv' : 'khata';
+  const p = await c.db.prepare(`SELECT id, name, phone FROM parties WHERE id = ? AND org_id = ?`).bind(+b.party_id || 0, c.org.id).first();
+  if (!p) throw notFound('Contact not found.');
+  let docId = null;
+  if (book === 'inv') {
+    const d = await c.db.prepare(`SELECT id FROM docs WHERE org_id = ? AND party_id = ? AND type = 'INV' AND status IN ('unpaid','partial') ORDER BY due_date, id LIMIT 1`).bind(c.org.id, p.id).first();
+    if (!d) throw bad('Koi baaki nahi hai.');
+    docId = d.id;
+  }
+  const r = await makePromise(c, { org: c.org, partyId: p.id, partyName: p.name, book, docId, by: 'shop', body: b });
+  const link = book === 'inv' ? `${c.url.origin}/i/${await shareToken(c, docId)}` : await khataLink(c, p.id);
+  const planLines = r.kisht.length > 1 ? '\n' + r.kisht.map((k) => `• ${fd(k.d)}: ${inrW(k.a)}`).join('\n') : '';
+  const wa = `*${c.org.name}*\n✍ Aapka vaada likh liya\n\nNamaste ${p.name} ji,\n*${fd(r.last)}* tak *${inrW(r.amount)}*${planLines}\n\nApna ${book === 'inv' ? 'bill' : 'khata'} dekhein ⬇\n${link}\n\n_Sent via ${BRAND}_`;
+  const sms = `${c.org.name}: Namaste ${p.name}, aapka vaada likh liya: ${fd(r.last)} tak ${rs(r.amount)}. ${link} -${BRAND}`;
+  return json({ ok: true, vaada: r.vaada, phone: p.phone, ...sendLinks(p.phone, wa, sms) });
+});
+router.add('POST', '/api/vaade/:id/cancel', async (c) => {
+  requireCan(c.user, 'khata');
+  const id = +c.params.id || 0, reason = str(c.body.reason, 120);
+  const [u] = await c.db.batch([
+    c.db.prepare(`UPDATE vaade SET status = 'cancelled', closed_on = ?, note = COALESCE(note, '') || ' [radd: ' || ? || ']' WHERE id = ? AND org_id = ? AND status = 'open'`)
+      .bind(today(), reason, id, c.org.id),
+    c.db.prepare(`INSERT INTO audit (org_id, user_id, at, action, detail) SELECT ?, ?, ?, 'vaada cancel',
+        COALESCE((SELECT p.name FROM vaade v JOIN parties p ON p.id = v.party_id WHERE v.id = ? AND v.org_id = ?), '') || ': ' || ? WHERE changes() > 0`)
+      .bind(c.org.id, c.user.id, nowIso(), id, c.org.id, reason)]);
+  if (!u.meta.changes) {
+    if (!(await c.db.prepare(`SELECT 1 AS x FROM vaade WHERE id = ? AND org_id = ?`).bind(id, c.org.id).first())) throw notFound('Vaada nahi mila.');
+    throw bad('Ye vaada khula nahi hai.');
+  }
+  return json({ ok: true });
+});
+/* udhaar check for the billing screens (the same rules createDoc enforces) */
+router.add('GET', '/api/vaade/check', async (c) => {
+  requireCan(c.user, 'sales');
+  const s = cleanVaada(c.org.vaada), t = today(), pid = +c.url.searchParams.get('party_id') || 0;
+  const mode = hasFeature(c.org, 'vaada') ? s.credit_check : 'off';
+  if (mode === 'off') return json({ risky: false, reasons: [], text: '', mode, can_override: true });
+  const res = await c.db.batch([...riskStatements(c.db, c.org.id, pid, t, s.grace), c.db.prepare(`SELECT id, name, credit_limit FROM parties WHERE id = ? AND org_id = ?`).bind(pid, c.org.id)]);
+  const party = res[5].results[0];
+  if (!party) throw notFound('Contact not found.');
+  const r = risk(riskInput(res, party, 0, t), s);
+  return json({ risky: r.risky, name: party.name, reasons: r.reasons, text: r.text, mode, can_override: mode === 'warn' || can(c.user, 'settings'), kept_pct: r.kept_pct, broken90: r.broken90 });
+});
+router.add('PUT', '/api/settings/vaada', async (c) => {
+  requireCan(c.user, 'settings');
+  const s = cleanVaada({ ...cleanVaada(c.org.vaada), ...(c.body && typeof c.body === 'object' ? c.body : {}) });
+  await c.db.batch([c.db.prepare(`UPDATE orgs SET vaada = ? WHERE id = ?`).bind(JSON.stringify(s), c.org.id),
+    auditStatement(c, 'vaada settings', `${s.on ? 'on' : 'off'} · udhaar check ${s.credit_check} · plans ${s.plans.join(',') || '-'}`)]);
+  return json({ ok: true, vaada: s });
+});
+
+/* ---------- Kal ka Cash: the next 4 weeks of cash (§6.4), cached once a day per business ---------- */
+const ymBack = (t, n) => { let d = t.slice(0, 8) + '01'; for (let i = 0; i < n; i++) d = addDays(d, -1).slice(0, 8) + '01'; return d.slice(0, 7); };
+router.add('GET', '/api/vaade/cash', async (c) => {
+  requireFeature(c.org, 'cash');
+  if (c.user.role === 'custom' && !canView(c.user, 'finance') && !canView(c.user, 'reports')) throw forbidden('Your role cannot see this. Ask the owner.');
+  const t = today(), o = c.org.id, db = c.db;
+  if (c.url.searchParams.get('fresh') === '1') await limitHi(c, 'vcash:' + o, 10, 3600, 'Bahut baar dobara banaya. Thodi der baad try karein.');
+  else {
+    const hit = await db.prepare(`SELECT d, data FROM vaada_cache WHERE org_id = ?`).bind(o).first();
+    if (hit && hit.d === t) { try { return json({ ...JSON.parse(hit.data), cached: true }); } catch (e) { /* rebuild */ } }
+  }
+  const res = await db.batch([
+    db.prepare(`SELECT d.id, d.party_id, d.date, d.due_date, d.total - d.paid AS bal, p.name, p.phone FROM docs d JOIN parties p ON p.id = d.party_id
+        WHERE d.org_id = ? AND d.type = 'INV' AND d.status IN ('unpaid','partial')`).bind(o),
+    db.prepare(`SELECT d.id, d.number, d.date, d.due_date, d.total - d.paid AS bal, p.name AS party FROM docs d LEFT JOIN parties p ON p.id = d.party_id
+        WHERE d.org_id = ? AND d.type = 'BILL' AND d.status IN ('unpaid','partial')`).bind(o),
+    db.prepare(`SELECT d.party_id, p.date, d.due_date FROM payments p JOIN payment_allocs a ON a.payment_id = p.id JOIN docs d ON d.id = a.doc_id
+        WHERE p.org_id = ? AND p.kind = 'receipt' AND p.date >= ? AND substr(COALESCE(p.notes, ''), 1, 6) != '[void]' AND d.type = 'INV' ORDER BY p.date DESC LIMIT 5000`).bind(o, addDays(t, -120)),
+    db.prepare(`SELECT k.party_id, k.due, k.amount, v.book, p.name, p.phone FROM vaada_kisht k JOIN vaade v ON v.id = k.vaada_id JOIN parties p ON p.id = k.party_id
+        WHERE v.org_id = ? AND v.status = 'open' AND k.outcome IS NULL`).bind(o),
+    db.prepare(`SELECT party_id, kept, broken FROM vaada_stats WHERE org_id = ? AND party_id IN (SELECT party_id FROM vaade WHERE org_id = ? AND status = 'open')`).bind(o, o),
+    db.prepare(`SELECT m.account_id, a.sys, a.type, m.ym, m.dr, m.cr FROM acct_month m JOIN accounts a ON a.id = m.account_id
+        WHERE m.org_id = ? AND m.ym >= ? AND (a.type = 'expense' OR a.sys IN ('gst_output','gst_input'))`).bind(o, ymBack(t, 4)),
+  ]);
+  const bal = await rep.accountBalances(db, o, '0000-01-01', t);
+  const f = forecast({ opening: bal.filter((a) => a.is_cash).reduce((x, a) => x + a.dr - a.cr, 0), invs: res[0].results, bills: res[1].results, late: res[2].results,
+    kisht: res[3].results, stats: res[4].results, months: res[5].results }, t);
+  const out = { today: t, at: nowTime(), low_data: String(c.org.created_at || '').slice(0, 10) > addDays(t, -60), opening: R(f.opening),
+    weeks: f.weeks.map((w) => ({ from: w.from, to: w.to, in_exp: R(w.in_exp), in_full: R(w.in_full), out: R(w.out), close_exp: R(w.close_exp), close_full: R(w.close_full) })),
+    short_week: f.short_week, short_amount: R(f.short_amount), remind: f.remind.map((r) => ({ ...r, amount: R(r.amount) })), remind_total: R(f.remind_total),
+    bills_wait: f.bills_wait.map((b) => ({ ...b, amount: R(b.amount) })), stuck: R(f.stuck), expense_week: R(f.expense_week) };
+  await db.prepare(`INSERT INTO vaada_cache (org_id, d, at, data) VALUES (?, ?, ?, ?) ON CONFLICT (org_id) DO UPDATE SET d = excluded.d, at = excluded.at, data = excluded.data`)
+    .bind(o, t, nowIso(), JSON.stringify(out)).run();
+  return json({ ...out, cached: false });
+});
 
 /* ======================================================================= reports */
 const noCosts = (o, keys) => { keys.forEach((k) => delete o[k]); return o; };
@@ -1003,6 +1322,8 @@ function readArea(url) {
   if (p === '/api/reports/stock' || /^\/api\/items\/\d+\/moves/.test(p)) return 'items';
   if (p.startsWith('/api/payments') || /^\/api\/accounts\/\d+\/ledger/.test(p)) return 'finance';
   if (p.startsWith('/api/khata')) return 'khata';
+  if (p === '/api/vaade/cash' || p === '/api/vaade/check') return null;   // checked in the handler (finance or reports / sales)
+  if (p.startsWith('/api/vaade')) return 'khata';                          // coarse gate; rows are filtered per book in the handler
   if (p.startsWith('/api/gate')) return 'purchase';
   if (/^\/api\/parties\/\d+\/(ledger|reminder)/.test(p)) return 'masters';
   if (p === '/api/docs' && DOC_TYPES[t]) return DOC_TYPES[t].side;

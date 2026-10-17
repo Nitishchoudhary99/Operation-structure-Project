@@ -22,7 +22,7 @@ document.body.insertAdjacentHTML('beforeend', `<datalist id="states">${STATES.ma
 let ME = null;                  // { user, org, can, doc_types, gst_rates, today }
 const cache = {};               // masters used by forms; cleared after writes
 
-class ApiError extends Error { constructor(msg, status) { super(msg); this.status = status; } }
+class ApiError extends Error { constructor(msg, status, data) { super(msg); this.status = status; this.data = data || {}; } }
 async function api(method, path, body) {
   const res = await fetch(path, {
     method, credentials: 'same-origin',
@@ -32,7 +32,7 @@ async function api(method, path, body) {
   let data = {};
   try { data = await res.json(); } catch (e) { /* empty */ }
   if (res.status === 401 && !path.startsWith('/api/auth')) { ME = null; renderAuth(); throw new ApiError('Please sign in.', 401); }
-  if (!res.ok) throw new ApiError(data.error || `Request failed (${res.status})`, res.status);
+  if (!res.ok) throw new ApiError(data.error || `Request failed (${res.status})`, res.status, data);
   return data;
 }
 const GET = (p) => api('GET', p);
@@ -194,17 +194,17 @@ const ADV_DOCS = ['QUOTE', 'SO', 'DN', 'PO', 'GRN'];
 const simple = () => !ME || (ME.org.mode || 'simple') !== 'advanced';
 /* which permission area a menu entry needs (custom roles may not see every area) */
 const navArea = (h) => /^(receipts|payments|expenses|accounts|journal)$/.test(h) ? 'finance' : /^(sales\/|pos$)/.test(h) ? 'sales' : /^(purchase\/|gate\/in$)/.test(h) ? 'purchase'
-  : /^(items|stock|stockcount|gate\/out|pending)$/.test(h) ? 'items' : /^(parties|reminders)$/.test(h) ? 'masters' : h === 'khata' ? 'khata'
+  : /^(items|stock|stockcount|gate\/out|pending)$/.test(h) ? 'items' : /^(parties|reminders)$/.test(h) ? 'masters' : /^(khata|vaade)$/.test(h) ? 'khata'
   : /^(reports\/|tally$|daybook$)/.test(h) ? 'reports' : h === 'plan' ? 'settings' : '';
-const seen = (h) => { const a = navArea(h); return !a || !ME.view || ME.view[a] !== false; };
+const seen = (h) => { if (h === 'cash') return !ME.view || ME.view.finance !== false || ME.view.reports !== false; const a = navArea(h); return !a || !ME.view || ME.view[a] !== false; };
 const NAV = [
   ['', [['dashboard', 'Dashboard']]],
   ['Sales', [['pos', 'Quick Bill (POS)'], ['sales/INV', 'Invoices'], ['sales/SO', 'Sales Orders'], ['sales/DN', 'Delivery Notes'], ['sales/QUOTE', 'Quotations'], ['sales/SRET', 'Sales Returns'], ['sales/CNOTE', 'Credit Notes (rate diff)'], ['receipts', 'Receipts']]],
   ['Purchase', [['purchase/PO', 'Purchase Orders'], ['gate/in', 'Gate Entry (inward)'], ['purchase/GRN', 'Goods Receipts (GRN)'], ['purchase/BILL', 'Purchase Bills'], ['purchase/PRET', 'Purchase Returns'], ['purchase/DNOTE', 'Debit Notes (rate diff)'], ['payments', 'Payments']]],
   ['Inventory', [['items', 'Items'], ['stock', 'Stock & Godowns'], ['stockcount', 'Stock Count'], ['gate/out', 'Gate Pass (outward)'], ['pending', 'Pending Orders']]],
-  ['Contacts', [['parties', 'Customers & Suppliers'], ['khata', 'Khata Book'], ['reminders', 'Payment Reminders']]],
+  ['Contacts', [['parties', 'Customers & Suppliers'], ['khata', 'Khata Book'], ['reminders', 'Payment Reminders'], ['vaade', 'Vaade (Promises)']]],
   ['Accounts', [['expenses', 'Expenses'], ['accounts', 'Chart of Accounts'], ['journal', 'Journal Voucher'], ['daybook', 'Day Book']]],
-  ['Reports', [['reports/pnl', 'Profit & Loss'], ['reports/balance-sheet', 'Balance Sheet'], ['reports/trial-balance', 'Trial Balance'], ['reports/gst', 'GST Summary'], ['reports/ageing', 'Outstanding (Ageing)'], ['reports/register', 'Registers'], ['tally', 'Tally Export']]],
+  ['Reports', [['reports/pnl', 'Profit & Loss'], ['reports/balance-sheet', 'Balance Sheet'], ['reports/trial-balance', 'Trial Balance'], ['reports/gst', 'GST Summary'], ['reports/ageing', 'Outstanding (Ageing)'], ['reports/register', 'Registers'], ['cash', 'Kal ka Cash'], ['tally', 'Tally Export']]],
   ['Settings', [['settings', 'Settings'], ['plan', 'Plan & Billing']]],
 ];
 
@@ -314,7 +314,7 @@ const head = (title, actions = '') => `<div class="page-head"><h1>${title}</h1><
 
 /* ======================================================================= dashboard */
 route(/^dashboard$/, async (el) => {
-  const d = await GET('/api/reports/dashboard');
+  const [d, vs] = await Promise.all([GET('/api/reports/dashboard'), ME.view && ME.view.khata === false ? null : GET('/api/vaade/summary').catch(() => null)]);
   const max = Math.max(1, ...d.monthly.map((m) => Math.max(m.sales, m.purchases)));
   const W = 720, H = 190, bw = W / d.monthly.length;
   const bars = d.monthly.map((m, i) => {
@@ -324,7 +324,7 @@ route(/^dashboard$/, async (el) => {
       <text x="${x + bw / 2}" y="${H - 5}" font-size="10" text-anchor="middle" fill="var(--muted)">${new Date(m.month + '-01').toLocaleString('en-IN', { month: 'short' })}</text>`;
   }).join('');
   el.innerHTML = head('Dashboard', `${ME.can.purchase ? '<a class="btn hide-sm" href="#/new/BILL">+ Purchase bill</a>' : ''}${ME.can.sales ? '<a class="btn primary hide-sm" href="#/new/INV">+ New invoice</a>' : ''}`)
-    + getStarted(d.setup) + `
+    + getStarted(d.setup) + vaadaCard(vs) + `
     <div class="kpis">
       <div class="kpi"><div class="l">Sales this month</div><div class="v">${inr0(d.sales_month)}</div><div class="s">FY: ${inr0(d.sales_fy)} &middot; ${d.invoices_fy} invoices</div></div>
       ${d.gross_profit_fy === undefined ? '' : `<div class="kpi"><div class="l">Gross profit (FY)</div><div class="v">${inr0(d.gross_profit_fy)}</div><div class="s">Margin ${d.gross_margin}% &middot; Net ${inr0(d.net_profit_fy)}</div></div>`}
@@ -338,7 +338,7 @@ route(/^dashboard$/, async (el) => {
         <svg class="chart" viewBox="0 0 ${W} ${H}" preserveAspectRatio="none">${bars}</svg>
         <div class="legend"><span><i style="background:var(--brand)"></i>Sales</span><span><i style="background:#94a3b8"></i>Purchases</span></div></div>
       <div class="panel"><h3>Cash &amp; bank</h3>${table([{ h: 'Account', k: 'name' }, { h: 'Balance', num: 1, f: (r) => inr(r.balance) }], d.cash)}
-        <div class="row" style="margin-top:12px"><a class="btn sm" href="#/receipts?new=1">Receive money</a><a class="btn sm" href="#/payments?new=1">Pay supplier</a><a class="btn sm" href="#/expenses?new=1">Add expense</a></div></div>
+        <div class="row" style="margin-top:12px"><a class="btn sm" href="#/receipts?new=1">Receive money</a><a class="btn sm" href="#/payments?new=1">Pay supplier</a><a class="btn sm" href="#/expenses?new=1">Add expense</a>${seen('cash') ? '<a class="btn sm" href="#/cash">Agle 4 hafte ka cash</a>' : ''}</div></div>
       <div class="panel flush"><div style="padding:14px 16px 0"><h3>Overdue invoices</h3></div>${table([
         { h: 'Invoice', f: (r) => `<a href="#/doc/${r.id}">${esc(r.number)}</a>` }, { h: 'Customer', k: 'party' }, { h: 'Due', f: (r) => fdate(r.due_date) }, { h: 'Balance', num: 1, f: (r) => inr(r.balance) }],
         d.overdue, { empty: 'No overdue invoices.' })}</div>
@@ -479,10 +479,26 @@ route(/^new\/([A-Z]+)$/, async (el, m, q) => {
           <label class="f">${isSale ? 'Money went into' : 'Paid from'}<select name="pay_account">${cashAccts.map((o) => `<option value="${o.v}">${esc(o.t)}</option>`).join('')}</select></label></div>` : ''}</div>
       <div class="panel"><div class="totals" id="totals"></div></div>
     </div>
+    <div class="panel warnbox cwarn" id="cwarn" role="status" hidden></div>
     <div class="row savebar"><span class="sb-total" id="sbtotal"></span><span class="spacer"></span><a class="btn hide-sm" href="javascript:history.back()">Cancel</a><button class="btn primary" id="save">Save ${esc(T.label)}</button></div></form>`;
 
   const form = $('#docf'), tbody = $('#lines');
   const partyOf = () => parties.find((p) => p.id === +form.elements.party_id.value);
+  // udhaar check (Vaada Pakka): a banner while the sale is on credit, for a risky customer
+  let risk = null, riskFor = 0;
+  const creditBanner = () => {
+    const box = $('#cwarn'); if (!box) return;
+    const paid = form.elements.pay_amount ? +form.elements.pay_amount.value || 0 : 0;
+    box.hidden = !(risk && risk.risky && paid < (+form.dataset.total || 0));
+    if (!box.hidden) box.innerHTML = creditText(risk);
+  };
+  const loadRisk = async () => {
+    const pid = +form.elements.party_id.value || 0;
+    if (type !== 'INV' || pid === riskFor) return;
+    riskFor = pid; risk = pid ? await creditCheck(pid) : null;
+    if (riskFor === pid) creditBanner();
+  };
+  if (type === 'INV') { form.elements.party_id.addEventListener('change', loadRisk); if (form.elements.pay_amount) form.elements.pay_amount.addEventListener('input', creditBanner); }
   const recalc = () => {
     const p = partyOf(), inter = !!(p && p.state && ME.org.state && p.state.toLowerCase() !== ME.org.state.toLowerCase());
     let taxable = 0, tax = 0;
@@ -497,6 +513,8 @@ route(/^new\/([A-Z]+)$/, async (el, m, q) => {
       ${total !== exact ? `<div><span>Round off</span><span>${inr(total - exact)}</span></div>` : ''}
       <div class="grand"><span>Total</span><span>${inr(total)}</span></div>`;
     $('#sbtotal').innerHTML = `Total <b>${inr(total)}</b>`;
+    form.dataset.total = total;
+    if (type === 'INV') creditBanner();
   };
   const wireRow = (tr) => {
     const sel = $('select[name=item_id]', tr);
@@ -520,7 +538,7 @@ route(/^new\/([A-Z]+)$/, async (el, m, q) => {
     parties.push(p); const s = form.elements.party_id;
     s.insertAdjacentHTML('beforeend', `<option value="${p.id}">${esc(p.name)}</option>`); s.value = p.id; recalc();
   });
-  recalc();
+  recalc(); loadRisk();
   form.onsubmit = async (e) => {
     e.preventDefault();
     const f = form.elements;
@@ -532,12 +550,22 @@ route(/^new\/([A-Z]+)$/, async (el, m, q) => {
     if (ge) body.gate_entry_id = ge.id;
     if (f.due_date && f.due_date.value) body.due_date = f.due_date.value;
     if (f.pay_amount && +f.pay_amount.value > 0) body.payment = { amount: +f.pay_amount.value, account_id: +f.pay_account.value };
+    if (type === 'INV') body.credit_ok = false;
     const btn = $('#save'); btn.disabled = true;
-    try {
-      const d = await POST('/api/docs', body);
-      dirty('items', 'parties', 'accounts');
-      toast(`${d.number} saved`); go('doc/' + d.id);
-    } catch (err) { const b = $('.err', form); b.hidden = false; b.textContent = err.message; window.scrollTo(0, 0); } finally { btn.disabled = false; }
+    const save = async () => {
+      try {
+        const d = await POST('/api/docs', body);
+        dirty('items', 'parties', 'accounts');
+        toast(`${d.number} saved`); go('doc/' + d.id);
+      } catch (err) {
+        if (err.status === 409 && err.data.credit_warning) {
+          return creditSheet(err.data.credit_warning, { yes: () => { body.credit_ok = true; save(); },
+            cash: () => { if (f.pay_amount) { f.pay_amount.value = form.dataset.total || ''; f.pay_amount.focus(); f.pay_amount.scrollIntoView({ block: 'center' }); creditBanner(); } } });
+        }
+        const b = $('.err', form); b.hidden = false; b.textContent = err.message; window.scrollTo(0, 0);
+      }
+    };
+    try { await save(); } finally { btn.disabled = false; }
   };
 });
 
@@ -669,7 +697,7 @@ const payList = (kind) => async (el, m, q) => {
     if (!confirm('Void this entry? Its accounting will be reversed and the invoices/bills re-opened.')) return;
     try { await POST(`/api/payments/${b.dataset.void}/void`); dirty('accounts', 'parties'); toast('Entry voided'); render(); } catch (e) { toast(e.message, 'err'); }
   });
-  if (takeNew(q)) paymentForm(kind);
+  if (takeNew(q)) paymentForm(kind, { party_id: q.get('party_id') || '', amount: q.get('amount') || '' });
 };
 route(/^receipts$/, payList('receipt'));
 route(/^payments$/, payList('payment'));
@@ -720,11 +748,13 @@ route(/^party\/(\d+)$/, async (el, m, q) => {
   el.innerHTML = head(esc(p.name), `<button class="btn" id="edit">Edit</button><button class="btn" id="open">Opening balance</button><button class="btn danger" id="del">Delete</button>`) + `
     <div class="kpis"><div class="kpi"><div class="l">Balance</div><div class="v ${L.closing >= 0 ? 'pos' : 'neg'}">${inr(Math.abs(L.closing))} ${L.closing >= 0 ? 'Dr' : 'Cr'}</div><div class="s">${L.closing >= 0 ? 'They owe you' : 'You owe them'}</div></div>
       <div class="kpi"><div class="l">Contact</div><div class="s">${esc(p.phone)} ${esc(p.email)}<br>${esc(p.gstin)} ${esc(p.state)}</div></div></div>
+    <div id="vaada-box" class="no-print"></div>
     <div class="panel"><form class="row" id="per"><input type="date" name="from" value="${L.from}" style="max-width:170px"><input type="date" name="to" value="${L.to}" style="max-width:170px"><button class="btn">Show</button><span class="spacer"></span><button type="button" class="btn" onclick="print()">Print statement</button></form></div>
     <div class="panel flush">${table([{ h: 'Date', f: (r) => fdate(r.date) }, { h: 'Voucher', f: (r) => r.ref_id && ['INV', 'BILL', 'SRET', 'PRET'].includes(r.ref_type) ? `<a href="#/doc/${r.ref_id}">${esc(r.number)}</a>` : esc(r.number || r.ref_type) },
       { h: 'Particulars', k: 'narration' }, { h: 'Debit', num: 1, f: (r) => r.debit ? inr(r.debit) : '' }, { h: 'Credit', num: 1, f: (r) => r.credit ? inr(r.credit) : '' }, { h: 'Balance', num: 1, f: (r) => inr(r.balance) }],
     [{ date: L.from, narration: 'Opening balance', debit: 0, credit: 0, balance: L.opening }, ...L.rows])}</div>`;
   $('#per').onsubmit = (e) => { e.preventDefault(); go(`party/${p.id}?${new URLSearchParams(new FormData(e.target))}`); };
+  if (p.kind !== 'supplier' && (!ME.view || ME.view.khata !== false)) vaadaParty($('#vaada-box'), p.id, '');
   $('#edit').onclick = () => partyForm(p);
   $('#open').onclick = () => modal('Opening balance', [{ k: 'amount', label: 'Amount (₹): positive = they owe you, negative = you owe them', type: 'number', wide: true }, { k: 'date', label: 'As on', type: 'date', value: ME.today }],
     async (v) => { await POST(`/api/parties/${p.id}/opening`, v); dirty('parties', 'accounts'); render(); });
@@ -855,7 +885,7 @@ function sendEntry(r, after) {
   });
 }
 
-route(/^khata\/(\d+)$/, async (el, m) => {
+route(/^khata\/(\d+)$/, async (el, m, q) => {
   const k = await GET('/api/khata/' + m[1]);
   const reversed = new Set(k.rows.filter((r) => r.reverses).map((r) => r.reverses));
   const status = (r) => r.status === 'pending' ? '<span class="badge b-partial">not sent: does not count</span>'
@@ -866,6 +896,7 @@ route(/^khata\/(\d+)$/, async (el, m) => {
     <div class="kpis"><div class="kpi"><div class="l">${k.balance >= 0 ? 'You will get' : 'You will give'}</div><div class="v ${k.balance >= 0 ? 'pos' : 'neg'}">${inr(Math.abs(k.balance))}</div>
       <div class="s">${esc(k.party.phone || 'No mobile number saved')}</div></div></div>
     <div class="khata-btns"><button class="btn gave" data-k="gave">You gave ₹</button><button class="btn got" data-k="got">You got ₹</button></div>
+    <div id="vaada-box"></div>
     <div class="row" style="margin:12px 0"><button class="btn" id="wa">WhatsApp reminder</button><button class="btn" id="sms">SMS reminder</button><button class="btn" id="share">Copy customer's khata link</button></div>
     <div class="panel flush kl">${k.rows.length ? k.rows.map((r) => `<div class="ke ${r.status}">
         <div class="kl-l"><b>${fdate(r.date)}</b>${r.note ? `<div class="muted">${esc(r.note)}</div>` : ''}<div class="ks">${status(r)}</div></div>
@@ -873,9 +904,12 @@ route(/^khata\/(\d+)$/, async (el, m) => {
           ${r.status === 'sent' ? `<div class="muted">Bal ${inr(r.balance)}</div>` : ''}
           <div class="kact">${r.status === 'pending' ? `<button class="btn sm primary" data-send="${r.id}">Send</button><button class="btn sm danger" data-del="${r.id}">Discard</button>`
             : (reversed.has(r.id) || r.reverses ? '' : `<button class="btn sm" data-rev="${r.id}">Reverse</button>`)}</div></div></div>`).join('') : '<div class="empty">No entries yet.</div>'}</div>`;
-  $$('[data-k]', el).forEach((b) => b.onclick = () => modal(b.dataset.k === 'gave' ? 'You gave' : 'You got', [{ k: 'amount', label: 'Amount (₹)', type: 'number', required: true },
+  const entry = (kind, amount = '') => modal(kind === 'gave' ? 'You gave' : 'You got', [{ k: 'amount', label: 'Amount (₹)', type: 'number', required: true, value: amount },
     { k: 'date', label: 'Date', type: 'date', value: ME.today }, { k: 'note', label: 'Note (items, reason)', wide: true }],
-  async (v) => { const r = await POST('/api/khata', { ...v, party_id: k.party.id, kind: b.dataset.k }); setTimeout(() => sendEntry(r), 0); }, { submit: 'Next: send to customer' }));
+  async (v) => { const r = await POST('/api/khata', { ...v, party_id: k.party.id, kind }); setTimeout(() => sendEntry(r), 0); }, { submit: 'Next: send to customer' });
+  $$('[data-k]', el).forEach((b) => b.onclick = () => entry(b.dataset.k));
+  vaadaParty($('#vaada-box'), k.party.id, 'khata');
+  if (q && q.get('got')) { history.replaceState(null, '', '#/khata/' + k.party.id); entry('got', q.get('got')); }
   $$('[data-send]', el).forEach((b) => b.onclick = async () => sendEntry(await GET(`/api/khata/entries/${b.dataset.send}/message`)));
   $$('[data-del]', el).forEach((b) => b.onclick = async () => { if (confirm('Discard this unsent entry?')) { await api('DELETE', '/api/khata/entries/' + b.dataset.del); render(); } });
   $$('[data-rev]', el).forEach((b) => b.onclick = () => modal('Reverse this entry', [{ k: 'reason', label: 'Reason (sent to the customer)', wide: true }],
@@ -898,8 +932,10 @@ async function publicDoc(token) {
         ${due && d.org.upi_id ? `<a class="btn got" href="${esc(upiLink(d.org.upi_id, d.org.name, d.balance, d.number))}">Pay ${inr(d.balance)} by UPI</a>` : ''}
         <button class="btn primary" onclick="print()">Download PDF</button></div>
       ${due ? `<div class="panel no-print">Balance due <b>${inr(d.balance)}</b>${d.due_date ? ` by ${fdate(d.due_date)}` : ''}.${payBox(d.org, d.balance, d.number)}</div>` : ''}
+      ${vaadaPub(d.vaada, d.org)}
       ${docPaper(d)}<p class="muted no-print">Shared by ${esc(d.org.name)} using SmartTrader ERP. Tap “Download PDF” and choose “Save as PDF”.</p></main>`;
     if (due) { if (!d.org.print || d.org.print.show_upi !== false) upiQr($('#upiqr'), d.org, d.balance, d.number, 'Scan to pay with any UPI app'); wirePayBox(app, d.org, d.balance, d.number); }
+    wireVaadaPub(app, d.vaada, d.org, { path: `/api/public/doc/${token}/vaada`, who: (d.party || {}).name || '', reload: () => publicDoc(token) });
   } catch (e) { app.innerHTML = '<div class="boot"><h2>You are offline</h2><p class="muted">Connect to the internet to see this document.</p></div>'; }
 }
 
@@ -933,6 +969,7 @@ async function publicKhata(token) {
       <div class="kpi" style="margin-bottom:14px"><div class="l">${esc(d.customer)}, ${d.balance > 0 ? 'you have to pay' : d.balance < 0 ? 'your advance' : 'your khata is'}</div>
         <div class="v ${d.balance > 0 ? 'neg' : 'pos'}">${d.balance === 0 ? 'Settled ✓' : inr(Math.abs(d.balance))}</div>
         ${d.balance > 0 ? payBox(d.shop, d.balance, 'Khata') : ''}</div>
+      ${vaadaPub(d.vaada, d.shop)}
       <div class="panel flush kl">${d.rows.length ? d.rows.map((r) => `<div class="ke">
         <div class="kl-l"><b>${fdate(r.date)}</b>${r.note ? `<div class="muted">${esc(r.note)}</div>` : ''}
           <div class="ks">${r.ack === 'confirmed' ? '<span class="badge b-paid">✓ you confirmed</span>' : r.ack === 'disputed' ? '<span class="badge b-unpaid">you said this is wrong</span>'
@@ -945,11 +982,333 @@ async function publicKhata(token) {
       if (!r.ok) alert((await r.json().catch(() => ({}))).error || 'Could not save'); else load();
     };
     if (d.balance > 0) wirePayBox(app, d.shop, d.balance, 'Khata');
+    wireVaadaPub(app, d.vaada, d.shop, { path: `/api/public/khata/${token}/vaada`, who: d.customer, reload: load });
     $$('[data-ok]').forEach((b) => b.onclick = () => ack(b.dataset.ok, 'confirmed'));
     $$('[data-no]').forEach((b) => b.onclick = () => { const n = prompt('What is wrong with this entry? (the shop will see this)'); if (n !== null) ack(b.dataset.no, 'disputed', n); });
   };
   try { await load(); } catch (e) { app.innerHTML = `<div class="boot"><h2>You are offline</h2><p class="muted">Connect to the internet to see your khata.</p></div>`; }
 }
+
+/* ======================================================================= Vaada Pakka (payment promises) + Kal ka Cash
+   The customer picks a pay date or instalments on their own link; the shop sees "Aaj ke Vaade", each promise is
+   marked kept/broken from the receipts, and the billing screens warn before more udhaar. */
+const HI_DAYS = ['Ravi', 'Som', 'Mangal', 'Budh', 'Guru', 'Shukra', 'Shani'];
+const HI_MON = ['Jan', 'Feb', 'Mar', 'Apr', 'Mai', 'Jun', 'Jul', 'Aug', 'Sep', 'Okt', 'Nov', 'Dis'];
+const addD = (d, n) => new Date(Date.parse(d + 'T00:00:00Z') + n * 864e5).toISOString().slice(0, 10);
+const dmy = (d) => (d ? `${d.slice(8, 10)}-${d.slice(5, 7)}-${d.slice(0, 4)}` : '');
+const dm = (d) => (d ? `${d.slice(8, 10)}-${d.slice(5, 7)}` : '');
+const hiDay = (d) => { const x = new Date(d + 'T00:00:00Z'); return `${HI_DAYS[x.getUTCDay()]} ${x.getUTCDate()} ${HI_MON[x.getUTCMonth()]}`; };
+const KSTATE = { kept: ['b-paid', '✓ Samay par mila'], broken: ['b-unpaid', '✗ Chhoot gaya'], due: ['b-partial', 'Aaj aakhri din'] };
+const kBadge = (k) => (KSTATE[k.state] ? `<span class="badge ${KSTATE[k.state][0]}">${KSTATE[k.state][1]}</span>` : `<span class="badge">Baaki · ${dmy(k.due)}</span>`);
+
+/* Bottom sheet on phones (the modal pattern), centred dialog on wide screens */
+function sheet(html, onClose) {
+  const root = $('#modal-root');
+  root.innerHTML = `<div class="modal-bg"><div class="modal vsheet" role="dialog" aria-modal="true">${html}</div></div>`;
+  const keys = (e) => { if (e.key === 'Escape') close(); };
+  const close = () => { if (!root.firstChild) return; root.innerHTML = ''; document.removeEventListener('keydown', keys); if (onClose) onClose(); };
+  document.addEventListener('keydown', keys);
+  $('.modal-bg', root).addEventListener('mousedown', (e) => { if (e.target.classList.contains('modal-bg')) close(); });
+  const S = { el: $('.modal', root), close };
+  S.el.addEventListener('click', (e) => { if (e.target.closest('[data-x]')) setTimeout(close, 0); });   // after the tap, so a link still opens
+  return S;
+}
+const sheetErr = (S, msg) => { const b = $('.err', S.el); b.hidden = false; b.textContent = msg; b.scrollIntoView({ block: 'nearest' }); };
+
+/* the promise card: the customer's "Aapka vaada" (A5) and the shop's open promise (D) */
+function vaadaOpenCard(o, { pub = false, shopPhone = '' } = {}) {
+  const last = o.kisht[o.kisht.length - 1], tel = String(shopPhone || '').replace(/[^\d+]/g, '');
+  return `<h3>${pub ? 'Aapka vaada' : 'Khula vaada'}${pub ? '' : ` <span class="badge">${o.book === 'inv' ? 'Bill' : 'Khata'}</span>`}</h3>
+    <div class="vsum"><b>${inr(o.amount)}</b> · ${dmy(last.due)} tak · ${o.made_by === 'customer' ? 'link se' : 'shop ne likha'}</div>
+    <div class="klist">${o.kisht.map((k) => `<div class="krow"><span>${o.kisht.length > 1 ? `${k.n}. ` : ''}${dmy(k.due)}</span><b class="num">${inr(k.amount)}</b>${kBadge(k)}</div>`).join('')}</div>
+    <div class="vpaid">Ab tak mila: <b>${inr(o.paid_since)}</b></div>
+    ${!pub ? '' : o.can_change ? '<button class="linkbtn" type="button" data-vchange>Tareekh badlein (sirf ek baar)</button>'
+    : `<p class="muted small">Tareekh badalni hai? ${tel ? `<a href="tel:${esc(tel)}">${esc(shopPhone)}</a> par baat karein.` : 'Shop se baat karein.'}</p>`}`;
+}
+const vaadaAskBtns = (v) => `<div class="vstack"><button class="btn big" type="button" data-vdate>📅 Main tareekh chunta hoon</button>
+  ${v.options.plans.length ? '<button class="btn big" type="button" data-vplan>🧾 Kisht mein dunga</button>' : ''}</div>`;
+
+/* Screen A: "Kab tak denge?" on the customer's khata / invoice link */
+function vaadaPub(v, shop) {
+  if (!v || !v.enabled || !(v.due > 0 || v.open)) return '';
+  const inner = v.open ? vaadaOpenCard(v.open, { pub: true, shopPhone: shop.phone })
+    : `<h3>Kab tak denge?</h3><p class="muted">Tareekh chunein, shop ko pata chal jayega. Koi byaaj nahi.</p>${vaadaAskBtns(v)}
+       <p class="muted small">Aapka vaada sirf ${esc(shop.name)} ko dikhega.</p>`;
+  return `<div class="panel vpub no-print" id="vpub">${inner}</div>`;
+}
+function wireVaadaPub(root, v, shop, ctx) {
+  const box = $('#vpub', root);
+  if (!box) return;
+  box.addEventListener('click', (e) => {
+    if (e.target.closest('[data-vdate]')) vDateSheet(v, shop, ctx);
+    else if (e.target.closest('[data-vplan]')) vPlanSheet(v, shop, ctx);
+    else if (e.target.closest('[data-vchange]')) e.target.closest('[data-vchange]').outerHTML = v.due > 0 ? vaadaAskBtns(v) : '';
+  });
+}
+const vConsent = (shop, btn) => `<p class="muted small vconsent">'${btn}' dabane par tareekh, rakam aur naam ${esc(shop.name)} ke paas save honge.</p>`;
+const vNameInput = '<label class="f">Aapka naam (zaroori nahi)<input id="vname" maxlength="60" autocomplete="name" enterkeyhint="done"></label>';
+function vDateSheet(v, shop, ctx) {
+  const t = v.today, max = v.options.max_date, o = v.options, chips = [];
+  for (let i = 0; i <= 7; i++) { const d = addD(t, i); if (d > max) break; chips.push([d, ['Aaj', 'Kal', 'Parson'][i] || hiDay(d)]); }
+  const partOk = o.part && o.min_amount < v.due;
+  let picked = '', done = false;
+  const S = sheet(`<h2>Kis tareekh tak denge?</h2>
+    <div class="chips" id="vchips">${chips.map(([d, l]) => `<button type="button" class="chip" data-d="${d}">${l}</button>`).join('')}<button type="button" class="chip" data-more>Aur tareekh…</button></div>
+    <input type="date" id="vdate" min="${t}" max="${max}" hidden aria-label="Tareekh">
+    <div class="vq"><b>Kitna denge?</b>
+      <label class="radio"><input type="radio" name="vamt" value="full" checked> Poora ${inr(v.due)}</label>
+      ${partOk ? `<label class="radio"><input type="radio" name="vamt" value="part"> Kuch hissa</label>
+        <input type="number" id="vpart" inputmode="decimal" step="any" min="${o.min_amount}" max="${v.due}" placeholder="Kam se kam ${inr0(o.min_amount)}" hidden>` : ''}</div>
+    ${vNameInput}${vConsent(shop, 'Vaada pakka karein')}<div class="err" hidden></div>
+    <div class="actions"><button type="button" class="btn" data-x>Wapas</button><button type="button" class="btn primary" id="vgo">Vaada pakka karein</button></div>`, () => { if (done) ctx.reload(); });
+  const el = S.el, di = $('#vdate', el);
+  $('#vchips', el).onclick = (e) => {
+    const b = e.target.closest('.chip'); if (!b) return;
+    $$('.chip', el).forEach((x) => x.classList.toggle('on', x === b));
+    if (b.dataset.more !== undefined) { di.hidden = false; picked = di.value; di.focus(); try { if (di.showPicker) di.showPicker(); } catch (er) { /* not allowed here */ } }
+    else { di.hidden = true; picked = b.dataset.d; }
+  };
+  di.onchange = () => { picked = di.value; };
+  $$('[name=vamt]', el).forEach((r) => r.onchange = () => { const p = $('#vpart', el); if (p) { p.hidden = $('[name=vamt]:checked', el).value !== 'part'; if (!p.hidden) p.focus(); } });
+  $('#vgo', el).onclick = () => {
+    if (!picked) return sheetErr(S, 'Tareekh chunein.');
+    const body = { kind: 'date', date: picked, name: $('#vname', el).value };
+    if (($('[name=vamt]:checked', el) || {}).value === 'part') {
+      const a = +$('#vpart', el).value;
+      if (!(a > 0)) return sheetErr(S, `Kam se kam ${inr0(o.min_amount)} ka vaada karein.`);
+      body.amount = a;
+    }
+    vSubmit(S, body, ctx, () => { done = true; });
+  };
+}
+function vPlanSheet(v, shop, ctx) {
+  let done = false;
+  const S = sheet(`<h2>Kitni kisht mein?</h2>
+    <div class="vplans">${v.options.plans.map((p, i) => { const n = p.amounts.length, last = p.amounts[n - 1]; return `<label class="vplan"><input type="radio" name="vplan" value="${esc(p.key)}" ${i ? '' : 'checked'}>
+      <span><b>${esc(p.label)}</b><br>${inr0(p.amounts[0])} × ${n} · pehli ${dmy(p.first)}, aakhri ${dmy(p.last)}${last !== p.amounts[0] ? `<br><small class="muted">Aakhri kisht ${inr(last)} (bachi rakam usme judti hai)</small>` : ''}</span></label>`; }).join('')}</div>
+    ${vNameInput}${vConsent(shop, 'Kisht pakki karein')}<div class="err" hidden></div>
+    <div class="actions"><button type="button" class="btn" data-x>Wapas</button><button type="button" class="btn primary" id="vgo">Kisht pakki karein</button></div>`, () => { if (done) ctx.reload(); });
+  $('#vgo', S.el).onclick = () => vSubmit(S, { kind: 'plan', plan: $('[name=vplan]:checked', S.el).value, name: $('#vname', S.el).value }, ctx, () => { done = true; });
+}
+async function vSubmit(S, body, ctx, ok) {
+  const btn = $('#vgo', S.el); $('.err', S.el).hidden = true; btn.disabled = true;
+  try {
+    const r = await fetch(ctx.path, { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Requested-With': 'SmartTrader' }, body: JSON.stringify(body) });
+    const d = await r.json().catch(() => ({}));
+    if (!r.ok) throw new Error(r.status === 429 ? 'Aaj bahut baar koshish hui. Kal dobara try karein.' : d.error || 'Save nahi hua. Dobara try karein.');
+    ok();
+    const o = d.vaada, last = o.kisht[o.kisht.length - 1];
+    S.el.innerHTML = `<div class="vok"><div class="vok-h">✅ <b>Vaada pakka!</b></div>
+      ${o.kisht.length > 1 ? `<div class="klist">${o.kisht.map((k) => `<div class="krow"><span>${k.n}. ${dmy(k.due)}</span><b class="num">${inr(k.amount)}</b></div>`).join('')}</div>`
+    : `<p class="vok-a">${dmy(last.due)} tak <b>${inr(o.amount)}</b></p>`}
+      ${d.shop_whatsapp_url ? `<a class="btn got big" href="${esc(d.shop_whatsapp_url)}" target="_blank" rel="noopener">Shop ko WhatsApp par batayein</a>` : ''}
+      <p class="muted small">Paisa dene par ye vaada apne aap poora ho jayega.</p></div>
+      <div class="actions"><button type="button" class="btn primary" data-x>Theek hai</button></div>`;
+  } catch (e) { sheetErr(S, e.message); btn.disabled = false; }
+}
+
+/* Screen B: dashboard card */
+function vaadaCard(vs) {
+  if (!vs || vs.today_n + vs.broken_n <= 0) return '';
+  return `<a class="panel vcard" href="#/vaade"><div class="vcard-h"><h3>Aaj ke Vaade</h3><span aria-hidden="true">›</span></div>
+    <div class="vcard-k"><b>${vs.today_n}</b> aane hain · <b>${inr0(vs.today_amount)}</b></div>
+    ${vs.broken_n > 0 ? `<div class="neg">${vs.broken_n} vaade toote, yaad dilayein</div>` : ''}
+    ${vs.free_cap ? '<div class="muted small">10 se zyada vaade ke liye Starter plan lein</div>' : ''}</a>`;
+}
+
+/* WhatsApp reminder through the existing reminder routes (they now carry the promise) */
+async function remindParty(pid, book) {
+  const w = window.open('', '_blank');
+  try {
+    const r = await GET(book === 'khata' ? `/api/khata/${pid}/reminder` : `/api/parties/${pid}/reminder`);
+    if (w) w.location = r.whatsapp_url; else location.href = r.whatsapp_url;
+  } catch (e) { if (w) w.close(); toast(e.message, 'err'); }
+}
+async function cancelVaada(id, after) {
+  const reason = prompt('Vaada kyun radd kar rahe hain?');
+  if (reason === null) return;
+  try { await POST(`/api/vaade/${id}/cancel`, { reason }); toast('Vaada radd hua'); after(); } catch (e) { toast(e.message, 'err'); }
+}
+
+/* Screen C: #/vaade */
+const vRecord = (r) => (r.kept + r.broken
+  ? `<span class="badge ${r.pct >= 80 ? 'b-paid' : r.pct >= 50 ? 'b-partial' : 'b-unpaid'}">Vaade nibhaye: ${r.kept}/${r.kept + r.broken}</span>` : '<span class="badge">Pehla vaada</span>');
+function vRow(r, i) {
+  const when = r.state === 'done' ? 'Poora hua' : r.due === ME.today ? 'Aaj' : `${dm(r.due)} tak`;
+  const amt = r.due_amount > 0 ? r.due_amount : r.kamount;
+  return `<div class="vrow" data-i="${i}">
+    <div class="vr1"><a href="#/${r.book === 'khata' ? 'khata' : 'party'}/${r.party_id}"><b>${esc(r.name)}</b></a><b class="num">${inr0(amt)}</b></div>
+    <div class="vr2 muted">${when} · ${r.of > 1 ? `kisht ${r.n}/${r.of}` : 'poora'} <span class="chip-s">${r.made_by === 'customer' ? 'Link se' : 'Phone par'}</span><span class="chip-s">${r.book === 'khata' ? 'Khata' : 'Bill'}</span>${r.state === 'broken' ? '<span class="badge b-unpaid">Toota</span>' : ''}</div>
+    <div class="vr3">${vRecord(r)}</div>
+    <div class="vr4">${r.status === 'done' && r.state !== 'broken' ? '' : '<button class="btn sm got" data-rem>Yaad dilayein</button>'}
+      ${r.status === 'done' ? '' : '<button class="btn sm" data-paid>Paisa mila</button>'}
+      ${r.status === 'open' && ME.can.khata ? '<details class="more-menu"><summary class="btn sm" aria-label="Aur">⋯</summary><div class="menu"><button class="btn danger" data-cancel>Vaada radd karein</button></div></details>' : ''}</div></div>`;
+}
+route(/^vaade$/, async (el, m, q) => {
+  const view = ['today', 'upcoming', 'broken', 'all'].includes(q.get('v')) ? q.get('v') : 'today';
+  const d = await GET('/api/vaade?view=' + view);
+  const tabs = [['today', 'Aaj'], ['upcoming', 'Aane wale'], ['broken', 'Toote'], ['all', 'Sab']];
+  el.innerHTML = head('Vaade <span class="muted h-sub">(Payment promises)</span>', '<a class="btn" href="#/reminders">Reminders</a>') + `
+    <div class="seg s4 vtabs" role="tablist">${tabs.map(([k, t]) => `<button type="button" role="tab" aria-selected="${k === view}" data-v="${k}" class="${k === view ? 'on' : ''}">${t}${d.counts[k] ? ` <span class="cnt">${d.counts[k]}</span>` : ''}</button>`).join('')}</div>
+    ${d.summary.free_cap ? '<div class="panel warnbox">10 se zyada khule vaade ke liye <a href="#/plan">Starter plan</a> lein. Tab tak grahak naya vaada nahi bana sakte.</div>' : ''}
+    <div class="vlist">${d.rows.length ? d.rows.map(vRow).join('') : view === 'today'
+    ? emptyCta('Aaj koi vaada nahi. Reminder bhejte hi grahak link par khud tareekh chun sakta hai.', '<a class="btn primary" href="#/reminders">Reminders kholein</a>')
+    : '<div class="empty">Koi vaada nahi.</div>'}</div>
+    <p class="muted small">Vaada record sirf aapki dukaan ko dikhta hai, kisi aur ko nahi.</p>`;
+  $$('[data-v]', el).forEach((b) => b.onclick = () => go('vaade?v=' + b.dataset.v));
+  $$('.vrow', el).forEach((row) => {
+    const r = d.rows[+row.dataset.i], amt = r.due_amount > 0 ? r.due_amount : r.kamount;
+    row.addEventListener('click', (e) => {
+      if (e.target.closest('[data-rem]')) remindParty(r.party_id, r.book);
+      else if (e.target.closest('[data-paid]')) {
+        if (r.book === 'khata') { if (!ME.can.khata) return toast('Khata entry ki permission nahi hai.', 'err'); go(`khata/${r.party_id}?got=${amt}`); }
+        else { if (!ME.can.finance) return toast('Receipt banane ki permission nahi hai.', 'err'); go(`receipts?new=1&party_id=${r.party_id}&amount=${amt}`); }
+      } else if (e.target.closest('[data-cancel]')) cancelVaada(r.id, render);
+    });
+  });
+});
+
+/* Screen D: vaada record, open promise and "Phone par vaada likhein" on the party and khata pages. book '' = both books */
+async function vaadaParty(box, pid, book) {
+  if (!box) return;
+  let d;
+  try { d = await GET('/api/vaade/party/' + pid); } catch (e) { box.innerHTML = ''; return; }
+  if (!d.on) { box.innerHTML = ''; return; }
+  const books = book ? [book] : ['inv', 'khata'];
+  const opens = books.map((b) => d.open[b]).filter(Boolean), dueBooks = books.filter((b) => d.due[b] > 0);
+  const s = d.stats, tot = s.kept + s.broken;
+  if (!tot && !opens.length && !dueBooks.length) { box.innerHTML = ''; return; }
+  box.innerHTML = `<div class="panel vparty">
+    <div class="vstrip"><b>Vaada record:</b> ${tot ? `${s.kept} nibhaye · ${s.broken} toota (${s.pct}%) · pichhle 90 din mein ${s.broken90} toota` : 'abhi koi record nahi'}</div>
+    ${opens.map((o) => `<div class="vopen" data-vid="${o.id}">${vaadaOpenCard(o)}${ME.can.khata ? '<button class="btn sm danger" type="button" data-vcancel>Radd karein</button>' : ''}</div>`).join('')}
+    ${ME.can.khata && dueBooks.length ? '<button class="btn" type="button" data-vnew>✍ Phone par vaada likhein</button>' : ''}</div>`;
+  const again = () => vaadaParty(box, pid, book);
+  $$('[data-vcancel]', box).forEach((b) => b.onclick = () => cancelVaada(b.closest('[data-vid]').dataset.vid, again));
+  const nb = $('[data-vnew]', box);
+  if (nb) nb.onclick = () => shopVaadaSheet(d, dueBooks, again);
+}
+function shopVaadaSheet(d, books, after) {
+  let book = books[0], saved = false;
+  const def = addD(d.today, 7) <= d.max_date ? addD(d.today, 7) : d.max_date;
+  const S = sheet(`<h2>Phone par vaada likhein</h2><p class="muted">${esc(d.party.name)}</p>
+    ${books.length > 1 ? `<div class="seg" id="vbook">${books.map((b) => `<button type="button" data-b="${b}" class="${b === book ? 'on' : ''}">${b === 'inv' ? 'Bill' : 'Khata'} · ${inr0(d.due[b])}</button>`).join('')}</div>` : ''}
+    <div class="form">
+      <label class="f" data-date>Kab tak?<input type="date" id="vd" min="${d.today}" max="${d.max_date}" value="${def}"></label>
+      <label class="f" data-date>Kitna? (₹)<input type="number" id="va" step="any" min="0" inputmode="decimal"></label>
+      <div class="f wide" id="vkw"></div>
+      <div class="vplans f wide" id="vplans" hidden></div>
+      <label class="f wide">Note<input id="vn" maxlength="200" placeholder="Jaise: phone par baat hui"></label>
+    </div><div class="err" hidden></div>
+    <div class="actions"><button type="button" class="btn" data-x>Cancel</button><button type="button" class="btn primary" id="vgo">Vaada save karein</button></div>`, () => { if (saved) after(); });
+  const el = S.el;
+  const draw = () => {
+    $('#va', el).value = d.due[book];
+    const plans = d.plans[book] || [];
+    $('#vkw', el).innerHTML = !d.can_plan ? '<span class="muted small">Kisht: Starter plan mein</span>'
+      : plans.length ? '<label class="check"><input type="checkbox" id="vk"> <span>Kisht mein</span></label>' : '<span class="muted small">Is rakam par kisht nahi ban sakti.</span>';
+    $('#vplans', el).innerHTML = plans.map((p, i) => `<label class="vplan"><input type="radio" name="vplan" value="${esc(p.key)}" ${i ? '' : 'checked'}>
+      <span><b>${esc(p.label)}</b><br>${inr0(p.amounts[0])} × ${p.amounts.length} · aakhri ${dmy(p.last)}</span></label>`).join('');
+    $('#vplans', el).hidden = true; $$('[data-date]', el).forEach((x) => { x.hidden = false; });
+    const k = $('#vk', el);
+    if (k) k.onchange = () => { $('#vplans', el).hidden = !k.checked; $$('[data-date]', el).forEach((x) => { x.hidden = k.checked; }); };
+  };
+  draw();
+  const bk = $('#vbook', el);
+  if (bk) bk.onclick = (e) => { const b = e.target.closest('[data-b]'); if (!b) return; book = b.dataset.b; $$('[data-b]', bk).forEach((x) => x.classList.toggle('on', x === b)); draw(); };
+  $('#vgo', el).onclick = async () => {
+    const k = $('#vk', el), body = { party_id: d.party.id, book, note: $('#vn', el).value };
+    if (k && k.checked) Object.assign(body, { kind: 'plan', plan: ($('[name=vplan]:checked', el) || {}).value });
+    else Object.assign(body, { kind: 'date', date: $('#vd', el).value, amount: $('#va', el).value });
+    const btn = $('#vgo', el); btn.disabled = true; $('.err', el).hidden = true;
+    try {
+      const r = await POST('/api/vaade', body);
+      saved = true; toast('Vaada save hua');
+      el.innerHTML = `<div class="vok"><div class="vok-h">✅ <b>Vaada save hua</b></div><p class="muted">Grahak ko WhatsApp par bhej dein, taaki unhe tareekh yaad rahe.</p>
+        <div class="wa-prev"><div class="wa-bubble">${waFormat(r.text)}</div></div>
+        <a class="btn got big" href="${esc(r.whatsapp_url)}" target="_blank" rel="noopener" data-x>Grahak ko bhejein</a></div>
+        <div class="actions"><button type="button" class="btn" data-x>Baad mein</button></div>`;
+    } catch (e) { sheetErr(S, e.message); btn.disabled = false; }
+  };
+}
+
+/* Screen E: udhaar check while billing */
+const creditOn = () => !!(ME.plan && ME.plan.features.includes('vaada') && ME.org.vaada && ME.org.vaada.credit_check !== 'off' && ME.can.sales);
+async function creditCheck(pid) {
+  if (!pid || !creditOn()) return null;
+  try { return await GET('/api/vaade/check?party_id=' + pid); } catch (e) { return null; }
+}
+const creditText = (r) => `⚠ <b>${esc(r.name || '')}</b>: ${esc(r.reasons.join(', '))}. <b>Phir bhi udhaar?</b>`;
+function creditSheet(cw, { yes, cash }) {
+  const S = sheet(`<h2>Udhaar dena hai?</h2><ul class="vreasons">${(cw.reasons || []).map((x) => `<li>${esc(x)}</li>`).join('')}</ul>
+    ${cw.can_override ? '' : '<p class="err">Is grahak ka udhaar abhi band hai. Owner ya admin se approve karayein.</p>'}
+    <div class="actions"><button type="button" class="btn" id="ccash">Cash / UPI lein</button>${cw.can_override ? '<button type="button" class="btn primary" id="cyes">Haan, udhaar dein</button>' : ''}</div>`);
+  $('#ccash', S.el).onclick = () => { S.close(); cash(); };
+  const y = $('#cyes', S.el);
+  if (y) { y.onclick = () => { S.close(); yes(); }; if (matchMedia('(pointer: fine)').matches) y.focus(); }
+}
+
+/* Screen F: Settings → Vaade aur udhaar */
+const VPLANS = [['2f', '2 kisht · har 15 din'], ['4w', '4 kisht · har hafte'], ['3m', '3 kisht · har mahine'], ['6w', '6 kisht · har hafte'], ['6m', '6 kisht · har mahine']];
+function vaadaSettings() {
+  const v = ME.org.vaada || {}, starter = ME.plan.features.includes('vaada'), num = (n, lo, hi, val) => `<input type="number" name="${n}" min="${lo}" max="${hi}" value="${esc(val)}" inputmode="numeric">`;
+  return `<form class="panel" id="vset"><h2>Vaade aur udhaar</h2>
+    <p class="muted">Grahak apne khata ya bill ke link par khud tareekh ya kisht chunta hai. Paisa aate hi vaada apne aap poora ho jata hai.</p><div class="err" hidden></div>
+    <label class="check vline"><input type="checkbox" name="on" ${v.on ? 'checked' : ''}> <span>Link par "Kab tak denge?" dikhayein</span></label>
+    <div class="form">
+      <label class="f">Grahak kitne din aage tak ki tareekh chun sake${num('max_days', 1, 60, v.max_days)}</label>
+      <label class="f">Kam se kam hissa %${num('min_part_pct', 10, 100, v.min_part_pct)}</label>
+      <label class="check f wide"><input type="checkbox" name="part" ${v.part ? 'checked' : ''}> <span>Hissa (part) payment ka vaada</span></label>
+      <fieldset class="f wide vfs" ${starter ? '' : 'disabled'}><legend>Kisht ke plan${starter ? '' : ' <span class="badge">Starter plan mein</span>'}</legend>
+        ${VPLANS.map(([k, t]) => `<label class="check"><input type="checkbox" name="plans" value="${k}" ${(v.plans || []).includes(k) ? 'checked' : ''}> ${t}</label>`).join('')}</fieldset>
+      <label class="f">Kam se kam kisht ₹${num('min_kisht', 1, 10000000, v.min_kisht)}</label>
+      <label class="f">Chhoot (grace) ke din${num('grace', 0, 3, v.grace)}</label>
+      <fieldset class="f wide vfs"><legend>Naya udhaar dete waqt check${starter ? '' : ' <span class="badge">Starter plan mein</span>'}</legend>
+        ${[['off', 'Band'], ['warn', 'Sirf chetavni (koi bhi aage badh sake)'], ['stop', 'Rokein (sirf owner/admin de sake)']].map(([k, t]) => `<label class="check"><input type="radio" name="credit_check" value="${k}" ${v.credit_check === k ? 'checked' : ''}> ${t}</label>`).join('')}</fieldset>
+      <label class="f">Kitne din purana baaki ho to chetavni${num('overdue_days', 7, 180, v.overdue_days)}</label>
+      <label class="f">90 din mein kitne vaade toote to chetavni${num('broken_max', 1, 10, v.broken_max)}</label>
+    </div>
+    <div class="row" style="margin-top:12px"><span class="spacer"></span><button class="btn primary" ${ME.can.settings ? '' : 'disabled'}>Save karein</button></div></form>`;
+}
+function wireVaadaSettings(el) {
+  const f = $('#vset', el);
+  if (!f) return;
+  f.onsubmit = async (e) => {
+    e.preventDefault();
+    const b = $('.err', f), E = f.elements; b.hidden = true;
+    const body = { on: E.on.checked, max_days: +E.max_days.value, part: E.part.checked, min_part_pct: +E.min_part_pct.value, min_kisht: +E.min_kisht.value,
+      grace: +E.grace.value, credit_check: ($('[name=credit_check]:checked', f) || {}).value || 'warn', overdue_days: +E.overdue_days.value, broken_max: +E.broken_max.value };
+    if (ME.plan.features.includes('vaada')) body.plans = $$('[name=plans]:checked', f).map((x) => x.value);
+    try { const r = await api('PUT', '/api/settings/vaada', body); ME.org.vaada = r.vaada; toast('Vaada settings save hui'); } catch (err) { b.hidden = false; b.textContent = err.message; }
+  };
+}
+
+/* Screen G: #/cash, Kal ka Cash */
+route(/^cash$/, async (el, m, q) => {
+  let d;
+  try { d = await GET('/api/vaade/cash' + (q.get('fresh') ? '?fresh=1' : '')); } catch (e) {
+    if (e.status !== 402) throw e;
+    el.innerHTML = head('Agle 4 hafte ka cash') + `<div class="panel">${emptyCta('Kal ka Cash Growth plan mein hai: kis hafte paisa kam padega aur aaj kisko yaad dilana hai, ek nazar mein.', '<a class="btn primary" href="#/plan">Plan dekhein</a>')}</div>`;
+    return;
+  }
+  if (q.get('fresh')) history.replaceState(null, '', '#/cash');
+  const max = Math.max(1, ...d.weeks.map((w) => Math.abs(w.close_exp))), sw = d.short_week ? d.weeks[d.short_week - 1] : null;
+  el.innerHTML = head('Agle 4 hafte ka cash', d.low_data ? '<span class="badge b-partial">Kam data: anumaan kachcha hai</span>' : '') + `
+    <div class="panel ctop">Aaj haath mein: <b>${inr0(d.opening)}</b> <span class="muted">(Cash + Bank + UPI)</span></div>
+    ${sw ? `<div class="panel cshort" role="alert">⚠ <b>${dm(sw.from)} – ${dm(sw.to)}</b> wale hafte mein ~${inr0(d.short_amount)} kam pad sakta hai.</div>` : ''}
+    <div class="cweeks">${d.weeks.map((w) => `<div class="cweek${w.close_exp < 0 ? ' short' : ''}"><div class="cw-t">${dm(w.from)} – ${dm(w.to)}</div>
+      <div>Aayega ~${inr0(w.in_exp)} <span class="muted">(zyada se zyada ${inr0(w.in_full)})</span></div><div>Jayega ${inr0(w.out)}</div>
+      <div class="cw-c">Hafte ke ant mein ~<b class="${w.close_exp < 0 ? 'neg' : ''}">${inr0(w.close_exp)}</b></div>
+      <div class="cbar"><i class="${w.close_exp < 0 ? 'r' : 'g'}" style="width:${Math.max(4, Math.round(Math.abs(w.close_exp) / max * 100))}%"></i></div></div>`).join('')}</div>
+    ${d.remind.length ? `<div class="panel"><h3>Aaj in ${d.remind.length} logon ko yaad dilayein <span class="muted">(~${inr0(d.remind_total)} aa sakta hai)</span></h3>
+      ${d.remind.map((r) => `<div class="crow"><span><a href="#/${r.book === 'khata' ? 'khata' : 'party'}/${r.party_id}"><b>${esc(r.name)}</b></a> <span class="muted">~${inr0(r.amount)}</span></span>
+        <button class="btn sm got" data-rem="${r.party_id}" data-book="${r.book}">Yaad dilayein</button></div>`).join('')}</div>` : ''}
+    ${d.bills_wait.length ? `<div class="panel"><h3>Ye bills thoda ruk sakte hain <span class="muted">(abhi terms ke andar)</span></h3>
+      ${d.bills_wait.map((b) => `<div class="crow"><a href="#/doc/${b.id}">${esc(b.party || b.number)}</a><span class="muted">${inr0(b.amount)} · due ${dm(b.due)}</span></div>`).join('')}</div>` : ''}
+    ${d.stuck > 0 ? `<p class="muted">Atka hua ${inr0(d.stuck)} (90 din se purana), gina nahi.</p>` : ''}
+    <p class="muted small">Anumaan kaise: vaade × grahak ka vaada-record, baaki bills × 60% unki aam deri ke hisaab se, supplier bills due date par, GST 20 tareekh ko, kharche pichhle 3 mahine ke beech ke hisaab se. Aaj ${esc(d.at)} par bana. <button class="linkbtn" type="button" id="cfresh">Dobara banayein</button></p>`;
+  $$('[data-rem]', el).forEach((b) => b.onclick = () => remindParty(b.dataset.rem, b.dataset.book));
+  $('#cfresh').onclick = () => go('cash?fresh=1');
+});
 
 /* ======================================================================= finance */
 route(/^expenses$/, async (el, m, q) => {
@@ -1279,6 +1638,7 @@ route(/^settings$/, async (el) => {
       <label class="f">Financial year starts (MM-DD)<input name="fy_start" value="${esc(o.fy_start)}"></label>
       <label class="f wide">Address (printed on invoices)<textarea name="address" rows="2">${esc(o.address)}</textarea></label></div>
       <div class="row" style="margin-top:12px"><span class="spacer"></span><button class="btn primary" ${ME.can.settings ? '' : 'disabled'}>Save profile</button></div></form>
+    ${vaadaSettings()}
     ${canUsers ? `<div class="panel flush"><div class="row" style="padding:14px 16px"><h2 style="margin:0">Users</h2><span class="spacer"></span><button class="btn" id="adduser">+ Add user</button></div>
       ${table([{ h: 'Name', k: 'name' }, { h: 'Email', k: 'email', cls: 'hide-sm' }, { h: 'Role', f: (u) => u.role_key === 'owner' ? 'owner' : `<select data-role="${u.id}" aria-label="Role">${roleOpts.map((o) => `<option value="${esc(o.v)}" ${o.v === u.role_key ? 'selected' : ''}>${esc(o.t)}</option>`).join('')}</select>` },
         { h: 'Status', f: (u) => u.active ? badge('ok') : badge('cancelled') },
@@ -1295,6 +1655,7 @@ route(/^settings$/, async (el) => {
   const sub = (id, fn) => { $(id).onsubmit = async (e) => { e.preventDefault(); const b = $('.err', e.target); b.hidden = true; try { await fn(Object.fromEntries(new FormData(e.target))); } catch (err) { b.hidden = false; b.textContent = err.message; } }; };
   sub('#org', async (v) => { await api('PUT', '/api/org', v); ME = await GET('/api/me'); shell(); wireInstall(); toast('Profile saved'); render(); });
   sub('#pw', async (v) => { await POST('/api/me/password', v); toast('Password changed'); $('#pw').reset(); });
+  wireVaadaSettings(el);
   if ($('#adduser')) $('#adduser').onclick = () => modal('Add user', [{ k: 'name', label: 'Name' }, { k: 'email', label: 'Email', type: 'email' },
     { k: 'role', label: 'Role', type: 'select', options: roleOpts }, { k: 'password', label: 'Temporary password (8+ chars)', type: 'password' }],
   async (v) => { await POST('/api/users', v); toast('User added. Share the email and password with them.'); render(); });
@@ -1417,7 +1778,7 @@ route(/^reminders$/, async (el) => {
   const mark = (k) => { sent[k] = 1; try { sessionStorage.setItem('st-sent', JSON.stringify(sent)); } catch (e) { /* ignore */ } };
   const khRows = kh.rows.filter((r) => r.balance > 0);
   const btns = (k) => `${sent[k] ? '<span class="badge b-paid">sent</span> ' : ''}<button class="btn sm got" data-wa="${k}">WhatsApp</button> <button class="btn sm" data-sms="${k}">SMS</button>`;
-  el.innerHTML = head('Payment Reminders') + `${ME.org.upi_id ? '' : '<div class="panel warnbox">Add your <b>UPI ID</b> in <a href="#/settings">Business &amp; Users</a> so customers get a <b>Pay by UPI</b> button and QR in every message.</div>'}<p class="muted">Everyone who owes you money, oldest dues first. Tap WhatsApp to send a ready reminder with the bills, total and your UPI. Sent ones are marked for today.</p>
+  el.innerHTML = head('Payment Reminders', '<a class="btn" href="#/vaade">Vaade (promises)</a>') + `${ME.org.upi_id ? '' : '<div class="panel warnbox">Add your <b>UPI ID</b> in <a href="#/settings">Business &amp; Users</a> so customers get a <b>Pay by UPI</b> button and QR in every message.</div>'}<p class="muted">Everyone who owes you money, oldest dues first. Tap WhatsApp to send a ready reminder with the bills, total and your UPI. Sent ones are marked for today.</p>
     <div class="panel flush"><div class="row" style="padding:14px 16px 0"><h3>Invoice dues</h3><span class="badge">${ag.rows.length}</span></div>${table([
       { h: 'Customer', f: (r) => `<a href="#/party/${r.party_id}">${esc(r.party)}</a><div class="muted">${esc(r.phone || 'no mobile')}</div>` },
       { h: 'Overdue', num: 1, cls: 'hide-sm', f: (r) => inr(r.total - r.current) }, { h: 'Total due', num: 1, f: (r) => `<b>${inr(r.total)}</b>` }, { h: '', f: (r) => btns('p' + r.party_id) }],
@@ -1507,6 +1868,7 @@ route(/^pos$/, async (el) => {
         <div class="seg" id="method">${[['cash', 'Cash'], ['upi', 'UPI'], ['bank', 'Card / Bank'], ['credit', 'Credit (udhaar)']].map(([k, t]) => `<button type="button" data-m="${k}" class="${k === method ? 'on' : ''}">${t}</button>`).join('')}</div>
         <label class="f" id="recvw">Amount received (₹)<input id="recv" type="number" step="any" min="0"></label>
         <div id="change" class="muted"></div><div id="posqr"></div>${cfDefs('doc', 'sales').length ? `<div class="form">${cfInputs('doc', {}, 'sales')}</div>` : ''}
+        <div class="warnbox cwarn" id="cwarn" role="status" hidden></div>
         <button class="btn primary big" id="done">Complete sale <span class="hide-sm">(F9)</span></button>
         <div class="err" id="perr" hidden></div>
       </div>
@@ -1557,8 +1919,19 @@ route(/^pos$/, async (el) => {
   });
   $('#cart').addEventListener('change', draw);
   $('#cart').addEventListener('click', (e) => { if (e.target.dataset.x !== undefined) { cart.splice(+e.target.dataset.x, 1); draw(); } });
-  $('#method').onclick = (e) => { const m = e.target.dataset.m; if (!m) return; method = m; $$('#method button').forEach((b) => b.classList.toggle('on', b.dataset.m === m)); draw(); };
+  const setMethod = (m) => { method = m; $$('#method button').forEach((b) => b.classList.toggle('on', b.dataset.m === m)); draw(); posRisk(); };
+  $('#method').onclick = (e) => { const m = e.target.dataset.m; if (m) setMethod(m); };
   $('#recv').oninput = draw;
+  // udhaar check (Vaada Pakka): banner when a risky customer buys on credit
+  let risk = null, riskFor = 0;
+  const posRisk = async () => {
+    const pid = +$('#cust').value || 0, box = $('#cwarn');
+    if (method !== 'credit') { box.hidden = true; return; }
+    if (pid !== riskFor) { riskFor = pid; risk = await creditCheck(pid); }
+    box.hidden = !(risk && risk.risky && method === 'credit' && riskFor === +$('#cust').value);
+    if (!box.hidden) box.innerHTML = creditText(risk);
+  };
+  $('#cust').addEventListener('change', posRisk);
   if ($('#cam')) $('#cam').onclick = () => cameraScan(add);
   const complete = async () => {
     const lines = cart.filter((l) => l.qty > 0);
@@ -1567,12 +1940,19 @@ route(/^pos$/, async (el) => {
     const body = { type: 'INV', party_id: +$('#cust').value, warehouse_id: +$('#wh').value, date: ME.today, notes: 'POS sale', extra: cfRead($('.pos-pay')),
       lines: lines.map((l) => ({ item_id: l.item_id, qty: l.qty, rate: l.rate, gst_rate: l.gst_rate })) };
     if (method !== 'credit') body.payment = { amount: Math.min(+$('#recv').value || t.total, t.total), account_id: acc(method === 'upi' ? 'upi' : method === 'bank' ? 'bank' : 'cash') };
-    try {
-      const d = await POST('/api/docs', body);
-      dirty('items', 'accounts', 'parties');
-      printReceipt(d, method, +$('#recv').value || 0);
-      cart.length = 0; draw(); scan.focus(); toast(`${d.number} saved`);
-    } catch (err) { $('#perr').hidden = false; $('#perr').textContent = err.message; } finally { btn.disabled = false; }
+    body.credit_ok = false;
+    const save = async () => {
+      try {
+        const d = await POST('/api/docs', body);
+        dirty('items', 'accounts', 'parties');
+        printReceipt(d, method, +$('#recv').value || 0);
+        cart.length = 0; draw(); scan.focus(); toast(`${d.number} saved`);
+      } catch (err) {
+        if (err.status === 409 && err.data.credit_warning) return creditSheet(err.data.credit_warning, { yes: () => { body.credit_ok = true; save(); }, cash: () => setMethod('cash') });
+        $('#perr').hidden = false; $('#perr').textContent = err.message;
+      }
+    };
+    try { await save(); } finally { btn.disabled = false; }
   };
   $('#done').onclick = complete;
   const keys = (e) => { if (e.key === 'F9') { e.preventDefault(); complete(); } };
@@ -1672,7 +2052,8 @@ route(/^plan$/, async (el, m, q) => {
       <div class="price">${p.price ? '₹' + p.price.toLocaleString('en-IN') + '<span>/year + GST</span>' : '₹0<span>forever</span>'}</div>
       ${p.price ? `<div class="muted small">≈ ₹${Math.round(p.price / 12)} a month · pay ₹${p.pay.toLocaleString('en-IN')} incl. GST</div>` : ''}
       <ul class="ticks"><li>${lim(p.invoices_per_month)} invoices / month</li><li>${lim(p.users)} user${p.users === 1 ? '' : 's'}</li><li>${lim(p.warehouses)} godown${p.warehouses === 1 ? '' : 's'}</li>
-      <li>Billing, stock, khata, POS, accounts</li>${p.features.includes('tally') ? '<li>Tally export</li>' : ''}${p.features.includes('einvoice') ? '<li>E-invoice & e-way bill</li>' : ''}${p.features.includes('priority') ? '<li>Priority support</li>' : ''}</ul>
+      <li>Billing, stock, khata, POS, accounts</li>${p.features.includes('tally') ? '<li>Tally export</li>' : ''}${p.features.includes('einvoice') ? '<li>E-invoice & e-way bill</li>' : ''}${p.features.includes('priority') ? '<li>Priority support</li>' : ''}
+      <li>Grahak khud tareekh chune (vaada)${p.features.includes('vaada') ? '' : ': 10 khule vaade tak'}</li>${p.features.includes('vaada') ? '<li>Kisht + udhaar check</li>' : ''}${p.features.includes('cash') ? '<li>Kal ka Cash (4 hafte ka cash)</li>' : ''}</ul>
       ${!p.price ? (p.key === cur.key ? '<div class="muted">Your plan</div>' : '') : !ME.can.settings ? '<div class="muted">Ask the owner to upgrade</div>'
         : online ? `<button class="btn primary big" data-buy="${p.key}">${p.key === cur.key ? (P.history.some((h) => h.status === 'paid') ? 'Renew 1 year' : 'Buy 1 year') : 'Upgrade'} · Pay ₹${p.pay.toLocaleString('en-IN')}</button>`
           : wa ? `<a class="btn primary" target="_blank" rel="noopener" href="${wa}">Upgrade on WhatsApp</a>` : '<div class="muted">Online payment coming soon</div>'}</div>`).join('')}</div>
