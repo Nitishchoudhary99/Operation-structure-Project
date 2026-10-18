@@ -22,7 +22,7 @@ import { STATES, einvoiceJson, ewaybillJson } from './gst.js';
 import { tallyXml } from './tally.js';
 import { printOf, cleanPrint, imageFromDataUrl, shortHash, imageResponse, FILE_KINDS, seriesOf, numberSpec, formatNumber, cleanSeries, fyParts,
   fieldsOf, extraOf, cleanField, cleanExtra, extraFilter, printExtra } from './custom.js';
-import { billingMode, razorpayMode, grossPaise, billingStart, billingVerify, billingWebhook, billingStatus, billingHistory,
+import { billingMode, razorpayMode, grossPaise, billingStart, billingVerify, billingWebhook, billingStatus, billingHistory, hubFetch, hubOn,
   billingUpiCallback, billingUpiClaim, billingUpiCancel } from './billing.js';
 
 const R = (p) => Math.round(p) / 100;
@@ -74,7 +74,7 @@ router.add('POST', '/api/auth/login', async (c) => {
 /* Forgot password: a one-time link by e-mail (Resend, same account as docbrisk.com), valid 30 minutes.
    The answer is the same whether or not the account exists. Without RESEND_API_KEY the app tells the user to ask the owner. */
 const sha256Hex = async (t) => [...new Uint8Array(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(t)))].map((b) => b.toString(16).padStart(2, '0')).join('');
-const mailOn = (env) => !!env.RESEND_API_KEY;
+const mailOn = (env) => !!env.RESEND_API_KEY || hubOn(env);   // own Resend key, or docbrisk.com's mail account via the hub link
 router.add('POST', '/api/auth/forgot', async (c) => {
   const email = str(c.body.email, 120).toLowerCase();
   const ip = c.request.headers.get('CF-Connecting-IP') || 'local';
@@ -88,7 +88,11 @@ router.add('POST', '/api/auth/forgot', async (c) => {
       c.db.prepare(`DELETE FROM pw_resets WHERE user_id = ? OR expires_at < ?`).bind(user.id, now),
       c.db.prepare(`INSERT INTO pw_resets (token_hash, user_id, expires_at) VALUES (?, ?, ?)`).bind(await sha256Hex(token), user.id, now + 30 * 60000),
     ]);
-    const link = `${new URL(c.request.url).origin}/#/reset/${token}`;
+    const origin = new URL(c.request.url).origin, link = `${origin}/#/reset/${token}`;
+    if (!c.env.RESEND_API_KEY) {   // send through docbrisk.com (docbrisk-api builds and sends the same e-mail)
+      await hubFetch(c.env, 'POST', '/api/pay/svc/erp-reset-mail', { to: user.email, name: user.name, org: user.org, token, origin });
+      return json({ ok: true, mail: true });
+    }
     const html = `<div style="font-family:Arial,sans-serif;max-width:480px;margin:auto;color:#1f2937">
       <h2 style="color:#0f766e">SmartTrader ERP</h2><p>Namaste ${attr(user.name)},</p>
       <p>We got a request to reset the password for <b>${attr(user.email)}</b> (${attr(user.org)}).</p>

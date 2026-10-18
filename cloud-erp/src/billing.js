@@ -77,7 +77,7 @@ async function activate(db, rec, paymentId, paidPaise) {
 /* ---------------------------------------------------------------- DocBrisk Pay hub (server to server)
    Request signing (hub spec 10.1): X-PayHub-Sig = v1=HMAC(secret, ts \n METHOD \n path?query \n sha256hex(body)).
    Returns { status, data }; status 0 = the hub could not be reached. */
-async function hubFetch(env, method, path, body) {
+export async function hubFetch(env, method, path, body) {
   const raw = body === undefined ? '' : JSON.stringify(body);
   const url = new URL(String(env.PAYHUB_URL || 'https://payhub.internal').trim().replace(/\/+$/, '') + path);
   const ts = String(Date.now());
