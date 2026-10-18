@@ -7,7 +7,7 @@ NAV = [('/gst-billing-software/', 'GST Billing'), ('/khata-book-app/', 'Khata Bo
 PRICES = [('Free', '₹0', 'forever', ['50 invoices / month', '1 user, 1 godown', 'Unlimited khata entries', 'POS & barcode billing', 'GST reports, P&L, Balance Sheet']),
           ('Starter', '₹999', '/year + GST', ['Unlimited invoices', '2 users, 1 godown', 'Everything in Free', 'Tally export']),
           ('Growth', '₹2,499', '/year + GST', ['Unlimited invoices', '5 users, 3 godowns', 'E-invoice & e-way bill JSON', 'Orders, GRN, gate entry']),
-          ('Business', '₹4,499', '/year + GST', ['Unlimited invoices', '15 users, unlimited godowns', 'Everything in Growth', 'Priority support'])]
+          ('Business', '₹4,499', '/year + GST', ['Unlimited invoices', '15 users, unlimited godowns', 'Everything in Growth', 'Priority WhatsApp support (+91 90684 46139)'])]
 
 def page(path, title, desc, h1, lead, sections, faqs, keywords):
     url = SITE + path
@@ -57,7 +57,7 @@ def page(path, title, desc, h1, lead, sections, faqs, keywords):
 <section><h2>Frequently asked questions</h2>{faq}</section>
 <section class="cta"><h2>Shuru karein aaj hi</h2><p>Free plan me 50 invoices har mahine aur unlimited khata. Card ki zaroorat nahi.</p><a class="btn primary big" href="/#signup">Create your free account</a></section>
 </main>
-<footer><nav>{nav}<a href="https://docbrisk.com/">DocBrisk</a></nav><p>© 2026 SmartTrader ERP by DocBrisk. GST billing, inventory, accounts and khata for Indian businesses.</p></footer>
+<footer><nav>{nav}<a href="https://wa.me/919068446139" rel="noopener">WhatsApp support</a><a href="https://docbrisk.com/">DocBrisk</a></nav><p>© 2026 SmartTrader ERP by DocBrisk. GST billing, inventory, accounts and khata for Indian businesses.</p></footer>
 </body>
 </html>
 '''

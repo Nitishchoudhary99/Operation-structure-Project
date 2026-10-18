@@ -9,7 +9,7 @@ export const PLANS = {
   growth: { label: 'Growth', price: 2499, invoices_per_month: Infinity, users: 5, warehouses: 3, features: ['tally', 'einvoice', 'vaada', 'cash'] },
   business: { label: 'Business', price: 4499, invoices_per_month: Infinity, users: 15, warehouses: Infinity, features: ['tally', 'einvoice', 'priority', 'vaada', 'cash'] },
 };
-export const FEATURE_LABEL = { tally: 'Tally export', einvoice: 'E-invoice & e-way bill JSON', priority: 'Priority support',
+export const FEATURE_LABEL = { tally: 'Tally export', einvoice: 'E-invoice & e-way bill JSON', priority: 'Priority WhatsApp support',
   vaada: 'Kisht plans & udhaar check', cash: 'Kal ka Cash (4-week cash view)' };
 export const hasFeature = (org, f) => planOf(org).features.includes(f);
 export const TRIAL_DAYS = 14;

@@ -255,7 +255,7 @@ function shell() {
       <div class="brand"><i>&#x2197;</i><span>SmartTrader<small>${esc(ME.org.name)}</small></span></div>
       ${NAV.map(([g, all]) => { const items = all.filter(([h]) => (!simple() || !ADVANCED.has(h)) && seen(h)); return items.length ? `${g ? `<div class="nav-group">${g}</div>` : ''}${items.map(([h, t]) => `<a href="#/${h}" data-h="${h}">${t}</a>`).join('')}` : ''; }).join('')}
       <div class="side-foot"><div class="muted">${esc(ME.user.name)} &middot; ${esc(ME.user.role)}</div>
-        <button class="btn sm" id="install" hidden>Install app</button><button class="btn sm" id="logout">Sign out</button></div>
+        <button class="btn sm" id="install" hidden>Install app</button><a class="btn sm" href="https://wa.me/919068446139?text=${encodeURIComponent('Hi, I need help with SmartTrader ERP')}" target="_blank" rel="noopener" title="WhatsApp support: +91 90684 46139">Help</a><button class="btn sm" id="logout">Sign out</button></div>
     </nav>
     <div class="main">
       <header class="top">

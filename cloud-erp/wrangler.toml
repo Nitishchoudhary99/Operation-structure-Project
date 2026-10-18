@@ -34,3 +34,7 @@ mode = "smart"
 
 [observability]
 enabled = true
+
+# WhatsApp number for customer support (shown in the app, pricing and Plan & Billing)
+[vars]
+SUPPORT_WHATSAPP = "919068446139"
