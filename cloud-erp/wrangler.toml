@@ -24,9 +24,9 @@ database_id = "65271993-a4d4-4929-93fe-fcb649d132d3"
 
 # DocBrisk Pay (automatic UPI plan payments): optional private link to the docbrisk-api worker on the same account.
 # Set the PAYHUB_SECRET secret (and PAYHUB_URL if you do not use this binding); see README "One-time setup".
-# [[services]]
-# binding = "PAYHUB_API"
-# service = "docbrisk-api"
+[[services]]
+binding = "PAYHUB_API"
+service = "docbrisk-api"
 
 # Run the worker near the D1 database: many short DB round trips per request. Static files still come from the nearest edge.
 [placement]
