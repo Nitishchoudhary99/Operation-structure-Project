@@ -110,7 +110,7 @@ const upiOut = (h) => ({
 export async function billingStart(c) {
   const rzp = razorpayMode(c.env), upi = hubOn(c.env);
   const plan = String(c.body.plan || '');
-  if (!PLANS[plan] || plan === 'free') throw bad('Please choose a plan.');
+  if (!Object.hasOwn(PLANS, plan) || plan === 'free') throw bad('Please choose a plan.');
   const wantRzp = c.body.method === 'razorpay';
   if (wantRzp && rzp === 'off') throw bad('Card payment is not available. Please pay by UPI.');
   if (!wantRzp && upi) {

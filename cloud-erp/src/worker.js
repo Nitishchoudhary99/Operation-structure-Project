@@ -1326,7 +1326,8 @@ const REPORTS = {
   register: (c) => rep.register(c.db, c.org, c.url.searchParams),
 };
 router.add('GET', '/api/reports/:name', async (c) => {
-  const fn = REPORTS[c.params.name];
+  // Own keys only: REPORTS['constructor'] is Object(), which would hand back the whole request context (env, secrets).
+  const fn = Object.hasOwn(REPORTS, c.params.name) ? REPORTS[c.params.name] : null;
   if (!fn) throw notFound('Unknown report.');
   return json(await fn(c));
 });

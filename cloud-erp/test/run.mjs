@@ -540,5 +540,13 @@ else {
   check('busy business: checklist done', s1.items && s1.customers && s1.invoices, JSON.stringify(s1));
 }
 
+/* Prototype keys must never resolve as report or plan names ('constructor' once returned the whole request context, secrets included). */
+for (const k of ['constructor', '__proto__', 'toString', 'hasOwnProperty', 'valueOf']) {
+  const r = await api('GET', '/api/reports/' + k, null, true);
+  check('report "' + k + '" is not found', r.status === 404 && !JSON.stringify(r).includes('SESSION_SECRET'), JSON.stringify(r).slice(0, 120));
+}
+const bp = await api('POST', '/api/billing/start', { plan: 'constructor' }, true);
+check('billing plan "constructor" is rejected cleanly', bp.status === 400, JSON.stringify(bp).slice(0, 120));
+
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);
