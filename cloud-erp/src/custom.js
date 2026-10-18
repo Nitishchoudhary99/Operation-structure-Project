@@ -1,7 +1,7 @@
 /* Per-business customisation: print branding (logo, colour, layout, terms, bank, signature).
    Settings live as small JSON on the orgs row, which every request already loads, so reading them costs no extra query.
    Images (logo, signature) live in org_files and are fetched only by <img> tags, with an immutable cache. */
-import { HttpError, bad, str } from './lib.js';
+import { HttpError, bad, str, own } from './lib.js';
 
 export const LAYOUTS = ['classic', 'modern', 'compact'];
 export const FILE_KINDS = ['logo', 'signature'];
@@ -75,7 +75,7 @@ export const expandPrefix = (tpl, org, d) => {
 };
 /* counter key and printf format for the next number of `key` (a doc type, or receipt / payment) on date d */
 export function numberSpec(org, key, defPrefix, d) {
-  const S = seriesOf(org)[key];
+  const S = own(seriesOf(org), key);
   if (!S || typeof S.prefix !== 'string') return { key, fmt: `${defPrefix}-%05d` };
   return { key: S.fy_reset ? `${key}|${fyParts(org, d).fy}` : key, fmt: `${expandPrefix(S.prefix, org, d)}%0${S.pad || 5}d` };
 }
@@ -138,7 +138,7 @@ export function cleanExtra(defs, entity, input, side = '') {
   const src = input && typeof input === 'object' ? input : {}, out = {};
   for (const f of defs) {
     if (f.entity !== entity || (side && f.side && f.side !== side)) continue;
-    let v = src[f.key];
+    let v = own(src, f.key);
     if (v === undefined || v === null || String(v).trim() === '') { if (f.required) throw bad(`${f.label} is required.`); continue; }
     if (f.type === 'number') { v = Number(v); if (!Number.isFinite(v)) throw bad(`${f.label} must be a number.`); }
     else if (f.type === 'date') { v = str(v, 10); if (!/^\d{4}-\d{2}-\d{2}$/.test(v)) throw bad(`${f.label} must be a date.`); }
@@ -167,6 +167,6 @@ export function extraFilter(defs, entity, params, col) {
 /* fields marked "show on print", as label/value pairs */
 export const printExtra = (defs, entity, extra, side = '') => {
   const x = typeof extra === 'string' ? extraOf(extra) : extra || {};
-  return defs.filter((f) => f.entity === entity && f.on_print && (!side || !f.side || f.side === side) && x[f.key] !== undefined && x[f.key] !== '')
-    .map((f) => ({ label: f.label, value: f.type === 'date' ? x[f.key].split('-').reverse().join('-') : String(x[f.key]) }));
+  return defs.filter((f) => f.entity === entity && f.on_print && (!side || !f.side || f.side === side) && own(x, f.key) !== undefined && own(x, f.key) !== '')
+    .map((f) => ({ label: f.label, value: f.type === 'date' ? String(own(x, f.key)).split('-').reverse().join('-') : String(own(x, f.key)) }));
 };

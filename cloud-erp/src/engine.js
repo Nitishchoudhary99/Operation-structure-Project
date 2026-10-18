@@ -4,11 +4,11 @@
    Rows created inside a batch are found again through their unique `txk` key. */
 import {
   HttpError, bad, notFound, str, reqStr, num, date, addDays, nowIso, uid, lineCalc, toPaise, roundQty, today,
-  counterStatements, counterValueSql,
+  counterStatements, counterValueSql, own,
 } from './lib.js';
 import { requireCan, can } from './auth.js';
 import { stateCode } from './gst.js';
-import { checkInvoiceLimit, hasFeature } from './saas.js';
+import { checkInvoiceLimit, invoiceCap, invoiceCapError, hasFeature, planOf, upgradeError } from './saas.js';
 import { cleanVaada, risk, riskStatements, riskInput } from './vaada.js';
 import { numberSpec, fieldsOf, cleanExtra } from './custom.js';
 
@@ -53,8 +53,9 @@ export function journalStatements(db, ctx, { date: d, narration, refType, refId,
                            VALUES (?, ?, ?, ?, ${refExpr}, ?, ?, ?)`)
     .bind(ctx.org.id, d, narration.slice(0, 300), refType, refTxk || refId || null, ctx.user.id, nowIso(), txk)];
   for (const l of clean) {
+    // the account and party are looked up again inside this business: an id from another business becomes NULL (no party) or fails the whole batch (no account)
     out.push(db.prepare(`INSERT INTO journal_lines (journal_id, org_id, account_id, party_id, debit, credit, date)
-                         VALUES ((SELECT id FROM journals WHERE txk = ?), ?, ?, ?, ?, ?, ?)`)
+                         VALUES ((SELECT id FROM journals WHERE txk = ?1), ?2, (SELECT id FROM accounts WHERE id = ?3 AND org_id = ?2), (SELECT id FROM parties WHERE id = ?4 AND org_id = ?2), ?5, ?6, ?7)`)
       .bind(txk, ctx.org.id, l.account, l.party || null, l.amount > 0 ? l.amount : 0, l.amount < 0 ? -l.amount : 0, d));
   }
   return out;
@@ -105,15 +106,20 @@ async function stockIn(db, orgId, warehouseId, itemIds) {
   return new Map(rows.map((r) => [r.item_id, r.qty]));
 }
 
-async function warehouseOf(db, orgId, id) {
+async function warehouseOf(ctx, id) {
+  const { db, org } = ctx, orgId = org.id;
+  // pos = how many older godowns the business has; a godown past the plan's limit (after a plan lapses) takes no new stock
+  const pos = `(SELECT COUNT(*) FROM warehouses x WHERE x.org_id = w.org_id AND x.id < w.id) AS pos`;
+  let w;
   if (id) {
-    const w = await db.prepare(`SELECT id, name FROM warehouses WHERE id = ? AND org_id = ?`).bind(id, orgId).first();
+    w = await db.prepare(`SELECT w.id, w.name, ${pos} FROM warehouses w WHERE w.id = ? AND w.org_id = ?`).bind(id, orgId).first();
     if (!w) throw bad('Unknown warehouse.');
-    return w;
+  } else {
+    w = await db.prepare(`SELECT w.id, w.name, ${pos} FROM warehouses w WHERE w.org_id = ? ORDER BY w.id LIMIT 1`).bind(orgId).first();
+    if (!w) throw bad('Create a warehouse first.');
   }
-  const w = await db.prepare(`SELECT id, name FROM warehouses WHERE org_id = ? ORDER BY id LIMIT 1`).bind(orgId).first();
-  if (!w) throw bad('Create a warehouse first.');
-  return w;
+  if (w.pos >= planOf(org).warehouses) throw upgradeError(`${w.name} is over the godown limit of your plan, so it cannot take new stock.`);
+  return { id: w.id, name: w.name };
 }
 
 /* Signed amount: positive -> debit, negative -> credit. */
@@ -126,10 +132,11 @@ export function moneyStatus(total, paid) { return paid <= 0 ? 'unpaid' : paid >=
 export async function createDoc(ctx, body) {
   const { db } = ctx;
   const type = str(body.type, 10).toUpperCase();
-  const T = DOC_TYPES[type];
+  const T = own(DOC_TYPES, type);
   if (!T) throw bad('Unknown document type.');
   requireCan(ctx.user, T.side === 'sales' ? 'sales' : 'purchase');
-  if (type === 'INV') await checkInvoiceLimit(db, ctx.org);
+  const cap = type === 'INV' ? invoiceCap(ctx.org) : null;
+  if (cap) await checkInvoiceLimit(db, ctx.org);
   const orgId = ctx.org.id;
   const d = date(body.date);
 
@@ -143,7 +150,7 @@ export async function createDoc(ctx, body) {
   if (body.ref_id) {
     src = await db.prepare(`SELECT * FROM docs WHERE id = ? AND org_id = ?`).bind(+body.ref_id, orgId).first();
     if (!src) throw bad('Source document not found.');
-    if (!T.from.includes(src.type)) throw bad(`A ${T.label} cannot be made from a ${DOC_TYPES[src.type].label}.`);
+    if (!T.from.includes(src.type)) throw bad(`A ${T.label} cannot be made from a ${(own(DOC_TYPES, src.type) || {}).label || 'document of that kind'}.`);
     if (src.status === 'cancelled') throw bad('The source document is cancelled.');
     if (src.party_id !== party.id) throw bad('The source document belongs to another party.');
     const { results } = await db.prepare(`SELECT * FROM doc_lines WHERE doc_id = ?`).bind(src.id).all();
@@ -152,7 +159,7 @@ export async function createDoc(ctx, body) {
     throw bad(`A ${T.label} must be made from the original ${type === 'SRET' ? 'invoice' : 'bill'}.`);
   }
 
-  const wh = await warehouseOf(db, orgId, +body.warehouse_id || (src && src.warehouse_id) || 0);
+  const wh = await warehouseOf(ctx, +body.warehouse_id || (src && src.warehouse_id) || 0);
   // inter-state when the two GST state codes differ (from GSTIN, else state name); falls back to comparing names
   const sc = stateCode(party.state, party.gstin), oc = stateCode(ctx.org.state, ctx.org.gstin);
   const inter = sc && oc ? sc !== oc : !!(party.state && ctx.org.state && party.state.toLowerCase() !== ctx.org.state.toLowerCase());
@@ -225,12 +232,17 @@ export async function createDoc(ctx, body) {
   const nspec = numberSpec(ctx.org, type, T.prefix, d);
   const extra = cleanExtra(fieldsOf(ctx.org), 'doc', body.extra, T.side);
   st.push(counterStatements(db, orgId, nspec.key));
-  st.push(db.prepare(`INSERT INTO docs (org_id, type, number, party_id, date, due_date, warehouse_id, ref_id, status, place_of_supply,
-        inter_state, taxable, cgst, sgst, igst, round_off, total, paid, notes, created_by, created_at, txk, extra)
-      VALUES (?, ?, ${counterValueSql}, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?)`)
-    .bind(orgId, type, nspec.fmt, orgId, nspec.key, party.id, d, dueDate, wh.id, src ? src.id : null, initialStatus,
-      party.state || ctx.org.state || '', inter ? 1 : 0, taxable, cgst, sgst, igst, roundOff, total,
-      str(body.notes, 1000), ctx.user.id, nowIso(), txk, extra));
+  // on a capped plan the insert itself checks the monthly count, so parallel requests cannot all slip under the limit
+  const docCols = `org_id, type, number, party_id, date, due_date, warehouse_id, ref_id, status, place_of_supply,
+        inter_state, taxable, cgst, sgst, igst, round_off, total, paid, notes, created_by, created_at, txk, extra`;
+  const docVals = `?, ?, ${counterValueSql}, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?`;
+  const docArgs = [orgId, type, nspec.fmt, orgId, nspec.key, party.id, d, dueDate, wh.id, src ? src.id : null, initialStatus,
+    party.state || ctx.org.state || '', inter ? 1 : 0, taxable, cgst, sgst, igst, roundOff, total,
+    str(body.notes, 1000), ctx.user.id, nowIso(), txk, extra];
+  st.push(cap
+    ? db.prepare(`INSERT INTO docs (${docCols}) SELECT ${docVals} WHERE (SELECT COUNT(*) FROM docs WHERE org_id = ? AND type = 'INV' AND created_at >= ?) < ?`)
+      .bind(...docArgs, orgId, cap.since, cap.max)
+    : db.prepare(`INSERT INTO docs (${docCols}) VALUES (${docVals})`).bind(...docArgs));
 
   // lines + stock + per-line cost
   let costOut = 0, costIn = 0, grniClear = 0, variance = 0, serviceCost = 0;
@@ -356,7 +368,9 @@ export async function createDoc(ctx, body) {
   if (type === 'INV') await creditGate(ctx, party, total - paidNow, body, st);
   st.push(auditStatement(ctx, `create ${type}`, `${party.name} ${total / 100}`));
   try { await db.batch(st); } catch (e) {
-    if (/UNIQUE constraint failed: docs\.org_id, docs\.type, docs\.number/.test(String(e && e.message))) throw bad('This document number is already used. Change the next number in Settings > Numbering.');
+    const msg = String(e && e.message);
+    if (/UNIQUE constraint failed: docs\.org_id, docs\.type, docs\.number/.test(msg)) throw bad('This document number is already used. Change the next number in Settings > Numbering.');
+    if (cap && /NOT NULL constraint failed: doc_lines\.doc_id/.test(msg)) throw invoiceCapError(cap);   // the guarded insert added no row: the cap was reached
     throw e;
   }
   return db.prepare(`SELECT * FROM docs WHERE txk = ?`).bind(txk).first();
@@ -531,7 +545,7 @@ export async function stockAdjust(ctx, body) {
   requireCan(ctx.user, 'stock');
   const item = await db.prepare(`SELECT * FROM items WHERE id = ? AND org_id = ?`).bind(+body.item_id || 0, ctx.org.id).first();
   if (!item || item.is_service) throw bad('Choose a stocked item.');
-  const wh = await warehouseOf(db, ctx.org.id, +body.warehouse_id || 0);
+  const wh = await warehouseOf(ctx, +body.warehouse_id || 0);
   const qty = roundQty(num(body.qty, 'Quantity', { min: -1e9, max: 1e9 }));
   if (!qty) throw bad('Quantity cannot be zero.');
   const d = date(body.date);
@@ -561,7 +575,7 @@ export async function stockAdjust(ctx, body) {
 export async function stockCount(ctx, body) {
   const { db } = ctx;
   requireCan(ctx.user, 'stock');
-  const wh = await warehouseOf(db, ctx.org.id, +body.warehouse_id || 0);
+  const wh = await warehouseOf(ctx, +body.warehouse_id || 0);
   const lines = (Array.isArray(body.lines) ? body.lines : []).filter((l) => l && l.counted !== '' && l.counted !== null && l.counted !== undefined);
   if (!lines.length) throw bad('Enter the counted quantity for at least one item.');
   if (lines.length > 300) throw bad('Count at most 300 items at a time.');
@@ -594,8 +608,8 @@ export async function stockTransfer(ctx, body) {
   requireCan(ctx.user, 'stock');
   const item = await db.prepare(`SELECT * FROM items WHERE id = ? AND org_id = ?`).bind(+body.item_id || 0, ctx.org.id).first();
   if (!item || item.is_service) throw bad('Choose a stocked item.');
-  const from = await warehouseOf(db, ctx.org.id, +body.from_warehouse_id || -1);
-  const to = await warehouseOf(db, ctx.org.id, +body.to_warehouse_id || -1);
+  const from = await warehouseOf(ctx, +body.from_warehouse_id || -1);
+  const to = await warehouseOf(ctx, +body.to_warehouse_id || -1);
   if (from.id === to.id) throw bad('Choose two different warehouses.');
   const qty = roundQty(num(body.qty, 'Quantity', { min: 0.001 }));
   const have = await available(db, ctx.org.id, item.id, from.id);
@@ -635,13 +649,19 @@ export async function createJournal(ctx, body) {
   requireCan(ctx.user, 'finance');
   const lines = Array.isArray(body.lines) ? body.lines : [];
   if (lines.length < 2) throw bad('A journal needs at least two lines.');
+  if (lines.length > 200) throw bad('At most 200 lines per journal.');
   const { results: accts } = await db.prepare(`SELECT id FROM accounts WHERE org_id = ?`).bind(ctx.org.id).all();
   const ok = new Set(accts.map((a) => a.id));
+  // a party id is global across businesses: accept only this business's own (never trust the id from the request)
+  const askedParties = lines.map((l) => (l && l.party_id !== undefined && l.party_id !== null && l.party_id !== '' && l.party_id !== 0 ? Number(l.party_id) : null));
+  const mine = new Set((await loadByIds(db, `SELECT id FROM parties WHERE org_id = ? AND id IN (?ids)`, [ctx.org.id], askedParties.filter((p) => Number.isInteger(p) && p > 0))).map((p) => p.id));
   const out = lines.map((l, i) => {
+    if (!l || typeof l !== 'object') throw bad(`Line ${i + 1}: not a valid line.`);
     if (!ok.has(+l.account_id)) throw bad(`Line ${i + 1}: unknown account.`);
+    if (askedParties[i] !== null && !mine.has(askedParties[i])) throw bad(`Line ${i + 1}: unknown party.`);
     const dr = toPaise(num(l.debit, 'Debit', { min: 0, def: 0 })), cr = toPaise(num(l.credit, 'Credit', { min: 0, def: 0 }));
     if (dr && cr) throw bad(`Line ${i + 1}: put an amount in debit or credit, not both.`);
-    return { account: +l.account_id, party: +l.party_id || null, amount: dr - cr };
+    return { account: +l.account_id, party: askedParties[i], amount: dr - cr };
   });
   if (out.reduce((s, l) => s + l.amount, 0) !== 0) throw bad('Debits and credits must be equal.');
   const d = date(body.date);

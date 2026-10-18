@@ -143,7 +143,7 @@ Prices are in `src/saas.js` (`PLANS`, per year before GST); the buyer pays the p
 cd cloud-erp
 npm install
 npx wrangler dev            # http://localhost:8787, with a local D1 database in .wrangler/
-node test/run.mjs           # in another terminal: 120-check end-to-end business test
+node test/run.mjs           # in another terminal: end-to-end business and security test
                             # (put ADMIN_KEY=local-test-admin-key-0001 and RAZORPAY_WEBHOOK_SECRET=local-test-webhook-secret-0001 in cloud-erp/.dev.vars)
 node test/perf.mjs          # D1 calls and rows per screen stay within budget (QUERY_COUNT=1 in .dev.vars)
 ```
@@ -157,12 +157,13 @@ cloud-erp/
   src/engine.js        posting engine: documents → stock + double-entry journals (atomic batches)
   src/reports.js       trial balance, P&L, balance sheet, GST, ageing, stock, ledgers, dashboard
   src/schema.js        tables + default chart of accounts; auto-migrates on first request
-  src/auth.js          PBKDF2 passwords, signed session cookies, roles, rate limits
+  src/auth.js          PBKDF2 passwords, signed session cookies, revocation, roles, rate limits, login throttle
+  src/headers.js       Content-Security-Policy and the other security headers (public/_headers repeats them)
   src/lib.js           validation, GST maths, numbering, router
   src/gst.js           state codes, units, e-invoice and e-way bill JSON
   src/tally.js         Tally XML export
   src/saas.js          plans, limits, activation codes
-  public/              the web app (plain HTML/CSS/JS, no build step), PWA manifest + service worker
+  public/              the web app (plain HTML/CSS/JS, no build step), PWA manifest + service worker, csv.js (export), _headers
   test/run.mjs         end-to-end test against a running worker
   test/perf.mjs        speed budgets per screen, next to a second, busy business
   docs/COMPETITORS.md  market and competitor research
@@ -170,12 +171,42 @@ cloud-erp/
 
 ## Security notes
 
-- Passwords are hashed with PBKDF2-SHA256 and a per-user salt. Sessions are HMAC-signed, HttpOnly,
-  SameSite cookies, and changing a password logs out other sessions.
+- Passwords are hashed with PBKDF2-SHA256 and a per-user salt. Sessions are HMAC-signed, HttpOnly, SameSite=Lax cookies
+  (Secure on https) that carry a session id. **Sign out** puts that id on a revoked list, so a copied cookie stops working at once;
+  changing a password, a password set by the owner, switching a user off and **Sign out everywhere** (Settings) end every token of that user.
 - Every write needs a custom request header and a same-origin check, which protects against CSRF.
-- Login and signup are rate-limited.
-- Every query is scoped to the signed-in user's business, and roles are checked on the server for every write.
+- Login is throttled by address, by account + address and by account, counting only failed attempts (a good login writes nothing to the
+  database). Signup, reset, forgot, public links and admin have their own limits. Old counters are cleaned up automatically.
+- Sign-up: when e-mail works (`RESEND_API_KEY`, or the hub link) the business is created only after the owner opens the e-mailed link,
+  and the answer is the same whether or not the address already has an account. Set `SIGNUP_VERIFY=off` to turn this off. If the mail
+  cannot be sent, sign-up falls back to creating the account at once rather than locking people out.
+- Every query is scoped to the signed-in user's business, and roles are checked on the server for every write. Ids that come from a
+  request (party, account, item, godown, document) are looked up inside the business before use, and the journal insert re-checks the
+  account and party itself. Reads for custom roles go through one table (`READ_AREAS` in `src/worker.js`): anything not listed is refused.
+- Tables keyed by something a user can type (reports, plans, document types, states, units, numbering, custom fields) are read with
+  own-key lookups only (`own()` in `src/lib.js`), so names like `constructor` or `__proto__` never resolve.
+- The request context keeps `env` (the secrets) non-enumerable, so a handler that serialises the context cannot dump it. Error answers
+  carry a fixed message only; details go to the Worker log.
+- Security headers on the app, the API and the `/k/` and `/i/` pages: a strict Content-Security-Policy (no inline or eval scripts, no
+  framing), X-Frame-Options, HSTS, Referrer-Policy, Permissions-Policy, nosniff. They live in `src/headers.js` and in `public/_headers`
+  (for the static files); `test/run.mjs` checks the two agree. The app has no inline scripts or handlers; use `data-act` buttons.
+- Customer links (`/i/<token>`, `/k/<token>`) are created only by roles that may sell (invoices) or write the khata, and can be turned off
+  one by one (invoice page, khata page) or all at once (Settings → Customer links). A cancelled invoice's link stops working.
+- CSV exports prefix cells that start with `= + - @` with an apostrophe, so a formula typed into a name cannot run in Excel (`public/csv.js`).
+- Plan limits hold when a plan lapses: staff beyond the user limit are paused (the owner and the oldest staff keep working), godowns beyond
+  the limit take no new stock, and the monthly invoice cap counts by the time an invoice was created (cancelled ones included) with the check
+  inside the insert, so parallel requests cannot slip past it.
 - Never put secrets in `wrangler.toml`; this repository is public. Use `wrangler secret put` or the dashboard.
+
+### Tests
+
+```bash
+npx wrangler dev --port 8799 --persist-to /tmp/erp-test      # fresh folder each time (signup is limited per address)
+node test/run.mjs http://localhost:8799                       # whole suite, including the security checks
+# sign-up by e-mailed link: start the worker with a mail sink, then run only those checks
+npx wrangler dev --port 8799 --persist-to /tmp/erp-mail --var RESEND_API_KEY:test-key --var RESEND_URL:http://127.0.0.1:8798/send
+ERP_MAIL_SINK=8798 node test/run.mjs http://localhost:8799
+```
 
 ## Not built yet (next steps)
 

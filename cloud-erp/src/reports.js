@@ -169,7 +169,7 @@ export async function stockReport(db, org) {
 
 export async function itemMoves(db, org, itemId) {
   const { results } = await db.prepare(`SELECT m.date, m.qty, m.unit_cost, m.value, m.ref_type, m.ref_id, m.note, w.name AS warehouse, d.number
-      FROM stock_moves m JOIN warehouses w ON w.id = m.warehouse_id LEFT JOIN docs d ON d.id = m.ref_id AND m.ref_type = d.type
+      FROM stock_moves m JOIN warehouses w ON w.id = m.warehouse_id LEFT JOIN docs d ON d.id = m.ref_id AND d.org_id = m.org_id AND m.ref_type = d.type
       WHERE m.org_id = ? AND m.item_id = ? ORDER BY m.date, m.id`).bind(org.id, itemId).all();
   let bal = 0;
   return results.map((m) => ({ ...m, unit_cost: R(m.unit_cost), value: R(m.value), balance: (bal = Math.round((bal + m.qty) * 1000) / 1000) }));
@@ -184,8 +184,8 @@ export async function partyLedger(db, org, partyId, q) {
   const { results } = await db.prepare(`SELECT jl.date, jl.debit, jl.credit, j.narration, j.ref_type, j.ref_id,
         COALESCE(d.number, p.number) AS number
       FROM journal_lines jl JOIN journals j ON j.id = jl.journal_id
-      LEFT JOIN docs d ON d.id = j.ref_id AND j.ref_type IN ('INV','SRET','CNOTE','BILL','PRET','DNOTE')
-      LEFT JOIN payments p ON p.id = j.ref_id AND j.ref_type IN ('receipt','payment')
+      LEFT JOIN docs d ON d.id = j.ref_id AND d.org_id = j.org_id AND j.ref_type IN ('INV','SRET','CNOTE','BILL','PRET','DNOTE')
+      LEFT JOIN payments p ON p.id = j.ref_id AND p.org_id = j.org_id AND j.ref_type IN ('receipt','payment')
       WHERE jl.org_id = ? AND jl.party_id = ? AND jl.account_id IN (?, ?) AND jl.date >= ? AND jl.date <= ?
       ORDER BY jl.date, jl.id`).bind(org.id, partyId, ids[0], ids[1], from, to).all();
   let bal = open.b;
@@ -202,7 +202,7 @@ export async function partyBalances(db, orgId) {
 export async function dayBook(db, org, q) {
   const { from, to } = period(org, q);
   const { results } = await db.prepare(`SELECT j.id, j.date, j.narration, j.ref_type, a.code, a.name AS account, jl.debit, jl.credit, pt.name AS party
-      FROM journals j JOIN journal_lines jl ON jl.journal_id = j.id JOIN accounts a ON a.id = jl.account_id LEFT JOIN parties pt ON pt.id = jl.party_id
+      FROM journals j JOIN journal_lines jl ON jl.journal_id = j.id JOIN accounts a ON a.id = jl.account_id LEFT JOIN parties pt ON pt.id = jl.party_id AND pt.org_id = jl.org_id
       WHERE j.org_id = ? AND j.date >= ? AND j.date <= ? ORDER BY j.date DESC, j.id DESC, jl.id LIMIT 2000`).bind(org.id, from, to).all();
   const by = new Map();
   for (const r of results) {
@@ -218,7 +218,7 @@ export async function accountLedger(db, org, accountId, q) {
   if (!a) throw bad('Unknown account.');
   const open = await db.prepare(`SELECT COALESCE(SUM(debit - credit), 0) AS b FROM journal_lines WHERE org_id = ? AND account_id = ? AND date < ?`).bind(org.id, a.id, from).first();
   const { results } = await db.prepare(`SELECT jl.date, jl.debit, jl.credit, j.narration, pt.name AS party FROM journal_lines jl
-      JOIN journals j ON j.id = jl.journal_id LEFT JOIN parties pt ON pt.id = jl.party_id
+      JOIN journals j ON j.id = jl.journal_id LEFT JOIN parties pt ON pt.id = jl.party_id AND pt.org_id = jl.org_id
       WHERE jl.org_id = ? AND jl.account_id = ? AND jl.date >= ? AND jl.date <= ? ORDER BY jl.date, jl.id`).bind(org.id, a.id, from, to).all();
   let bal = open.b;
   return { account: { id: a.id, code: a.code, name: a.name, type: a.type }, from, to, opening: R(open.b),

@@ -19,8 +19,15 @@ export async function readJson(request, max = 200000) {
   const text = await request.text();
   if (text.length > max) throw new HttpError(413, 'Request too large.');
   if (!text) return {};
-  try { return JSON.parse(text); } catch (e) { throw bad('Could not read the request (invalid JSON).'); }
+  let v;
+  try { v = JSON.parse(text); } catch (e) { throw bad('Could not read the request (invalid JSON).'); }
+  if (v === null || typeof v !== 'object' || Array.isArray(v)) throw bad('Could not read the request (expected a JSON object).');
+  return v;
 }
+
+/* Own-key lookup for maps keyed by anything that came from a request or from stored user data: 'constructor',
+   'toString' or '__proto__' must never resolve to something inherited from Object.prototype. */
+export const own = (obj, key) => (obj != null && Object.hasOwn(obj, key) ? obj[key] : undefined);
 
 /* ---------- validation ---------- */
 export const str = (v, max = 200) => String(v == null ? '' : v).replace(/[\u0000-\u001f\u007f]/g, ' ').trim().slice(0, max);
@@ -101,7 +108,7 @@ export class Router {
       if (!m) continue;
       if (r.method !== method) { allowed = true; continue; }
       const params = {};
-      r.keys.forEach((k, i) => { params[k] = decodeURIComponent(m[i + 1]); });
+      try { r.keys.forEach((k, i) => { params[k] = decodeURIComponent(m[i + 1]); }); } catch (e) { return null; }
       return { route: r, params };
     }
     return allowed ? { methodNotAllowed: true } : null;

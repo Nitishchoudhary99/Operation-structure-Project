@@ -2,6 +2,7 @@
    Import in Tally: Gateway → Import → Masters (or Vouchers) → choose this file. Masters are created first.
    Built from the double-entry journal, so Tally's trial balance matches this ERP's exactly. */
 import { period } from './reports.js';
+import { own } from './lib.js';
 
 const x = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&apos;' }[c]));
 const amt = (paise) => (paise / 100).toFixed(2);
@@ -34,9 +35,9 @@ export async function tallyXml(db, org, q) {
            p.name AS party, p.kind AS party_kind, p.gstin, p.state,
            COALESCE(d.number, pay.number, '') AS number
     FROM journals j JOIN journal_lines jl ON jl.journal_id = j.id
-    LEFT JOIN parties p ON p.id = jl.party_id
-    LEFT JOIN docs d ON d.id = j.ref_id AND j.ref_type IN ('INV','SRET','CNOTE','BILL','PRET','DNOTE','DN','GRN')
-    LEFT JOIN payments pay ON pay.id = j.ref_id AND j.ref_type IN ('receipt','payment')
+    LEFT JOIN parties p ON p.id = jl.party_id AND p.org_id = jl.org_id
+    LEFT JOIN docs d ON d.id = j.ref_id AND d.org_id = j.org_id AND j.ref_type IN ('INV','SRET','CNOTE','BILL','PRET','DNOTE','DN','GRN')
+    LEFT JOIN payments pay ON pay.id = j.ref_id AND pay.org_id = j.org_id AND j.ref_type IN ('receipt','payment')
     WHERE j.org_id = ? AND j.date >= ? AND j.date <= ? ORDER BY j.date, j.id, jl.id`).bind(org.id, from, to).all();
 
   // a party line on Debtors/Creditors posts to the party's own ledger in Tally
@@ -66,7 +67,7 @@ export async function tallyXml(db, org, q) {
 
   const vch = [];
   for (const v of vouchers.values()) {
-    const type = VCH[v.ref_type] || 'Journal';
+    const type = own(VCH, v.ref_type) || 'Journal';
     const party = v.lines.find((l) => parties.has(l.ledger));
     // Tally convention: debit = ISDEEMEDPOSITIVE Yes with a negative amount; credit = No with a positive amount
     const entries = v.lines.filter((l) => l.amount).map((l) => `<ALLLEDGERENTRIES.LIST><LEDGERNAME>${x(l.ledger)}</LEDGERNAME><ISDEEMEDPOSITIVE>${l.amount > 0 ? 'Yes' : 'No'}</ISDEEMEDPOSITIVE><AMOUNT>${amt(-l.amount)}</AMOUNT></ALLLEDGERENTRIES.LIST>`).join('');

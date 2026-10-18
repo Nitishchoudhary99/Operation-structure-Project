@@ -4,18 +4,19 @@
 import { migrate, DEFAULT_ACCOUNTS } from './schema.js';
 import {
   HttpError, bad, notFound, forbidden, json, readJson, str, reqStr, num, int, date, nowIso, oneOf, toPaise, Router, GST_RATES, today, counterStatements, counterValueSql,
-  addDays, uid,
+  addDays, uid, own,
 } from './lib.js';
 import {
-  hashPassword, randomHex, sameText, passwordProblem, issueSession, sessionCookie, clearCookie, sessionFromRequest, sessionValid, USER_SQL, ROLES, can, requireCan, rateLimit,
-  AREAS, canView, seesCosts, permsOf,
+  hashPassword, randomHex, sameText, passwordProblem, issueSession, sessionCookie, clearCookie, sessionFromRequest, sessionValid, USER_SQL, REVOKED_SQL, ROLES, can, requireCan, rateLimit,
+  AREAS, canView, seesCosts, permsOf, loginGate, loginFailed, revokeSession, endAllSessions,
 } from './auth.js';
 import {
   DOC_TYPES, NOTE_TYPES, stockCount, loadByIds, SYS_SQL, sysMap, createDoc, cancelDoc, createPayment, voidPayment, stockAdjust, stockTransfer, createExpense, createJournal, partyOpening,
   auditStatement, cashAccount,
 } from './engine.js';
 import * as rep from './reports.js';
-import { PLANS, planOut, usage, checkCount, requireFeature, extendPlan, adminKey, trialUntil, hasFeature } from './saas.js';
+import { PLANS, planOut, planOf, usage, checkCount, countError, seatBlocked, seatError, requireFeature, extendPlan, adminKey, trialUntil, hasFeature } from './saas.js';
+import { secure } from './headers.js';
 import { cleanVaada, splitPlan, planOptions, minPart, risk, riskStatements, riskInput, setStatements, evalSet, writeBackStatements, promiseOut, pctOf,
   forecast, inr0, FREE_OPEN_MAX } from './vaada.js';
 import { STATES, einvoiceJson, ewaybillJson } from './gst.js';
@@ -30,54 +31,134 @@ const router = new Router();
 let migrated = false;
 
 /* ======================================================================= auth */
-router.add('POST', '/api/auth/signup', async (c) => {
-  const b = c.body;
-  const ip = c.request.headers.get('CF-Connecting-IP') || 'local';
-  await rateLimit(c.env, 'signup:' + ip, 5, 3600);
-  const business = reqStr(b.business, 'Business name', 120);
-  const name = reqStr(b.name, 'Your name', 80);
-  const email = reqStr(b.email, 'Email', 120).toLowerCase();
-  if (!/^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(email)) throw bad('Please enter a valid email address.');
-  const prob = passwordProblem(b.password);
-  if (prob) throw bad(prob);
-  if (await c.db.prepare(`SELECT 1 FROM users WHERE email = ?`).bind(email).first()) throw bad('An account with this email already exists. Sign in instead.');
-  const salt = randomHex(16), hash = await hashPassword(b.password, salt), now = nowIso(), otx = crypto.randomUUID();
-  const db = c.db;
+/* A new business: the business, its owner, the chart of accounts, a godown and a walk-in customer, in one transaction.
+   `hash` and `salt` come from hashPassword(). Returns the owner row. */
+async function createBusiness(c, { business, name, email, hash, salt, gstin, state, phone, address }) {
+  const now = nowIso(), otx = crypto.randomUUID(), db = c.db;
   const st = [
     db.prepare(`INSERT INTO orgs (name, gstin, state, phone, address, email, plan, plan_until, created_at) VALUES (?, ?, ?, ?, ?, ?, 'growth', ?, ?)`)
-      .bind(business, str(b.gstin, 15).toUpperCase(), str(b.state, 60), str(b.phone, 20), str(b.address, 300), email, trialUntil(), otx),
+      .bind(business, str(gstin, 15).toUpperCase(), str(state, 60), str(phone, 20), str(address, 300), email, trialUntil(), otx),
     db.prepare(`INSERT INTO users (org_id, email, name, role, pw_hash, salt, pw_changed_at, created_at)
                 VALUES ((SELECT id FROM orgs WHERE created_at = ?), ?, ?, 'owner', ?, ?, ?, ?)`).bind(otx, email, name, hash, salt, Date.now(), now),
     ...DEFAULT_ACCOUNTS.map(([code, nm, type, sys, isCash]) => db.prepare(`INSERT INTO accounts (org_id, code, name, type, sys, is_cash)
                 VALUES ((SELECT id FROM orgs WHERE created_at = ?), ?, ?, ?, ?, ?)`).bind(otx, code, nm, type, sys, isCash)),
     db.prepare(`INSERT INTO warehouses (org_id, name) VALUES ((SELECT id FROM orgs WHERE created_at = ?), 'Main Store')`).bind(otx),
     db.prepare(`INSERT INTO parties (org_id, name, kind, state, created_at) VALUES ((SELECT id FROM orgs WHERE created_at = ?), 'Walk-in Customer', 'customer', ?, ?)`)
-      .bind(otx, str(b.state, 60), now),
+      .bind(otx, str(state, 60), now),
     db.prepare(`UPDATE orgs SET created_at = ? WHERE created_at = ?`).bind(now, otx),
   ];
-  await db.batch(st);
-  const user = await db.prepare(`SELECT * FROM users WHERE email = ?`).bind(email).first();
+  try { await db.batch(st); } catch (e) {
+    if (/UNIQUE constraint failed: users\.email/.test(String(e && e.message))) throw bad('An account with this email already exists. Sign in instead.');
+    throw e;
+  }
+  return db.prepare(`SELECT * FROM users WHERE email = ?`).bind(email).first();
+}
+
+/* Sign-up. When e-mail works, the account is made only after the owner opens the link we mail to the address (so nobody
+   can register someone else's address, and the answer is the same whether or not the address already has an account).
+   Without working e-mail the account is made at once, and an address that is taken has to be said so. */
+const SIGNUP_HOURS = 24;
+const verifyOn = (env) => env.SIGNUP_VERIFY !== 'off' && mailOn(env);
+router.add('POST', '/api/auth/signup', async (c) => {
+  const b = c.body;
+  await rateLimit(c.env, 'signup:' + clientIp(c), 5, 3600);
+  const business = reqStr(b.business, 'Business name', 120);
+  const name = reqStr(b.name, 'Your name', 80);
+  const email = reqStr(b.email, 'Email', 120).toLowerCase();
+  if (!/^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(email)) throw bad('Please enter a valid email address.');
+  const prob = passwordProblem(b.password);
+  if (prob) throw bad(prob);
+  const salt = randomHex(16), hash = await hashPassword(b.password, salt);       // hashed in every case, so timing does not tell either
+  const taken = !!(await c.db.prepare(`SELECT 1 FROM users WHERE email = ?`).bind(email).first());
+  const fields = { business, name, email, hash, salt, gstin: b.gstin, state: b.state, phone: b.phone, address: b.address };
+  if (verifyOn(c.env)) {
+    await rateLimit(c.env, 'signup-mail:' + email, 3, 3600);
+    const origin = new URL(c.request.url).origin;
+    if (taken) {
+      await sendMail(c, 'exists', { to: email, name, origin });
+      return json({ ok: true, verify: true });
+    }
+    const token = randomHex(32), now = Date.now();
+    await c.db.batch([c.db.prepare(`DELETE FROM signups WHERE email = ? OR expires_at < ?`).bind(email, now),
+      c.db.prepare(`INSERT INTO signups (token_hash, email, data, expires_at) VALUES (?, ?, ?, ?)`)
+        .bind(await sha256Hex(token), email, JSON.stringify({ business, name, hash, salt, gstin: str(b.gstin, 15), state: str(b.state, 60), phone: str(b.phone, 20), address: str(b.address, 300) }), now + SIGNUP_HOURS * 3600e3)]);
+    if (await sendMail(c, 'verify', { to: email, name, token, origin })) return json({ ok: true, verify: true });
+    await c.db.prepare(`DELETE FROM signups WHERE email = ?`).bind(email).run();       // mail is down: carry on without the check rather than lock the owner out
+  }
+  if (taken) throw bad('An account with this email already exists. Sign in instead.');
+  const user = await createBusiness(c, fields);
   const token = await issueSession(c.env, user);
   return json({ ok: true, user: publicUser(user) }, 200, { 'Set-Cookie': sessionCookie(token, c.request) });
 }, { public: true });
 
+/* The link in the sign-up e-mail: now the business is made and the owner is signed in. */
+router.add('POST', '/api/auth/verify', async (c) => {
+  await rateLimit(c.env, 'verify:' + clientIp(c), 20, 3600);
+  const token = str(c.body.token, 80);
+  if (!/^[0-9a-f]{64}$/.test(token)) throw bad('This link is not valid. Please sign up again.');
+  const row = await c.db.prepare(`SELECT * FROM signups WHERE token_hash = ?`).bind(await sha256Hex(token)).first();
+  if (!row || row.expires_at < Date.now()) throw bad('This link has expired or was already used. Please sign up again.');
+  if (await c.db.prepare(`SELECT 1 FROM users WHERE email = ?`).bind(row.email).first()) {
+    await c.db.prepare(`DELETE FROM signups WHERE email = ?`).bind(row.email).run();
+    throw bad('This email already has an account. Please sign in.');
+  }
+  const d = JSON.parse(row.data);
+  const claim = await c.db.prepare(`DELETE FROM signups WHERE token_hash = ?`).bind(row.token_hash).run();        // one use only, even for two clicks at once
+  if (!claim.meta.changes) throw bad('This link has expired or was already used. Please sign up again.');
+  const user = await createBusiness(c, { ...d, email: row.email });
+  const session = await issueSession(c.env, user);
+  return json({ ok: true, user: publicUser(user) }, 200, { 'Set-Cookie': sessionCookie(session, c.request) });
+}, { public: true });
+
+const clientIp = (c) => c.request.headers.get('CF-Connecting-IP') || 'local';
 router.add('POST', '/api/auth/login', async (c) => {
-  const email = str(c.body.email, 120).toLowerCase();
-  await rateLimit(c.env, 'login:' + email, 10, 900);
-  const user = await c.db.prepare(`SELECT * FROM users WHERE email = ?`).bind(email).first();
-  const hash = await hashPassword(c.body.password || '', user ? user.salt : 'no-such-user-salt');
-  if (!user || !user.active || !sameText(hash, user.pw_hash)) throw new HttpError(401, 'Incorrect email or password.');
-  const token = await issueSession(c.env, user);
-  return json({ ok: true, user: publicUser(user) }, 200, { 'Set-Cookie': sessionCookie(token, c.request) });
+  const email = str(c.body.email, 120).toLowerCase(), ip = clientIp(c);
+  const release = await loginGate(c.env, email, ip);
+  try {
+    const user = await c.db.prepare(`SELECT * FROM users WHERE email = ?`).bind(email).first();
+    const hash = await hashPassword(c.body.password || '', user ? user.salt : 'no-such-user-salt');
+    if (!user || !user.active || !sameText(hash, user.pw_hash)) {
+      await loginFailed(c.env, email, ip);
+      throw new HttpError(401, 'Incorrect email or password.');
+    }
+    const [row, org] = await c.db.batch([c.db.prepare(USER_SQL).bind(user.id), c.db.prepare(`SELECT * FROM orgs WHERE id = ?`).bind(user.org_id)]);
+    if (seatBlocked(org.results[0], row.results[0])) throw seatError(org.results[0]);
+    const token = await issueSession(c.env, user);
+    return json({ ok: true, user: publicUser(user) }, 200, { 'Set-Cookie': sessionCookie(token, c.request) });
+  } finally { release(); }
 }, { public: true });
 
 /* Forgot password: a one-time link by e-mail (Resend, same account as docbrisk.com), valid 30 minutes.
    The answer is the same whether or not the account exists. Without RESEND_API_KEY the app tells the user to ask the owner. */
 const sha256Hex = async (t) => [...new Uint8Array(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(t)))].map((b) => b.toString(16).padStart(2, '0')).join('');
 const mailOn = (env) => !!env.RESEND_API_KEY || hubOn(env);   // own Resend key, or docbrisk.com's mail account via the hub link
+/* The sign-up e-mails ('verify': the confirm link, 'exists': "you already have an account"). True when the mail was handed over. */
+async function sendMail(c, kind, { to, name, token, origin }) {
+  try {
+    if (!c.env.RESEND_API_KEY) {      // docbrisk.com's mail account, through the hub link
+      const r = await hubFetch(c.env, 'POST', '/api/pay/svc/erp-verify-mail', { kind, to, name, token, origin });
+      return r.status === 200 && !!(r.data && r.data.ok);
+    }
+    const link = `${origin}/#/verify/${token}`;
+    const inner = kind === 'verify'
+      ? `<p>Namaste ${attr(name)},</p><p>Please confirm this e-mail address to start your SmartTrader account.</p>
+         <p><a href="${link}" style="display:inline-block;background:#0f766e;color:#fff;padding:12px 20px;border-radius:8px;text-decoration:none;font-weight:bold">Confirm and start</a></p>
+         <p style="color:#6b7280;font-size:13px">This link works once, for ${SIGNUP_HOURS} hours. If you did not ask for it, ignore this e-mail and nothing will be created.</p>`
+      : `<p>Namaste ${attr(name)},</p><p>Someone asked to create a SmartTrader account with this e-mail address, but you already have one.
+         Open ${attr(origin)} and sign in, or use "Forgot password" there if you do not remember the password.</p>
+         <p style="color:#6b7280;font-size:13px">If it was not you, you can ignore this e-mail. Nothing has changed.</p>`;
+    const html = `<div style="font-family:Arial,sans-serif;max-width:480px;margin:auto;color:#1f2937"><h2 style="color:#0f766e">SmartTrader ERP</h2>${inner}</div>`;
+    const res = await fetch(c.env.RESEND_URL || 'https://api.resend.com/emails', {
+      method: 'POST', headers: { Authorization: `Bearer ${c.env.RESEND_API_KEY}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ from: c.env.MAIL_FROM || 'SmartTrader ERP <no-reply@docbrisk.com>', to: [to],
+        subject: kind === 'verify' ? 'Confirm your SmartTrader account' : 'You already have a SmartTrader account', html }),
+    });
+    return res.ok;
+  } catch (e) { return false; }
+}
 router.add('POST', '/api/auth/forgot', async (c) => {
   const email = str(c.body.email, 120).toLowerCase();
-  const ip = c.request.headers.get('CF-Connecting-IP') || 'local';
+  const ip = clientIp(c);
   await rateLimit(c.env, 'forgot-ip:' + ip, 10, 3600);
   if (!mailOn(c.env)) return json({ ok: true, mail: false });
   await rateLimit(c.env, 'forgot:' + email, 3, 3600);
@@ -98,7 +179,7 @@ router.add('POST', '/api/auth/forgot', async (c) => {
       <p>We got a request to reset the password for <b>${attr(user.email)}</b> (${attr(user.org)}).</p>
       <p><a href="${link}" style="display:inline-block;background:#0f766e;color:#fff;padding:12px 20px;border-radius:8px;text-decoration:none;font-weight:bold">Set a new password</a></p>
       <p style="color:#6b7280;font-size:13px">This link works once, for 30 minutes. If you did not ask for it, ignore this e-mail; your password stays the same.</p></div>`;
-    await fetch('https://api.resend.com/emails', {
+    await fetch(c.env.RESEND_URL || 'https://api.resend.com/emails', {
       method: 'POST', headers: { Authorization: `Bearer ${c.env.RESEND_API_KEY}`, 'Content-Type': 'application/json' },
       body: JSON.stringify({ from: c.env.MAIL_FROM || 'SmartTrader ERP <no-reply@docbrisk.com>', to: [user.email], subject: 'Reset your SmartTrader password', html }),
     }).catch(() => {});
@@ -107,7 +188,7 @@ router.add('POST', '/api/auth/forgot', async (c) => {
 }, { public: true });
 
 router.add('POST', '/api/auth/reset', async (c) => {
-  const ip = c.request.headers.get('CF-Connecting-IP') || 'local';
+  const ip = clientIp(c);
   await rateLimit(c.env, 'reset:' + ip, 20, 3600);
   const token = str(c.body.token, 80);
   if (!/^[0-9a-f]{64}$/.test(token)) throw bad('This reset link is not valid. Please ask for a new one.');
@@ -124,7 +205,16 @@ router.add('POST', '/api/auth/reset', async (c) => {
   return json({ ok: true }, 200, { 'Set-Cookie': sessionCookie(token2, c.request) });
 }, { public: true });
 
-router.add('POST', '/api/auth/logout', async () => json({ ok: true }, 200, { 'Set-Cookie': clearCookie() }), { public: true });
+router.add('POST', '/api/auth/logout', async (c) => {
+  const p = await sessionFromRequest(c.env, c.request);
+  if (p) await revokeSession(c.env, p);
+  return json({ ok: true }, 200, { 'Set-Cookie': clearCookie(c.request) });
+}, { public: true });
+/* Sign out everywhere: every token of this user (all devices) stops working, including the one that asked. */
+router.add('POST', '/api/me/logout-all', async (c) => {
+  await endAllSessions(c.env, c.user.id);
+  return json({ ok: true }, 200, { 'Set-Cookie': clearCookie(c.request) });
+});
 
 router.add('GET', '/api/me', async (c) => json({
   user: publicUser(c.user), org: orgOut(c.org),
@@ -135,6 +225,7 @@ router.add('GET', '/api/me', async (c) => json({
 }));
 
 router.add('POST', '/api/me/password', async (c) => {
+  await rateLimit(c.env, 'pwchange:' + c.user.id, 10, 3600);
   const u = await c.db.prepare(`SELECT * FROM users WHERE id = ?`).bind(c.user.id).first();
   if (!sameText(await hashPassword(c.body.current || '', u.salt), u.pw_hash)) throw bad('Your current password is not correct.');
   const prob = passwordProblem(c.body.password);
@@ -236,8 +327,10 @@ router.add('PUT', '/api/settings/series/:type', async (c) => {
 });
 router.add('DELETE', '/api/settings/series/:type', async (c) => {
   requireCan(c.user, 'settings');
+  const def = SERIES().find(([k]) => k === c.params.type);
+  if (!def) throw bad('Unknown document type.');
   const S = seriesOf(c.org);
-  delete S[c.params.type];
+  delete S[def[0]];
   c.org = { ...c.org, series: JSON.stringify(S) };
   await c.db.batch([c.db.prepare(`UPDATE orgs SET series = ? WHERE id = ?`).bind(c.org.series, c.org.id), auditStatement(c, 'numbering', `${c.params.type} default`)]);
   return json({ ok: true });
@@ -272,7 +365,9 @@ router.add('GET', '/api/users', async (c) => {
   requireCan(c.user, 'users');
   const [u, r] = await c.db.batch([c.db.prepare(`SELECT u.id, u.email, u.name, u.role, u.role_id, r.name AS role_name, u.active, u.created_at FROM users u
       LEFT JOIN roles r ON r.id = u.role_id WHERE u.org_id = ? ORDER BY u.id`).bind(c.org.id), c.db.prepare(`SELECT id, name FROM roles WHERE org_id = ? ORDER BY name`).bind(c.org.id)]);
-  return json({ rows: u.results.map((x) => ({ ...x, role_key: x.role === 'custom' ? 'c:' + x.role_id : x.role, role: x.role === 'custom' ? x.role_name : x.role })),
+  const max = planOf(c.org).users;
+  let seat = 0;       // staff past the plan's user limit are paused (see seatBlocked)
+  return json({ rows: u.results.map((x) => ({ ...x, paused: x.active && x.role !== 'owner' && Number.isFinite(max) && seat++ >= max - 1, role_key: x.role === 'custom' ? 'c:' + x.role_id : x.role, role: x.role === 'custom' ? x.role_name : x.role })),
     roles: ROLES, custom_roles: r.results });
 });
 /* Custom roles: a name and per-area view / edit switches */
@@ -327,12 +422,17 @@ router.add('POST', '/api/users', async (c) => {
   const { role, role_id } = await roleOf(c, c.body.role);
   const prob = passwordProblem(c.body.password);
   if (prob) throw bad(prob);
-  if (await c.db.prepare(`SELECT 1 FROM users WHERE email = ?`).bind(email).first()) throw bad('This email is already in use.');
+  await rateLimit(c.env, 'adduser:' + c.org.id, 30, 3600);
+  if (await c.db.prepare(`SELECT 1 FROM users WHERE email = ?`).bind(email).first()) throw bad('This email cannot be used. Please use a different email address.');
   await checkCount(c.db, c.org, 'users');
-  const salt = randomHex(16);
-  await c.db.batch([c.db.prepare(`INSERT INTO users (org_id, email, name, role, role_id, pw_hash, salt, pw_changed_at, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`)
-    .bind(c.org.id, email, reqStr(c.body.name, 'Name', 80), role, role_id, await hashPassword(c.body.password, salt), salt, Date.now(), nowIso()),
-  auditStatement(c, 'add user', `${email} ${role}${role_id ? ' ' + role_id : ''}`)]);
+  const salt = randomHex(16), max = planOf(c.org).users;
+  // the insert checks the plan's user limit itself, so two requests at once cannot both take the last seat
+  const [ins] = await c.db.batch([c.db.prepare(`INSERT INTO users (org_id, email, name, role, role_id, pw_hash, salt, pw_changed_at, created_at)
+      SELECT ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9 WHERE (SELECT COUNT(*) FROM users WHERE org_id = ?1 AND active = 1) < ?10`)
+    .bind(c.org.id, email, reqStr(c.body.name, 'Name', 80), role, role_id, await hashPassword(c.body.password, salt), salt, Date.now(), nowIso(), Number.isFinite(max) ? max : 1e9),
+  c.db.prepare(`INSERT INTO audit (org_id, user_id, at, action, detail) SELECT ?, ?, ?, 'add user', ? WHERE changes() > 0`)
+    .bind(c.org.id, c.user.id, nowIso(), `${email} ${role}${role_id ? ' ' + role_id : ''}`.slice(0, 300))]);
+  if (!ins.meta.changes) throw countError(c.org, 'users');
   return json({ ok: true });
 });
 router.add('PUT', '/api/users/:id', async (c) => {
@@ -345,14 +445,21 @@ router.add('PUT', '/api/users/:id', async (c) => {
     const prob = passwordProblem(c.body.password);
     if (prob) throw bad(prob);
     const salt = randomHex(16);
-    await c.db.batch([c.db.prepare(`UPDATE users SET pw_hash = ?, salt = ?, pw_changed_at = ? WHERE id = ?`).bind(await hashPassword(c.body.password, salt), salt, Date.now(), u.id),
+    await c.db.batch([c.db.prepare(`UPDATE users SET pw_hash = ?, salt = ?, pw_changed_at = MAX(pw_changed_at + 1, ?) WHERE id = ?`).bind(await hashPassword(c.body.password, salt), salt, Date.now(), u.id),
       auditStatement(c, 'reset password', u.email)]);
     return json({ ok: true });
   }
   const active = c.body.active === undefined ? u.active : (c.body.active ? 1 : 0);
+  const max = planOf(c.org).users;
   if (active && !u.active) await checkCount(c.db, c.org, 'users');
-  await c.db.batch([c.db.prepare(`UPDATE users SET role = ?, role_id = ?, active = ?, pw_changed_at = CASE WHEN ? != active THEN ? ELSE pw_changed_at END WHERE id = ?`)
-    .bind(role, role_id, active, active, Date.now(), u.id), auditStatement(c, 'edit user', `${u.email} ${role}${role_id ? ' ' + role_id : ''} ${active ? 'on' : 'off'}`)]);
+  // switching a user off (or back on) moves their password version, so every token they hold stops working at once;
+  // switching on also re-checks the plan's user limit inside the statement
+  const [upd] = await c.db.batch([c.db.prepare(`UPDATE users SET role = ?1, role_id = ?2, active = ?3, pw_changed_at = CASE WHEN ?3 != active THEN MAX(pw_changed_at + 1, ?4) ELSE pw_changed_at END
+      WHERE id = ?5 AND org_id = ?6 AND (?3 = 0 OR active = 1 OR (SELECT COUNT(*) FROM users WHERE org_id = ?6 AND active = 1) < ?7)`)
+    .bind(role, role_id, active, Date.now(), u.id, c.org.id, Number.isFinite(max) ? max : 1e9),
+  c.db.prepare(`INSERT INTO audit (org_id, user_id, at, action, detail) SELECT ?, ?, ?, 'edit user', ? WHERE changes() > 0`)
+    .bind(c.org.id, c.user.id, nowIso(), `${u.email} ${role}${role_id ? ' ' + role_id : ''} ${active ? 'on' : 'off'}`.slice(0, 300))]);
+  if (!upd.meta.changes) throw countError(c.org, 'users');
   return json({ ok: true });
 });
 
@@ -367,12 +474,17 @@ const partyFields = (b, c) => ({
 router.add('GET', '/api/parties', async (c) => {
   const q = c.url.searchParams;
   const kind = q.get('kind'), cf = extraFilter(fieldsOf(c.org), 'party', q, 'extra');
+  // a custom role sees the kinds of party its areas deal with, and balances only when it handles money (masters, finance, khata, reports)
+  const u = c.user, money = ['masters', 'finance', 'khata', 'reports'].some((a) => canView(u, a));
+  const custs = money || canView(u, 'sales'), supps = money || canView(u, 'purchase');
+  if (!custs && !supps) throw forbidden('Your role cannot see this. Ask the owner.');
   const { results } = await c.db.prepare(`SELECT * FROM parties WHERE org_id = ? ${kind === 'customer' ? "AND kind IN ('customer','both')" : kind === 'supplier' ? "AND kind IN ('supplier','both')" : ''}
+      ${custs && supps ? '' : custs ? "AND kind != 'supplier'" : "AND kind != 'customer'"}
       AND (? = '' OR name LIKE ? OR phone LIKE ?)${cf.sql} ORDER BY name LIMIT 1000`).bind(c.org.id, q.get('q') || '', `%${q.get('q') || ''}%`, `%${q.get('q') || ''}%`, ...cf.args).all();
-  const bal = await rep.partyBalances(c.db, c.org.id);
+  const bal = money ? await rep.partyBalances(c.db, c.org.id) : {};
   return json({ rows: results.map((p) => {
-    const b = bal[p.id] || 0;
-    return { ...p, extra: extraOf(p.extra), credit_limit: R(p.credit_limit), balance: R(b), over_limit: p.credit_limit > 0 && b > p.credit_limit };
+    const b = bal[p.id] || 0, o = { ...p, extra: extraOf(p.extra), credit_limit: R(p.credit_limit) };
+    return money ? { ...o, balance: R(b), over_limit: p.credit_limit > 0 && b > p.credit_limit } : o;
   }) });
 });
 router.add('POST', '/api/parties', async (c) => {
@@ -483,19 +595,28 @@ router.add('GET', '/api/items/:id/moves', async (c) => {
 router.add('GET', '/api/warehouses', async (c) => {
   const { results } = await c.db.prepare(`SELECT w.*, COALESCE((SELECT SUM(s.qty * i.avg_cost) FROM stock s JOIN items i ON i.id = s.item_id WHERE s.org_id = w.org_id AND s.warehouse_id = w.id AND s.qty > 0), 0) AS value
       FROM warehouses w WHERE w.org_id = ? ORDER BY w.id`).bind(c.org.id).all();
-  return json({ rows: results.map((w) => ({ ...w, value: R(w.value) })) });
+  const costs = seesCosts(c.user);
+  return json({ rows: results.map(({ value, ...w }) => (costs ? { ...w, value: R(value) } : w)) });
 });
 router.add('POST', '/api/warehouses', async (c) => {
   requireCan(c.user, 'stock');
   const name = reqStr(c.body.name, 'Warehouse name', 80);
   if (await c.db.prepare(`SELECT 1 FROM warehouses WHERE org_id = ? AND name = ?`).bind(c.org.id, name).first()) throw bad('That warehouse already exists.');
   await checkCount(c.db, c.org, 'warehouses');
-  return json(await c.db.prepare(`INSERT INTO warehouses (org_id, name) VALUES (?, ?) RETURNING *`).bind(c.org.id, name).first());
+  const max = planOf(c.org).warehouses;
+  const row = await c.db.prepare(`INSERT INTO warehouses (org_id, name) SELECT ?1, ?2 WHERE (SELECT COUNT(*) FROM warehouses WHERE org_id = ?1) < ?3 RETURNING *`)
+    .bind(c.org.id, name, Number.isFinite(max) ? max : 1e9).first();
+  if (!row) throw countError(c.org, 'warehouses');
+  return json(row);
 });
 
 /* ======================================================================= accounts */
 router.add('GET', '/api/accounts', async (c) => {
   const rows = await rep.accountBalances(c.db, c.org.id, '0001-01-01', '9999-12-31');
+  const full = canView(c.user, 'finance') || canView(c.user, 'reports');
+  if (!full) {      // a role that sees neither finance nor reports gets the cash/bank/UPI accounts only (the dashboard shows those balances anyway)
+    return json({ rows: rows.filter((a) => a.is_cash).map((a) => ({ id: a.id, code: a.code, name: a.name, type: a.type, sys: a.sys, is_cash: a.is_cash, balance: R(a.dr - a.cr) })) });
+  }
   return json({ rows: rows.map((a) => ({ ...a, bal: a.dr - a.cr, balance: R(['asset', 'expense'].includes(a.type) ? a.dr - a.cr : a.cr - a.dr) })) });
 });
 router.add('POST', '/api/accounts', async (c) => {
@@ -561,7 +682,7 @@ router.add('POST', '/api/docs/:id/cancel', async (c) => { await cancelDoc(c, +c.
 router.add('GET', '/api/docs/:id/convert', async (c) => {
   const src = await docDetail(c, +c.params.id);
   const to = (c.url.searchParams.get('to') || '').toUpperCase();
-  const T = DOC_TYPES[to];
+  const T = own(DOC_TYPES, to);
   if (!T || !T.from.includes(src.type)) throw bad(`Cannot make a ${to} from a ${src.type}.`);
   if (T.note) {     // value note: every line of the bill/invoice, the user types the rate difference per unit
     return json({ type: to, party_id: src.party_id, ref_id: src.id, ref_number: src.number, warehouse_id: src.warehouse_id, date: today(), extra: src.extra,
@@ -596,15 +717,18 @@ router.add('PUT', '/api/docs/:id/gst-refs', async (c) => {
   if (!r.meta.changes) throw notFound('Document not found.');
   return json({ ok: true });
 });
-/* Customer link for a document: view, print/download and pay by UPI. Shared on WhatsApp with a banner card. */
+/* Customer link for a document: view, print/download and pay by UPI. Shared on WhatsApp with a banner card.
+   Only roles that may sell can create one; anyone with the link can read the document until the link is revoked. */
 async function shareToken(c, docId) {
   const d = await c.db.prepare(`SELECT share_token FROM docs WHERE id = ? AND org_id = ?`).bind(docId, c.org.id).first();
   if (!d) throw notFound('Document not found.');
   if (d.share_token) return d.share_token;
-  await c.db.prepare(`UPDATE docs SET share_token = ? WHERE id = ? AND share_token IS NULL`).bind(randomHex(12), docId).run();
-  return (await c.db.prepare(`SELECT share_token FROM docs WHERE id = ?`).bind(docId).first()).share_token;
+  requireCan(c.user, 'sales');
+  await c.db.prepare(`UPDATE docs SET share_token = ? WHERE id = ? AND org_id = ? AND share_token IS NULL`).bind(randomHex(12), docId, c.org.id).run();
+  return (await c.db.prepare(`SELECT share_token FROM docs WHERE id = ? AND org_id = ?`).bind(docId, c.org.id).first()).share_token;
 }
 router.add('GET', '/api/docs/:id/share', async (c) => {
+  requireCan(c.user, 'sales');
   const d = await docDetail(c, +c.params.id);
   const url = `${c.url.origin}/i/${await shareToken(c, d.id)}`;
   const p = d.party || {}, paise = (x) => Math.round(x * 100);
@@ -616,15 +740,39 @@ router.add('GET', '/api/docs/:id/share', async (c) => {
   const sms = `${c.org.name}: ${d.label} ${d.number} dt ${fd(d.date)}, amount ${rs(paise(d.total))}${d.type === 'INV' && d.balance > 0 ? `, due ${rs(paise(d.balance))}` : ''}. View/download: ${url} -${BRAND}`;
   return json({ url, ...sendLinks(p.phone, wa, sms) });
 });
+/* Stop sharing one document: its link stops working at once, and sharing it again makes a new link. */
+router.add('POST', '/api/docs/:id/share/revoke', async (c) => {
+  requireCan(c.user, 'sales');
+  const r = await c.db.prepare(`UPDATE docs SET share_token = NULL WHERE id = ? AND org_id = ?`).bind(+c.params.id, c.org.id).run();
+  if (!r.meta.changes) throw notFound('Document not found.');
+  await c.db.batch([auditStatement(c, 'revoke document link', String(+c.params.id))]);
+  return json({ ok: true });
+});
+/* Stop sharing one party's khata statement link. */
+router.add('POST', '/api/khata/:party/revoke-link', async (c) => {
+  requireCan(c.user, 'khata');
+  const r = await c.db.prepare(`UPDATE parties SET khata_token = NULL WHERE id = ? AND org_id = ?`).bind(+c.params.party, c.org.id).run();
+  if (!r.meta.changes) throw notFound('Contact not found.');
+  await c.db.batch([auditStatement(c, 'revoke khata link', String(+c.params.party))]);
+  return json({ ok: true });
+});
+/* Owner/admin panic button: every customer link of this business (invoices and khata statements) stops working. */
+router.add('POST', '/api/org/revoke-links', async (c) => {
+  requireCan(c.user, 'settings');
+  const [d, k] = await c.db.batch([c.db.prepare(`UPDATE docs SET share_token = NULL WHERE org_id = ? AND share_token IS NOT NULL`).bind(c.org.id),
+    c.db.prepare(`UPDATE parties SET khata_token = NULL WHERE org_id = ? AND khata_token IS NOT NULL`).bind(c.org.id),
+    auditStatement(c, 'revoke all customer links')]);
+  return json({ ok: true, invoices: d.meta.changes, khata: k.meta.changes });
+});
 const PUBLIC_DOCS = ['INV', 'SRET', 'CNOTE', 'QUOTE', 'SO', 'DN'];
 router.add('GET', '/api/public/doc/:token', async (c) => {
-  await rateLimit(c.env, 'dview:' + (c.request.headers.get('CF-Connecting-IP') || 'local'), 120, 600);
+  await rateLimit(c.env, 'dview:' + (clientIp(c)), 120, 600);
   const t = String(c.params.token || '');
   const row = /^[0-9a-f]{24}$/.test(t) ? await c.db.prepare(`SELECT id, org_id, party_id FROM docs WHERE share_token = ?`).bind(t).first() : null;
   if (!row) throw notFound('This link is not valid.');
   c.org = await c.db.prepare(`SELECT * FROM orgs WHERE id = ?`).bind(row.org_id).first();
   const d = await docDetail(c, row.id);
-  if (!PUBLIC_DOCS.includes(d.type)) throw notFound('This link is not valid.');
+  if (!PUBLIC_DOCS.includes(d.type) || d.status === 'cancelled') throw notFound('This link is not valid.');
   const o = d.org, p = d.party || {};
   const vaada = d.type === 'INV' && d.status !== 'cancelled' && row.party_id ? await publicVaada(c, c.org, row.party_id, 'inv') : null;
   return json({ vaada,   // only what is printed on the document: no costs, margins, links to other records or internal ids
@@ -644,7 +792,7 @@ router.add('GET', '/api/public/doc/:token', async (c) => {
 router.add('GET', '/api/public/doc/:token/file/:kind', async (c) => {
   const t = String(c.params.token || ''), kind = oneOf(c.params.kind, FILE_KINDS, 'File');
   const row = /^[0-9a-f]{24}$/.test(t) ? await c.db.prepare(`SELECT f.mime, f.data FROM docs d JOIN org_files f ON f.org_id = d.org_id AND f.kind = ?
-      WHERE d.share_token = ? AND d.type IN ('${PUBLIC_DOCS.join("','")}')`).bind(kind, t).first() : null;
+      WHERE d.share_token = ? AND d.status != 'cancelled' AND d.type IN ('${PUBLIC_DOCS.join("','")}')`).bind(kind, t).first() : null;
   if (!row) throw notFound('No image.');
   return imageResponse(row);
 }, { public: true });
@@ -660,7 +808,7 @@ router.add('GET', '/api/plan', async (c) => json({
   plan: planOut(c.org), usage: await usage(c.db, c.org),
   plans: Object.entries(PLANS).map(([k, p]) => ({ key: k, ...p, invoices_per_month: p.invoices_per_month === Infinity ? null : p.invoices_per_month,
     users: p.users === Infinity ? null : p.users, warehouses: p.warehouses === Infinity ? null : p.warehouses, pay: p.price ? grossPaise(k) / 100 : 0 })),
-  billing: billingMode(c.env), razorpay: razorpayMode(c.env), history: await billingHistory(c), support_whatsapp: c.env.SUPPORT_WHATSAPP || '',
+  billing: billingMode(c.env), razorpay: razorpayMode(c.env), history: canView(c.user, 'settings') ? await billingHistory(c) : [], support_whatsapp: c.env.SUPPORT_WHATSAPP || '',
 }));
 /* Online payment (DocBrisk Pay UPI; Razorpay optional): see src/billing.js */
 router.add('POST', '/api/billing/start', async (c) => { requireCan(c.user, 'settings'); await rateLimit(c.env, 'pay:' + c.org.id, 20, 3600); return json(await billingStart(c)); });
@@ -675,7 +823,7 @@ router.add('POST', '/api/billing/upi-cancel', async (c) => { requireCan(c.user, 
 async function requireAdmin(c) {
   const key = adminKey(c.env);
   if (!key) throw new HttpError(404, 'Admin is switched off. Add an ADMIN_KEY secret (16+ characters) to the worker to use it.');
-  await rateLimit(c.env, 'admin:' + (c.request.headers.get('CF-Connecting-IP') || 'local'), 60, 600);
+  await rateLimit(c.env, 'admin:' + (clientIp(c)), 60, 600);
   if (!sameText(c.request.headers.get('X-Admin-Key') || '', key)) throw new HttpError(401, 'Wrong admin key.');
 }
 router.add('GET', '/api/admin/orgs', async (c) => {
@@ -774,16 +922,18 @@ router.add('POST', '/api/gate/:id/:action', async (c) => {
 
 /* ======================================================================= pending work (what is stuck where) */
 router.add('GET', '/api/reports/pending', async (c) => {
+  const buy = canView(c.user, 'purchase'), sell = canView(c.user, 'sales');      // purchase side: PO, GRN, gate; sales side: SO, DN, quotes
   const lines = async (type) => (await c.db.prepare(`SELECT d.id, d.number, d.date, d.due_date, p.name AS party, i.name AS item, i.unit, l.qty, l.done_qty, ROUND(l.qty - l.done_qty, 3) AS pending
       FROM docs d JOIN doc_lines l ON l.doc_id = d.id LEFT JOIN items i ON i.id = l.item_id LEFT JOIN parties p ON p.id = d.party_id
       WHERE d.org_id = ? AND d.type = ? AND d.status IN ('open','partial') AND l.qty - l.done_qty > 0.0005 ORDER BY d.date, d.id LIMIT 500`).bind(c.org.id, type).all()).results;
   const docs = async (type) => (await c.db.prepare(`SELECT d.id, d.number, d.date, d.total, p.name AS party FROM docs d LEFT JOIN parties p ON p.id = d.party_id
       WHERE d.org_id = ? AND d.type = ? AND d.status IN ('open','partial') ORDER BY d.date LIMIT 300`).bind(c.org.id, type).all()).results
     .map((r) => ({ ...r, total: R(r.total) }));
-  const [so, po, dn, grn, quotes, gate] = await Promise.all([lines('SO'), lines('PO'), docs('DN'), docs('GRN'), docs('QUOTE'),
-    c.db.prepare(`SELECT g.id, g.number, g.date, g.time_in, g.vehicle_no, g.challan_no, p.name AS party FROM gate_entries g LEFT JOIN parties p ON p.id = g.party_id
-      WHERE g.org_id = ? AND g.kind = 'in' AND g.status = 'open' ORDER BY g.date, g.id`).bind(c.org.id).all()]);
-  return json({ to_deliver: so, to_receive: po, to_invoice: dn, to_bill: grn, open_quotes: quotes, at_gate: gate.results });
+  const none = async () => [];
+  const [so, po, dn, grn, quotes, gate] = await Promise.all([sell ? lines('SO') : none(), buy ? lines('PO') : none(), sell ? docs('DN') : none(), buy ? docs('GRN') : none(), sell ? docs('QUOTE') : none(),
+    buy ? c.db.prepare(`SELECT g.id, g.number, g.date, g.time_in, g.vehicle_no, g.challan_no, p.name AS party FROM gate_entries g LEFT JOIN parties p ON p.id = g.party_id
+      WHERE g.org_id = ? AND g.kind = 'in' AND g.status = 'open' ORDER BY g.date, g.id`).bind(c.org.id).all().then((r) => r.results) : none()]);
+  return json({ to_deliver: so, to_receive: po, to_invoice: dn, to_bill: grn, open_quotes: quotes, at_gate: gate });
 });
 
 /* Payment reminder for invoice dues (the khata has its own): overdue invoices, total and UPI, for WhatsApp/SMS. */
@@ -834,12 +984,15 @@ const KHATA_BAL = `COALESCE(SUM(CASE WHEN k.status = 'sent' THEN (CASE WHEN k.ki
 const rs = (p) => 'Rs ' + (p / 100).toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 const fd = (d) => `${d.slice(8, 10)}-${d.slice(5, 7)}-${d.slice(0, 4)}`;
 
-async function khataToken(c, partyId) {
-  const p = await c.db.prepare(`SELECT khata_token FROM parties WHERE id = ?`).bind(partyId).first();
-  if (p && p.khata_token) return p.khata_token;
+async function khataToken(c, partyId, create = true) {
+  const p = await c.db.prepare(`SELECT khata_token FROM parties WHERE id = ? AND org_id = ?`).bind(partyId, c.org.id).first();
+  if (!p) throw notFound('Contact not found.');
+  if (p.khata_token) return p.khata_token;
+  if (!create) return '';
+  requireCan(c.user, 'khata');          // only roles that may write the khata can publish its link
   const t = randomHex(12);
-  await c.db.prepare(`UPDATE parties SET khata_token = ? WHERE id = ? AND (khata_token IS NULL OR khata_token = '')`).bind(t, partyId).run();
-  return (await c.db.prepare(`SELECT khata_token FROM parties WHERE id = ?`).bind(partyId).first()).khata_token;
+  await c.db.prepare(`UPDATE parties SET khata_token = ? WHERE id = ? AND org_id = ? AND (khata_token IS NULL OR khata_token = '')`).bind(t, partyId, c.org.id).run();
+  return (await c.db.prepare(`SELECT khata_token FROM parties WHERE id = ? AND org_id = ?`).bind(partyId, c.org.id).first()).khata_token;
 }
 async function khataBalance(c, partyId) {
   return (await c.db.prepare(`SELECT ${KHATA_BAL} AS b FROM khata k WHERE k.party_id = ?`).bind(partyId).first()).b;
@@ -853,7 +1006,7 @@ function sendLinks(phoneRaw, wa, sms = wa) {
   return { text: wa, sms_text: sms, whatsapp_url: `https://api.whatsapp.com/send?${to ? `phone=${to}&` : ''}text=${encodeURIComponent(wa)}`, sms_url: phone ? `sms:${phone}?body=${encodeURIComponent(sms)}` : '' };
 }
 const inrW = (p) => '₹' + (p / 100).toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
-const khataLink = async (c, partyId) => `${c.url.origin}/k/${await khataToken(c, partyId)}`;
+const khataLink = async (c, partyId, create = true) => { const t = await khataToken(c, partyId, create); return t ? `${c.url.origin}/k/${t}` : ''; };
 /* The messages for one entry, with the balance it makes once sent. */
 async function entryMessage(c, e, p) {
   const after = (await khataBalance(c, p.id)) + (e.status === 'sent' ? 0 : (e.kind === 'gave' ? e.amount : -e.amount));
@@ -932,7 +1085,7 @@ router.add('GET', '/api/khata/:party', async (c) => {
       FROM khata WHERE org_id = ? AND party_id = ? ORDER BY date, id`).bind(c.org.id, p.id).all();
   let bal = 0;
   const rows = results.map((r) => ({ ...r, amount: R(r.amount), balance: R(r.status === 'sent' ? (bal += r.kind === 'gave' ? r.amount : -r.amount) : bal) }));
-  return json({ party: p, rows: rows.reverse(), balance: R(bal), statement_url: await khataLink(c, p.id) });
+  return json({ party: p, rows: rows.reverse(), balance: R(bal), statement_url: await khataLink(c, p.id, can(c.user, 'khata')) });
 });
 /* Pending (never sent) entries can be discarded. Sent entries are permanent: reverse them instead. */
 router.add('DELETE', '/api/khata/entries/:id', async (c) => {
@@ -982,7 +1135,7 @@ async function khataByToken(c) {
   return p;
 }
 router.add('GET', '/api/public/khata/:token', async (c) => {
-  await rateLimit(c.env, 'kview:' + (c.request.headers.get('CF-Connecting-IP') || 'local'), 120, 600);
+  await rateLimit(c.env, 'kview:' + (clientIp(c)), 120, 600);
   const p = await khataByToken(c);
   const { results } = await c.db.prepare(`SELECT id, date, kind, amount, note, sent_at, ack, ack_at FROM khata
       WHERE party_id = ? AND status = 'sent' ORDER BY date, id`).bind(p.id).all();
@@ -992,7 +1145,7 @@ router.add('GET', '/api/public/khata/:token', async (c) => {
   return json({ shop: { name: p.org_name, phone: p.org_phone, upi_id: p.upi_id, address: p.org_address }, customer: p.name, balance: R(bal), rows, vaada });
 }, { public: true });
 router.add('POST', '/api/public/khata/:token/ack', async (c) => {
-  await rateLimit(c.env, 'kack:' + (c.request.headers.get('CF-Connecting-IP') || 'local'), 60, 600);
+  await rateLimit(c.env, 'kack:' + (clientIp(c)), 60, 600);
   const p = await khataByToken(c);
   const ack = oneOf(c.body.ack, ['confirmed', 'disputed'], 'Answer');
   const r = await c.db.prepare(`UPDATE khata SET ack = ?, ack_at = ?, ack_note = ? WHERE id = ? AND party_id = ? AND status = 'sent'`)
@@ -1007,7 +1160,6 @@ router.add('POST', '/api/public/khata/:token/ack', async (c) => {
    receipts are never edited silently (void and reverse only), so the record is fair to both sides. Data stays with
    the shop: never shared across businesses, never called a score. Algorithms: src/vaada.js. */
 const VAADA_429 = 'Aaj bahut baar koshish hui. Kal dobara try karein.';
-const clientIp = (c) => c.request.headers.get('CF-Connecting-IP') || 'local';
 async function limitHi(c, key, max, win, msg = VAADA_429) {
   try { await rateLimit(c.env, key, max, win); } catch (e) { if (e instanceof HttpError && e.status === 429) throw new HttpError(429, msg); throw e; }
 }
@@ -1314,8 +1466,28 @@ router.add('GET', '/api/vaade/cash', async (c) => {
 
 /* ======================================================================= reports */
 const noCosts = (o, keys) => { keys.forEach((k) => delete o[k]); return o; };
+/* The dashboard mixes every area. A custom role gets the parts its views cover: recent documents only of the sides it may see,
+   purchase and profit figures only with purchase/reports, sales figures only with sales/finance/reports, costs only with seesCosts. */
+function dashboardFor(user, d) {
+  if (!seesCosts(user)) {
+    noCosts(d, ['gross_profit_fy', 'net_profit_fy', 'gross_margin', 'stock_value']);
+    d.low_stock = d.low_stock.map((r) => noCosts({ ...r }, ['avg_cost', 'value']));
+  }
+  if (user.role !== 'custom') return d;
+  d.recent = d.recent.filter((r) => Object.hasOwn(DOC_TYPES, r.type) && canView(user, DOC_TYPES[r.type].side));
+  if (!canView(user, 'purchase') && !canView(user, 'reports') && !canView(user, 'finance')) {
+    noCosts(d, ['purchases_fy', 'payable', 'gst_payable']);
+    d.monthly = d.monthly.map((m) => noCosts({ ...m }, ['purchases']));
+  }
+  if (!canView(user, 'sales') && !canView(user, 'reports') && !canView(user, 'finance') && !canView(user, 'khata')) {
+    noCosts(d, ['sales_month', 'sales_fy', 'invoices_fy', 'receivable', 'gst_payable']);
+    d.overdue = [];
+    d.monthly = d.monthly.map((m) => noCosts({ ...m }, ['sales']));
+  }
+  return d;
+}
 const REPORTS = {
-  dashboard: async (c) => { const d = await rep.dashboard(c.db, c.org); return seesCosts(c.user) ? d : noCosts(d, ['gross_profit_fy', 'net_profit_fy', 'gross_margin', 'stock_value']); },
+  dashboard: async (c) => dashboardFor(c.user, await rep.dashboard(c.db, c.org)),
   'trial-balance': (c) => rep.trialBalance(c.db, c.org, c.url.searchParams),
   pnl: (c) => rep.profitLoss(c.db, c.org, c.url.searchParams),
   'balance-sheet': (c) => rep.balanceSheet(c.db, c.org, c.url.searchParams),
@@ -1381,20 +1553,38 @@ function countingDb(db, counter) {
   return { prepare: (sql) => wrap(db.prepare(sql)), batch: (list) => { counter.n++; return db.batch(list.map((x) => x.__raw || x)).then((rs) => { rs.forEach(meta); return rs; }); }, exec: (q) => db.exec(q) };
 }
 
-/* which area a GET belongs to, for custom roles (documents are checked by their side in docDetail) */
+/* Which area a GET belongs to, for custom roles. A string is that area's view right and a list is any one of them.
+   OPEN means every signed-in role may call it and the handler itself narrows what it returns (documents are checked by their
+   side in docDetail). Anything not listed is refused for custom roles, so a new endpoint is closed until it is listed here. */
+const OPEN = 'open';
+const READ_AREAS = [
+  [/^\/api\/(me|plan|search)\/?$/, OPEN],
+  [/^\/api\/settings\/(print|fields)\/?$/, OPEN],
+  [/^\/api\/org\/files\/[^/]+\/?$/, OPEN],
+  [/^\/api\/(parties|accounts|warehouses)\/?$/, OPEN],
+  [/^\/api\/reports\/(dashboard|pending)\/?$/, OPEN],
+  [/^\/api\/docs\/\d+(\/(convert|einvoice|ewaybill|share))?\/?$/, OPEN],
+  [/^\/api\/vaade\/(cash|check)\/?$/, OPEN],
+  [/^\/api\/items(\/lookup)?\/?$/, ['items', 'sales', 'purchase']],
+  [/^\/api\/items\/\d+\/moves\/?$/, 'items'],
+  [/^\/api\/reports\/stock\/?$/, 'items'],
+  [/^\/api\/reports\//, 'reports'],
+  [/^\/api\/export\//, 'reports'],
+  [/^\/api\/(payments|accounts\/\d+\/ledger)(\/|$)/, 'finance'],
+  [/^\/api\/parties\/\d+\/(ledger|reminder)\/?$/, 'masters'],
+  [/^\/api\/khata(\/|$)/, 'khata'],
+  [/^\/api\/vaade(\/|$)/, 'khata'],         // coarse gate; rows are filtered per book in the handler
+  [/^\/api\/gate(\/|$)/, 'purchase'],
+  [/^\/api\/(audit|users|roles|billing\/status|settings\/series)\/?$/, 'settings'],
+];
 function readArea(url) {
-  const p = url.pathname, t = (url.searchParams.get('type') || '').toUpperCase();
-  if (/^\/api\/reports\/(pnl|balance-sheet|trial-balance|gst|daybook|register|ageing)/.test(p) || p.startsWith('/api/export/')) return 'reports';
-  if (p === '/api/reports/stock' || /^\/api\/items\/\d+\/moves/.test(p)) return 'items';
-  if (p.startsWith('/api/payments') || /^\/api\/accounts\/\d+\/ledger/.test(p)) return 'finance';
-  if (p.startsWith('/api/khata')) return 'khata';
-  if (p === '/api/vaade/cash' || p === '/api/vaade/check') return null;   // checked in the handler (finance or reports / sales)
-  if (p.startsWith('/api/vaade')) return 'khata';                          // coarse gate; rows are filtered per book in the handler
-  if (p.startsWith('/api/gate')) return 'purchase';
-  if (/^\/api\/parties\/\d+\/(ledger|reminder)/.test(p)) return 'masters';
-  if (p === '/api/docs' && DOC_TYPES[t]) return DOC_TYPES[t].side;
-  if (p === '/api/audit' || p === '/api/users' || p === '/api/roles') return 'settings';
-  return null;
+  const p = url.pathname;
+  if (p === '/api/docs' || p === '/api/docs/') {
+    const t = (url.searchParams.get('type') || '').toUpperCase();
+    return Object.hasOwn(DOC_TYPES, t) ? DOC_TYPES[t].side : OPEN;      // without a type the handler lists only the sides the role may see
+  }
+  const hit = READ_AREAS.find(([re]) => re.test(p));
+  return hit ? hit[1] : null;
 }
 
 async function handleApi(request, env, counter) {
@@ -1411,7 +1601,8 @@ async function handleApi(request, env, counter) {
     const origin = request.headers.get('Origin');
     if (origin && origin !== url.origin) throw forbidden('Cross-site request blocked.');
   }
-  const c = { env, db: env.DB, request, url, params: m.params, body: {} };
+  const c = { db: env.DB, request, url, params: m.params, body: {} };
+  Object.defineProperty(c, 'env', { value: env, enumerable: false, writable: true, configurable: true });   // env holds the secrets: a handler that serialises c must never be able to dump it
   if (m.route.opts.webhook) {       // a server calling us (DocBrisk Pay hub, Razorpay): signed raw body, no cookie, no custom header
     c.raw = await request.text();
     if (c.raw.length > 200000) throw new HttpError(413, 'Request too large.');
@@ -1420,17 +1611,20 @@ async function handleApi(request, env, counter) {
   if (!m.route.opts.public) {
     const p = await sessionFromRequest(env, request);
     if (!p) throw new HttpError(401, 'Please sign in.');
-    // user, business and (only for writes) the posting accounts, in one D1 call
-    const db = env.DB, st = [db.prepare(USER_SQL).bind(p.u), db.prepare(`SELECT * FROM orgs WHERE id = ?`).bind(p.o)];
-    if (request.method !== 'GET') st.push(db.prepare(SYS_SQL).bind(p.o));
-    const [u, o, s] = await db.batch(st);
-    c.user = u.results[0];
-    c.org = o.results[0];
-    if (!sessionValid(c.user, p) || !c.org) throw new HttpError(401, 'Please sign in.');
-    c.sys = s ? sysMap(s.results) : null;
+    // user, business, whether this very session was logged out, and (only for writes) the posting accounts, in one D1 call
+    const db = env.DB, write = request.method !== 'GET', st = [db.prepare(USER_SQL).bind(p.u), db.prepare(`SELECT * FROM orgs WHERE id = ?`).bind(p.o)];
+    if (p.i) st.push(db.prepare(REVOKED_SQL).bind(String(p.i)));
+    if (write) st.push(db.prepare(SYS_SQL).bind(p.o));
+    const res = await db.batch(st);
+    c.user = res[0].results[0];
+    c.org = res[1].results[0];
+    if (!sessionValid(c.user, p) || !c.org || (p.i && res[2].results.length)) throw new HttpError(401, 'Please sign in.');
+    c.sys = write ? sysMap(res[res.length - 1].results) : null;
+    if (seatBlocked(c.org, c.user)) throw seatError(c.org);
     if (c.user.role === 'custom' && request.method === 'GET') {
       const area = readArea(url);
-      if (area && !canView(c.user, area)) throw forbidden('Your role cannot see this. Ask the owner.');
+      if (area === null) throw forbidden('Your role cannot see this. Ask the owner.');
+      if (area !== OPEN && !(Array.isArray(area) ? area : [area]).some((a) => canView(c.user, a))) throw forbidden('Your role cannot see this. Ask the owner.');
     }
   }
   return m.route.handler(c);
@@ -1452,8 +1646,8 @@ async function sharePage(request, env, kind, token) {
       image = '/og-khata.png';
     }
   } else {
-    const d = await env.DB.prepare(`SELECT d.type, d.number, d.date, d.total, d.paid, o.name AS org FROM docs d JOIN orgs o ON o.id = d.org_id WHERE d.share_token = ?`).bind(token).first();
-    if (d) {
+    const d = await env.DB.prepare(`SELECT d.type, d.number, d.date, d.total, d.paid, o.name AS org FROM docs d JOIN orgs o ON o.id = d.org_id WHERE d.share_token = ? AND d.status != 'cancelled'`).bind(token).first();
+    if (d && Object.hasOwn(DOC_TYPES, d.type)) {
       title = `${DOC_TYPES[d.type].label} ${d.number} · ${d.org}`;
       desc = `Amount ${inrW(d.total)}${d.type === 'INV' ? (d.total - d.paid > 0 ? ` · Due ${inrW(d.total - d.paid)}` : ' · Paid') : ''}. Dekhein, download karein${d.type === 'INV' ? ' aur pay karein' : ''}.`;
     }
@@ -1472,25 +1666,31 @@ async function sharePage(request, env, kind, token) {
   return new Response(html, { headers: { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store', 'X-Robots-Tag': 'noindex' } });
 }
 
+/* the static files come from the ASSETS binding; headers are added to everything the Worker sends */
+async function respond(request, env, url) {
+  const share = url.pathname.match(/^\/(k|i)\/([0-9a-f]{24})\/?$/);
+  if (share && env.ASSETS) return sharePage(request, env, share[1], share[2]).catch(() => env.ASSETS.fetch(new Request(url.origin + '/', request)));
+  if (!url.pathname.startsWith('/api/')) {
+    return env.ASSETS ? env.ASSETS.fetch(request) : new Response('Not found', { status: 404 });
+  }
+  try {
+    const counter = env.QUERY_COUNT === '1' ? { n: 0 } : null;
+    const res = await handleApi(request, env, counter);
+    if (counter) res.headers.set('X-Query-Count', String(counter.n));
+    if (counter) res.headers.set('X-Rows', `${counter.read || 0}/${counter.written || 0}`);
+    return res;
+  } catch (e) {
+    if (e instanceof HttpError) return json({ error: e.message, ...(e.extra || {}) }, e.status);
+    console.error(e && e.stack || e);          // logged for the owner; the caller only ever sees this fixed text
+    return json({ error: 'Something went wrong on the server. Please try again.' }, 500);
+  }
+}
 export default {
   async fetch(request, env) {
     const url = new URL(request.url);
-    const share = url.pathname.match(/^\/(k|i)\/([0-9a-f]{24})\/?$/);
-    if (share && env.ASSETS) return sharePage(request, env, share[1], share[2]).catch(() => env.ASSETS.fetch(new Request(url.origin + '/', request)));
-    if (!url.pathname.startsWith('/api/')) {
-      return env.ASSETS ? env.ASSETS.fetch(request) : new Response('Not found', { status: 404 });
-    }
-    try {
-      const counter = env.QUERY_COUNT === '1' ? { n: 0 } : null;
-      const res = await handleApi(request, env, counter);
-      res.headers.set('X-Content-Type-Options', 'nosniff');
-      if (counter) res.headers.set('X-Query-Count', String(counter.n));
-      if (counter) res.headers.set('X-Rows', `${counter.read || 0}/${counter.written || 0}`);
-      return res;
-    } catch (e) {
-      if (e instanceof HttpError) return json({ error: e.message, ...(e.extra || {}) }, e.status);
+    try { return secure(await respond(request, env, url), url.pathname.startsWith('/api/')); } catch (e) {
       console.error(e && e.stack || e);
-      return json({ error: 'Something went wrong on the server. Please try again.' }, 500);
+      return secure(new Response('Something went wrong. Please try again.', { status: 500, headers: { 'Content-Type': 'text/plain; charset=utf-8' } }), true);
     }
   },
 };

@@ -3,7 +3,7 @@
    Every business table carries org_id: one database serves many businesses (multi-tenant).
    migrate() runs on the first request after each deploy, so no manual migration step is needed. */
 
-export const SCHEMA_VERSION = 16;
+export const SCHEMA_VERSION = 17;
 
 // document types whose monthly totals doc_month keeps (sales and purchase money documents)
 const MONTH_TYPES = `('INV','SRET','CNOTE','BILL','PRET','DNOTE')`;
@@ -332,6 +332,19 @@ export const MIGRATIONS = {
   16: [
     `CREATE TABLE IF NOT EXISTS pw_resets (token_hash TEXT PRIMARY KEY, user_id INTEGER NOT NULL, expires_at INTEGER NOT NULL, used_at INTEGER)`,
     `CREATE INDEX IF NOT EXISTS pw_resets_user ON pw_resets(user_id)`,
+  ],
+  /* security hardening: logout puts the session id on a revoked list; e-mail-verified signups wait in `signups`;
+     indexes keep the rate-limit clean-up and the monthly invoice count (by creation time) cheap;
+     journal lines that point at another business's party (a past hole) lose that link and their party balance rows. */
+  17: [
+    `CREATE TABLE IF NOT EXISTS revoked_tokens (jti TEXT PRIMARY KEY, exp INTEGER NOT NULL) WITHOUT ROWID`,
+    `CREATE INDEX IF NOT EXISTS ix_revoked_exp ON revoked_tokens (exp)`,
+    `CREATE TABLE IF NOT EXISTS signups (token_hash TEXT PRIMARY KEY, email TEXT NOT NULL, data TEXT NOT NULL, expires_at INTEGER NOT NULL)`,
+    `CREATE INDEX IF NOT EXISTS ix_signups_email ON signups (email)`,
+    `CREATE INDEX IF NOT EXISTS ix_rate_reset ON rate_limits (reset_at)`,
+    `CREATE INDEX IF NOT EXISTS ix_docs_created ON docs (org_id, type, created_at)`,
+    `UPDATE journal_lines SET party_id = NULL WHERE party_id IS NOT NULL AND party_id NOT IN (SELECT id FROM parties WHERE parties.org_id = journal_lines.org_id)`,
+    `DELETE FROM party_bal WHERE party_id NOT IN (SELECT id FROM parties WHERE parties.org_id = party_bal.org_id)`,
   ],
 };
 

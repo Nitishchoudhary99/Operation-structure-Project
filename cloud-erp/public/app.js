@@ -1,6 +1,8 @@
 /* SmartTrader Cloud ERP - web app (no build step, no framework).
    Hash routes (#/sales/INV, #/doc/12 ...) render pages from the JSON API in src/worker.js. */
 
+import { csvCell, toCsv } from '/csv.js';
+
 /* ======================================================================= helpers */
 const $ = (s, el = document) => el.querySelector(s);
 const $$ = (s, el = document) => [...el.querySelectorAll(s)];
@@ -63,10 +65,6 @@ function table(cols, rows, { onRow, foot, empty = 'Nothing here yet.' } = {}) {
 }
 function bindRows(el, rows, fn) {
   $$('tr.click', el).forEach((tr) => tr.addEventListener('click', (e) => { if (!e.target.closest('a,button')) fn(rows[+tr.dataset.i]); }));
-}
-function toCsv(cols, rows) {
-  const cell = (v) => { const s = String(v ?? ''); return /[",\n]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s; };
-  return [cols.map((c) => cell(c.h)).join(','), ...rows.map((r) => cols.map((c) => cell(c.csv ? c.csv(r) : r[c.k])).join(','))].join('\n');
 }
 function download(name, text) {
   const a = document.createElement('a');
@@ -190,7 +188,14 @@ function renderAuth(mode = /^#\/?signup/.test(location.hash) ? 'signup' : 'login
         $$('[data-m]', e.target).forEach((a) => a.onclick = (ev) => { ev.preventDefault(); renderAuth('login'); });
         return;
       }
-      await POST('/api/auth/' + mode, body);
+      const r = await POST('/api/auth/' + mode, body);
+      if (mode === 'signup' && r.verify) {         // the account is made when the owner opens the e-mailed link
+        e.target.innerHTML = `<h1>Check your email</h1>
+          <p>We sent a link to <b>${esc(body.email)}</b>. Open it to confirm your address and start your free trial. Look in the spam folder too. The link works once, for 24 hours.</p>
+          <p class="muted">Wrong address? <a href="#" data-m="signup">Start again</a></p>`;
+        $$('[data-m]', e.target).forEach((a) => a.onclick = (ev) => { ev.preventDefault(); renderAuth('signup'); });
+        return;
+      }
       if (/^#\/?(signup|login)/.test(location.hash)) history.replaceState(null, '', '/#/dashboard');
       await boot();
     } catch (err) { const b = $('.err', e.target); b.hidden = false; b.textContent = err.message; } finally { btn.disabled = false; }
@@ -216,6 +221,28 @@ function renderReset(token) {
     btn.disabled = true;
     try {
       await POST('/api/auth/reset', { token, password: v.password });
+      history.replaceState(null, '', '/#/dashboard');
+      await boot();
+    } catch (err) { b.hidden = false; b.textContent = err.message; } finally { btn.disabled = false; }
+  };
+}
+
+/* The sign-up e-mail link opens #/verify/<token>: one tap creates the business and signs the owner in */
+function renderVerify(token) {
+  $('#app').innerHTML = `<div class="auth"><div class="box"><form id="verify-form">
+    <div class="brandline"><i>&#x2197;</i>SmartTrader ERP</div>
+    <h1>Confirm your email</h1>
+    <div class="err" hidden></div>
+    <p>Tap the button to create your business account and start your free trial.</p>
+    <button class="btn primary">Confirm and start</button>
+    <p class="muted"><a href="/">Back to sign in</a></p>
+  </form></div></div>`;
+  $('#verify-form').onsubmit = async (e) => {
+    e.preventDefault();
+    const b = $('.err', e.target), btn = $('button', e.target);
+    b.hidden = true; btn.disabled = true;
+    try {
+      await POST('/api/auth/verify', { token });
       history.replaceState(null, '', '/#/dashboard');
       await boot();
     } catch (err) { b.hidden = false; b.textContent = err.message; } finally { btn.disabled = false; }
@@ -277,7 +304,11 @@ function shell() {
   }
   wireSearch();
 }
+/* buttons marked data-act (the page has no inline scripts, so a strict Content-Security-Policy can be used) */
+const ACTS = { print: () => window.print(), back: () => history.back(), reload: () => location.reload() };
 document.addEventListener('click', (e) => {
+  const act = e.target.closest('[data-act]');
+  if (act && Object.hasOwn(ACTS, act.dataset.act)) { e.preventDefault(); ACTS[act.dataset.act](); return; }
   const nm = $('#newmenu'); if (nm && !e.target.closest('.newmenu')) nm.hidden = true;
   const gr = $('#gres'); if (gr && !e.target.closest('.gsearch')) gr.hidden = true;
   $$('.more-menu[open]').forEach((d) => { if (!d.contains(e.target) || e.target.closest('.menu')) d.removeAttribute('open'); });
@@ -351,10 +382,10 @@ const head = (title, actions = '') => `<div class="page-head"><h1>${title}</h1><
 /* ======================================================================= dashboard */
 route(/^dashboard$/, async (el) => {
   const [d, vs] = await Promise.all([GET('/api/reports/dashboard'), ME.view && ME.view.khata === false ? null : GET('/api/vaade/summary').catch(() => null)]);
-  const max = Math.max(1, ...d.monthly.map((m) => Math.max(m.sales, m.purchases)));
+  const max = Math.max(1, ...d.monthly.map((m) => Math.max(m.sales || 0, m.purchases || 0)));      // a custom role may not get every figure
   const W = 720, H = 190, bw = W / d.monthly.length;
   const bars = d.monthly.map((m, i) => {
-    const hs = m.sales / max * (H - 30), hp = m.purchases / max * (H - 30), x = i * bw;
+    const hs = (m.sales || 0) / max * (H - 30), hp = (m.purchases || 0) / max * (H - 30), x = i * bw;
     return `<rect x="${x + bw * 0.15}" y="${H - 20 - hs}" width="${bw * 0.33}" height="${hs}" fill="var(--brand)" rx="2"><title>Sales ${m.month}: ${inr0(m.sales)}</title></rect>
       <rect x="${x + bw * 0.5}" y="${H - 20 - hp}" width="${bw * 0.33}" height="${hp}" fill="#94a3b8" rx="2"><title>Purchases ${m.month}: ${inr0(m.purchases)}</title></rect>
       <text x="${x + bw / 2}" y="${H - 5}" font-size="10" text-anchor="middle" fill="var(--muted)">${new Date(m.month + '-01').toLocaleString('en-IN', { month: 'short' })}</text>`;
@@ -362,12 +393,12 @@ route(/^dashboard$/, async (el) => {
   el.innerHTML = head('Dashboard', `${ME.can.purchase ? '<a class="btn hide-sm" href="#/new/BILL">+ Purchase bill</a>' : ''}${ME.can.sales ? '<a class="btn primary hide-sm" href="#/new/INV">+ New invoice</a>' : ''}`)
     + getStarted(d.setup) + vaadaCard(vs) + `
     <div class="kpis">
-      <div class="kpi"><div class="l">Sales this month</div><div class="v">${inr0(d.sales_month)}</div><div class="s">FY: ${inr0(d.sales_fy)} &middot; ${d.invoices_fy} invoices</div></div>
+      ${d.sales_month === undefined ? '' : `<div class="kpi"><div class="l">Sales this month</div><div class="v">${inr0(d.sales_month)}</div><div class="s">FY: ${inr0(d.sales_fy)} &middot; ${d.invoices_fy} invoices</div></div>`}
       ${d.gross_profit_fy === undefined ? '' : `<div class="kpi"><div class="l">Gross profit (FY)</div><div class="v">${inr0(d.gross_profit_fy)}</div><div class="s">Margin ${d.gross_margin}% &middot; Net ${inr0(d.net_profit_fy)}</div></div>`}
-      <div class="kpi"><div class="l">To receive</div><div class="v pos">${inr0(d.receivable)}</div><div class="s"><a href="#/reports/ageing">${d.overdue.length} overdue</a></div></div>
-      <div class="kpi"><div class="l">To pay</div><div class="v neg">${inr0(d.payable)}</div><div class="s"><a href="#/reports/ageing?kind=payable">Payables</a></div></div>
+      ${d.receivable === undefined ? '' : `<div class="kpi"><div class="l">To receive</div><div class="v pos">${inr0(d.receivable)}</div><div class="s"><a href="#/reports/ageing">${d.overdue.length} overdue</a></div></div>`}
+      ${d.payable === undefined ? '' : `<div class="kpi"><div class="l">To pay</div><div class="v neg">${inr0(d.payable)}</div><div class="s"><a href="#/reports/ageing?kind=payable">Payables</a></div></div>`}
       <div class="kpi"><div class="l">${d.stock_value === undefined ? 'Stock' : 'Stock value'}</div><div class="v">${d.stock_value === undefined ? d.reorder_count : inr0(d.stock_value)}</div><div class="s"><a href="#/stock">${d.reorder_count} items to reorder</a></div></div>
-      <div class="kpi"><div class="l">GST payable (net)</div><div class="v">${inr0(d.gst_payable)}</div><div class="s"><a href="#/reports/gst">GST summary</a></div></div>
+      ${d.gst_payable === undefined ? '' : `<div class="kpi"><div class="l">GST payable (net)</div><div class="v">${inr0(d.gst_payable)}</div><div class="s"><a href="#/reports/gst">GST summary</a></div></div>`}
     </div>
     <div class="grid g2">
       <div class="panel"><h3>Sales vs purchases, last 12 months</h3>
@@ -516,7 +547,7 @@ route(/^new\/([A-Z]+)$/, async (el, m, q) => {
       <div class="panel"><div class="totals" id="totals"></div></div>
     </div>
     <div class="panel warnbox cwarn" id="cwarn" role="status" hidden></div>
-    <div class="row savebar"><span class="sb-total" id="sbtotal"></span><span class="spacer"></span><a class="btn hide-sm" href="javascript:history.back()">Cancel</a><button class="btn primary" id="save">Save ${esc(T.label)}</button></div></form>`;
+    <div class="row savebar"><span class="sb-total" id="sbtotal"></span><span class="spacer"></span><a class="btn hide-sm" href="#" data-act="back">Cancel</a><button class="btn primary" id="save">Save ${esc(T.label)}</button></div></form>`;
 
   const form = $('#docf'), tbody = $('#lines');
   const partyOf = () => parties.find((p) => p.id === +form.elements.party_id.value);
@@ -652,7 +683,7 @@ route(/^doc\/(\d+)$/, async (el, m) => {
   const main = [], more = [];   // main: the few big buttons; more: everything else, in a menu
   if (d.status !== 'cancelled') {
     if (['INV', 'BILL'].includes(d.type) && d.balance > 0) main.push(`<button class="btn" id="pay">${d.type === 'INV' ? 'Receive payment' : 'Record payment'}</button>`);
-    if (['INV', 'SRET', 'CNOTE', 'QUOTE', 'SO'].includes(d.type)) { main.push(`<button class="btn got" id="wa">WhatsApp</button>`); more.push(...(p.phone ? ['<button class="btn" id="sms">Send SMS</button>'] : []), `<button class="btn" id="link">Copy customer link</button>`); }
+    if (['INV', 'SRET', 'CNOTE', 'QUOTE', 'SO'].includes(d.type)) { main.push(`<button class="btn got" id="wa">WhatsApp</button>`); more.push(...(p.phone ? ['<button class="btn" id="sms">Send SMS</button>'] : []), `<button class="btn" id="link">Copy customer link</button>`, ...(ME.can.sales ? ['<button class="btn" id="unshare">Stop sharing link</button>'] : [])); }
     for (const [k, v] of next) if (hasOpen || v.note) more.push(`<a class="btn" href="#/new/${k}?from=${d.id}">${['SRET', 'PRET'].includes(k) ? 'Return goods' : v.note ? (k === 'CNOTE' ? 'Credit note' : 'Debit note') : 'Make ' + esc(v.label)}</a>`);
     if (!simple() && ['SO', 'DN'].includes(d.type)) more.push(`<a class="btn" href="#/picklist/${d.id}">Pick list</a>`);
     if (!simple() && ['INV', 'SRET', 'CNOTE'].includes(d.type)) more.push(`<a class="btn" href="/api/docs/${d.id}/einvoice" id="einv">E-invoice JSON</a>`);
@@ -660,7 +691,7 @@ route(/^doc\/(\d+)$/, async (el, m) => {
     if (!simple() && ['INV', 'SRET', 'DN'].includes(d.type)) more.push(`<button class="btn" id="refs">${d.irn || d.ewb_no ? 'Edit' : 'Add'} IRN / EWB no.</button>`);
     more.push(`<button class="btn danger" id="cancel">Cancel ${esc((T && T.label) || 'document')}</button>`);
   }
-  main.push(`<button class="btn primary" onclick="print()">Print / PDF</button>`);
+  main.push(`<button class="btn primary" data-act="print">Print / PDF</button>`);
   const actions = [...main, more.length ? `<details class="more-menu"><summary class="btn" aria-label="More actions">More &#9662;</summary><div class="menu">${more.join('')}</div></details>` : ''];
   el.innerHTML = head(`${esc(d.number)} ${badge(d.status)}`, actions.join('')) + `
     <div class="panel no-print"><div class="row">
@@ -695,6 +726,10 @@ route(/^doc\/(\d+)$/, async (el, m) => {
     catch (e) { if (w) w.close(); toast(e.message, 'err'); }
   };
   if ($('#sms')) $('#sms').onclick = async () => { const r = await GET(`/api/docs/${d.id}/share`); location.href = r.sms_url; };
+  if ($('#unshare')) $('#unshare').onclick = async () => {
+    if (!confirm('Stop sharing this document? The link already sent to the customer will stop working. You can share it again later with a new link.')) return;
+    try { await POST(`/api/docs/${d.id}/share/revoke`); toast('Link turned off'); } catch (e) { toast(e.message, 'err'); }
+  };
   if ($('#link')) $('#link').onclick = async () => {
     const r = await GET(`/api/docs/${d.id}/share`);
     try { await navigator.clipboard.writeText(r.url); toast('Customer link copied'); } catch (e) { prompt('Copy this link:', r.url); }
@@ -785,7 +820,7 @@ route(/^party\/(\d+)$/, async (el, m, q) => {
     <div class="kpis"><div class="kpi"><div class="l">Balance</div><div class="v ${L.closing >= 0 ? 'pos' : 'neg'}">${inr(Math.abs(L.closing))} ${L.closing >= 0 ? 'Dr' : 'Cr'}</div><div class="s">${L.closing >= 0 ? 'They owe you' : 'You owe them'}</div></div>
       <div class="kpi"><div class="l">Contact</div><div class="s">${esc(p.phone)} ${esc(p.email)}<br>${esc(p.gstin)} ${esc(p.state)}</div></div></div>
     <div id="vaada-box" class="no-print"></div>
-    <div class="panel"><form class="row" id="per"><input type="date" name="from" value="${L.from}" style="max-width:170px"><input type="date" name="to" value="${L.to}" style="max-width:170px"><button class="btn">Show</button><span class="spacer"></span><button type="button" class="btn" onclick="print()">Print statement</button></form></div>
+    <div class="panel"><form class="row" id="per"><input type="date" name="from" value="${L.from}" style="max-width:170px"><input type="date" name="to" value="${L.to}" style="max-width:170px"><button class="btn">Show</button><span class="spacer"></span><button type="button" class="btn" data-act="print">Print statement</button></form></div>
     <div class="panel flush">${table([{ h: 'Date', f: (r) => fdate(r.date) }, { h: 'Voucher', f: (r) => r.ref_id && ['INV', 'BILL', 'SRET', 'PRET'].includes(r.ref_type) ? `<a href="#/doc/${r.ref_id}">${esc(r.number)}</a>` : esc(r.number || r.ref_type) },
       { h: 'Particulars', k: 'narration' }, { h: 'Debit', num: 1, f: (r) => r.debit ? inr(r.debit) : '' }, { h: 'Credit', num: 1, f: (r) => r.credit ? inr(r.credit) : '' }, { h: 'Balance', num: 1, f: (r) => inr(r.balance) }],
     [{ date: L.from, narration: 'Opening balance', debit: 0, credit: 0, balance: L.opening }, ...L.rows])}</div>`;
@@ -933,7 +968,7 @@ route(/^khata\/(\d+)$/, async (el, m, q) => {
       <div class="s">${esc(k.party.phone || 'No mobile number saved')}</div></div></div>
     <div class="khata-btns"><button class="btn gave" data-k="gave">You gave ₹</button><button class="btn got" data-k="got">You got ₹</button></div>
     <div id="vaada-box"></div>
-    <div class="row" style="margin:12px 0"><button class="btn" id="wa">WhatsApp reminder</button><button class="btn" id="sms">SMS reminder</button><button class="btn" id="share">Copy customer's khata link</button></div>
+    <div class="row" style="margin:12px 0"><button class="btn" id="wa">WhatsApp reminder</button><button class="btn" id="sms">SMS reminder</button><button class="btn" id="share">Copy customer's khata link</button>${ME.can.khata ? '<button class="btn" id="unshare">Stop sharing link</button>' : ''}</div>
     <div class="panel flush kl">${k.rows.length ? k.rows.map((r) => `<div class="ke ${r.status}">
         <div class="kl-l"><b>${fdate(r.date)}</b>${r.note ? `<div class="muted">${esc(r.note)}</div>` : ''}<div class="ks">${status(r)}</div></div>
         <div class="kl-r"><div class="${r.kind === 'gave' ? 'neg' : 'pos'} ka">${r.kind === 'gave' ? 'You gave ' : 'You got '}${inr(r.amount)}</div>
@@ -954,6 +989,10 @@ route(/^khata\/(\d+)$/, async (el, m, q) => {
   const rem = async (which) => { const r = await GET(`/api/khata/${k.party.id}/reminder`); if (which === 'sms' && !r.sms_url) return alert('Save a mobile number for this contact first.'); open(which === 'sms' ? r.sms_url : r.whatsapp_url, '_blank'); };
   $('#wa').onclick = () => rem('wa'); $('#sms').onclick = () => rem('sms');
   $('#share').onclick = async () => { try { await navigator.clipboard.writeText(k.statement_url); toast('Link copied'); } catch (e) { prompt('Copy this link:', k.statement_url); } };
+  if ($('#unshare')) $('#unshare').onclick = async () => {
+    if (!confirm('Stop sharing this khata? The link already sent to the customer will stop working. Copying the link again makes a new one.')) return;
+    try { await POST(`/api/khata/${k.party.id}/revoke-link`); toast('Link turned off'); render(); } catch (e) { toast(e.message, 'err'); }
+  };
 });
 
 /* The customer's view of an invoice / quotation (/i/<token>): print or save as PDF, pay by UPI. */
@@ -966,7 +1005,7 @@ async function publicDoc(token) {
     const due = d.type === 'INV' && d.balance > 0;
     app.innerHTML = `<main class="page pub pubdoc"><div class="page-head no-print"><h1>${esc(d.label)} ${esc(d.number)}</h1>${d.type === 'INV' ? badge(d.status) : ''}<span class="spacer"></span>
         ${due && d.org.upi_id ? `<a class="btn got" href="${esc(upiLink(d.org.upi_id, d.org.name, d.balance, d.number))}">Pay ${inr(d.balance)} by UPI</a>` : ''}
-        <button class="btn primary" onclick="print()">Download PDF</button></div>
+        <button class="btn primary" data-act="print">Download PDF</button></div>
       ${due ? `<div class="panel no-print">Balance due <b>${inr(d.balance)}</b>${d.due_date ? ` by ${fdate(d.due_date)}` : ''}.${payBox(d.org, d.balance, d.number)}</div>` : ''}
       ${vaadaPub(d.vaada, d.org)}
       ${docPaper(d)}<p class="muted no-print">Shared by ${esc(d.org.name)} using SmartTrader ERP. Tap “Download PDF” and choose “Save as PDF”.</p></main>`;
@@ -1418,7 +1457,7 @@ route(/^daybook$/, async (el, m, q) => {
 /* ======================================================================= reports */
 const periodBar = (d, extra = '') => `<div class="panel no-print"><form class="row" id="per">${d.from ? `<label class="f">From<input type="date" name="from" value="${d.from}"></label>` : ''}
   <label class="f">${d.from ? 'To' : 'As on'}<input type="date" name="to" value="${d.to || d.as_of || ME.today}"></label>${extra}<label class="f">&nbsp;<button class="btn">Show</button></label>
-  <span class="spacer"></span><label class="f">&nbsp;<span class="row"><button type="button" class="btn" id="csv">CSV</button><button type="button" class="btn" onclick="print()">Print</button></span></label></form></div>`;
+  <span class="spacer"></span><label class="f">&nbsp;<span class="row"><button type="button" class="btn" id="csv">CSV</button><button type="button" class="btn" data-act="print">Print</button></span></label></form></div>`;
 route(/^reports\/([a-z-]+)$/, async (el, m, q) => {
   const name = m[1], qs = q.toString();
   const d = await GET(`/api/reports/${name}?${qs}`);
@@ -1467,7 +1506,7 @@ route(/^reports\/([a-z-]+)$/, async (el, m, q) => {
   const keep = ['kind', 'type'].filter((k) => q.get(k)).map((k) => `<input type="hidden" name="${k}" value="${esc(q.get(k))}">`).join('');
   el.innerHTML = head(titles[name] + ` <span class="muted" style="font-size:14px;font-weight:400">${esc(ME.org.name)}${d.from ? ` · ${fdate(d.from)} – ${fdate(d.to)}` : ` · as on ${fdate(d.to || d.as_of)}`}</span>`) + periodBar(d, keep) + html;
   $('#per').onsubmit = (e) => { e.preventDefault(); go(`reports/${name}?${new URLSearchParams(new FormData(e.target))}`); };
-  $('#csv').onclick = () => download(`${name}.csv`, csv.map((r) => r.map((c) => { const s = String(c ?? ''); return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s; }).join(',')).join('\n'));
+  $('#csv').onclick = () => download(`${name}.csv`, csv.map((r) => r.map(csvCell).join(',')).join('\n'));
 });
 
 /* ======================================================================= settings */
@@ -1677,11 +1716,14 @@ route(/^settings$/, async (el) => {
     ${vaadaSettings()}
     ${canUsers ? `<div class="panel flush"><div class="row" style="padding:14px 16px"><h2 style="margin:0">Users</h2><span class="spacer"></span><button class="btn" id="adduser">+ Add user</button></div>
       ${table([{ h: 'Name', k: 'name' }, { h: 'Email', k: 'email', cls: 'hide-sm' }, { h: 'Role', f: (u) => u.role_key === 'owner' ? 'owner' : `<select data-role="${u.id}" aria-label="Role">${roleOpts.map((o) => `<option value="${esc(o.v)}" ${o.v === u.role_key ? 'selected' : ''}>${esc(o.t)}</option>`).join('')}</select>` },
-        { h: 'Status', f: (u) => u.active ? badge('ok') : badge('cancelled') },
+        { h: 'Status', f: (u) => u.paused ? `${badge('partial')}<div class="muted">over plan limit</div>` : u.active ? badge('ok') : badge('cancelled') },
         { h: '', f: (u) => u.role === 'owner' ? '' : `<button class="btn sm" data-pw="${u.id}" data-email="${esc(u.email)}">Set password</button> <button class="btn sm" data-u="${u.id}" data-a="${u.active}">${u.active ? 'Disable' : 'Enable'}</button>` }], users.rows)}
       <div class="muted" style="padding:10px 16px">Need your own role? <a href="#/settings/roles">Make one in Roles</a>. Built-in: <b>admin</b> everything · <b>accountant</b> money, bills, reports · <b>store</b> stock, items, purchase · <b>sales</b> quotes, orders, invoices, khata.</div></div>` : ''}
     <form class="panel" id="pw"><h2>Change your password</h2><div class="err" hidden></div><div class="form"><label class="f">Current password<input type="password" name="current" autocomplete="current-password"></label>
-      <label class="f">New password<input type="password" name="password" autocomplete="new-password" minlength="8"></label></div><div class="row" style="margin-top:12px"><span class="spacer"></span><button class="btn">Change password</button></div></form>
+      <label class="f">New password<input type="password" name="password" autocomplete="new-password" minlength="8"></label></div><div class="row" style="margin-top:12px"><button type="button" class="btn" id="logoutall">Sign out everywhere</button><span class="spacer"></span><button class="btn">Change password</button></div>
+      <p class="muted">Changing your password signs you out on every other device. "Sign out everywhere" does that without changing it.</p></form>
+    ${ME.can.settings ? `<div class="panel"><h2>Customer links</h2><p class="muted">Invoice and khata links you sent on WhatsApp or SMS work for anyone who has them. If a link went to the wrong person, turn it off on that invoice or khata page. To turn off every link of this business at once:</p>
+      <div class="row"><button type="button" class="btn danger" id="revokeall">Turn off all customer links</button></div></div>` : ''}
     <p class="muted">Selling SmartTrader to other businesses? <a href="#/admin">Open the admin panel</a> (needs the ADMIN_KEY secret).</p>
     ${canUsers ? `<div class="panel flush"><div style="padding:14px 16px 0"><h3>Audit trail</h3></div>${table([{ h: 'When', f: (a) => new Date(a.at).toLocaleString('en-IN') }, { h: 'User', k: 'user' }, { h: 'Action', k: 'action' }, { h: 'Detail', k: 'detail', cls: 'hide-sm' }], audit.slice(0, 100))}</div>` : ''}`;
   $$('[name=mode]', el).forEach((r) => r.onchange = async () => {
@@ -1691,6 +1733,14 @@ route(/^settings$/, async (el) => {
   const sub = (id, fn) => { $(id).onsubmit = async (e) => { e.preventDefault(); const b = $('.err', e.target); b.hidden = true; try { await fn(Object.fromEntries(new FormData(e.target))); } catch (err) { b.hidden = false; b.textContent = err.message; } }; };
   sub('#org', async (v) => { await api('PUT', '/api/org', v); ME = await GET('/api/me'); shell(); wireInstall(); toast('Profile saved'); render(); });
   sub('#pw', async (v) => { await POST('/api/me/password', v); toast('Password changed'); $('#pw').reset(); });
+  if ($('#logoutall')) $('#logoutall').onclick = async () => {
+    if (!confirm('Sign out of SmartTrader on every device, including this one?')) return;
+    await POST('/api/me/logout-all'); ME = null; location.hash = ''; renderAuth();
+  };
+  if ($('#revokeall')) $('#revokeall').onclick = async () => {
+    if (!confirm('Turn off ALL invoice and khata links you have shared? Customers who open an old link will see that it is not valid. Sharing again makes a new link.')) return;
+    try { const r = await POST('/api/org/revoke-links'); toast(`${r.invoices + r.khata} link(s) turned off`); } catch (e) { toast(e.message, 'err'); }
+  };
   wireVaadaSettings(el);
   if ($('#adduser')) $('#adduser').onclick = () => modal('Add user', [{ k: 'name', label: 'Name' }, { k: 'email', label: 'Email', type: 'email' },
     { k: 'role', label: 'Role', type: 'select', options: roleOpts }, { k: 'password', label: 'Temporary password (8+ chars)', type: 'password' }],
@@ -1844,7 +1894,7 @@ route(/^picklist\/(\d+)$/, async (el, m) => {
   const d = await GET('/api/docs/' + m[1]);
   const lines = d.lines.filter((l) => l.item_id && !l.is_service).map((l) => ({ ...l, pick: d.type === 'SO' ? l.remaining : l.qty }))
     .filter((l) => l.pick > 0.0005).sort((a, b) => (a.location || '~').localeCompare(b.location || '~', 'en', { numeric: true }) || a.item.localeCompare(b.item));
-  el.innerHTML = head(`Pick list · ${esc(d.number)}`, `<a class="btn" href="#/doc/${d.id}">Back</a><button class="btn primary" onclick="print()">Print</button>`) + `
+  el.innerHTML = head(`Pick list · ${esc(d.number)}`, `<a class="btn" href="#/doc/${d.id}">Back</a><button class="btn primary" data-act="print">Print</button>`) + `
     <div class="doc-paper"><div class="hdr"><div><div style="font-size:18px;font-weight:700">PICK LIST</div><div>${esc(d.label)} ${esc(d.number)} · ${fdate(d.date)}</div></div>
       <div style="text-align:right"><b>${esc((d.party || {}).name || '')}</b><div>Godown: ${esc(d.warehouse || '')}</div></div></div>
       <div class="tbl-wrap"><table class="dl"><thead><tr><th>✓</th><th>Bin / rack</th><th>Item</th><th class="num">Qty to pick</th><th>Picked by</th></tr></thead>
@@ -2052,7 +2102,7 @@ route(/^labels\/(\d+)$/, async (el, m, q) => {
   const it = (await master('items')).find((x) => x.id === +m[1]);
   if (!it) throw new Error('Item not found.');
   const n = Math.min(200, Math.max(1, +q.get('n') || 24)), code = labelCode(it);
-  el.innerHTML = head(`Labels: ${esc(it.name)}`, `<form class="row" id="lf"><input name="n" type="number" min="1" max="200" value="${n}" style="width:90px"><button class="btn">Update</button></form><button class="btn primary" onclick="print()">Print labels</button>`) +
+  el.innerHTML = head(`Labels: ${esc(it.name)}`, `<form class="row" id="lf"><input name="n" type="number" min="1" max="200" value="${n}" style="width:90px"><button class="btn">Update</button></form><button class="btn primary" data-act="print">Print labels</button>`) +
     `<p class="muted no-print">Code <b>${esc(code)}</b>. ${it.barcode || it.sku ? '' : 'This item has no barcode, so the label uses its built-in code; the POS screen recognises it.'} Use A4 label sheets or a label printer.</p>
     <div class="labels">${Array.from({ length: n }, () => `<div class="label"><div class="ln">${esc(it.name)}</div><svg class="bc"></svg><div class="lp">MRP ${inr(it.sale_price)}</div></div>`).join('')}</div>`;
   $('#lf').onsubmit = (e) => { e.preventDefault(); go(`labels/${it.id}?n=${e.target.n.value}`); };
@@ -2378,6 +2428,8 @@ async function boot() {
   if (pi) return publicDoc(pi[1]);
   const rt = location.hash.match(/^#\/reset\/([0-9a-f]{64})$/);   // link from the forgot-password e-mail
   if (rt) return renderReset(rt[1]);
+  const vt = location.hash.match(/^#\/verify\/([0-9a-f]{64})$/);  // link from the sign-up e-mail
+  if (vt) return renderVerify(vt[1]);
   try { ME = await GET('/api/me'); } catch (e) {
     if (e.status === 401 && /^#\/admin/.test(location.hash)) {   // admin works with the ADMIN_KEY alone
       $('#app').innerHTML = '<main class="page" id="page"></main>';
@@ -2387,7 +2439,7 @@ async function boot() {
     const off = !navigator.onLine || e instanceof TypeError;
     $('#app').innerHTML = `<div class="boot"><h2>${off ? 'You are offline' : 'Could not load SmartTrader'}</h2>
       <p class="muted">${off ? 'Your business data lives safely in the cloud. Connect to the internet to continue.' : esc(e.message)}</p>
-      <button class="btn primary" onclick="location.reload()">Try again</button></div>`;
+      <button class="btn primary" data-act="reload">Try again</button></div>`;
     if (off) window.addEventListener('online', () => location.reload(), { once: true });
     return;
   }

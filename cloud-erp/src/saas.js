@@ -1,6 +1,6 @@
 /* Plans and limits, for selling the ERP to other businesses. Plans are bought online (src/billing.js);
    the person running this deployment can also set a plan by hand with the ADMIN_KEY secret (#/admin). */
-import { HttpError, today, addDays } from './lib.js';
+import { HttpError, today, addDays, own } from './lib.js';
 
 /* Prices are per year in rupees, before GST. Limits: Infinity = no limit. */
 export const PLANS = {
@@ -16,7 +16,7 @@ export const TRIAL_DAYS = 14;
 
 /* The plan in force today: a paid plan whose end date has passed drops back to Free. */
 export function planOf(org) {
-  const key = org.plan && PLANS[org.plan] && (org.plan === 'free' || (org.plan_until && org.plan_until >= today())) ? org.plan : 'free';
+  const key = org.plan && own(PLANS, org.plan) && (org.plan === 'free' || (org.plan_until && org.plan_until >= today())) ? org.plan : 'free';
   return { key, ...PLANS[key], until: key === 'free' ? '' : org.plan_until };
 }
 const fmtLimit = (n) => (n === Infinity ? null : n);
@@ -26,30 +26,57 @@ export function planOut(org) {
 }
 
 function upgrade(msg) { return new HttpError(402, msg + ' Upgrade your plan in Settings → Plan & billing.', { upgrade: true }); }
+export { upgrade as upgradeError };
 
 export function requireFeature(org, feature) {
   const p = planOf(org);
-  if (!p.features.includes(feature)) throw upgrade(`${FEATURE_LABEL[feature]} is not included in the ${p.label} plan.`);
+  if (!p.features.includes(feature)) throw upgrade(`${own(FEATURE_LABEL, feature) || 'This feature'} is not included in the ${p.label} plan.`);
 }
-export async function checkInvoiceLimit(db, org) {
+/* First instant of this month in India (00:00 IST), as the ISO text docs.created_at uses. Invoices are counted by the
+   moment they were created, never by the date typed on them, so back-dating cannot hide an invoice from the cap.
+   Cancelled invoices count too: they still used an invoice number, and cancelling then re-issuing would otherwise be free. */
+export const monthStartIso = () => new Date(Date.parse(today().slice(0, 8) + '01T00:00:00+05:30')).toISOString();
+export const INV_COUNT_SQL = `SELECT COUNT(*) FROM docs WHERE org_id = ? AND type = 'INV' AND created_at >= ?`;
+/* { max, since } while the plan has a monthly invoice cap, else null */
+export function invoiceCap(org) {
   const p = planOf(org);
-  if (p.invoices_per_month === Infinity) return;
-  const r = await db.prepare(`SELECT COUNT(*) AS n FROM docs WHERE org_id = ? AND type = 'INV' AND status != 'cancelled' AND date >= ?`)
-    .bind(org.id, today().slice(0, 8) + '01').first();
-  if (r.n >= p.invoices_per_month) throw upgrade(`The ${p.label} plan allows ${p.invoices_per_month} invoices a month and you have used them all.`);
+  return p.invoices_per_month === Infinity ? null : { max: p.invoices_per_month, since: monthStartIso(), label: p.label };
 }
-export async function checkCount(db, org, what) {
+export const invoiceCapError = (cap) => upgrade(`The ${cap.label} plan allows ${cap.max} invoices a month and you have used them all.`);
+export async function checkInvoiceLimit(db, org) {
+  const cap = invoiceCap(org);
+  if (!cap) return;
+  const r = await db.prepare(INV_COUNT_SQL.replace('COUNT(*)', 'COUNT(*) AS n')).bind(org.id, cap.since).first();
+  if (r.n >= cap.max) throw invoiceCapError(cap);
+}
+const COUNT_SQL = {
+  users: `SELECT COUNT(*) AS n FROM users WHERE org_id = ? AND active = 1`,
+  warehouses: `SELECT COUNT(*) AS n FROM warehouses WHERE org_id = ?`,
+};
+export const countError = (org, what) => {
   const p = planOf(org), max = p[what];
+  return upgrade(`The ${p.label} plan allows ${max} ${what === 'users' ? 'active user' : 'godown'}${max === 1 ? '' : 's'}.`);
+};
+export async function checkCount(db, org, what) {
+  const max = planOf(org)[what];
   if (max === Infinity) return;
-  const r = await db.prepare(`SELECT COUNT(*) AS n FROM ${what === 'users' ? 'users' : 'warehouses'} WHERE org_id = ?${what === 'users' ? ' AND active = 1' : ''}`).bind(org.id).first();
-  if (r.n >= max) throw upgrade(`The ${p.label} plan allows ${max} ${what === 'users' ? 'active user' : 'godown'}${max === 1 ? '' : 's'}.`);
+  const r = await db.prepare(COUNT_SQL[what]).bind(org.id).first();
+  if (r.n >= max) throw countError(org, what);
 }
+/* The staff who may still sign in after a plan lapses: the owner and the oldest staff, up to the plan's user limit. */
+export const seatBlocked = (org, user) => {
+  const max = planOf(org).users;
+  return user.role !== 'owner' && Number.isFinite(max) && (user.seat || 0) >= max - 1;
+};
+export const seatError = (org) => {
+  const p = planOf(org);
+  return new HttpError(403, `The ${p.label} plan allows ${p.users} user${p.users === 1 ? '' : 's'}, and this login is paused. Ask the business owner to upgrade the plan in Settings → Plan & billing.`, { upgrade: true });
+};
 export async function usage(db, org) {
-  const r = await db.prepare(`SELECT
-      (SELECT COUNT(*) FROM docs WHERE org_id = ?1 AND type = 'INV' AND status != 'cancelled' AND date >= ?2) AS invoices_this_month,
+  return db.prepare(`SELECT
+      (SELECT COUNT(*) FROM docs WHERE org_id = ?1 AND type = 'INV' AND created_at >= ?2) AS invoices_this_month,
       (SELECT COUNT(*) FROM users WHERE org_id = ?1 AND active = 1) AS users,
-      (SELECT COUNT(*) FROM warehouses WHERE org_id = ?1) AS warehouses`).bind(org.id, today().slice(0, 8) + '01').first();
-  return r;
+      (SELECT COUNT(*) FROM warehouses WHERE org_id = ?1) AS warehouses`).bind(org.id, monthStartIso()).first();
 }
 
 export function adminKey(env) {

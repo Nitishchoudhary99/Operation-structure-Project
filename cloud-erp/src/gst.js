@@ -1,7 +1,7 @@
 /* GST helpers: state codes, units (UQC), and the government JSON formats for
    e-invoice (NIC IRP schema 1.1) and e-way bill (bulk generation upload). These files are
    uploaded on the portals (or through a GSP); the IRN / e-way bill numbers you get back are saved on the document. */
-import { bad } from './lib.js';
+import { bad, own } from './lib.js';
 
 export const STATES = [
   ['01', 'Jammu and Kashmir'], ['02', 'Himachal Pradesh'], ['03', 'Punjab'], ['04', 'Chandigarh'], ['05', 'Uttarakhand'],
@@ -20,7 +20,8 @@ export function stateCode(state, gstin) {
   if (gstin && /^\d{2}/.test(gstin)) return gstin.slice(0, 2);
   const n = norm(state);
   if (!n) return '';
-  if (ALIAS[n]) return ALIAS[n];
+  const alias = own(ALIAS, n);
+  if (alias) return alias;
   const hit = STATES.find(([, name]) => norm(name) === n) || STATES.find(([, name]) => norm(name).startsWith(n) && n.length >= 4);
   return hit ? hit[0] : '';
 }
@@ -31,7 +32,7 @@ const UQC = { pcs: 'PCS', pc: 'PCS', piece: 'PCS', pieces: 'PCS', nos: 'NOS', no
   bag: 'BAG', bags: 'BAG', box: 'BOX', boxes: 'BOX', btl: 'BTL', bottle: 'BTL', dozen: 'DOZ', doz: 'DOZ', pack: 'PAC', pac: 'PAC', packet: 'PAC',
   set: 'SET', sets: 'SET', pair: 'PRS', prs: 'PRS', roll: 'ROL', tin: 'CAN', can: 'CAN', ton: 'TON', tonne: 'TON', qtl: 'QTL', quintal: 'QTL',
   sqft: 'SQF', sqm: 'SQM', ctn: 'CTN', carton: 'CTN', bundle: 'BDL', bdl: 'BDL', unit: 'UNT', units: 'UNT', tab: 'TBS', strip: 'NOS' };
-export const uqc = (unit) => UQC[norm(unit)] || 'OTH';
+export const uqc = (unit) => own(UQC, norm(unit)) || 'OTH';
 
 const dmy = (d) => (d ? `${d.slice(8, 10)}/${d.slice(5, 7)}/${d.slice(0, 4)}` : '');
 const r2 = (x) => Math.round((x + Number.EPSILON) * 100) / 100;
