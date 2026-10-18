@@ -543,3 +543,4 @@ a.vcard:hover { background: var(--soft); }
 .upimore summary { cursor: pointer; font-weight: 600; padding: 4px 0; }
 .upirefrow { display: flex; gap: 8px; }
 .upirefrow input { flex: 1; min-width: 0; font-size: 16px; letter-spacing: 1px; }
+.auth .forgot { margin: -4px 0 10px; text-align: right; font-size: 14px; }

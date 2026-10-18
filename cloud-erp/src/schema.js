@@ -3,7 +3,7 @@
    Every business table carries org_id: one database serves many businesses (multi-tenant).
    migrate() runs on the first request after each deploy, so no manual migration step is needed. */
 
-export const SCHEMA_VERSION = 15;
+export const SCHEMA_VERSION = 16;
 
 // document types whose monthly totals doc_month keeps (sales and purchase money documents)
 const MONTH_TYPES = `('INV','SRET','CNOTE','BILL','PRET','DNOTE')`;
@@ -327,6 +327,11 @@ export const MIGRATIONS = {
     `ALTER TABLE billing_orders ADD COLUMN pay_paise INTEGER`,
     `ALTER TABLE billing_orders ADD COLUMN pay_expires_at TEXT`,
     `ALTER TABLE billing_orders ADD COLUMN pay_checked_at INTEGER`,
+  ],
+  // forgot password: one-time reset links (only a SHA-256 of the token is stored)
+  16: [
+    `CREATE TABLE IF NOT EXISTS pw_resets (token_hash TEXT PRIMARY KEY, user_id INTEGER NOT NULL, expires_at INTEGER NOT NULL, used_at INTEGER)`,
+    `CREATE INDEX IF NOT EXISTS pw_resets_user ON pw_resets(user_id)`,
   ],
 };
 

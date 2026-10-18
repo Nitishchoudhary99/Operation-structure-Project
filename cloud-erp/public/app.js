@@ -161,28 +161,64 @@ function renderAuth(mode = /^#\/?signup/.test(location.hash) ? 'signup' : 'login
     </div>
     <div class="box"><form id="auth-form">
       <div class="brandline show-sm"><i>&#x2197;</i>SmartTrader ERP <span class="muted">· GST billing, stock &amp; khata</span></div>
-      <h1>${mode === 'login' ? 'Sign in' : 'Create your business account'}</h1>
+      <h1>${mode === 'login' ? 'Sign in' : mode === 'forgot' ? 'Forgot your password?' : 'Create your business account'}</h1>
       <div class="err" hidden></div>
+      ${mode === 'forgot' ? '<p class="muted">Enter the email you sign in with. We will e-mail you a link to set a new password.</p>' : ''}
       ${mode === 'signup' ? `
         <label class="f">Business name<input name="business" required></label>
         <label class="f">Your name<input name="name" required></label>
         <div class="row"><label class="f grow">State<input name="state" list="states" autocomplete="off" placeholder="e.g. Rajasthan" required></label>
         <label class="f grow">GSTIN (optional)<input name="gstin" maxlength="15"></label></div>` : ''}
       <label class="f">Email<input name="email" type="email" autocomplete="email" required></label>
-      <label class="f">Password<input name="password" type="password" autocomplete="${mode === 'login' ? 'current-password' : 'new-password'}" required minlength="8"></label>
-      <button class="btn primary">${mode === 'login' ? 'Sign in' : 'Create account'}</button>
-      <p class="muted">${mode === 'login' ? `New here? <a href="#" data-m="signup">Create a free account</a>` : `Already have an account? <a href="#" data-m="login">Sign in</a>`}</p>
+      ${mode === 'forgot' ? '' : `<label class="f">Password<input name="password" type="password" autocomplete="${mode === 'login' ? 'current-password' : 'new-password'}" required minlength="8"></label>`}
+      ${mode === 'login' ? '<p class="forgot"><a href="#" data-m="forgot">Forgot password?</a></p>' : ''}
+      <button class="btn primary">${mode === 'login' ? 'Sign in' : mode === 'forgot' ? 'Send reset link' : 'Create account'}</button>
+      <p class="muted">${mode === 'login' ? `New here? <a href="#" data-m="signup">Create a free account</a>` : mode === 'forgot' ? `Remembered it? <a href="#" data-m="login">Sign in</a>` : `Already have an account? <a href="#" data-m="login">Sign in</a>`}</p>
     </form></div></div>`;
-  $('[data-m]').onclick = (e) => { e.preventDefault(); renderAuth(e.target.dataset.m); };
+  $$('[data-m]').forEach((a) => a.onclick = (e) => { e.preventDefault(); renderAuth(e.target.dataset.m); });
   $('#auth-form').onsubmit = async (e) => {
     e.preventDefault();
     const body = Object.fromEntries(new FormData(e.target));
     const btn = $('button', e.target); btn.disabled = true;
     try {
+      if (mode === 'forgot') {
+        const r = await POST('/api/auth/forgot', body);
+        e.target.innerHTML = `<h1>${r.mail ? 'Check your email' : 'Ask your business owner'}</h1>
+          <p>${r.mail ? `If <b>${esc(body.email)}</b> has a SmartTrader account, a link to set a new password is on its way. Check your inbox and spam folder. The link works once, for 30 minutes.`
+            : 'Password reset by e-mail is not switched on yet. Ask your business owner to set a new password for you in Settings &rarr; Users &rarr; Set password.'}</p>
+          <p class="muted"><a href="#" data-m="login">Back to sign in</a></p>`;
+        $$('[data-m]', e.target).forEach((a) => a.onclick = (ev) => { ev.preventDefault(); renderAuth('login'); });
+        return;
+      }
       await POST('/api/auth/' + mode, body);
       if (/^#\/?(signup|login)/.test(location.hash)) history.replaceState(null, '', '/#/dashboard');
       await boot();
     } catch (err) { const b = $('.err', e.target); b.hidden = false; b.textContent = err.message; } finally { btn.disabled = false; }
+  };
+}
+
+/* Forgot password: the e-mail link opens #/reset/<token> (no login needed) */
+function renderReset(token) {
+  $('#app').innerHTML = `<div class="auth"><div class="box"><form id="reset-form">
+    <div class="brandline"><i>&#x2197;</i>SmartTrader ERP</div>
+    <h1>Set a new password</h1>
+    <div class="err" hidden></div>
+    <label class="f">New password<input name="password" type="password" autocomplete="new-password" required minlength="8"></label>
+    <label class="f">Type it again<input name="password2" type="password" autocomplete="new-password" required minlength="8"></label>
+    <button class="btn primary">Save and sign in</button>
+    <p class="muted"><a href="/">Back to sign in</a></p>
+  </form></div></div>`;
+  $('#reset-form').onsubmit = async (e) => {
+    e.preventDefault();
+    const v = Object.fromEntries(new FormData(e.target)), b = $('.err', e.target), btn = $('button', e.target);
+    b.hidden = true;
+    if (v.password !== v.password2) { b.hidden = false; b.textContent = 'The two passwords are not the same.'; return; }
+    btn.disabled = true;
+    try {
+      await POST('/api/auth/reset', { token, password: v.password });
+      history.replaceState(null, '', '/#/dashboard');
+      await boot();
+    } catch (err) { b.hidden = false; b.textContent = err.message; } finally { btn.disabled = false; }
   };
 }
 
@@ -1642,7 +1678,7 @@ route(/^settings$/, async (el) => {
     ${canUsers ? `<div class="panel flush"><div class="row" style="padding:14px 16px"><h2 style="margin:0">Users</h2><span class="spacer"></span><button class="btn" id="adduser">+ Add user</button></div>
       ${table([{ h: 'Name', k: 'name' }, { h: 'Email', k: 'email', cls: 'hide-sm' }, { h: 'Role', f: (u) => u.role_key === 'owner' ? 'owner' : `<select data-role="${u.id}" aria-label="Role">${roleOpts.map((o) => `<option value="${esc(o.v)}" ${o.v === u.role_key ? 'selected' : ''}>${esc(o.t)}</option>`).join('')}</select>` },
         { h: 'Status', f: (u) => u.active ? badge('ok') : badge('cancelled') },
-        { h: '', f: (u) => u.role === 'owner' ? '' : `<button class="btn sm" data-u="${u.id}" data-a="${u.active}">${u.active ? 'Disable' : 'Enable'}</button>` }], users.rows)}
+        { h: '', f: (u) => u.role === 'owner' ? '' : `<button class="btn sm" data-pw="${u.id}" data-email="${esc(u.email)}">Set password</button> <button class="btn sm" data-u="${u.id}" data-a="${u.active}">${u.active ? 'Disable' : 'Enable'}</button>` }], users.rows)}
       <div class="muted" style="padding:10px 16px">Need your own role? <a href="#/settings/roles">Make one in Roles</a>. Built-in: <b>admin</b> everything · <b>accountant</b> money, bills, reports · <b>store</b> stock, items, purchase · <b>sales</b> quotes, orders, invoices, khata.</div></div>` : ''}
     <form class="panel" id="pw"><h2>Change your password</h2><div class="err" hidden></div><div class="form"><label class="f">Current password<input type="password" name="current" autocomplete="current-password"></label>
       <label class="f">New password<input type="password" name="password" autocomplete="new-password" minlength="8"></label></div><div class="row" style="margin-top:12px"><span class="spacer"></span><button class="btn">Change password</button></div></form>
@@ -1659,6 +1695,9 @@ route(/^settings$/, async (el) => {
   if ($('#adduser')) $('#adduser').onclick = () => modal('Add user', [{ k: 'name', label: 'Name' }, { k: 'email', label: 'Email', type: 'email' },
     { k: 'role', label: 'Role', type: 'select', options: roleOpts }, { k: 'password', label: 'Temporary password (8+ chars)', type: 'password' }],
   async (v) => { await POST('/api/users', v); toast('User added. Share the email and password with them.'); render(); });
+  $$('[data-pw]', el).forEach((b) => b.onclick = () => modal('Set a new password', [{ k: 'password', label: 'New password (8+ chars)', type: 'password' }],
+    async (v) => { await api('PUT', '/api/users/' + b.dataset.pw, { password: v.password }); toast('Password changed. Share it with ' + b.dataset.email + '.'); },
+    { submit: 'Set password', intro: 'For ' + esc(b.dataset.email) + ', who forgot their password. They will be signed out on other devices.' }));
   $$('[data-u]', el).forEach((b) => b.onclick = async () => { await api('PUT', '/api/users/' + b.dataset.u, { active: b.dataset.a !== '1' }); render(); });
   $$('[data-role]', el).forEach((s) => s.onchange = async () => { try { await api('PUT', '/api/users/' + s.dataset.role, { role: s.value }); toast('Role changed'); } catch (e) { toast(e.message, 'err'); render(); } });
 });
@@ -2281,6 +2320,8 @@ async function boot() {
   if (pk) return publicKhata(pk[1]);
   const pi = location.pathname.match(/^\/i\/([0-9a-f]{24})\/?$/);
   if (pi) return publicDoc(pi[1]);
+  const rt = location.hash.match(/^#\/reset\/([0-9a-f]{64})$/);   // link from the forgot-password e-mail
+  if (rt) return renderReset(rt[1]);
   try { ME = await GET('/api/me'); } catch (e) {
     if (e.status === 401 && /^#\/admin/.test(location.hash)) {   // admin works with the ADMIN_KEY alone
       $('#app').innerHTML = '<main class="page" id="page"></main>';

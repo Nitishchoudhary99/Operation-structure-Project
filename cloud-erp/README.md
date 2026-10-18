@@ -133,6 +133,8 @@ Optional: `ADMIN_KEY` (16+ characters) opens `https://erp.docbrisk.com/#/admin` 
 plan by hand (1200 months = lifetime, e.g. for your own business). `SUPPORT_WHATSAPP` (e.g. 919876543210) shows a WhatsApp
 button while online payment is not switched on.
 
+Forgot password: set the secret `RESEND_API_KEY` (the same Resend key docbrisk.com uses; optional `MAIL_FROM`, default `SmartTrader ERP <no-reply@docbrisk.com>`) and the sign-in page e-mails a one-time reset link valid for 30 minutes. Without it, owners can still set a staff member's password in Settings → Users → Set password.
+
 Prices are in `src/saas.js` (`PLANS`, per year before GST); the buyer pays the price plus 18% GST.
 
 ## Run locally

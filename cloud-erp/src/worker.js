@@ -71,6 +71,55 @@ router.add('POST', '/api/auth/login', async (c) => {
   return json({ ok: true, user: publicUser(user) }, 200, { 'Set-Cookie': sessionCookie(token, c.request) });
 }, { public: true });
 
+/* Forgot password: a one-time link by e-mail (Resend, same account as docbrisk.com), valid 30 minutes.
+   The answer is the same whether or not the account exists. Without RESEND_API_KEY the app tells the user to ask the owner. */
+const sha256Hex = async (t) => [...new Uint8Array(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(t)))].map((b) => b.toString(16).padStart(2, '0')).join('');
+const mailOn = (env) => !!env.RESEND_API_KEY;
+router.add('POST', '/api/auth/forgot', async (c) => {
+  const email = str(c.body.email, 120).toLowerCase();
+  const ip = c.request.headers.get('CF-Connecting-IP') || 'local';
+  await rateLimit(c.env, 'forgot-ip:' + ip, 10, 3600);
+  if (!mailOn(c.env)) return json({ ok: true, mail: false });
+  await rateLimit(c.env, 'forgot:' + email, 3, 3600);
+  const user = email && await c.db.prepare(`SELECT u.id, u.name, u.email, o.name AS org FROM users u JOIN orgs o ON o.id = u.org_id WHERE u.email = ? AND u.active = 1`).bind(email).first();
+  if (user) {
+    const token = randomHex(32), now = Date.now();
+    await c.db.batch([
+      c.db.prepare(`DELETE FROM pw_resets WHERE user_id = ? OR expires_at < ?`).bind(user.id, now),
+      c.db.prepare(`INSERT INTO pw_resets (token_hash, user_id, expires_at) VALUES (?, ?, ?)`).bind(await sha256Hex(token), user.id, now + 30 * 60000),
+    ]);
+    const link = `${new URL(c.request.url).origin}/#/reset/${token}`;
+    const html = `<div style="font-family:Arial,sans-serif;max-width:480px;margin:auto;color:#1f2937">
+      <h2 style="color:#0f766e">SmartTrader ERP</h2><p>Namaste ${attr(user.name)},</p>
+      <p>We got a request to reset the password for <b>${attr(user.email)}</b> (${attr(user.org)}).</p>
+      <p><a href="${link}" style="display:inline-block;background:#0f766e;color:#fff;padding:12px 20px;border-radius:8px;text-decoration:none;font-weight:bold">Set a new password</a></p>
+      <p style="color:#6b7280;font-size:13px">This link works once, for 30 minutes. If you did not ask for it, ignore this e-mail; your password stays the same.</p></div>`;
+    await fetch('https://api.resend.com/emails', {
+      method: 'POST', headers: { Authorization: `Bearer ${c.env.RESEND_API_KEY}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ from: c.env.MAIL_FROM || 'SmartTrader ERP <no-reply@docbrisk.com>', to: [user.email], subject: 'Reset your SmartTrader password', html }),
+    }).catch(() => {});
+  }
+  return json({ ok: true, mail: true });
+}, { public: true });
+
+router.add('POST', '/api/auth/reset', async (c) => {
+  const ip = c.request.headers.get('CF-Connecting-IP') || 'local';
+  await rateLimit(c.env, 'reset:' + ip, 20, 3600);
+  const token = str(c.body.token, 80);
+  if (!/^[0-9a-f]{64}$/.test(token)) throw bad('This reset link is not valid. Please ask for a new one.');
+  const r = await c.db.prepare(`SELECT r.user_id, r.expires_at, r.used_at, u.* FROM pw_resets r JOIN users u ON u.id = r.user_id WHERE r.token_hash = ?`).bind(await sha256Hex(token)).first();
+  if (!r || r.used_at || r.expires_at < Date.now() || !r.active) throw bad('This reset link has expired or was already used. Please ask for a new one.');
+  const prob = passwordProblem(c.body.password);
+  if (prob) throw bad(prob);
+  const salt = randomHex(16), now = Date.now();
+  await c.db.batch([
+    c.db.prepare(`UPDATE users SET pw_hash = ?, salt = ?, pw_changed_at = ? WHERE id = ?`).bind(await hashPassword(c.body.password, salt), salt, now, r.user_id),
+    c.db.prepare(`DELETE FROM pw_resets WHERE user_id = ?`).bind(r.user_id),
+  ]);
+  const token2 = await issueSession(c.env, { ...r, id: r.user_id, pw_changed_at: now });
+  return json({ ok: true }, 200, { 'Set-Cookie': sessionCookie(token2, c.request) });
+}, { public: true });
+
 router.add('POST', '/api/auth/logout', async () => json({ ok: true }, 200, { 'Set-Cookie': clearCookie() }), { public: true });
 
 router.add('GET', '/api/me', async (c) => json({
@@ -288,6 +337,14 @@ router.add('PUT', '/api/users/:id', async (c) => {
   if (!u) throw notFound('User not found.');
   if (u.role === 'owner') throw bad('The owner cannot be changed here.');
   const { role, role_id } = c.body.role ? await roleOf(c, c.body.role) : { role: u.role, role_id: u.role_id };
+  if (c.body.password !== undefined) {   // owner/admin sets a new password for a staff member who forgot theirs
+    const prob = passwordProblem(c.body.password);
+    if (prob) throw bad(prob);
+    const salt = randomHex(16);
+    await c.db.batch([c.db.prepare(`UPDATE users SET pw_hash = ?, salt = ?, pw_changed_at = ? WHERE id = ?`).bind(await hashPassword(c.body.password, salt), salt, Date.now(), u.id),
+      auditStatement(c, 'reset password', u.email)]);
+    return json({ ok: true });
+  }
   const active = c.body.active === undefined ? u.active : (c.body.active ? 1 : 0);
   if (active && !u.active) await checkCount(c.db, c.org, 'users');
   await c.db.batch([c.db.prepare(`UPDATE users SET role = ?, role_id = ?, active = ?, pw_changed_at = CASE WHEN ? != active THEN ? ELSE pw_changed_at END WHERE id = ?`)
