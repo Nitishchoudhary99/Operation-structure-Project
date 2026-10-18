@@ -2148,14 +2148,17 @@ route(/^plan$/, async (el, m, q) => {
     const apps = ios ? [['gpay', 'GPay'], ['phonepe', 'PhonePe'], ['paytm', 'Paytm']].map(([k, t]) => [L.ios && L.ios[k], t])
       : android ? [['gpay', 'GPay'], ['phonepe', 'PhonePe'], ['paytm', 'Paytm'], ['bhim', 'BHIM']].map(([k, t]) => [L.android && L.android[k], t]) : [];
     const anyLink = L.any || u.upi_link, amt = inr(u.amount_paise / 100);
+    // NPCI blocks link/app-button payments unless the payee is an online merchant; a scanned QR (or one shared to GPay) works.
+    const shareOk = phone && !ios && (() => { try { return !!(navigator.canShare && navigator.canShare({ files: [new File([new Uint8Array(1)], 'qr.png', { type: 'image/png' })] })); } catch (e) { return false; } })();
     state(`<div class="panel upipay" id="upibox">
       <div class="upihead"><div><div class="muted small">Pay exactly</div><div class="upiamt">${amt}</div></div>
         <button class="btn sm" id="upiamtcopy">Copy amount</button></div>
       <p class="small">Pay this exact amount. The paise tell us it is your payment, so do not change it.</p>
       ${phone ? `<ol class="upisteps small"><li>Tap <b>Save QR</b> · QR सेव करें</li><li>Open GPay, PhonePe or Paytm → <b>Scan</b> → <b>gallery</b> icon</li><li>Pick the saved QR and pay <b>${amt}</b></li></ol>
         <div class="upiqr" id="upiqr"></div><button class="btn primary" id="upisave">Save QR · QR सेव करें</button>
-        <details class="upimore"><summary>Or open a UPI app directly</summary><div class="upiapps">${apps.filter((x) => x[0]).map(([h, t]) => `<a class="btn" href="${esc(h)}">${t}</a>`).join('')}<a class="btn" href="${esc(anyLink)}">${apps.some((x) => x[0]) ? 'Other UPI app' : 'Open UPI app'}</a></div>
-          <p class="muted small">If the app shows "bank limit" or an error, use Save QR above instead.</p></details>`
+        ${shareOk ? '<button class="btn" id="upishare">Share QR to Google Pay</button>' : ''}
+        ${u.amount_paise > 200000 ? '<p class="muted small">Above ₹2,000 some UPI apps do not accept a QR from the gallery. Then scan this QR from another phone, or open this page on a computer and scan it.</p>' : ''}
+        ${u.vpa_kind === 'online' ? `<details class="upimore"><summary>Or open a UPI app directly</summary><div class="upiapps">${apps.filter((x) => x[0]).map(([h, t]) => `<a class="btn" href="${esc(h)}">${t}</a>`).join('')}<a class="btn" href="${esc(anyLink)}">${apps.some((x) => x[0]) ? 'Other UPI app' : 'Open UPI app'}</a></div></details>` : ''}`
         : `<div class="upiqr" id="upiqr"></div><p class="muted small upimid">Scan with any UPI app</p>`}
       <div class="upito small">To <b>${esc(u.payee || '')}</b></div>
       <div class="muted small">Code ${esc(u.note || '')} · expires in <b id="upicd">--:--</b></div>
@@ -2186,28 +2189,27 @@ route(/^plan$/, async (el, m, q) => {
         if (q && phone) q.innerHTML = `<img alt="UPI QR" src="${png}" style="width:240px;max-width:100%;border-radius:8px">`;
       } catch (e) { /* the SVG stays */ }
     }).catch(() => { const q = $('#upiqr'); if (q) q.innerHTML = '<p class="muted small">QR could not load. Please reload the page.</p>'; });
-    const sv = $('#upisave');
-    if (sv) sv.onclick = async () => {
+    const saveQr = (btn, share) => async () => {
       fast = true;
       if (!png) return toast('Press and hold the QR to save it');
       const name = 'erp-pay-' + String(u.amount) + '.png';
-      let shared = false;
-      // iPhone: the share sheet's "Save Image" puts it in Photos. No await before share(): Safari needs it straight from the tap.
-      if (ios && navigator.canShare) {
-        let f = null;
-        try {
-          const s = atob(png.split(',')[1]), a = new Uint8Array(s.length);
-          for (let i = 0; i < s.length; i++) a[i] = s.charCodeAt(i);
-          f = new File([a], name, { type: 'image/png' });
-        } catch (e) { f = null; }
-        if (f && navigator.canShare({ files: [f] })) {
-          try { await navigator.share({ files: [f] }); shared = true; }
-          catch (e) { if (e && e.name === 'AbortError') return; }
-        }
+      let f = null;
+      try {
+        const bin = atob(png.split(',')[1]), arr = new Uint8Array(bin.length);
+        for (let i = 0; i < bin.length; i++) arr[i] = bin.charCodeAt(i);
+        f = new File([arr], name, { type: 'image/png' });
+      } catch (e) { f = null; }
+      // Share: GPay on Android takes the image in; iPhone's share sheet has "Save Image". No await before share().
+      if (f && (share || ios) && navigator.canShare && navigator.canShare({ files: [f] })) {
+        try { await navigator.share({ files: [f] }); if (!share) btn.textContent = 'Saved ✓ Now open your UPI app → Scan → Gallery'; return; }
+        catch (e) { if (e && e.name === 'AbortError') return; }
       }
-      if (!shared) { const a = document.createElement('a'); a.href = png; a.download = name; document.body.appendChild(a); a.click(); a.remove(); }
-      sv.textContent = 'Saved ✓ Now open your UPI app → Scan → Gallery';
+      const a = document.createElement('a'); a.href = png; a.download = name; document.body.appendChild(a); a.click(); a.remove();
+      btn.textContent = 'Saved ✓ Now open your UPI app → Scan → Gallery';
     };
+    const sv = $('#upisave'), sh = $('#upishare');
+    if (sv) sv.onclick = saveQr(sv, false);
+    if (sh) sh.onclick = saveQr(sh, true);
     const say = () => {
       const age = Date.now() - t0, gone = left() <= 0;
       const k = hubState === 'review' ? 'review' : hubState === 'activating' ? 'act' : age > 3600000 ? 'late' : gone ? 'gone' : age < 120000 ? 'wait' : 'slow';
