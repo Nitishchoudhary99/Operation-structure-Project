@@ -1867,7 +1867,8 @@ async function fileDownload(url) {
   setTimeout(() => URL.revokeObjectURL(a.href), 2000);
   toast('Downloaded ' + name);
 }
-const upiLink = (vpa, name, amount, note) => `upi://pay?pa=${encodeURIComponent(vpa)}&pn=${encodeURIComponent(name)}${amount ? `&am=${(+amount).toFixed(2)}` : ''}&cu=INR${note ? `&tn=${encodeURIComponent(note)}` : ''}`;
+// '@' stays literal: UPI apps show "name%40bank" for an encoded one and will not let the payer continue.
+const upiLink = (vpa, name, amount, note) => `upi://pay?pa=${encodeURIComponent(vpa).replace(/%40/g, '@')}&pn=${encodeURIComponent(name)}${amount ? `&am=${(+amount).toFixed(2)}` : ''}&cu=INR${note ? `&tn=${encodeURIComponent(note)}` : ''}`;
 async function upiQr(el, org, amount, note, caption = '') {
   if (!el || !org.upi_id) return;
   try {
@@ -2151,10 +2152,12 @@ route(/^plan$/, async (el, m, q) => {
       <div class="upihead"><div><div class="muted small">Pay exactly</div><div class="upiamt">${amt}</div></div>
         <button class="btn sm" id="upiamtcopy">Copy amount</button></div>
       <p class="small">Pay this exact amount. The paise tell us it is your payment, so do not change it.</p>
-      ${phone ? `<div class="upiapps">${apps.filter((x) => x[0]).map(([h, t]) => `<a class="btn primary" href="${esc(h)}">${t}</a>`).join('')}<a class="btn${apps.some((x) => x[0]) ? '' : ' primary'}" href="${esc(anyLink)}">${apps.some((x) => x[0]) ? 'Other UPI app' : 'Open UPI app'}</a></div>
-        <details class="upimore"><summary>Pay from another phone: show QR</summary><div class="upiqr" id="upiqr"></div></details>`
+      ${phone ? `<ol class="upisteps small"><li>Tap <b>Save QR</b> · QR सेव करें</li><li>Open GPay, PhonePe or Paytm → <b>Scan</b> → <b>gallery</b> icon</li><li>Pick the saved QR and pay <b>${amt}</b></li></ol>
+        <div class="upiqr" id="upiqr"></div><button class="btn primary" id="upisave">Save QR · QR सेव करें</button>
+        <details class="upimore"><summary>Or open a UPI app directly</summary><div class="upiapps">${apps.filter((x) => x[0]).map(([h, t]) => `<a class="btn" href="${esc(h)}">${t}</a>`).join('')}<a class="btn" href="${esc(anyLink)}">${apps.some((x) => x[0]) ? 'Other UPI app' : 'Open UPI app'}</a></div>
+          <p class="muted small">If the app shows "bank limit" or an error, use Save QR above instead.</p></details>`
         : `<div class="upiqr" id="upiqr"></div><p class="muted small upimid">Scan with any UPI app</p>`}
-      <div class="upito small">To <b>${esc(u.payee || '')}</b> · ${esc(u.vpa || '')} <button class="btn sm" id="upivpacopy">Copy UPI ID</button></div>
+      <div class="upito small">To <b>${esc(u.payee || '')}</b></div>
       <div class="muted small">Code ${esc(u.note || '')} · expires in <b id="upicd">--:--</b></div>
       <div class="upimsg" id="upimsg"></div>
       <div class="upibtns"><button class="btn primary" id="upipaid">I have paid</button>${o.razorpay ? '<button class="btn" id="upicard">Card / netbanking</button>' : ''}<button class="btn" id="upiclose">Cancel</button></div>
@@ -2169,11 +2172,42 @@ route(/^plan$/, async (el, m, q) => {
     const openRef = () => { const d = $('#upiref'); if (d && !d.open) d.open = true; };
     const copy = async (text, what) => { try { await navigator.clipboard.writeText(text); toast(what + ' copied'); } catch (e) { prompt(what + ':', text); } };
     $('#upiamtcopy').onclick = () => copy(String(u.amount), 'Amount');
-    $('#upivpacopy').onclick = () => copy(String(u.vpa || ''), 'UPI ID');
+    let png = '';
     import('/vendor/qrcode.mjs').then(({ default: qrcode }) => {
       const qr = qrcode(0, 'M'); qr.addData(u.qr_text); qr.make();
       const q = $('#upiqr'); if (q) q.innerHTML = qr.createSvgTag({ cellSize: 4, margin: 2, scalable: true });
-    }).catch(() => { const q = $('#upiqr'); if (q) q.innerHTML = '<p class="muted small">QR could not load. Use the UPI ID above.</p>'; });
+      // A PNG with the amount under it, so it can be saved and picked from the gallery in a UPI app.
+      try {
+        const n = qr.getModuleCount(), S = 14, Q = 4, W = (n + Q * 2) * S, c = document.createElement('canvas'), x = c.getContext('2d');
+        c.width = W; c.height = W + 70; x.fillStyle = '#fff'; x.fillRect(0, 0, c.width, c.height); x.fillStyle = '#000';
+        for (let r = 0; r < n; r++) for (let k = 0; k < n; k++) if (qr.isDark(r, k)) x.fillRect((k + Q) * S, (r + Q) * S, S, S);
+        x.font = 'bold 34px system-ui, sans-serif'; x.textAlign = 'center'; x.fillText('Pay ' + amt + ' · ' + (u.payee || 'DocBrisk'), W / 2, W + 40);
+        png = c.toDataURL('image/png');
+        if (q && phone) q.innerHTML = `<img alt="UPI QR" src="${png}" style="width:240px;max-width:100%;border-radius:8px">`;
+      } catch (e) { /* the SVG stays */ }
+    }).catch(() => { const q = $('#upiqr'); if (q) q.innerHTML = '<p class="muted small">QR could not load. Please reload the page.</p>'; });
+    const sv = $('#upisave');
+    if (sv) sv.onclick = async () => {
+      fast = true;
+      if (!png) return toast('Press and hold the QR to save it');
+      const name = 'erp-pay-' + String(u.amount) + '.png';
+      let shared = false;
+      // iPhone: the share sheet's "Save Image" puts it in Photos. No await before share(): Safari needs it straight from the tap.
+      if (ios && navigator.canShare) {
+        let f = null;
+        try {
+          const s = atob(png.split(',')[1]), a = new Uint8Array(s.length);
+          for (let i = 0; i < s.length; i++) a[i] = s.charCodeAt(i);
+          f = new File([a], name, { type: 'image/png' });
+        } catch (e) { f = null; }
+        if (f && navigator.canShare({ files: [f] })) {
+          try { await navigator.share({ files: [f] }); shared = true; }
+          catch (e) { if (e && e.name === 'AbortError') return; }
+        }
+      }
+      if (!shared) { const a = document.createElement('a'); a.href = png; a.download = name; document.body.appendChild(a); a.click(); a.remove(); }
+      sv.textContent = 'Saved ✓ Now open your UPI app → Scan → Gallery';
+    };
     const say = () => {
       const age = Date.now() - t0, gone = left() <= 0;
       const k = hubState === 'review' ? 'review' : hubState === 'activating' ? 'act' : age > 3600000 ? 'late' : gone ? 'gone' : age < 120000 ? 'wait' : 'slow';

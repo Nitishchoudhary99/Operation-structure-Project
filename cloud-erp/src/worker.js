@@ -961,7 +961,7 @@ router.add('GET', '/api/khata/:party/reminder', async (c) => {
   if (!p) throw notFound('Contact not found.');
   const bal = await khataBalance(c, p.id), amt = R(bal);
   const link = await khataLink(c, p.id);
-  const upi = c.org.upi_id && amt > 0 ? `upi://pay?pa=${encodeURIComponent(c.org.upi_id)}&pn=${encodeURIComponent(c.org.name)}&am=${amt.toFixed(2)}&cu=INR` : '';
+  const upi = c.org.upi_id && amt > 0 ? `upi://pay?pa=${encodeURIComponent(c.org.upi_id).replace(/%40/g, '@')}&pn=${encodeURIComponent(c.org.name)}&am=${amt.toFixed(2)}&cu=INR` : '';
   const v = bal > 0 ? await vaadaReminder(c, p.id, 'khata') : null;
   const wa = bal > 0
     ? [`*${c.org.name}*`, '⏰ Payment reminder', '', `Namaste ${p.name} ji,`, `Aapka baaki: *${inrW(bal)}*`, 'Kripya jaldi bhugtan karein.', ...(c.org.upi_id ? [`UPI: ${c.org.upi_id}`] : []),
