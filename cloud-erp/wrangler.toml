@@ -28,10 +28,6 @@ database_id = "65271993-a4d4-4929-93fe-fcb649d132d3"
 binding = "PAYHUB_API"
 service = "docbrisk-api"
 
-# Run the worker near the D1 database: many short DB round trips per request. Static files still come from the nearest edge.
-[placement]
-mode = "smart"
-
 [observability]
 enabled = true
 
