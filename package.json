@@ -1,0 +1,9 @@
+{
+  "name": "operation-structure-project",
+  "private": true,
+  "description": "SmartTrader Cloud ERP. The app lives in cloud-erp/; wrangler.toml at the root deploys it.",
+  "scripts": {
+    "build": "node --check cloud-erp/src/worker.js && echo \"no build step: wrangler bundles cloud-erp/src/worker.js on deploy\"",
+    "deploy": "wrangler deploy"
+  }
+}
