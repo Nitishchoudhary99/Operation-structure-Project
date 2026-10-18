@@ -102,7 +102,7 @@ async function hubCallbackOk(env, headers, raw) {
 /* The UPI part of a checkout, as the page needs it (from the hub's order reply) */
 const upiOut = (h) => ({
   order_id: h.order_id, amount_paise: h.amount_paise, amount: h.amount, base: h.base, vpa: h.vpa, payee: h.payee, note: h.note,
-  upi_link: h.upi_link, qr_text: h.qr_text, app_links: h.app_links, created_at: h.created_at, expires_at: h.expires_at,
+  upi_link: h.upi_link, qr_text: h.qr_text, app_links: h.app_links, vpa_kind: h.vpa_kind, created_at: h.created_at, expires_at: h.expires_at,
   hold_until: h.hold_until, server_time: h.server_time,
 });
 

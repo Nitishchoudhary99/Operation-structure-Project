@@ -2150,15 +2150,25 @@ route(/^plan$/, async (el, m, q) => {
     const anyLink = L.any || u.upi_link, amt = inr(u.amount_paise / 100);
     // NPCI blocks link/app-button payments unless the payee is an online merchant; a scanned QR (or one shared to GPay) works.
     const shareOk = phone && !ios && (() => { try { return !!(navigator.canShare && navigator.canShare({ files: [new File([new Uint8Array(1)], 'qr.png', { type: 'image/png' })] })); } catch (e) { return false; } })();
+    // On a phone the buyer's own UPI app comes first, the saved QR second. For a personal UPI ID NPCI refuses link-started
+    // payments, so there it is the other way round. If the buyer comes back from an app unpaid, the QR opens by itself.
+    const appsFirst = u.vpa_kind !== 'personal';
+    const appBtns = (appsFirst ? `<a class="btn primary" href="${esc(anyLink)}">Pay ${amt} with UPI</a>` : '')
+      + apps.filter((x) => x[0]).map(([h, t]) => `<a class="btn" href="${esc(h)}">${t}</a>`).join('')
+      + (appsFirst ? '' : `<a class="btn" href="${esc(anyLink)}">Other UPI app</a>`);
+    const qrBlock = `<ol class="upisteps small"><li>Tap <b>Save QR</b> · QR सेव करें</li><li>Open GPay, PhonePe or Paytm → <b>Scan</b> → <b>gallery</b> icon</li><li>Pick the saved QR and pay <b>${amt}</b></li></ol>
+        <div class="upiqr" id="upiqr"></div><button class="btn primary" id="upisave">Save QR · QR सेव करें</button>
+        ${shareOk ? '<button class="btn" id="upishare">Share QR to Google Pay</button>' : ''}
+        ${u.amount_paise > 200000 ? '<p class="muted small">Above ₹2,000 some UPI apps do not accept a QR from the gallery. Then scan this QR from another phone, or open this page on a computer and scan it.</p>' : ''}`;
     state(`<div class="panel upipay" id="upibox">
       <div class="upihead"><div><div class="muted small">Pay exactly</div><div class="upiamt">${amt}</div></div>
         <button class="btn sm" id="upiamtcopy">Copy amount</button></div>
       <p class="small">Pay this exact amount. The paise tell us it is your payment, so do not change it.</p>
-      ${phone ? `<ol class="upisteps small"><li>Tap <b>Save QR</b> · QR सेव करें</li><li>Open GPay, PhonePe or Paytm → <b>Scan</b> → <b>gallery</b> icon</li><li>Pick the saved QR and pay <b>${amt}</b></li></ol>
-        <div class="upiqr" id="upiqr"></div><button class="btn primary" id="upisave">Save QR · QR सेव करें</button>
-        ${shareOk ? '<button class="btn" id="upishare">Share QR to Google Pay</button>' : ''}
-        ${u.amount_paise > 200000 ? '<p class="muted small">Above ₹2,000 some UPI apps do not accept a QR from the gallery. Then scan this QR from another phone, or open this page on a computer and scan it.</p>' : ''}
-        ${u.vpa_kind === 'online' ? `<details class="upimore"><summary>Or open a UPI app directly</summary><div class="upiapps">${apps.filter((x) => x[0]).map(([h, t]) => `<a class="btn" href="${esc(h)}">${t}</a>`).join('')}<a class="btn" href="${esc(anyLink)}">${apps.some((x) => x[0]) ? 'Other UPI app' : 'Open UPI app'}</a></div></details>` : ''}`
+      ${phone ? (appsFirst ? `<div class="upiapps">${appBtns}</div>
+          <p class="muted small upimid">Tap your UPI app. It opens with ${amt} filled in. Pay, then come back here.</p>
+          <div class="upimsg hidden" id="upifail">If the app showed an error or "bank limit", pay with the QR below instead. If you already paid, just wait: this page updates by itself.</div>
+          <details class="upimore" id="upiqrmore"><summary>App not opening? Pay with the QR instead</summary>${qrBlock}</details>`
+        : `${qrBlock}<details class="upimore"><summary>Or open a UPI app directly</summary>${appBtns ? `<div class="upiapps">${appBtns}</div>` : ''}</details>`)
         : `<div class="upiqr" id="upiqr"></div><p class="muted small upimid">Scan with any UPI app</p>`}
       <div class="upito small">To <b>${esc(u.payee || '')}</b></div>
       <div class="muted small">Code ${esc(u.note || '')} · expires in <b id="upicd">--:--</b></div>
@@ -2207,6 +2217,16 @@ route(/^plan$/, async (el, m, q) => {
       const a = document.createElement('a'); a.href = png; a.download = name; document.body.appendChild(a); a.click(); a.remove();
       btn.textContent = 'Saved ✓ Now open your UPI app → Scan → Gallery';
     };
+    let tapAt = 0, failShown = false;
+    box.addEventListener('click', (e) => { if (e.target.closest('.upiapps a')) { fast = true; tapAt = Date.now(); } });
+    const onBack = () => {
+      if (!alive || !tapAt || failShown || document.hidden || Date.now() - tapAt < 2500 || hubState) return;
+      failShown = true;
+      const f = $('#upifail'), d = $('#upiqrmore');
+      if (f) f.classList.remove('hidden');
+      if (d) d.open = true;
+    };
+    document.addEventListener('visibilitychange', onBack); window.addEventListener('focus', onBack); window.addEventListener('pageshow', onBack);
     const sv = $('#upisave'), sh = $('#upishare');
     if (sv) sv.onclick = saveQr(sv, false);
     if (sh) sh.onclick = saveQr(sh, true);
@@ -2255,7 +2275,7 @@ route(/^plan$/, async (el, m, q) => {
     const cdTimer = setInterval(tick, 1000);
     const stop = (cancel) => {
       if (!alive) return;
-      alive = false; clearTimeout(timer); clearInterval(cdTimer); document.removeEventListener('visibilitychange', onVis);
+      alive = false; clearTimeout(timer); clearInterval(cdTimer); document.removeEventListener('visibilitychange', onVis); document.removeEventListener('visibilitychange', onBack); window.removeEventListener('focus', onBack); window.removeEventListener('pageshow', onBack);
       if (stopUpi === stop) stopUpi = null;
       if (cancel) POST('/api/billing/upi-cancel', { ref: o.ref }).catch(() => {});
     };
