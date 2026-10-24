@@ -1790,7 +1790,7 @@ route(/^settings$/, async (el, m, q) => {
     const when = (t) => t ? new Date(t).toLocaleString('en-IN', { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' }) : '';
     if (!g.configured) { box.innerHTML = '<p class="muted">Google Drive backup is being switched on for SmartTrader. Until then, use “Download full backup” and keep the file in your Drive.</p>'; return; }
     if (!g.connected) {
-      box.innerHTML = `<p class="muted">Connect your Google Drive once. SmartTrader then saves a full backup there every day by itself, like WhatsApp does. It can see only its own backup files, nothing else in your Drive. रोज़ अपने आप Google Drive में बैकअप।</p>
+      box.innerHTML = `<p class="muted">Connect your Google Drive once. SmartTrader then saves a full backup there every day by itself, like WhatsApp does. It can see only its own backup files, nothing else in your Drive. On Google’s page, <b>tick the Google Drive box</b>, then Continue. रोज़ अपने आप Google Drive में बैकअप।</p>
         <div class="row"><button type="button" class="btn primary" id="gconnect">Connect Google Drive</button></div>`;
       $('#gconnect').onclick = async () => { try { location.href = (await POST('/api/gdrive/connect')).url; } catch (e) { toast(e.message, 'err'); } };
       return;
@@ -1814,6 +1814,7 @@ route(/^settings$/, async (el, m, q) => {
   drive();
   const dq = q && q.get('drive');
   if (dq) toast({ ok: 'Google Drive connected. First backup saved.', fail: 'Google Drive connected, but the backup failed. Try “Back up now”.', cancel: 'Google Drive was not connected.',
+    noscope: 'Google Drive permission was not given. Tap Connect Google Drive again and, on Google’s page, tick the Google Drive box (“See, edit, create and delete only the specific Google Drive files…”).',
     norefresh: 'Google did not give offline access. Remove SmartTrader in your Google account’s third-party access, then connect again.', bad: 'That link expired. Connect again.' }[dq] || 'Done', dq === 'ok' ? 'ok' : 'err');
   if ($('#revokeall')) $('#revokeall').onclick = async () => {
     if (!confirm('Turn off ALL invoice and khata links you have shared? Customers who open an old link will see that it is not valid. Sharing again makes a new link.')) return;

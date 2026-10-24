@@ -83,6 +83,9 @@ async function gjson(res, what) {
     const msg = (j.error && (j.error.message || j.error_description || j.error)) || j.error_description || res.status;
     const e = new Error(`${what}: ${typeof msg === 'string' ? msg : res.status}`);
     e.status = res.status; e.gone = j.error === 'invalid_grant';
+    // the Drive box was not ticked on Google's page (Google asks for each permission separately)
+    e.scope = /insufficient authentication scopes|ACCESS_TOKEN_SCOPE_INSUFFICIENT|insufficientPermissions/i.test(t);
+    e.apiOff = /accessNotConfigured|SERVICE_DISABLED|has not been used in project|API has not been used|is disabled/i.test(t);
     throw e;
   }
   return j;
@@ -140,7 +143,10 @@ export async function backupToDrive(env, orgId, by) {
     await db.batch(st);
     return { ok: true, file: f.name, records: b.records, size: b.json.length };
   } catch (e) {
-    const msg = e.gone ? 'Google access was removed. Connect Google Drive again.' : String(e && e.message || 'Backup failed.').slice(0, 300);
+    const msg = e.gone ? 'Google access was removed. Connect Google Drive again.'
+      : e.scope ? 'Google did not give SmartTrader permission for Drive files. Tap Disconnect, then Connect Google Drive again and tick the Google Drive box on Google’s page.'
+      : e.apiOff ? 'The Google Drive API is switched off in SmartTrader’s Google Cloud project, so backups cannot be saved yet. (Operator: Google Cloud → APIs & Services → Google Drive API → Enable.)'
+      : String(e && e.message || 'Backup failed.').slice(0, 300);
     await db.prepare(`UPDATE drive_links SET last_error = ?, last_try_at = ? WHERE org_id = ?`).bind(msg, nowIso(), orgId).run();
     return { ok: false, error: msg };
   }
@@ -175,6 +181,11 @@ export function driveRoutes(router) {
     try {
       const t = await tokenCall(c.env, { grant_type: 'authorization_code', code: c.url.searchParams.get('code'), redirect_uri: redirectUri(c.url) });
       if (!t.refresh_token) return back('norefresh');
+      // Google lists the permissions the person actually ticked; without the Drive one, a backup can never be saved
+      if (t.scope && !/\/auth\/drive\.file\b/.test(t.scope)) {
+        try { await fetch(G(c.env).revoke, { method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, body: new URLSearchParams({ token: t.refresh_token }) }); } catch (e) { /* best effort */ }
+        return back('noscope');
+      }
       let email = '';
       try { email = (await gjson(await fetch(`${G(c.env).api}/oauth2/v3/userinfo`, { headers: authed(t.access_token) }), 'Google account')).email || ''; } catch (e) { email = ''; }
       await c.db.batch([

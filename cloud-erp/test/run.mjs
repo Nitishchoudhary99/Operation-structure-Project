@@ -354,11 +354,17 @@ if (process.env.ERP_GDRIVE_MOCK) {
       const u = new URL(req.url, 'http://x'); calls.push(req.method + ' ' + u.pathname);
       if (u.pathname === '/token') {
         const f = new URLSearchParams(b);
-        if (f.get('grant_type') === 'authorization_code' && f.get('code') === 'good') return send(res, 200, { access_token: 'at1', refresh_token: 'rt-secret-1', expires_in: 3600 });
+        if (f.get('grant_type') === 'authorization_code' && f.get('code') === 'good') return send(res, 200, { access_token: 'at1', refresh_token: 'rt-secret-1', expires_in: 3600, scope: 'https://www.googleapis.com/auth/drive.file https://www.googleapis.com/auth/userinfo.email openid' });
+        // the person left the Drive box unticked on Google's page
+        if (f.get('grant_type') === 'authorization_code' && f.get('code') === 'emailonly') return send(res, 200, { access_token: 'at-e', refresh_token: 'rt-email', expires_in: 3600, scope: 'https://www.googleapis.com/auth/userinfo.email openid' });
+        // an older answer without the scope list: the link is made, Drive then refuses the call
+        if (f.get('grant_type') === 'authorization_code' && f.get('code') === 'noscopefield') return send(res, 200, { access_token: 'at-ns', refresh_token: 'rt-ns', expires_in: 3600 });
+        if (f.get('grant_type') === 'refresh_token' && f.get('refresh_token') === 'rt-ns') return send(res, 200, { access_token: 'at-ns', expires_in: 3600 });
         if (f.get('grant_type') === 'refresh_token' && f.get('refresh_token') === 'rt-secret-1') return send(res, 200, { access_token: 'at2', expires_in: 3600 });
         return send(res, 400, { error: 'invalid_grant' });
       }
       if (u.pathname === '/revoke') return send(res, 200, {});
+      if (req.headers.authorization === 'Bearer at-ns') return send(res, 403, { error: { code: 403, message: 'Request had insufficient authentication scopes.', status: 'PERMISSION_DENIED', details: [{ reason: 'ACCESS_TOKEN_SCOPE_INSUFFICIENT' }] } });
       if (req.headers.authorization !== 'Bearer at1' && req.headers.authorization !== 'Bearer at2') return send(res, 401, { error: { message: 'no token' } });
       if (u.pathname === '/oauth2/v3/userinfo') return send(res, 200, { email: 'owner@gmail.com' });
       if (u.pathname === '/drive/v3/files' && req.method === 'POST') return send(res, 200, { id: 'fold1' });
@@ -382,6 +388,15 @@ if (process.env.ERP_GDRIVE_MOCK) {
   check('connect sends the owner to Google with drive.file only and offline access', au.searchParams.get('scope').includes('auth/drive.file') && !au.searchParams.get('scope').includes('auth/drive ')
     && au.searchParams.get('access_type') === 'offline' && au.searchParams.get('redirect_uri').endsWith('/api/gdrive/callback'));
   const state = au.searchParams.get('state');
+  const st2 = new URL((await (await ofetch('/api/gdrive/connect', { method: 'POST', body: '{}' })).json()).url).searchParams.get('state');
+  const noDrive = await ofetch('/api/gdrive/callback?code=emailonly&state=' + encodeURIComponent(st2));
+  check('if the Drive box is left unticked, nothing is connected and the owner is told to tick it', /drive=noscope/.test(noDrive.headers.get('location') || '')
+    && (await (await ofetch('/api/gdrive')).json()).connected === false, noDrive.headers.get('location'));
+  const st3 = new URL((await (await ofetch('/api/gdrive/connect', { method: 'POST', body: '{}' })).json()).url).searchParams.get('state');
+  await ofetch('/api/gdrive/callback?code=noscopefield&state=' + encodeURIComponent(st3));
+  const ns = await (await ofetch('/api/gdrive')).json();
+  check('a Drive refusal for missing permission says how to fix it', ns.connected && /tick the Google Drive box/.test(ns.last_error || ''), ns.last_error);
+  await ofetch('/api/gdrive', { method: 'DELETE' });
   const bad1 = await ofetch('/api/gdrive/callback?code=good&state=' + encodeURIComponent(state.slice(0, -3) + 'AAA'));
   check('a forged state is refused', bad1.status === 302 && /drive=bad/.test(bad1.headers.get('location')));
   const cb = await ofetch('/api/gdrive/callback?code=good&state=' + encodeURIComponent(state));
@@ -396,8 +411,9 @@ if (process.env.ERP_GDRIVE_MOCK) {
   const now1 = await (await ofetch('/api/gdrive/backup', { method: 'POST', body: '{}' })).json();
   check('Back up now saves another file', now1.ok && files.filter((f) => f.body).length === 2, JSON.stringify(now1));
   check('weekly backups can be chosen', (await (await ofetch('/api/gdrive', { method: 'PUT', body: JSON.stringify({ every: 'week' }) })).json()).every === 'week');
+  const revokes = calls.filter((x) => x === 'POST /revoke').length;
   await ofetch('/api/gdrive', { method: 'DELETE' });
-  check('disconnect revokes Google access and forgets the link', calls.includes('POST /revoke') && (await (await ofetch('/api/gdrive')).json()).connected === false);
+  check('disconnect revokes Google access and forgets the link', calls.filter((x) => x === 'POST /revoke').length === revokes + 1 && (await (await ofetch('/api/gdrive')).json()).connected === false);
   g.close();
 }
 {
