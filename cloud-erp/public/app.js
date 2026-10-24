@@ -2202,7 +2202,7 @@ route(/^plan$/, async (el, m, q) => {
     const shareOk = phone && !ios && (() => { try { return !!(navigator.canShare && navigator.canShare({ files: [new File([new Uint8Array(1)], 'qr.png', { type: 'image/png' })] })); } catch (e) { return false; } })();
     // On a phone the buyer's own UPI app comes first, the saved QR second. For a personal UPI ID NPCI refuses link-started
     // payments, so there it is the other way round. If the buyer comes back from an app unpaid, the QR opens by itself.
-    const appsFirst = u.vpa_kind !== 'personal';
+    const appsFirst = u.vpa_kind === 'online';
     const appBtns = (appsFirst ? `<a class="btn primary" href="${esc(anyLink)}">Pay ${amt} with UPI</a>` : '')
       + apps.filter((x) => x[0]).map(([h, t]) => `<a class="btn" href="${esc(h)}">${t}</a>`).join('')
       + (appsFirst ? '' : `<a class="btn" href="${esc(anyLink)}">Other UPI app</a>`);
