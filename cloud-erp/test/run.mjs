@@ -340,6 +340,7 @@ await api('POST', '/api/auth/login', { email: 'store' + email, password: 'Store-
 const denied = await api('POST', '/api/payments', { kind: 'receipt', party_id: cust.id, account_id: accts.cash.id, amount: 1 }, true);
 check('store role cannot record receipts', denied.status === 403);
 check('only the owner can download a full backup', (await api('GET', '/api/export/backup', null, true)).status === 403);
+check('only the owner can make due recurring bills by hand', (await api('POST', '/api/recurring/run', {}, true)).status === 403);
 const storeCookie = cookie;
 {
   const bk = await fetch(BASE + '/api/export/backup', { headers: { Cookie: ownerCookie } });
@@ -421,6 +422,28 @@ check('IRN saved on invoice', (await api('GET', `/api/docs/${inv.id}`)).irn.leng
 {
   const cp = await api('GET', `/api/docs/${inv.id}/copy`);
   check('repeat gives a draft of the same invoice dated today, not linked', cp.type === 'INV' && cp.party_id === inv.party_id && cp.lines.length === (await api('GET', `/api/docs/${inv.id}`)).lines.length && !cp.ref_id && cp.lines.every((l) => !l.src_line_id) && cp.date === (await api('GET', '/api/me')).today);
+}
+{
+  // recurring invoices: a schedule due today makes one invoice with the same party and lines, then moves a month on
+  const today0 = (await api('GET', '/api/me')).today;
+  const src = await api('GET', `/api/docs/${inv.id}`);
+  check('a quotation cannot repeat by itself', (await api('POST', `/api/docs/${qt.id}/recurring`, { every: 'month' }, true)).status === 400);
+  const rec = await api('POST', `/api/docs/${inv.id}/recurring`, { every: 'month', next_on: today0 });
+  const before = (await api('GET', '/api/docs?type=INV')).rows.length;
+  const run1 = await api('POST', '/api/recurring/run');
+  const list1 = (await api('GET', '/api/recurring')).rows.find((r) => r.id === rec.id);
+  const made = await api('GET', `/api/docs/${list1.last_doc_id}`);
+  check('the due schedule made one invoice, same party and lines, dated today', run1.made >= 1 && (await api('GET', '/api/docs?type=INV')).rows.length === before + 1
+    && made.party_id === src.party_id && made.date === today0 && made.lines.length === src.lines.length && eq(made.total, src.total) && made.number !== src.number,
+    JSON.stringify([run1, before, (await api('GET', '/api/docs?type=INV')).rows.length, made.party_id, src.party_id, made.date, today0, made.lines.length, src.lines.length, made.total, src.total]));
+  const [y, mo, dd] = today0.split('-').map(Number), nm = new Date(Date.UTC(y, mo, 1)), last = new Date(Date.UTC(nm.getUTCFullYear(), nm.getUTCMonth() + 1, 0)).getUTCDate();
+  check('...and its next date is a month on', list1.next_on === new Date(Date.UTC(nm.getUTCFullYear(), nm.getUTCMonth(), Math.min(dd, last))).toISOString().slice(0, 10) && list1.runs === 1, list1.next_on);
+  check('running again the same day makes nothing more', (await api('POST', '/api/recurring/run')).made === 0);
+  check('the first date cannot be in the past', (await api('POST', `/api/docs/${inv.id}/recurring`, { every: 'month', next_on: '2020-01-01' }, true)).status === 400);
+  await api('POST', `/api/recurring/${rec.id}/stop`);
+  check('a stopped schedule shows as stopped', (await api('GET', '/api/recurring')).rows.find((r) => r.id === rec.id).active === 0);
+  tb = await api('GET', '/api/reports/trial-balance');
+  check('books balance after a recurring invoice', tb.balanced);
 }
 const tx = await raw('/api/export/tally');
 const xml = await tx.text();

@@ -28,6 +28,10 @@ database_id = "65271993-a4d4-4929-93fe-fcb649d132d3"
 binding = "PAYHUB_API"
 service = "docbrisk-api"
 
+# Recurring invoices and bills are made every morning at 06:00 India time (00:30 UTC).
+[triggers]
+crons = ["30 0 * * *"]
+
 [observability]
 enabled = true
 

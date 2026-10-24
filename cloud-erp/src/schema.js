@@ -3,7 +3,7 @@
    Every business table carries org_id: one database serves many businesses (multi-tenant).
    migrate() runs on the first request after each deploy, so no manual migration step is needed. */
 
-export const SCHEMA_VERSION = 17;
+export const SCHEMA_VERSION = 18;
 
 // document types whose monthly totals doc_month keeps (sales and purchase money documents)
 const MONTH_TYPES = `('INV','SRET','CNOTE','BILL','PRET','DNOTE')`;
@@ -345,6 +345,14 @@ export const MIGRATIONS = {
     `CREATE INDEX IF NOT EXISTS ix_docs_created ON docs (org_id, type, created_at)`,
     `UPDATE journal_lines SET party_id = NULL WHERE party_id IS NOT NULL AND party_id NOT IN (SELECT id FROM parties WHERE parties.org_id = journal_lines.org_id)`,
     `DELETE FROM party_bal WHERE party_id NOT IN (SELECT id FROM parties WHERE parties.org_id = party_bal.org_id)`,
+  ],
+  // recurring invoices and bills (src/recurring.js): one row per schedule, the cron makes the due ones every morning
+  18: [
+    `CREATE TABLE IF NOT EXISTS recurring (id INTEGER PRIMARY KEY, org_id INTEGER NOT NULL, src_doc_id INTEGER NOT NULL, every TEXT NOT NULL,
+      anchor_day INTEGER NOT NULL, next_on TEXT NOT NULL, ends_on TEXT, active INTEGER NOT NULL DEFAULT 1, created_by INTEGER NOT NULL,
+      created_at TEXT NOT NULL, runs INTEGER NOT NULL DEFAULT 0, last_doc_id INTEGER, last_run_on TEXT, last_error TEXT)`,
+    `CREATE INDEX IF NOT EXISTS ix_recurring_due ON recurring (active, next_on)`,
+    `CREATE INDEX IF NOT EXISTS ix_recurring_org ON recurring (org_id)`,
   ],
 };
 

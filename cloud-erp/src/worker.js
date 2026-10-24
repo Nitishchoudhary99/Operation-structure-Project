@@ -17,6 +17,7 @@ import {
 import * as rep from './reports.js';
 import { PLANS, planOut, planOf, usage, checkCount, countError, seatBlocked, seatError, requireFeature, extendPlan, adminKey, trialUntil, hasFeature } from './saas.js';
 import { secure } from './headers.js';
+import { createRecurring, listRecurring, stopRecurring, runDue } from './recurring.js';
 import { cleanVaada, splitPlan, planOptions, minPart, risk, riskStatements, riskInput, setStatements, evalSet, writeBackStatements, promiseOut, pctOf,
   forecast, inr0, FREE_OPEN_MAX } from './vaada.js';
 import { STATES, einvoiceJson, ewaybillJson } from './gst.js';
@@ -694,6 +695,15 @@ router.add('GET', '/api/docs/:id/convert', async (c) => {
   }));
   if (!lines.length) throw bad(`Nothing left to ${['SRET', 'PRET'].includes(to) ? 'return' : 'process'} on ${src.number}.`);
   return json({ type: to, party_id: src.party_id, ref_id: src.id, ref_number: src.number, warehouse_id: src.warehouse_id, date: today(), extra: src.extra, lines });
+});
+
+/* Recurring: the document is made again by itself every week / month / quarter / year (src/recurring.js) */
+router.add('POST', '/api/docs/:id/recurring', async (c) => json({ id: await createRecurring(c, +c.params.id) }));
+router.add('GET', '/api/recurring', async (c) => json({ rows: await listRecurring(c) }));
+router.add('POST', '/api/recurring/:id/stop', async (c) => { await stopRecurring(c, +c.params.id); return json({ ok: true }); });
+router.add('POST', '/api/recurring/run', async (c) => {
+  if (c.user.role !== 'owner') throw forbidden('Only the business owner can do this.');
+  return json(await runDue(c.env, c.org.id));
 });
 
 /* Repeat: a new draft of the same type, party and lines as an earlier document, dated today (monthly bills,
@@ -1715,6 +1725,14 @@ async function respond(request, env, url) {
   }
 }
 export default {
+  /* Cron (wrangler.toml [triggers]): every morning, make the recurring invoices and bills that are due. */
+  async scheduled(event, env, ctx) {
+    ctx.waitUntil((async () => {
+      if (!migrated) { await migrate(env.DB); migrated = true; }
+      const r = await runDue(env);
+      if (r.due) console.log('recurring', JSON.stringify(r));
+    })());
+  },
   async fetch(request, env) {
     const url = new URL(request.url);
     try { return secure(await respond(request, env, url), url.pathname.startsWith('/api/')); } catch (e) {

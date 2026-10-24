@@ -256,13 +256,13 @@ const ADVANCED = new Set(['sales/SO', 'sales/DN', 'sales/QUOTE', 'purchase/PO', 
 const ADV_DOCS = ['QUOTE', 'SO', 'DN', 'PO', 'GRN'];
 const simple = () => !ME || (ME.org.mode || 'simple') !== 'advanced';
 /* which permission area a menu entry needs (custom roles may not see every area) */
-const navArea = (h) => /^(receipts|payments|expenses|accounts|journal)$/.test(h) ? 'finance' : /^(sales\/|pos$)/.test(h) ? 'sales' : /^(purchase\/|gate\/in$)/.test(h) ? 'purchase'
+const navArea = (h) => /^(receipts|payments|expenses|accounts|journal)$/.test(h) ? 'finance' : /^(sales\/|pos$|recurring$)/.test(h) ? 'sales' : /^(purchase\/|gate\/in$)/.test(h) ? 'purchase'
   : /^(items|stock|stockcount|gate\/out|pending)$/.test(h) ? 'items' : /^(parties|reminders)$/.test(h) ? 'masters' : /^(khata|vaade)$/.test(h) ? 'khata'
   : /^(reports\/|tally$|daybook$)/.test(h) ? 'reports' : h === 'plan' ? 'settings' : '';
 const seen = (h) => { if (h === 'cash') return !ME.view || ME.view.finance !== false || ME.view.reports !== false; const a = navArea(h); return !a || !ME.view || ME.view[a] !== false; };
 const NAV = [
   ['', [['dashboard', 'Dashboard']]],
-  ['Sales', [['pos', 'Quick Bill (POS)'], ['sales/INV', 'Invoices'], ['sales/SO', 'Sales Orders'], ['sales/DN', 'Delivery Notes'], ['sales/QUOTE', 'Quotations'], ['sales/SRET', 'Sales Returns'], ['sales/CNOTE', 'Credit Notes (rate diff)'], ['receipts', 'Receipts']]],
+  ['Sales', [['pos', 'Quick Bill (POS)'], ['sales/INV', 'Invoices'], ['recurring', 'Recurring Bills'], ['sales/SO', 'Sales Orders'], ['sales/DN', 'Delivery Notes'], ['sales/QUOTE', 'Quotations'], ['sales/SRET', 'Sales Returns'], ['sales/CNOTE', 'Credit Notes (rate diff)'], ['receipts', 'Receipts']]],
   ['Purchase', [['purchase/PO', 'Purchase Orders'], ['gate/in', 'Gate Entry (inward)'], ['purchase/GRN', 'Goods Receipts (GRN)'], ['purchase/BILL', 'Purchase Bills'], ['purchase/PRET', 'Purchase Returns'], ['purchase/DNOTE', 'Debit Notes (rate diff)'], ['payments', 'Payments']]],
   ['Inventory', [['items', 'Items'], ['stock', 'Stock & Godowns'], ['stockcount', 'Stock Count'], ['gate/out', 'Gate Pass (outward)'], ['pending', 'Pending Orders']]],
   ['Contacts', [['parties', 'Customers & Suppliers'], ['khata', 'Khata Book'], ['reminders', 'Payment Reminders'], ['vaade', 'Vaade (Promises)']]],
@@ -691,6 +691,7 @@ route(/^doc\/(\d+)$/, async (el, m) => {
     if (!simple() && ['INV', 'DN'].includes(d.type)) more.push(`<button class="btn" id="ewb">E-way bill</button>`);
     if (!simple() && ['INV', 'SRET', 'DN'].includes(d.type)) more.push(`<button class="btn" id="refs">${d.irn || d.ewb_no ? 'Edit' : 'Add'} IRN / EWB no.</button>`);
     if (['INV', 'BILL', 'QUOTE', 'SO', 'PO'].includes(d.type)) more.push(`<a class="btn" href="#/new/${d.type}?copy=${d.id}">Repeat (new copy, today)</a>`);
+    if (['INV', 'BILL'].includes(d.type)) more.push('<button class="btn" id="recur">Make it every month / week…</button>');
     more.push(`<button class="btn danger" id="cancel">Cancel ${esc((T && T.label) || 'document')}</button>`);
   }
   main.push(`<button class="btn primary" data-act="print">Print / PDF</button>`);
@@ -711,6 +712,15 @@ route(/^doc\/(\d+)$/, async (el, m) => {
     { k: 'trans_doc_no', label: 'LR / RR number' }, { k: 'trans_doc_date', label: 'LR date', type: 'date' }],
   async (v) => fileDownload(`/api/docs/${d.id}/ewaybill?${new URLSearchParams(v)}`), { submit: 'Download JSON',
     intro: '<p class="muted">Upload the file at ewaybillgst.gov.in → e-Waybill → Generate Bulk. Then save the e-way bill number here with “Add IRN / EWB no.”</p>' });
+  if ($('#recur')) $('#recur').onclick = () => {
+    const nm = new Date(ME.today + 'T00:00:00Z'); nm.setUTCMonth(nm.getUTCMonth() + 1);
+    modal(`Repeat ${d.number} automatically`, [
+      { k: 'every', label: 'Make it every', type: 'select', value: 'month', options: [{ v: 'week', t: 'Week' }, { v: 'month', t: 'Month' }, { v: 'quarter', t: '3 months (quarter)' }, { v: 'year', t: 'Year' }] },
+      { k: 'next_on', label: 'First new one on', type: 'date', value: nm.toISOString().slice(0, 10), required: true },
+      { k: 'ends_on', label: 'Stop after (optional)', type: 'date', value: '' }],
+    async (v) => { await POST(`/api/docs/${d.id}/recurring`, v); toast('Done. It will be made by itself every ' + v.every + '.'); go('recurring'); },
+    { submit: 'Start', intro: `<p class="muted">Every morning on the due date SmartTrader makes a new ${d.type === 'INV' ? 'invoice' : 'bill'} with the same party and items, dated that day. You can share it on WhatsApp from the Invoices list. हर महीने अपने आप नया बिल बन जाएगा।</p>` });
+  };
   if ($('#refs')) $('#refs').onclick = () => modal('GST portal numbers', [
     { k: 'irn', label: 'IRN (e-invoice)', value: d.irn, wide: true }, { k: 'ack_no', label: 'Ack No', value: d.ack_no }, { k: 'ack_date', label: 'Ack date', value: d.ack_date },
     { k: 'ewb_no', label: 'E-way bill no.', value: d.ewb_no }, { k: 'ewb_date', label: 'E-way bill date', value: d.ewb_date }],
@@ -1865,6 +1875,29 @@ route(/^pending$/, async (el) => {
 });
 
 /* ======================================================================= payment reminders (bulk) */
+/* ======================================================================= recurring invoices and bills */
+route(/^recurring$/, async (el) => {
+  const { rows } = await GET('/api/recurring');
+  const every = { week: 'Every week', month: 'Every month', quarter: 'Every 3 months', year: 'Every year' };
+  el.innerHTML = head('Recurring Bills', ME.user.role === 'owner' ? '<button class="btn" id="rundue">Make due ones now</button>' : '') + `
+    <p class="muted">Rent, AMC, tuition, monthly supply: open any invoice or purchase bill and choose <b>More → Make it every month / week</b>. A new one is made by itself every morning on its date. हर महीने अपने आप बिल।</p>
+    <div class="panel flush">${table([
+      { h: 'Made from', f: (r) => `<a href="#/doc/${r.src_doc_id}">${esc(r.number)}</a><div class="muted">${esc(r.party || '')}</div>` },
+      { h: 'Repeats', f: (r) => esc(every[r.every] || r.every) + (r.ends_on ? `<div class="muted">till ${fdate(r.ends_on)}</div>` : '') },
+      { h: 'Next', f: (r) => r.active ? fdate(r.next_on) : '<span class="badge">stopped</span>' },
+      { h: 'Amount', num: 1, cls: 'hide-sm', f: (r) => inr(r.total) },
+      { h: 'Last made', cls: 'hide-sm', f: (r) => (r.last_doc_id ? `<a href="#/doc/${r.last_doc_id}">${esc(r.last_number)}</a>` : '—') + (r.last_error ? `<div class="neg small">${esc(r.last_error)}</div>` : '') },
+      { h: '', f: (r) => r.active ? `<button class="btn sm danger" data-stop="${r.id}">Stop</button>` : '' }],
+    rows, { empty: emptyCta('No recurring bills yet. Open an invoice and choose "Make it every month".', '<a class="btn primary" href="#/sales/INV">Open invoices</a>') })}</div>`;
+  $$('[data-stop]', el).forEach((b) => { b.onclick = async () => {
+    if (!confirm('Stop this schedule? Bills already made stay as they are.')) return;
+    try { await POST(`/api/recurring/${b.dataset.stop}/stop`); toast('Stopped'); render(); } catch (e) { toast(e.message, 'err'); }
+  }; });
+  if ($('#rundue')) $('#rundue').onclick = async () => {
+    try { const r = await POST('/api/recurring/run'); dirty('items', 'accounts', 'parties'); toast(r.made ? `${r.made} made` : 'Nothing is due today'); render(); } catch (e) { toast(e.message, 'err'); }
+  };
+});
+
 route(/^reminders$/, async (el) => {
   const [ag, kh] = await Promise.all([GET('/api/reports/ageing?kind=receivable'), GET('/api/khata')]);
   let sent = {};
