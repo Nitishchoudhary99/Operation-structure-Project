@@ -35,7 +35,10 @@ export function razorpayMode(env) {
 const hubSecret = (env) => String(env.PAYHUB_SECRET || '').trim();
 export const hubOn = (env) => !!((env.PAYHUB_URL || (env.PAYHUB_API && env.PAYHUB_API.fetch)) && hubSecret(env));
 /* The main way to pay: 'upi' | 'order' | 'webhook' | 'off' */
-export function billingMode(env) { return hubOn(env) ? 'upi' : razorpayMode(env); }
+/* Razorpay is the main way while UPI-auto is not fully live (its checkout takes UPI too). Variable PAY_PRIMARY=upi puts DocBrisk Pay
+   first again. Razorpay leads only when it can confirm by itself (Key Secret or webhook secret set). */
+const rzpFirst = (env) => String(env.PAY_PRIMARY || 'razorpay').toLowerCase() === 'razorpay' && razorpayMode(env) !== 'off';
+export function billingMode(env) { return hubOn(env) && !rzpFirst(env) ? 'upi' : razorpayMode(env); }
 const keyId = (env) => String(env.RAZORPAY_KEY_ID || PUBLIC_KEY_ID).trim();
 /* Plan prices are before GST; the customer pays the price plus 18% GST, rounded to the rupee. */
 export const grossPaise = (plan) => Math.round(PLANS[plan].price * (1 + GST)) * 100;
@@ -113,7 +116,7 @@ export async function billingStart(c) {
   if (!Object.hasOwn(PLANS, plan) || plan === 'free') throw bad('Please choose a plan.');
   const wantRzp = c.body.method === 'razorpay';
   if (wantRzp && rzp === 'off') throw bad('Card payment is not available. Please pay by UPI.');
-  if (!wantRzp && upi) {
+  if (!wantRzp && upi && !rzpFirst(c.env)) {
     const out = await upiStart(c, plan);
     if (out) return out;
     // the hub is not ready or busy: card / netbanking if Razorpay is set up, otherwise ask to retry
