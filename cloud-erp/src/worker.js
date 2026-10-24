@@ -17,8 +17,10 @@ import {
 import * as rep from './reports.js';
 import { PLANS, planOut, planOf, usage, checkCount, countError, seatBlocked, seatError, requireFeature, extendPlan, adminKey, trialUntil, hasFeature } from './saas.js';
 import { secure } from './headers.js';
-import { createRecurring, listRecurring, stopRecurring, runDue } from './recurring.js';
-import { buildBackup, driveRoutes, runDriveBackups } from './gdrive.js';
+import { createRecurring, listRecurring, stopRecurring, resumeRecurring, runDue } from './recurring.js';
+import { buildBackup, driveRoutes, runDriveBackups, listDriveBackups, readDriveBackup } from './gdrive.js';
+import { excelBackup } from './export.js';
+import { restoreBackup, isEmptyOrg } from './restore.js';
 import { cleanVaada, splitPlan, planOptions, minPart, risk, riskStatements, riskInput, setStatements, evalSet, writeBackStatements, promiseOut, pctOf,
   forecast, inr0, FREE_OPEN_MAX } from './vaada.js';
 import { STATES, einvoiceJson, ewaybillJson } from './gst.js';
@@ -713,6 +715,7 @@ router.add('PUT', '/api/docs/:id/design', async (c) => {
 router.add('POST', '/api/docs/:id/recurring', async (c) => json({ id: await createRecurring(c, +c.params.id) }));
 router.add('GET', '/api/recurring', async (c) => json({ rows: await listRecurring(c) }));
 router.add('POST', '/api/recurring/:id/stop', async (c) => { await stopRecurring(c, +c.params.id); return json({ ok: true }); });
+router.add('POST', '/api/recurring/:id/resume', async (c) => { await resumeRecurring(c, +c.params.id); return json({ ok: true }); });
 router.add('POST', '/api/recurring/run', async (c) => {
   if (c.user.role !== 'owner') throw forbidden('Only the business owner can do this.');
   return json(await runDue(c.env, c.org.id));
@@ -844,6 +847,26 @@ router.add('GET', '/api/export/backup', async (c) => {
   return download(`smarttrader-backup-${today()}.json`, b.json);
 });
 driveRoutes(router);
+
+/* The same records as a readable Excel workbook (owner only): one sheet per kind of record, amounts in rupees */
+router.add('GET', '/api/export/excel', async (c) => {
+  if (c.user.role !== 'owner') throw forbidden('Only the business owner can download a full backup.');
+  const x = await excelBackup(c.db, c.org);
+  await c.db.batch([auditStatement(c, 'backup excel', `${x.counts.bills} bills`)]);
+  return new Response(x.bytes, { headers: { 'Content-Type': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+    'Content-Disposition': `attachment; filename="smarttrader-${today()}.xlsx"`, 'Cache-Control': 'no-store' } });
+});
+
+/* Restore (src/restore.js): only into an empty business, by the owner, from an uploaded backup or from Google Drive */
+const ownerOnly = (c) => { if (c.user.role !== 'owner') throw forbidden('Only the business owner can restore a backup.'); };
+router.add('GET', '/api/restore/check', async (c) => json({ empty: await isEmptyOrg(c.db, c.org.id) }));
+router.add('POST', '/api/restore', async (c) => { ownerOnly(c); return json(await restoreBackup(c, c.body)); }, { bodyMax: 30e6 });
+router.add('GET', '/api/gdrive/backups', async (c) => { ownerOnly(c); return json({ files: await listDriveBackups(c.env, c.org.id) }); });
+router.add('POST', '/api/restore/drive', async (c) => {
+  ownerOnly(c);
+  if (!(await isEmptyOrg(c.db, c.org.id))) throw bad('Restore works only in a new, empty business. Make a new SmartTrader account, then restore the backup there.');
+  return json(await restoreBackup(c, await readDriveBackup(c.env, c.org.id, c.body.file_id)));
+});
 
 /* ======================================================================= plan & billing (SaaS) */
 router.add('GET', '/api/plan', async (c) => json({
@@ -1649,7 +1672,7 @@ async function handleApi(request, env, counter) {
     c.raw = await request.text();
     if (c.raw.length > 200000) throw new HttpError(413, 'Request too large.');
     try { c.body = JSON.parse(c.raw || '{}'); } catch (e) { throw bad('Bad body.'); }
-  } else if (request.method !== 'GET') c.body = await readJson(request);
+  } else if (request.method !== 'GET') c.body = await readJson(request, m.route.opts.bodyMax);
   if (!m.route.opts.public) {
     const p = await sessionFromRequest(env, request);
     if (!p) throw new HttpError(401, 'Please sign in.');

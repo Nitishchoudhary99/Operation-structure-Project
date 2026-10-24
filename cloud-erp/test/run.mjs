@@ -340,6 +340,8 @@ await api('POST', '/api/auth/login', { email: 'store' + email, password: 'Store-
 const denied = await api('POST', '/api/payments', { kind: 'receipt', party_id: cust.id, account_id: accts.cash.id, amount: 1 }, true);
 check('store role cannot record receipts', denied.status === 403);
 check('only the owner can download a full backup', (await api('GET', '/api/export/backup', null, true)).status === 403);
+check('only the owner can download the Excel backup', (await api('GET', '/api/export/excel', null, true)).status === 403);
+check('only the owner can restore a backup', (await api('POST', '/api/restore', { format: 'smarttrader-backup', version: 1, tables: {} }, true)).status === 403);
 check('only the owner can make due recurring bills by hand', (await api('POST', '/api/recurring/run', {}, true)).status === 403);
 const storeCookie = cookie;
 check('only the owner can connect Google Drive', (await api('POST', '/api/gdrive/connect', {}, true)).status === 403);
@@ -369,6 +371,11 @@ if (process.env.ERP_GDRIVE_MOCK) {
       if (u.pathname === '/oauth2/v3/userinfo') return send(res, 200, { email: 'owner@gmail.com' });
       if (u.pathname === '/drive/v3/files' && req.method === 'POST') return send(res, 200, { id: 'fold1' });
       if (u.pathname === '/drive/v3/files' && req.method === 'GET') return send(res, 200, { files: files.slice().sort((a, b2) => b2.createdTime.localeCompare(a.createdTime)) });
+      if (u.pathname.startsWith('/drive/v3/files/') && req.method === 'GET' && u.searchParams.get('alt') === 'media') {
+        const f = files.find((x) => x.id === u.pathname.split('/').pop());
+        if (!f) return send(res, 404, { error: { message: 'File not found' } });
+        res.writeHead(200, { 'Content-Type': 'application/json' }); return res.end(f.body);
+      }
       if (u.pathname.startsWith('/drive/v3/files/') && req.method === 'GET') return send(res, 200, { id: 'fold1', trashed: false });
       if (u.pathname.startsWith('/drive/v3/files/') && req.method === 'DELETE') { const id = u.pathname.split('/').pop(); files.splice(files.findIndex((f) => f.id === id), 1); res.writeHead(204); return res.end(); }
       if (u.pathname === '/upload/drive/v3/files') {
@@ -410,6 +417,21 @@ if (process.env.ERP_GDRIVE_MOCK) {
   check('status shows the Google account and the last backup', st1.connected && st1.email === 'owner@gmail.com' && !!st1.last_backup_at && !st1.last_error && !('refresh_enc' in st1), JSON.stringify(st1));
   const now1 = await (await ofetch('/api/gdrive/backup', { method: 'POST', body: '{}' })).json();
   check('Back up now saves another file', now1.ok && files.filter((f) => f.body).length === 2, JSON.stringify(now1));
+  {
+    // a new, empty business connects the same Google account and restores the backup from Drive
+    const nb = await rq('POST', '/api/auth/signup', { business: 'Drive Restore Co', name: 'D', email: `drive${Date.now()}@test.in`, password: 'Drive-pass-1', state: 'Rajasthan' }, { ip: '203.0.113.95' });
+    const dfetch = (path, o = {}) => fetch(BASE + path, { redirect: 'manual', ...o, headers: { 'Content-Type': 'application/json', 'X-Requested-With': 'SmartTrader', Cookie: nb.cookie, 'CF-Connecting-IP': '203.0.113.95', ...(o.headers || {}) } });
+    const ds = new URL((await (await dfetch('/api/gdrive/connect', { method: 'POST', body: '{}' })).json()).url).searchParams.get('state');
+    const uploads = files.filter((f) => f.body).length;
+    const dcb = await dfetch('/api/gdrive/callback?code=good&state=' + encodeURIComponent(ds));
+    check('an empty business connects Drive without uploading an empty backup', /drive=okempty/.test(dcb.headers.get('location') || '') && files.filter((f) => f.body).length === uploads);
+    const list = (await (await dfetch('/api/gdrive/backups')).json()).files;
+    const pick = list.find((f) => (files.find((x) => x.id === f.id) || {}).body);
+    check('the backups in Drive are listed', list.length >= 2 && !!pick, JSON.stringify(list).slice(0, 200));
+    const dr = await (await dfetch('/api/restore/drive', { method: 'POST', body: JSON.stringify({ file_id: pick.id }) })).json();
+    check('restore from Google Drive brings the business back', dr.records > 50 && (await (await dfetch('/api/restore/check')).json()).empty === false, JSON.stringify(dr).slice(0, 200));
+    await dfetch('/api/gdrive', { method: 'DELETE' });
+  }
   check('weekly backups can be chosen', (await (await ofetch('/api/gdrive', { method: 'PUT', body: JSON.stringify({ every: 'week' }) })).json()).every === 'week');
   const revokes = calls.filter((x) => x === 'POST /revoke').length;
   await ofetch('/api/gdrive', { method: 'DELETE' });
@@ -423,6 +445,64 @@ if (process.env.ERP_GDRIVE_MOCK) {
     && j.format === 'smarttrader-backup' && j.tables.docs.some((d) => d.id === inv.id) && j.tables.doc_lines.some((l) => l.doc_id === inv.id) && j.tables.parties.length >= 2);
   check('backup has no password hashes or private link tokens', !/pw_hash|"salt"|khata_token/.test(txt) && j.tables.users.length >= 2);
   check('backup holds only this business', j.tables.docs.every((d) => d.org_id === j.org.id) && j.tables.items.every((d) => d.org_id === j.org.id));
+
+  // Excel copy: a real .xlsx (zip) with the sheets
+  const xr = await fetch(BASE + '/api/export/excel', { headers: { Cookie: ownerCookie } });
+  const xb = new Uint8Array(await xr.arrayBuffer()), xs = new TextDecoder('latin1').decode(xb);
+  check('owner gets an Excel workbook of the business', xr.ok && /spreadsheetml/.test(xr.headers.get('content-type') || '') && xs.startsWith('PK')
+    && xs.includes('xl/worksheets/sheet10.xml') && /filename="smarttrader-\d{4}-\d{2}-\d{2}\.xlsx"/.test(xr.headers.get('content-disposition') || ''), xr.status);
+
+  // restore into a brand-new, empty business: every record comes back with new ids, books and balances identical
+  const nu = await rq('POST', '/api/auth/signup', { business: 'Restore Co', name: 'R', email: `restore${Date.now()}@test.in`, password: 'Restore-pass-1', state: 'Rajasthan' }, { ip: '203.0.113.90' });
+  const rc = nu.cookie, R2 = (m, p, b) => rq(m, p, b, { cookie: rc, ip: '203.0.113.90' });
+  check('a new business is empty, so it can restore', (await R2('GET', '/api/restore/check')).data.empty === true);
+  const planBefore = (await R2('GET', '/api/me')).data.plan;
+  const rr = await R2('POST', '/api/restore', j);
+  check('restore brings the backup in', rr.status === 200 && rr.data.records > 50, JSON.stringify(rr.data).slice(0, 300));
+  const j2 = await (await fetch(BASE + '/api/export/backup', { headers: { Cookie: rc } })).json();
+  const same = (t) => j2.tables[t].length === j.tables[t].length;
+  check('every bill, line, party, item, payment, khata entry, journal line and stock move is back',
+    ['docs', 'doc_lines', 'parties', 'items', 'payments', 'payment_allocs', 'khata', 'journals', 'journal_lines', 'stock_moves', 'stock'].every(same),
+    ['docs', 'doc_lines', 'parties', 'items', 'payments', 'journal_lines', 'stock_moves'].map((t) => `${t} ${j.tables[t].length}/${j2.tables[t].length}`).join(' '));
+  const sum = (x, t, k) => x.tables[t].reduce((n, r) => n + (+r[k] || 0), 0);
+  check('totals are identical', sum(j, 'docs', 'total') === sum(j2, 'docs', 'total') && sum(j, 'journal_lines', 'debit') === sum(j2, 'journal_lines', 'debit') && sum(j, 'payments', 'amount') === sum(j2, 'payments', 'amount'));
+  check('the restored records belong only to the new business and point only at its own rows', j2.org.id !== j.org.id
+    && ['docs', 'parties', 'items', 'payments', 'journal_lines', 'khata'].every((t) => j2.tables[t].every((r) => r.org_id === j2.org.id))
+    && j2.tables.doc_lines.every((l) => j2.tables.docs.some((d) => d.id === l.doc_id))
+    && j2.tables.docs.every((d) => d.party_id === null || j2.tables.parties.some((p) => p.id === d.party_id))
+    && j2.tables.journal_lines.every((l) => j2.tables.accounts.some((a) => a.id === l.account_id)));
+  const tbA = (await rq('GET', '/api/reports/trial-balance', undefined, { cookie: ownerCookie })).data, tbB = (await R2('GET', '/api/reports/trial-balance')).data;
+  check('the restored books balance and match the original trial balance', tbB.balanced && JSON.stringify(tbA.rows.map((r) => [r.code, r.debit, r.credit])) === JSON.stringify(tbB.rows.map((r) => [r.code, r.debit, r.credit])));
+  const bal = async (o) => Object.fromEntries((await rq('GET', '/api/parties', undefined, o)).data.rows.map((p) => [p.name, p.balance]));
+  check('party balances are the same', JSON.stringify(await bal({ cookie: ownerCookie })) === JSON.stringify(await bal({ cookie: rc, ip: '203.0.113.90' })));
+  const meR = (await R2('GET', '/api/me')).data;
+  check('the business profile comes back, the plan does not', meR.org.name === j.org.name && meR.plan.key === planBefore.key && meR.plan.until === planBefore.until,
+    JSON.stringify([meR.org.name, j.org.name, meR.plan, planBefore]));
+  check('a second restore into a business with records is refused', (await R2('POST', '/api/restore', j)).status === 400 && (await R2('GET', '/api/restore/check')).data.empty === false);
+
+  // a doctored file cannot reach another business's rows, buy a plan, or name a column
+  const fk = await rq('POST', '/api/auth/signup', { business: 'Forged Co', name: 'F', email: `forged${Date.now()}@test.in`, password: 'Forged-pass-1', state: 'Rajasthan' }, { ip: '203.0.113.91' });
+  const F = (m, p, b) => rq(m, p, b, { cookie: fk.cookie, ip: '203.0.113.91' });
+  const fPlan = (await F('GET', '/api/me')).data.plan;
+  const otherParty = j.tables.parties[0].id;
+  const forged = { ...j, org: { ...j.org, plan: 'business', plan_until: '2099-12-31', name: 'Forged Co' }, tables: {
+    parties: [{ id: 7, org_id: 1, name: 'Only Party', kind: 'customer', ["name) VALUES ('x'); DROP TABLE docs; --"]: 'boom' }],
+    docs: [{ ...j.tables.docs.find((d) => d.type === 'INV'), id: 11, party_id: otherParty === 7 ? 8 : otherParty, org_id: 1 }],
+    doc_lines: [{ ...j.tables.doc_lines[0], id: 21, doc_id: 999999 }], accounts: [], users: [],
+    recurring: [{ id: 31, org_id: 1, src_doc_id: 11, every: 'month', anchor_day: 5, next_on: '2025-01-05', active: 1, created_by: 1, created_at: '2025-01-01T00:00:00Z', runs: 3 }] } };
+  const fr = await F('POST', '/api/restore', forged);
+  const j3 = await (await fetch(BASE + '/api/export/backup', { headers: { Cookie: fk.cookie } })).json();
+  check('a doctored backup restores only into its own rows (no foreign links, unknown columns ignored, no plan)', fr.status === 200
+    && j3.tables.parties.length === 1 && j3.tables.parties[0].name === 'Only Party' && j3.tables.docs.length === 1 && j3.tables.docs[0].party_id === null
+    && j3.tables.doc_lines.length === 0 && (await F('GET', '/api/me')).data.plan.key === fPlan.key && (await F('GET', '/api/me')).data.plan.until === fPlan.until
+    && (await rq('GET', `/api/docs/${inv.id}`, undefined, { cookie: ownerCookie })).status === 200,
+    JSON.stringify([fr.status, j3.tables.parties.map((p) => p.name), j3.tables.docs.map((d) => d.party_id), j3.tables.doc_lines.length, (await F('GET', '/api/me')).data.plan.key]));
+  check('a file that is not a backup is refused', (await F('POST', '/api/restore', { hello: 1 })).status === 400);
+  const recs = (await F('GET', '/api/recurring')).data.rows;
+  const resumed = recs.length ? await F('POST', `/api/recurring/${recs[0].id}/resume`) : null;
+  const after = recs.length ? (await F('GET', '/api/recurring')).data.rows[0] : null;
+  check('recurring bills come back paused and start again on Resume (from today, no backlog)', recs.length === 1 && recs[0].active === 0
+    && resumed.status === 200 && after.active === 1 && after.next_on === (await F('GET', '/api/me')).data.today, JSON.stringify([recs, resumed && resumed.data, after]).slice(0, 300));
 }
 await api('POST', '/api/auth/signup', { business: 'Other Co', name: 'X', email: 'x' + email, password: 'Other-pass-1' });
 const peek = await api('GET', `/api/docs/${inv.id}`, null, true);
@@ -551,7 +631,7 @@ if (orgsRes.status === 404) console.log('SKIP  admin tests (no ADMIN_KEY configu
 else {
   const orgs = await orgsRes.json();
   check('admin lists businesses', orgs.rows.some((o) => o.name === 'Sharma Traders'));
-  const mine = orgs.rows.find((o) => o.name === 'Sharma Traders');
+  const mine = orgs.rows.find((o) => o.id === me.org.id);       // by id: a restored copy of this business has the same name
   await adm('POST', `/api/admin/orgs/${mine.id}/plan`, { plan: 'free', months: 1 });
   const capped = await api('POST', '/api/warehouses', { name: 'Godown 3' }, true);
   check('free plan blocks extra godowns (402)', capped.status === 402 && capped.upgrade, JSON.stringify(capped));
