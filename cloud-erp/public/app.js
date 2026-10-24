@@ -472,7 +472,7 @@ route(/^(sales|purchase)\/([A-Z]+)$/, async (el, m, q) => {
       <input name="q" type="search" placeholder="Search number or party" value="${esc(q.get('q') || '')}" style="max-width:260px">
       <button type="button" class="btn sm show-sm" id="moref" aria-expanded="false">More filters</button>
       <select name="status" style="max-width:160px"><option value="">All statuses</option>${['open', 'partial', 'closed', 'unpaid', 'paid', 'converted', 'cancelled'].map((s) => `<option ${q.get('status') === s ? 'selected' : ''}>${s}</option>`).join('')}</select>
-      <input type="date" name="from" value="${esc(q.get('from') || '')}" style="max-width:160px"><input type="date" name="to" value="${esc(q.get('to') || '')}" style="max-width:160px">
+      <input type="date" name="from" aria-label="From date" value="${esc(q.get('from') || '')}" style="max-width:160px"><input type="date" name="to" aria-label="To date" value="${esc(q.get('to') || '')}" style="max-width:160px">
       ${cfF.map((f) => f.type === 'select' ? `<select name="cf.${f.key}" style="max-width:160px"><option value="">${esc(f.label)}: all</option>${f.options.map((o) => `<option ${q.get('cf.' + f.key) === o ? 'selected' : ''}>${esc(o)}</option>`).join('')}</select>`
         : `<input name="cf.${f.key}" placeholder="${esc(f.label)}" value="${esc(q.get('cf.' + f.key) || '')}" style="max-width:160px">`).join('')}
       <button class="btn">Search</button></form>
@@ -503,6 +503,7 @@ route(/^new\/([A-Z]+)$/, async (el, m, q) => {
     if (!draft.party_id) draft.party_id = ge.party_id;
   }
   if (q.get('from')) draft = { ...draft, ...(await GET(`/api/docs/${q.get('from')}/convert?to=${type}`)) };
+  else if (q.get('copy')) draft = { ...draft, ...(await GET(`/api/docs/${encodeURIComponent(q.get('copy'))}/copy`)) };
   // purchase order for everything at or below its reorder level
   if (q.get('reorder') && type === 'PO') {
     const low = (await GET('/api/reports/stock')).rows.filter((r) => r.suggested_order > 0);
@@ -689,6 +690,7 @@ route(/^doc\/(\d+)$/, async (el, m) => {
     if (!simple() && ['INV', 'SRET', 'CNOTE'].includes(d.type)) more.push(`<a class="btn" href="/api/docs/${d.id}/einvoice" id="einv">E-invoice JSON</a>`);
     if (!simple() && ['INV', 'DN'].includes(d.type)) more.push(`<button class="btn" id="ewb">E-way bill</button>`);
     if (!simple() && ['INV', 'SRET', 'DN'].includes(d.type)) more.push(`<button class="btn" id="refs">${d.irn || d.ewb_no ? 'Edit' : 'Add'} IRN / EWB no.</button>`);
+    if (['INV', 'BILL', 'QUOTE', 'SO', 'PO'].includes(d.type)) more.push(`<a class="btn" href="#/new/${d.type}?copy=${d.id}">Repeat (new copy, today)</a>`);
     more.push(`<button class="btn danger" id="cancel">Cancel ${esc((T && T.label) || 'document')}</button>`);
   }
   main.push(`<button class="btn primary" data-act="print">Print / PDF</button>`);
@@ -820,7 +822,7 @@ route(/^party\/(\d+)$/, async (el, m, q) => {
     <div class="kpis"><div class="kpi"><div class="l">Balance</div><div class="v ${L.closing >= 0 ? 'pos' : 'neg'}">${inr(Math.abs(L.closing))} ${L.closing >= 0 ? 'Dr' : 'Cr'}</div><div class="s">${L.closing >= 0 ? 'They owe you' : 'You owe them'}</div></div>
       <div class="kpi"><div class="l">Contact</div><div class="s">${esc(p.phone)} ${esc(p.email)}<br>${esc(p.gstin)} ${esc(p.state)}</div></div></div>
     <div id="vaada-box" class="no-print"></div>
-    <div class="panel"><form class="row" id="per"><input type="date" name="from" value="${L.from}" style="max-width:170px"><input type="date" name="to" value="${L.to}" style="max-width:170px"><button class="btn">Show</button><span class="spacer"></span><button type="button" class="btn" data-act="print">Print statement</button></form></div>
+    <div class="panel"><form class="row" id="per"><input type="date" name="from" aria-label="From date" value="${L.from}" style="max-width:170px"><input type="date" name="to" aria-label="To date" value="${L.to}" style="max-width:170px"><button class="btn">Show</button><span class="spacer"></span><button type="button" class="btn" data-act="print">Print statement</button></form></div>
     <div class="panel flush">${table([{ h: 'Date', f: (r) => fdate(r.date) }, { h: 'Voucher', f: (r) => r.ref_id && ['INV', 'BILL', 'SRET', 'PRET'].includes(r.ref_type) ? `<a href="#/doc/${r.ref_id}">${esc(r.number)}</a>` : esc(r.number || r.ref_type) },
       { h: 'Particulars', k: 'narration' }, { h: 'Debit', num: 1, f: (r) => r.debit ? inr(r.debit) : '' }, { h: 'Credit', num: 1, f: (r) => r.credit ? inr(r.credit) : '' }, { h: 'Balance', num: 1, f: (r) => inr(r.balance) }],
     [{ date: L.from, narration: 'Opening balance', debit: 0, credit: 0, balance: L.opening }, ...L.rows])}</div>`;
@@ -1416,7 +1418,7 @@ route(/^accounts$/, async (el) => {
 route(/^account\/(\d+)$/, async (el, m, q) => {
   const L = await GET(`/api/accounts/${m[1]}/ledger?from=${q.get('from') || ''}&to=${q.get('to') || ''}`);
   el.innerHTML = head(`${esc(L.account.code)} ${esc(L.account.name)}`) + `
-    <div class="panel"><form class="row" id="per"><input type="date" name="from" value="${L.from}" style="max-width:170px"><input type="date" name="to" value="${L.to}" style="max-width:170px"><button class="btn">Show</button></form></div>
+    <div class="panel"><form class="row" id="per"><input type="date" name="from" aria-label="From date" value="${L.from}" style="max-width:170px"><input type="date" name="to" aria-label="To date" value="${L.to}" style="max-width:170px"><button class="btn">Show</button></form></div>
     <div class="panel flush">${table([{ h: 'Date', f: (r) => fdate(r.date) }, { h: 'Particulars', f: (r) => esc(r.narration) + (r.party ? ` <span class="muted">· ${esc(r.party)}</span>` : '') },
       { h: 'Debit', num: 1, f: (r) => r.debit ? inr(r.debit) : '' }, { h: 'Credit', num: 1, f: (r) => r.credit ? inr(r.credit) : '' }, { h: 'Balance', num: 1, f: (r) => inr(r.balance) }],
     [{ date: L.from, narration: 'Opening balance', debit: 0, credit: 0, balance: L.opening }, ...L.rows])}</div>`;
@@ -1427,7 +1429,7 @@ route(/^journal$/, async (el) => {
   const accts = await master('accounts'), parties = await master('parties');
   const aopt = `<option value="">Account…</option>` + accts.map((a) => `<option value="${a.id}">${esc(a.code)} ${esc(a.name)}</option>`).join('');
   const popt = `<option value="">(no party)</option>` + parties.map((p) => `<option value="${p.id}">${esc(p.name)}</option>`).join('');
-  const row = () => `<tr><td><select name="account_id">${aopt}</select></td><td class="hide-sm"><select name="party_id">${popt}</select></td><td class="c-n"><input name="debit" type="number" step="any" min="0"></td><td class="c-n"><input name="credit" type="number" step="any" min="0"></td></tr>`;
+  const row = () => `<tr><td><select name="account_id" aria-label="Account">${aopt}</select></td><td class="hide-sm"><select name="party_id" aria-label="Party">${popt}</select></td><td class="c-n"><input name="debit" aria-label="Debit" type="number" step="any" min="0"></td><td class="c-n"><input name="credit" aria-label="Credit" type="number" step="any" min="0"></td></tr>`;
   el.innerHTML = head('Journal Voucher') + `<form id="jv"><div class="err" hidden></div>
     <div class="panel"><div class="form"><label class="f">Date<input type="date" name="date" value="${ME.today}"></label><label class="f wide">Narration<input name="narration" placeholder="e.g. Capital introduced, bank charges, contra"></label></div></div>
     <div class="panel flush"><table class="t lines"><thead><tr><th>Account</th><th class="hide-sm">Party (for debtors/creditors)</th><th>Debit ₹</th><th>Credit ₹</th></tr></thead><tbody id="jl">${row() + row()}</tbody>
@@ -1447,7 +1449,7 @@ route(/^journal$/, async (el) => {
 });
 route(/^daybook$/, async (el, m, q) => {
   const d = await GET(`/api/reports/daybook?from=${q.get('from') || ME.today}&to=${q.get('to') || ME.today}`);
-  el.innerHTML = head('Day Book') + `<div class="panel"><form class="row" id="per"><input type="date" name="from" value="${d.from}" style="max-width:170px"><input type="date" name="to" value="${d.to}" style="max-width:170px"><button class="btn">Show</button></form></div>
+  el.innerHTML = head('Day Book') + `<div class="panel"><form class="row" id="per"><input type="date" name="from" aria-label="From date" value="${d.from}" style="max-width:170px"><input type="date" name="to" aria-label="To date" value="${d.to}" style="max-width:170px"><button class="btn">Show</button></form></div>
     ${d.entries.length ? d.entries.map((e) => `<div class="panel flush"><div style="padding:10px 14px" class="row"><b>${fdate(e.date)}</b><span>${esc(e.narration)}</span><span class="spacer"></span><span class="badge">${esc(e.ref_type)}</span></div>
       ${table([{ h: 'Account', k: 'account' }, { h: 'Party', k: 'party', cls: 'hide-sm' }, { h: 'Debit', num: 1, f: (r) => r.debit ? inr(r.debit) : '' }, { h: 'Credit', num: 1, f: (r) => r.credit ? inr(r.credit) : '' }], e.lines)}</div>`).join('')
     : '<div class="panel empty">No entries for these dates.</div>'}`;
@@ -1456,7 +1458,7 @@ route(/^daybook$/, async (el, m, q) => {
 
 /* ======================================================================= reports */
 const periodBar = (d, extra = '') => `<div class="panel no-print"><form class="row" id="per">${d.from ? `<label class="f">From<input type="date" name="from" value="${d.from}"></label>` : ''}
-  <label class="f">${d.from ? 'To' : 'As on'}<input type="date" name="to" value="${d.to || d.as_of || ME.today}"></label>${extra}<label class="f">&nbsp;<button class="btn">Show</button></label>
+  <label class="f">${d.from ? 'To' : 'As on'}<input type="date" name="to" aria-label="To date" value="${d.to || d.as_of || ME.today}"></label>${extra}<label class="f">&nbsp;<button class="btn">Show</button></label>
   <span class="spacer"></span><label class="f">&nbsp;<span class="row"><button type="button" class="btn" id="csv">CSV</button><button type="button" class="btn" data-act="print">Print</button></span></label></form></div>`;
 route(/^reports\/([a-z-]+)$/, async (el, m, q) => {
   const name = m[1], qs = q.toString();
@@ -1724,6 +1726,8 @@ route(/^settings$/, async (el) => {
       <p class="muted">Changing your password signs you out on every other device. "Sign out everywhere" does that without changing it.</p></form>
     ${ME.can.settings ? `<div class="panel"><h2>Customer links</h2><p class="muted">Invoice and khata links you sent on WhatsApp or SMS work for anyone who has them. If a link went to the wrong person, turn it off on that invoice or khata page. To turn off every link of this business at once:</p>
       <div class="row"><button type="button" class="btn danger" id="revokeall">Turn off all customer links</button></div></div>` : ''}
+    ${ME.user.role === 'owner' ? `<div class="panel"><h2>Backup</h2><p class="muted">Download every record of your business (invoices, parties, items, stock, khata, payments, accounts) in one file. Keep it safe on your phone, PC or Google Drive. Your data is yours: you can take it with you anytime.<br>अपने पूरे कारोबार का डेटा एक फ़ाइल में डाउनलोड करें।</p>
+      <div class="row"><button type="button" class="btn" id="backup">Download full backup</button></div></div>` : ''}
     <p class="muted">Selling SmartTrader to other businesses? <a href="#/admin">Open the admin panel</a> (needs the ADMIN_KEY secret).</p>
     ${canUsers ? `<div class="panel flush"><div style="padding:14px 16px 0"><h3>Audit trail</h3></div>${table([{ h: 'When', f: (a) => new Date(a.at).toLocaleString('en-IN') }, { h: 'User', k: 'user' }, { h: 'Action', k: 'action' }, { h: 'Detail', k: 'detail', cls: 'hide-sm' }], audit.slice(0, 100))}</div>` : ''}`;
   $$('[name=mode]', el).forEach((r) => r.onchange = async () => {
@@ -1737,6 +1741,7 @@ route(/^settings$/, async (el) => {
     if (!confirm('Sign out of SmartTrader on every device, including this one?')) return;
     await POST('/api/me/logout-all'); ME = null; location.hash = ''; renderAuth();
   };
+  if ($('#backup')) $('#backup').onclick = () => fileDownload('/api/export/backup');
   if ($('#revokeall')) $('#revokeall').onclick = async () => {
     if (!confirm('Turn off ALL invoice and khata links you have shared? Customers who open an old link will see that it is not valid. Sharing again makes a new link.')) return;
     try { const r = await POST('/api/org/revoke-links'); toast(`${r.invoices + r.khata} link(s) turned off`); } catch (e) { toast(e.message, 'err'); }
@@ -1805,12 +1810,12 @@ route(/^stockcount$/, async (el, m, q) => {
   const wid = +q.get('wh') || (whs[0] && whs[0].id);
   const w = whs.find((x) => x.id === wid) || {};
   const rows = s.rows.map((r) => ({ ...r, here: ((r.warehouses || []).find((x) => x.warehouse === w.name) || { qty: 0 }).qty }));
-  el.innerHTML = head('Stock Count', `<select id="wh" style="width:auto">${whs.map((x) => `<option value="${x.id}" ${x.id === wid ? 'selected' : ''}>${esc(x.name)}</option>`).join('')}</select>`) + `
+  el.innerHTML = head('Stock Count', `<select id="wh" aria-label="Godown" style="width:auto">${whs.map((x) => `<option value="${x.id}" ${x.id === wid ? 'selected' : ''}>${esc(x.name)}</option>`).join('')}</select>`) + `
     <p class="muted">Count the shelves and type what you find. Leave an item blank to skip it. On save, the differences are adjusted in stock and in the books (Stock Adjustments) in one go.</p>
     <div class="panel"><input id="search" placeholder="Filter items…" style="max-width:320px"></div>
     <form id="cf"><div class="err" hidden></div><div class="panel flush"><div class="tbl-wrap"><table class="t lines"><thead><tr><th>Item</th><th class="hide-sm">Bin</th><th class="num">System qty</th><th>Counted</th><th class="num">Difference</th></tr></thead>
       <tbody>${rows.map((r) => `<tr data-name="${esc(r.name.toLowerCase())}"><td><b>${esc(r.name)}</b><div class="muted">${esc(r.sku || '')}</div></td><td class="hide-sm">${esc((r.location || ''))}</td>
-        <td class="num">${qtyf(r.here)} ${esc(r.unit)}</td><td class="c-n"><input type="number" step="any" min="0" name="c${r.id}" data-sys="${r.here}" data-id="${r.id}" inputmode="decimal"></td><td class="num" data-diff></td></tr>`).join('')}</tbody></table></div></div>
+        <td class="num">${qtyf(r.here)} ${esc(r.unit)}</td><td class="c-n"><input type="number" step="any" min="0" name="c${r.id}" aria-label="Counted quantity: ${esc(r.name)}" data-sys="${r.here}" data-id="${r.id}" inputmode="decimal"></td><td class="num" data-diff></td></tr>`).join('')}</tbody></table></div></div>
       <div class="row"><input type="date" name="date" value="${ME.today}" style="max-width:170px"><span class="spacer"></span><button class="btn primary">Save count & adjust stock</button></div></form>`;
   $('#wh').onchange = (e) => go('stockcount?wh=' + e.target.value);
   $('#search').oninput = (e) => { const f = e.target.value.toLowerCase(); $$('#cf tbody tr').forEach((tr) => { tr.hidden = f && !tr.dataset.name.includes(f); }); };
@@ -2102,7 +2107,7 @@ route(/^labels\/(\d+)$/, async (el, m, q) => {
   const it = (await master('items')).find((x) => x.id === +m[1]);
   if (!it) throw new Error('Item not found.');
   const n = Math.min(200, Math.max(1, +q.get('n') || 24)), code = labelCode(it);
-  el.innerHTML = head(`Labels: ${esc(it.name)}`, `<form class="row" id="lf"><input name="n" type="number" min="1" max="200" value="${n}" style="width:90px"><button class="btn">Update</button></form><button class="btn primary" data-act="print">Print labels</button>`) +
+  el.innerHTML = head(`Labels: ${esc(it.name)}`, `<form class="row" id="lf"><input name="n" type="number" min="1" max="200" value="${n}" aria-label="Number of labels" style="width:90px"><button class="btn">Update</button></form><button class="btn primary" data-act="print">Print labels</button>`) +
     `<p class="muted no-print">Code <b>${esc(code)}</b>. ${it.barcode || it.sku ? '' : 'This item has no barcode, so the label uses its built-in code; the POS screen recognises it.'} Use A4 label sheets or a label printer.</p>
     <div class="labels">${Array.from({ length: n }, () => `<div class="label"><div class="ln">${esc(it.name)}</div><svg class="bc"></svg><div class="lp">MRP ${inr(it.sale_price)}</div></div>`).join('')}</div>`;
   $('#lf').onsubmit = (e) => { e.preventDefault(); go(`labels/${it.id}?n=${e.target.n.value}`); };

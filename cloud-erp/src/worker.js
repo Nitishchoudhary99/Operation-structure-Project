@@ -696,6 +696,16 @@ router.add('GET', '/api/docs/:id/convert', async (c) => {
   return json({ type: to, party_id: src.party_id, ref_id: src.id, ref_number: src.number, warehouse_id: src.warehouse_id, date: today(), extra: src.extra, lines });
 });
 
+/* Repeat: a new draft of the same type, party and lines as an earlier document, dated today (monthly bills,
+   regular orders). It is only a draft for the new-document form; nothing is saved or linked to the original. */
+const REPEATABLE = ['INV', 'BILL', 'QUOTE', 'SO', 'PO'];
+router.add('GET', '/api/docs/:id/copy', async (c) => {
+  const src = await docDetail(c, +c.params.id);
+  if (!REPEATABLE.includes(src.type)) throw bad(`A ${src.type} cannot be repeated.`);
+  return json({ type: src.type, party_id: src.party_id, warehouse_id: src.warehouse_id, date: today(), extra: src.extra, notes: src.notes || '',
+    lines: src.lines.map((l) => ({ item_id: l.item_id, item: l.item, unit: l.unit, description: l.description, qty: l.qty, rate: l.rate, discount_pct: l.discount_pct, gst_rate: l.gst_rate })) });
+});
+
 /* GST portal files: e-invoice (IRP) and e-way bill JSON, and the numbers the portal gives back */
 const download = (name, body, type = 'application/json') => new Response(body, { headers: {
   'Content-Type': type + '; charset=utf-8', 'Content-Disposition': `attachment; filename="${name}"`, 'Cache-Control': 'no-store' } });
@@ -801,6 +811,25 @@ router.add('GET', '/api/export/tally', async (c) => {
   requireFeature(c.org, 'tally');
   const t = await tallyXml(c.db, c.org, c.url.searchParams);
   return download(`tally-${t.from}-to-${t.to}.xml`, t.xml, 'application/xml');
+});
+
+/* Full backup: every record of this business in one JSON file, so the owner's data is never locked in here.
+   Owner only. Login secrets (password hashes, salts) and private link tokens are left out; caches that are
+   rebuilt from the records are skipped. */
+const BACKUP_TABLES = ['accounts', 'warehouses', 'parties', 'items', 'stock', 'stock_moves', 'docs', 'payments', 'journals', 'journal_lines',
+  'khata', 'counters', 'gate_entries', 'roles', 'vaade', 'vaada_kisht', 'billing_orders', 'audit'];
+router.add('GET', '/api/export/backup', async (c) => {
+  if (c.user.role !== 'owner') throw forbidden('Only the business owner can download a full backup.');
+  const id = c.org.id, all = async (sql) => (await c.db.prepare(sql).bind(id).all()).results;
+  const tables = {};
+  for (const t of BACKUP_TABLES) tables[t] = await all(`SELECT * FROM ${t} WHERE org_id = ?`);
+  tables.doc_lines = await all(`SELECT l.* FROM doc_lines l JOIN docs d ON d.id = l.doc_id WHERE d.org_id = ?`);
+  tables.payment_allocs = await all(`SELECT a.* FROM payment_allocs a JOIN payments p ON p.id = a.payment_id WHERE p.org_id = ?`);
+  tables.users = await all(`SELECT id, email, name, role, role_id, active, created_at FROM users WHERE org_id = ?`);
+  tables.parties.forEach((r) => { delete r.khata_token; });
+  const org = (await all(`SELECT * FROM orgs WHERE id = ?`))[0] || {};
+  await c.db.batch([auditStatement(c, 'backup', `${Object.values(tables).reduce((n, r) => n + r.length, 0)} records`)]);
+  return download(`smarttrader-backup-${today()}.json`, JSON.stringify({ format: 'smarttrader-backup', version: 1, exported_at: nowIso(), org, tables }));
 });
 
 /* ======================================================================= plan & billing (SaaS) */

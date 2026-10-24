@@ -339,7 +339,16 @@ const ownerCookie = cookie;
 await api('POST', '/api/auth/login', { email: 'store' + email, password: 'Store-pass-1' });
 const denied = await api('POST', '/api/payments', { kind: 'receipt', party_id: cust.id, account_id: accts.cash.id, amount: 1 }, true);
 check('store role cannot record receipts', denied.status === 403);
+check('only the owner can download a full backup', (await api('GET', '/api/export/backup', null, true)).status === 403);
 const storeCookie = cookie;
+{
+  const bk = await fetch(BASE + '/api/export/backup', { headers: { Cookie: ownerCookie } });
+  const j = await bk.json(), txt = JSON.stringify(j);
+  check('owner backup has every invoice, its lines and the parties', bk.ok && /attachment; filename="smarttrader-backup-/.test(bk.headers.get('content-disposition') || '')
+    && j.format === 'smarttrader-backup' && j.tables.docs.some((d) => d.id === inv.id) && j.tables.doc_lines.some((l) => l.doc_id === inv.id) && j.tables.parties.length >= 2);
+  check('backup has no password hashes or private link tokens', !/pw_hash|"salt"|khata_token/.test(txt) && j.tables.users.length >= 2);
+  check('backup holds only this business', j.tables.docs.every((d) => d.org_id === j.org.id) && j.tables.items.every((d) => d.org_id === j.org.id));
+}
 await api('POST', '/api/auth/signup', { business: 'Other Co', name: 'X', email: 'x' + email, password: 'Other-pass-1' });
 const peek = await api('GET', `/api/docs/${inv.id}`, null, true);
 check('another business cannot see this invoice', peek.status === 404);
@@ -409,6 +418,10 @@ const ew = await (await raw(`/api/docs/${inv.id}/ewaybill?distance=12&vehicle_no
 check('e-way bill JSON', ew.billLists[0].vehicleNo === 'RJ14AB1234' && ew.billLists[0].fromPincode === 302001, JSON.stringify(ew).slice(0, 160));
 await api('PUT', `/api/docs/${inv.id}/gst-refs`, { irn: 'a'.repeat(64), ack_no: '112410000000001', ewb_no: '321000000001' });
 check('IRN saved on invoice', (await api('GET', `/api/docs/${inv.id}`)).irn.length === 64);
+{
+  const cp = await api('GET', `/api/docs/${inv.id}/copy`);
+  check('repeat gives a draft of the same invoice dated today, not linked', cp.type === 'INV' && cp.party_id === inv.party_id && cp.lines.length === (await api('GET', `/api/docs/${inv.id}`)).lines.length && !cp.ref_id && cp.lines.every((l) => !l.src_line_id) && cp.date === (await api('GET', '/api/me')).today);
+}
 const tx = await raw('/api/export/tally');
 const xml = await tx.text();
 check('Tally XML export', tx.ok && xml.includes('<VOUCHER VCHTYPE="Sales"') && xml.includes('<PARENT>Sundry Debtors</PARENT>') && xml.includes('Mehta Stores'));
