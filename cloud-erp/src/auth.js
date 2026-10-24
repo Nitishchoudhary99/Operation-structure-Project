@@ -36,7 +36,7 @@ export function passwordProblem(pw) {
 
 /* The signing secret: SESSION_SECRET if set, otherwise one generated once and kept in the database. */
 let secretCache = null;
-async function sessionSecret(env) {
+export async function sessionSecret(env) {
   if (env.SESSION_SECRET) return env.SESSION_SECRET;
   if (secretCache) return secretCache;
   let row = await env.DB.prepare(`SELECT v FROM meta WHERE k = 'session_secret'`).first();

@@ -342,6 +342,64 @@ check('store role cannot record receipts', denied.status === 403);
 check('only the owner can download a full backup', (await api('GET', '/api/export/backup', null, true)).status === 403);
 check('only the owner can make due recurring bills by hand', (await api('POST', '/api/recurring/run', {}, true)).status === 403);
 const storeCookie = cookie;
+check('only the owner can connect Google Drive', (await api('POST', '/api/gdrive/connect', {}, true)).status === 403);
+if (process.env.ERP_GDRIVE_MOCK) {
+  /* Google Drive backup against a stand-in Google (start the worker with the GDRIVE_* vars pointing at it, see README) */
+  const http = await import('node:http');
+  const files = [], calls = [];
+  for (let i = 0; i < 32; i++) files.push({ id: 'old' + i, name: 'smarttrader-backup-old-' + i + '.json', createdTime: new Date(Date.UTC(2025, 0, 1 + i)).toISOString(), body: '' });
+  const send = (res, code, o) => { res.writeHead(code, { 'Content-Type': 'application/json' }); res.end(JSON.stringify(o)); };
+  const g = http.createServer((req, res) => {
+    let b = ''; req.on('data', (d) => { b += d; }); req.on('end', () => {
+      const u = new URL(req.url, 'http://x'); calls.push(req.method + ' ' + u.pathname);
+      if (u.pathname === '/token') {
+        const f = new URLSearchParams(b);
+        if (f.get('grant_type') === 'authorization_code' && f.get('code') === 'good') return send(res, 200, { access_token: 'at1', refresh_token: 'rt-secret-1', expires_in: 3600 });
+        if (f.get('grant_type') === 'refresh_token' && f.get('refresh_token') === 'rt-secret-1') return send(res, 200, { access_token: 'at2', expires_in: 3600 });
+        return send(res, 400, { error: 'invalid_grant' });
+      }
+      if (u.pathname === '/revoke') return send(res, 200, {});
+      if (req.headers.authorization !== 'Bearer at1' && req.headers.authorization !== 'Bearer at2') return send(res, 401, { error: { message: 'no token' } });
+      if (u.pathname === '/oauth2/v3/userinfo') return send(res, 200, { email: 'owner@gmail.com' });
+      if (u.pathname === '/drive/v3/files' && req.method === 'POST') return send(res, 200, { id: 'fold1' });
+      if (u.pathname === '/drive/v3/files' && req.method === 'GET') return send(res, 200, { files: files.slice().sort((a, b2) => b2.createdTime.localeCompare(a.createdTime)) });
+      if (u.pathname.startsWith('/drive/v3/files/') && req.method === 'GET') return send(res, 200, { id: 'fold1', trashed: false });
+      if (u.pathname.startsWith('/drive/v3/files/') && req.method === 'DELETE') { const id = u.pathname.split('/').pop(); files.splice(files.findIndex((f) => f.id === id), 1); res.writeHead(204); return res.end(); }
+      if (u.pathname === '/upload/drive/v3/files') {
+        const parts = b.split(/--st[^\r\n]*/); const meta = JSON.parse(parts[1].split('\r\n\r\n')[1]); const body = parts[2].split('\r\n\r\n').slice(1).join('\r\n\r\n').replace(/\r\n$/, '');
+        const f = { id: 'f' + files.length + Date.now(), name: meta.name, createdTime: new Date().toISOString(), body, parents: meta.parents }; files.push(f);
+        return send(res, 200, { id: f.id, name: f.name, size: String(body.length) });
+      }
+      send(res, 404, { error: { message: 'unknown ' + u.pathname } });
+    });
+  });
+  await new Promise((ok) => g.listen(+process.env.ERP_GDRIVE_MOCK, '127.0.0.1', ok));
+  const ofetch = (path, o = {}) => fetch(BASE + path, { redirect: 'manual', ...o, headers: { 'Content-Type': 'application/json', 'X-Requested-With': 'SmartTrader', Cookie: ownerCookie, ...(o.headers || {}) } });
+  const st0 = await (await ofetch('/api/gdrive')).json();
+  check('Drive backup is set up and not connected yet', st0.configured === true && st0.connected === false, JSON.stringify(st0));
+  const cn = await (await ofetch('/api/gdrive/connect', { method: 'POST', body: '{}' })).json();
+  const au = new URL(cn.url);
+  check('connect sends the owner to Google with drive.file only and offline access', au.searchParams.get('scope').includes('auth/drive.file') && !au.searchParams.get('scope').includes('auth/drive ')
+    && au.searchParams.get('access_type') === 'offline' && au.searchParams.get('redirect_uri').endsWith('/api/gdrive/callback'));
+  const state = au.searchParams.get('state');
+  const bad1 = await ofetch('/api/gdrive/callback?code=good&state=' + encodeURIComponent(state.slice(0, -3) + 'AAA'));
+  check('a forged state is refused', bad1.status === 302 && /drive=bad/.test(bad1.headers.get('location')));
+  const cb = await ofetch('/api/gdrive/callback?code=good&state=' + encodeURIComponent(state));
+  check('Google sends the owner back: connected and the first backup is saved', cb.status === 302 && /drive=ok/.test(cb.headers.get('location')), cb.headers.get('location'));
+  const up = files.filter((f) => f.body);
+  const j = up.length ? JSON.parse(up[0].body) : {};
+  check('the Drive file is the full backup, in the SmartTrader folder, without login secrets', up.length === 1 && j.format === 'smarttrader-backup' && j.tables.docs.length > 0
+    && up[0].parents[0] === 'fold1' && !/pw_hash|khata_token|share_token|rt-secret/.test(up[0].body));
+  check('only the newest 30 backups are kept', files.length === 30 && files.some((f) => f.body), String(files.length));
+  const st1 = await (await ofetch('/api/gdrive')).json();
+  check('status shows the Google account and the last backup', st1.connected && st1.email === 'owner@gmail.com' && !!st1.last_backup_at && !st1.last_error && !('refresh_enc' in st1), JSON.stringify(st1));
+  const now1 = await (await ofetch('/api/gdrive/backup', { method: 'POST', body: '{}' })).json();
+  check('Back up now saves another file', now1.ok && files.filter((f) => f.body).length === 2, JSON.stringify(now1));
+  check('weekly backups can be chosen', (await (await ofetch('/api/gdrive', { method: 'PUT', body: JSON.stringify({ every: 'week' }) })).json()).every === 'week');
+  await ofetch('/api/gdrive', { method: 'DELETE' });
+  check('disconnect revokes Google access and forgets the link', calls.includes('POST /revoke') && (await (await ofetch('/api/gdrive')).json()).connected === false);
+  g.close();
+}
 {
   const bk = await fetch(BASE + '/api/export/backup', { headers: { Cookie: ownerCookie } });
   const j = await bk.json(), txt = JSON.stringify(j);

@@ -18,6 +18,7 @@ import * as rep from './reports.js';
 import { PLANS, planOut, planOf, usage, checkCount, countError, seatBlocked, seatError, requireFeature, extendPlan, adminKey, trialUntil, hasFeature } from './saas.js';
 import { secure } from './headers.js';
 import { createRecurring, listRecurring, stopRecurring, runDue } from './recurring.js';
+import { buildBackup, driveRoutes, runDriveBackups } from './gdrive.js';
 import { cleanVaada, splitPlan, planOptions, minPart, risk, riskStatements, riskInput, setStatements, evalSet, writeBackStatements, promiseOut, pctOf,
   forecast, inr0, FREE_OPEN_MAX } from './vaada.js';
 import { STATES, einvoiceJson, ewaybillJson } from './gst.js';
@@ -834,24 +835,15 @@ router.add('GET', '/api/export/tally', async (c) => {
   return download(`tally-${t.from}-to-${t.to}.xml`, t.xml, 'application/xml');
 });
 
-/* Full backup: every record of this business in one JSON file, so the owner's data is never locked in here.
-   Owner only. Login secrets (password hashes, salts) and private link tokens are left out; caches that are
-   rebuilt from the records are skipped. */
-const BACKUP_TABLES = ['accounts', 'warehouses', 'parties', 'items', 'stock', 'stock_moves', 'docs', 'payments', 'journals', 'journal_lines',
-  'khata', 'counters', 'gate_entries', 'roles', 'vaade', 'vaada_kisht', 'billing_orders', 'audit'];
+/* Full backup: every record of this business in one JSON file, so the owner's data is never locked in here (owner only).
+   The same file goes to the owner's Google Drive when it is connected (src/gdrive.js). */
 router.add('GET', '/api/export/backup', async (c) => {
   if (c.user.role !== 'owner') throw forbidden('Only the business owner can download a full backup.');
-  const id = c.org.id, all = async (sql) => (await c.db.prepare(sql).bind(id).all()).results;
-  const tables = {};
-  for (const t of BACKUP_TABLES) tables[t] = await all(`SELECT * FROM ${t} WHERE org_id = ?`);
-  tables.doc_lines = await all(`SELECT l.* FROM doc_lines l JOIN docs d ON d.id = l.doc_id WHERE d.org_id = ?`);
-  tables.payment_allocs = await all(`SELECT a.* FROM payment_allocs a JOIN payments p ON p.id = a.payment_id WHERE p.org_id = ?`);
-  tables.users = await all(`SELECT id, email, name, role, role_id, active, created_at FROM users WHERE org_id = ?`);
-  tables.parties.forEach((r) => { delete r.khata_token; });
-  const org = (await all(`SELECT * FROM orgs WHERE id = ?`))[0] || {};
-  await c.db.batch([auditStatement(c, 'backup', `${Object.values(tables).reduce((n, r) => n + r.length, 0)} records`)]);
-  return download(`smarttrader-backup-${today()}.json`, JSON.stringify({ format: 'smarttrader-backup', version: 1, exported_at: nowIso(), org, tables }));
+  const b = await buildBackup(c.db, c.org.id);
+  await c.db.batch([auditStatement(c, 'backup', `${b.records} records`)]);
+  return download(`smarttrader-backup-${today()}.json`, b.json);
 });
+driveRoutes(router);
 
 /* ======================================================================= plan & billing (SaaS) */
 router.add('GET', '/api/plan', async (c) => json({
@@ -1736,12 +1728,14 @@ async function respond(request, env, url) {
   }
 }
 export default {
-  /* Cron (wrangler.toml [triggers]): every morning, make the recurring invoices and bills that are due. */
+  /* Cron (wrangler.toml [triggers]): make the recurring invoices and bills that are due, and the Google Drive backups. */
   async scheduled(event, env, ctx) {
     ctx.waitUntil((async () => {
       if (!migrated) { await migrate(env.DB); migrated = true; }
       const r = await runDue(env);
       if (r.due) console.log('recurring', JSON.stringify(r));
+      const g = await runDriveBackups(env);
+      if (g.due) console.log('drive backups', JSON.stringify(g));
     })());
   },
   async fetch(request, env) {

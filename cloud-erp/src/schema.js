@@ -3,7 +3,7 @@
    Every business table carries org_id: one database serves many businesses (multi-tenant).
    migrate() runs on the first request after each deploy, so no manual migration step is needed. */
 
-export const SCHEMA_VERSION = 19;
+export const SCHEMA_VERSION = 20;
 
 // document types whose monthly totals doc_month keeps (sales and purchase money documents)
 const MONTH_TYPES = `('INV','SRET','CNOTE','BILL','PRET','DNOTE')`;
@@ -356,6 +356,11 @@ export const MIGRATIONS = {
   ],
   // per-document print design (NULL = the business's default from Branding & print)
   19: [`ALTER TABLE docs ADD COLUMN design TEXT`],
+  // Google Drive backup (src/gdrive.js): one connected Drive per business, the refresh token sealed with AES-GCM
+  20: [
+    `CREATE TABLE IF NOT EXISTS drive_links (org_id INTEGER PRIMARY KEY, user_id INTEGER NOT NULL, email TEXT, refresh_enc TEXT NOT NULL, folder_id TEXT,
+      every TEXT NOT NULL DEFAULT 'day', connected_at TEXT NOT NULL, last_backup_at TEXT, last_try_at TEXT, last_file TEXT, last_size INTEGER, last_error TEXT)`,
+  ],
 };
 
 const ATOMIC = [6, 7, 9];

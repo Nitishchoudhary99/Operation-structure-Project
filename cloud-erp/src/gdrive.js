@@ -1,0 +1,233 @@
+/* Full backup of a business, downloaded or sent to the owner's own Google Drive (like WhatsApp's chat backup).
+   Drive: the owner connects once (Google sign-in, scope drive.file: the app sees only the files it made itself).
+   A backup goes to a "SmartTrader Backup" folder every day or every week from the cron, and on "Back up now";
+   the newest 30 are kept. The Google refresh token is stored AES-GCM encrypted with a key derived from the session
+   secret. Needs the GDRIVE_CLIENT_ID and GDRIVE_CLIENT_SECRET settings (Google Cloud OAuth client, web type,
+   redirect URI https://<erp host>/api/gdrive/callback); without them Drive backup shows as "not set up". */
+import { HttpError, bad, forbidden, str, today, nowIso } from './lib.js';
+import { sessionSecret } from './auth.js';
+import { auditStatement } from './engine.js';
+
+/* ---------- the backup file ---------- */
+const BACKUP_TABLES = ['accounts', 'warehouses', 'parties', 'items', 'stock', 'stock_moves', 'docs', 'payments', 'journals', 'journal_lines',
+  'khata', 'counters', 'gate_entries', 'roles', 'vaade', 'vaada_kisht', 'recurring', 'billing_orders', 'audit'];
+
+/* Every record of this business. Login secrets (password hashes, salts), private link tokens and caches rebuilt
+   from the records are left out. */
+export async function buildBackup(db, orgId) {
+  const all = async (sql) => (await db.prepare(sql).bind(orgId).all()).results;
+  const tables = {};
+  for (const t of BACKUP_TABLES) tables[t] = await all(`SELECT * FROM ${t} WHERE org_id = ?`);
+  tables.doc_lines = await all(`SELECT l.* FROM doc_lines l JOIN docs d ON d.id = l.doc_id WHERE d.org_id = ?`);
+  tables.payment_allocs = await all(`SELECT a.* FROM payment_allocs a JOIN payments p ON p.id = a.payment_id WHERE p.org_id = ?`);
+  tables.users = await all(`SELECT id, email, name, role, role_id, active, created_at FROM users WHERE org_id = ?`);
+  tables.parties.forEach((r) => { delete r.khata_token; });
+  tables.docs.forEach((r) => { delete r.share_token; });
+  const org = (await all(`SELECT * FROM orgs WHERE id = ?`))[0] || {};
+  const records = Object.values(tables).reduce((n, r) => n + r.length, 0);
+  return { records, json: JSON.stringify({ format: 'smarttrader-backup', version: 1, exported_at: nowIso(), org, tables }) };
+}
+
+/* ---------- Google endpoints (overridable for tests) ---------- */
+const G = (env) => ({
+  auth: env.GDRIVE_OAUTH_URL || 'https://accounts.google.com/o/oauth2/v2/auth',
+  token: env.GDRIVE_TOKEN_URL || 'https://oauth2.googleapis.com/token',
+  revoke: env.GDRIVE_REVOKE_URL || 'https://oauth2.googleapis.com/revoke',
+  api: (env.GDRIVE_API || 'https://www.googleapis.com').replace(/\/$/, ''),
+});
+export const driveConfigured = (env) => !!(env.GDRIVE_CLIENT_ID && env.GDRIVE_CLIENT_SECRET);
+const SCOPE = 'https://www.googleapis.com/auth/drive.file email';
+const KEEP = 30;
+const redirectUri = (url) => url.origin + '/api/gdrive/callback';
+
+/* ---------- small crypto helpers ---------- */
+const enc = new TextEncoder();
+const b64u = (buf) => btoa(String.fromCharCode(...new Uint8Array(buf))).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+const unb64u = (s) => Uint8Array.from(atob(s.replace(/-/g, '+').replace(/_/g, '/') + '==='.slice((s.length + 3) % 4)), (ch) => ch.charCodeAt(0));
+async function keyFor(env, use) {
+  const raw = await crypto.subtle.digest('SHA-256', enc.encode('smarttrader-gdrive|' + use + '|' + await sessionSecret(env)));
+  return use === 'seal'
+    ? crypto.subtle.importKey('raw', raw, 'AES-GCM', false, ['encrypt', 'decrypt'])
+    : crypto.subtle.importKey('raw', raw, { name: 'HMAC', hash: 'SHA-256' }, false, ['sign', 'verify']);
+}
+async function seal(env, text) {
+  const iv = crypto.getRandomValues(new Uint8Array(12));
+  const ct = await crypto.subtle.encrypt({ name: 'AES-GCM', iv }, await keyFor(env, 'seal'), enc.encode(text));
+  return b64u(iv) + '.' + b64u(ct);
+}
+async function unseal(env, s) {
+  const [iv, ct] = String(s || '').split('.');
+  const pt = await crypto.subtle.decrypt({ name: 'AES-GCM', iv: unb64u(iv) }, await keyFor(env, 'seal'), unb64u(ct));
+  return new TextDecoder().decode(pt);
+}
+/* state = payload.signature, bound to the org and the user who started the connect, valid for 10 minutes */
+async function signState(env, o) {
+  const body = b64u(enc.encode(JSON.stringify({ ...o, x: Date.now() + 600e3, n: b64u(crypto.getRandomValues(new Uint8Array(9))) })));
+  return body + '.' + b64u(await crypto.subtle.sign('HMAC', await keyFor(env, 'state'), enc.encode(body)));
+}
+async function readState(env, s) {
+  const [body, sig] = String(s || '').split('.');
+  if (!body || !sig) return null;
+  let ok = false;
+  try { ok = await crypto.subtle.verify('HMAC', await keyFor(env, 'state'), unb64u(sig), enc.encode(body)); } catch (e) { ok = false; }
+  if (!ok) return null;
+  const o = JSON.parse(new TextDecoder().decode(unb64u(body)));
+  return o.x > Date.now() ? o : null;
+}
+
+/* ---------- Google calls ---------- */
+async function gjson(res, what) {
+  const t = await res.text();
+  let j = {}; try { j = JSON.parse(t || '{}'); } catch (e) { j = {}; }
+  if (!res.ok) {
+    const msg = (j.error && (j.error.message || j.error_description || j.error)) || j.error_description || res.status;
+    const e = new Error(`${what}: ${typeof msg === 'string' ? msg : res.status}`);
+    e.status = res.status; e.gone = j.error === 'invalid_grant';
+    throw e;
+  }
+  return j;
+}
+async function tokenCall(env, params) {
+  const res = await fetch(G(env).token, { method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    body: new URLSearchParams({ client_id: env.GDRIVE_CLIENT_ID, client_secret: env.GDRIVE_CLIENT_SECRET, ...params }) });
+  return gjson(res, 'Google sign-in');
+}
+const authed = (token, extra) => ({ Authorization: 'Bearer ' + token, ...(extra || {}) });
+
+async function ensureFolder(env, token, link, orgName) {
+  if (link.folder_id) {
+    const r = await fetch(`${G(env).api}/drive/v3/files/${encodeURIComponent(link.folder_id)}?fields=id,trashed`, { headers: authed(token) });
+    if (r.ok) { const f = await r.json(); if (!f.trashed) return link.folder_id; }
+  }
+  const f = await gjson(await fetch(`${G(env).api}/drive/v3/files?fields=id`, { method: 'POST', headers: authed(token, { 'Content-Type': 'application/json' }),
+    body: JSON.stringify({ name: `SmartTrader Backup - ${orgName}`.slice(0, 120), mimeType: 'application/vnd.google-apps.folder' }) }), 'Drive folder');
+  return f.id;
+}
+async function upload(env, token, folder, name, body) {
+  const boundary = 'st' + b64u(crypto.getRandomValues(new Uint8Array(12)));
+  const meta = JSON.stringify({ name, parents: [folder], mimeType: 'application/json' });
+  const payload = `--${boundary}\r\nContent-Type: application/json; charset=UTF-8\r\n\r\n${meta}\r\n--${boundary}\r\nContent-Type: application/json\r\n\r\n${body}\r\n--${boundary}--`;
+  return gjson(await fetch(`${G(env).api}/upload/drive/v3/files?uploadType=multipart&fields=id,name,size`, {
+    method: 'POST', headers: authed(token, { 'Content-Type': `multipart/related; boundary=${boundary}` }), body: payload }), 'Drive upload');
+}
+/* keep the newest KEEP backups in the folder (only files this app made are visible to it) */
+async function prune(env, token, folder) {
+  const q = encodeURIComponent(`'${folder}' in parents and trashed = false`);
+  const list = await gjson(await fetch(`${G(env).api}/drive/v3/files?q=${q}&orderBy=createdTime desc&pageSize=100&fields=files(id,name,createdTime)`, { headers: authed(token) }), 'Drive list');
+  const old = (list.files || []).filter((f) => /^smarttrader-backup-/.test(f.name)).slice(KEEP);
+  for (const f of old) await fetch(`${G(env).api}/drive/v3/files/${encodeURIComponent(f.id)}`, { method: 'DELETE', headers: authed(token) });
+  return old.length;
+}
+
+/* ---------- one backup to Drive ---------- */
+export async function backupToDrive(env, orgId, by) {
+  const db = env.DB;
+  const link = await db.prepare(`SELECT * FROM drive_links WHERE org_id = ?`).bind(orgId).first();
+  if (!link) throw bad('Google Drive is not connected.');
+  const org = await db.prepare(`SELECT id, name FROM orgs WHERE id = ?`).bind(orgId).first();
+  try {
+    let refresh;
+    try { refresh = await unseal(env, link.refresh_enc); } catch (e) { const g = new Error('sealed'); g.gone = true; throw g; }   // the session secret changed
+    const tok = await tokenCall(env, { grant_type: 'refresh_token', refresh_token: refresh });
+    const folder = await ensureFolder(env, tok.access_token, link, org.name);
+    const b = await buildBackup(db, orgId);
+    const stamp = nowIso().slice(0, 16).replace('T', '_').replace(':', '-');
+    const f = await upload(env, tok.access_token, folder, `smarttrader-backup-${stamp}.json`, b.json);
+    await prune(env, tok.access_token, folder);
+    const st = [db.prepare(`UPDATE drive_links SET folder_id = ?, last_backup_at = ?, last_file = ?, last_size = ?, last_error = NULL WHERE org_id = ?`)
+      .bind(folder, nowIso(), f.name || '', b.json.length, orgId)];
+    if (by) st.push(auditStatement({ db, org, user: by }, 'drive backup', `${b.records} records`));
+    await db.batch(st);
+    return { ok: true, file: f.name, records: b.records, size: b.json.length };
+  } catch (e) {
+    const msg = e.gone ? 'Google access was removed. Connect Google Drive again.' : String(e && e.message || 'Backup failed.').slice(0, 300);
+    await db.prepare(`UPDATE drive_links SET last_error = ?, last_try_at = ? WHERE org_id = ?`).bind(msg, nowIso(), orgId).run();
+    return { ok: false, error: msg };
+  }
+}
+
+/* ---------- routes ---------- */
+const owner = (c) => { if (c.user.role !== 'owner') throw forbidden('Only the business owner can change Google Drive backup.'); };
+const statusOf = async (c) => {
+  const l = await c.db.prepare(`SELECT email, every, connected_at, last_backup_at, last_file, last_size, last_error, last_try_at FROM drive_links WHERE org_id = ?`).bind(c.org.id).first();
+  return { configured: driveConfigured(c.env), connected: !!l, ...(l || {}) };
+};
+
+export function driveRoutes(router) {
+  router.add('GET', '/api/gdrive', async (c) => new Response(JSON.stringify(await statusOf(c)), { headers: { 'Content-Type': 'application/json' } }));
+
+  /* the Google sign-in address for this owner (the page sends the browser there) */
+  router.add('POST', '/api/gdrive/connect', async (c) => {
+    owner(c);
+    if (!driveConfigured(c.env)) throw new HttpError(503, 'Google Drive backup is not set up on this server yet.');
+    const state = await signState(c.env, { o: c.org.id, u: c.user.id });
+    const q = new URLSearchParams({ client_id: c.env.GDRIVE_CLIENT_ID, redirect_uri: redirectUri(c.url), response_type: 'code', scope: SCOPE,
+      access_type: 'offline', prompt: 'consent', include_granted_scopes: 'true', state });
+    return new Response(JSON.stringify({ url: G(c.env).auth + '?' + q }), { headers: { 'Content-Type': 'application/json' } });
+  });
+
+  /* Google sends the browser back here (a top-level GET, so the session cookie comes along) */
+  router.add('GET', '/api/gdrive/callback', async (c) => {
+    const back = (q) => new Response(null, { status: 302, headers: { Location: '/#/settings?drive=' + q, 'Cache-Control': 'no-store' } });
+    const s = await readState(c.env, c.url.searchParams.get('state'));
+    if (!s || s.o !== c.org.id || s.u !== c.user.id || c.user.role !== 'owner') return back('bad');
+    if (c.url.searchParams.get('error') || !c.url.searchParams.get('code')) return back('cancel');
+    try {
+      const t = await tokenCall(c.env, { grant_type: 'authorization_code', code: c.url.searchParams.get('code'), redirect_uri: redirectUri(c.url) });
+      if (!t.refresh_token) return back('norefresh');
+      let email = '';
+      try { email = (await gjson(await fetch(`${G(c.env).api}/oauth2/v3/userinfo`, { headers: authed(t.access_token) }), 'Google account')).email || ''; } catch (e) { email = ''; }
+      await c.db.batch([
+        c.db.prepare(`INSERT INTO drive_links (org_id, user_id, email, refresh_enc, every, connected_at) VALUES (?, ?, ?, ?, 'day', ?)
+          ON CONFLICT(org_id) DO UPDATE SET user_id = excluded.user_id, email = excluded.email, refresh_enc = excluded.refresh_enc, connected_at = excluded.connected_at, last_error = NULL`)
+          .bind(c.org.id, c.user.id, str(email, 120), await seal(c.env, t.refresh_token), nowIso()),
+        auditStatement(c, 'drive connected', email),
+      ]);
+      const r = await backupToDrive(c.env, c.org.id, c.user);
+      return back(r.ok ? 'ok' : 'fail');
+    } catch (e) {
+      return back('fail');
+    }
+  });
+
+  router.add('POST', '/api/gdrive/backup', async (c) => {
+    owner(c);
+    const r = await backupToDrive(c.env, c.org.id, c.user);
+    if (!r.ok) throw new HttpError(502, r.error);
+    return new Response(JSON.stringify(r), { headers: { 'Content-Type': 'application/json' } });
+  });
+
+  router.add('PUT', '/api/gdrive', async (c) => {
+    owner(c);
+    const every = String(c.body.every || '');
+    if (!['day', 'week'].includes(every)) throw bad('Back up every day or every week.');
+    await c.db.prepare(`UPDATE drive_links SET every = ? WHERE org_id = ?`).bind(every, c.org.id).run();
+    return new Response(JSON.stringify(await statusOf(c)), { headers: { 'Content-Type': 'application/json' } });
+  });
+
+  router.add('DELETE', '/api/gdrive', async (c) => {
+    owner(c);
+    const l = await c.db.prepare(`SELECT refresh_enc FROM drive_links WHERE org_id = ?`).bind(c.org.id).first();
+    if (l) {
+      try { await fetch(G(c.env).revoke, { method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, body: new URLSearchParams({ token: await unseal(c.env, l.refresh_enc) }) }); } catch (e) { /* already gone */ }
+      await c.db.batch([c.db.prepare(`DELETE FROM drive_links WHERE org_id = ?`).bind(c.org.id), auditStatement(c, 'drive disconnected', '')]);
+    }
+    return new Response(JSON.stringify({ ok: true }), { headers: { 'Content-Type': 'application/json' } });
+  });
+}
+
+/* Cron: backups that are due (daily: not yet today; weekly: 7 days since the last one). A few per run, so one slow
+   Google call never holds up the rest; the hourly cron gets through every business within the day. */
+export async function runDriveBackups(env, limit = 20) {
+  if (!driveConfigured(env)) return { due: 0, ok: 0 };
+  const dayStart = new Date(Date.parse(today() + 'T00:00:00+05:30')).toISOString(), weekAgo = new Date(Date.now() - 6.5 * 86400e3).toISOString();   // India days
+  const { results } = await env.DB.prepare(`SELECT org_id FROM drive_links
+    WHERE (last_try_at IS NULL OR last_try_at < ?) AND (last_backup_at IS NULL OR (every = 'day' AND last_backup_at < ?) OR (every = 'week' AND last_backup_at < ?))
+    ORDER BY last_backup_at LIMIT ?`).bind(new Date(Date.now() - 3600e3).toISOString(), dayStart, weekAgo, limit).all();
+  let ok = 0;
+  for (const r of results) {
+    await env.DB.prepare(`UPDATE drive_links SET last_try_at = ? WHERE org_id = ?`).bind(nowIso(), r.org_id).run();
+    if ((await backupToDrive(env, r.org_id, null)).ok) ok++;
+  }
+  return { due: results.length, ok };
+}

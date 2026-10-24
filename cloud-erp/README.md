@@ -206,7 +206,28 @@ node test/run.mjs http://localhost:8799                       # whole suite, inc
 # sign-up by e-mailed link: start the worker with a mail sink, then run only those checks
 npx wrangler dev --port 8799 --persist-to /tmp/erp-mail --var RESEND_API_KEY:test-key --var RESEND_URL:http://127.0.0.1:8798/send
 ERP_MAIL_SINK=8798 node test/run.mjs http://localhost:8799
+# Google Drive backup against a stand-in Google: start the worker with these, then run the whole suite with ERP_GDRIVE_MOCK
+npx wrangler dev --port 8799 --persist-to /tmp/erp-test --var GDRIVE_CLIENT_ID:test-client --var GDRIVE_CLIENT_SECRET:test-secret \
+  --var GDRIVE_TOKEN_URL:http://127.0.0.1:8797/token --var GDRIVE_REVOKE_URL:http://127.0.0.1:8797/revoke --var GDRIVE_API:http://127.0.0.1:8797
+ERP_GDRIVE_MOCK=8797 node test/run.mjs http://localhost:8799
 ```
+
+### Google Drive auto-backup (one-time setup by the SmartTrader operator)
+
+Customers connect their own Google Drive in **Settings → Backup**; a full backup then goes to a
+"SmartTrader Backup" folder in their Drive every day (or week), and the newest 30 are kept. The app asks only for
+`drive.file`, so it sees just the files it made. To switch it on for everyone:
+
+1. Google Cloud Console → create a project → **APIs & Services → Library** → enable **Google Drive API**.
+2. **OAuth consent screen**: External, app name SmartTrader ERP, your support e-mail, scopes `drive.file` and `email`.
+   Publish it (these scopes need no security review).
+3. **Credentials → Create credentials → OAuth client ID** → Web application. Authorised redirect URI:
+   `https://erp.docbrisk.com/api/gdrive/callback`.
+4. Cloudflare → the ERP worker → Settings → Variables and Secrets → add **GDRIVE_CLIENT_ID** and **GDRIVE_CLIENT_SECRET**
+   (type Secret). The hourly cron in wrangler.toml does the backups.
+
+Keep `SESSION_SECRET` fixed: the stored Google tokens are encrypted with a key made from it, so changing it means
+every business has to connect Drive again.
 
 ## Not built yet (next steps)
 

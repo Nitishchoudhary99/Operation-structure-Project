@@ -1735,7 +1735,7 @@ route(/^settings\/roles$/, async (el) => {
   });
 });
 
-route(/^settings$/, async (el) => {
+route(/^settings$/, async (el, m, q) => {
   const o = ME.org, canUsers = ME.can.users;
   const users = canUsers ? await GET('/api/users') : { rows: [], roles: [], custom_roles: [] };
   const roleOpts = [...users.roles.filter((r) => r !== 'owner').map((r) => ({ v: r, t: r })), ...(users.custom_roles || []).map((r) => ({ v: 'c:' + r.id, t: r.name }))];
@@ -1766,7 +1766,8 @@ route(/^settings$/, async (el) => {
     ${ME.can.settings ? `<div class="panel"><h2>Customer links</h2><p class="muted">Invoice and khata links you sent on WhatsApp or SMS work for anyone who has them. If a link went to the wrong person, turn it off on that invoice or khata page. To turn off every link of this business at once:</p>
       <div class="row"><button type="button" class="btn danger" id="revokeall">Turn off all customer links</button></div></div>` : ''}
     ${ME.user.role === 'owner' ? `<div class="panel"><h2>Backup</h2><p class="muted">Download every record of your business (invoices, parties, items, stock, khata, payments, accounts) in one file. Keep it safe on your phone, PC or Google Drive. Your data is yours: you can take it with you anytime.<br>अपने पूरे कारोबार का डेटा एक फ़ाइल में डाउनलोड करें।</p>
-      <div class="row"><button type="button" class="btn" id="backup">Download full backup</button></div></div>` : ''}
+      <div class="row"><button type="button" class="btn" id="backup">Download full backup</button></div>
+      <h3 style="margin-top:16px">Google Drive auto-backup</h3><div id="gdrive"><span class="muted">Checking…</span></div></div>` : ''}
     <p class="muted">Selling SmartTrader to other businesses? <a href="#/admin">Open the admin panel</a> (needs the ADMIN_KEY secret).</p>
     ${canUsers ? `<div class="panel flush"><div style="padding:14px 16px 0"><h3>Audit trail</h3></div>${table([{ h: 'When', f: (a) => new Date(a.at).toLocaleString('en-IN') }, { h: 'User', k: 'user' }, { h: 'Action', k: 'action' }, { h: 'Detail', k: 'detail', cls: 'hide-sm' }], audit.slice(0, 100))}</div>` : ''}`;
   $$('[name=mode]', el).forEach((r) => r.onchange = async () => {
@@ -1781,6 +1782,39 @@ route(/^settings$/, async (el) => {
     await POST('/api/me/logout-all'); ME = null; location.hash = ''; renderAuth();
   };
   if ($('#backup')) $('#backup').onclick = () => fileDownload('/api/export/backup');
+  /* Google Drive auto-backup, like WhatsApp's chat backup */
+  const drive = async () => {
+    const box = $('#gdrive'); if (!box) return;
+    const g = await GET('/api/gdrive').catch(() => null);
+    if (!g) { box.innerHTML = '<p class="muted">Could not check Google Drive right now.</p>'; return; }
+    const when = (t) => t ? new Date(t).toLocaleString('en-IN', { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' }) : '';
+    if (!g.configured) { box.innerHTML = '<p class="muted">Google Drive backup is being switched on for SmartTrader. Until then, use “Download full backup” and keep the file in your Drive.</p>'; return; }
+    if (!g.connected) {
+      box.innerHTML = `<p class="muted">Connect your Google Drive once. SmartTrader then saves a full backup there every day by itself, like WhatsApp does. It can see only its own backup files, nothing else in your Drive. रोज़ अपने आप Google Drive में बैकअप।</p>
+        <div class="row"><button type="button" class="btn primary" id="gconnect">Connect Google Drive</button></div>`;
+      $('#gconnect').onclick = async () => { try { location.href = (await POST('/api/gdrive/connect')).url; } catch (e) { toast(e.message, 'err'); } };
+      return;
+    }
+    box.innerHTML = `<p>Backing up to <b>${esc(g.email || 'your Google Drive')}</b>, folder “SmartTrader Backup”.</p>
+      <p class="muted">${g.last_backup_at ? `Last backup: <b>${when(g.last_backup_at)}</b>${g.last_size ? ` · ${Math.max(1, Math.round(g.last_size / 1024))} KB` : ''}` : 'No backup yet.'} The newest 30 are kept.</p>
+      ${g.last_error ? `<div class="panel err" style="margin:8px 0">${esc(g.last_error)}</div>` : ''}
+      <div class="row"><label class="f inline-f">Back up<select id="gevery"><option value="day" ${g.every !== 'week' ? 'selected' : ''}>Every day</option><option value="week" ${g.every === 'week' ? 'selected' : ''}>Every week</option></select></label>
+        <button type="button" class="btn" id="gnow">Back up now</button><span class="spacer"></span><button type="button" class="btn danger" id="goff">Disconnect</button></div>`;
+    $('#gevery').onchange = async (e) => { try { await api('PUT', '/api/gdrive', { every: e.target.value }); toast('Saved'); } catch (err) { toast(err.message, 'err'); } };
+    $('#gnow').onclick = async (e) => {
+      e.target.disabled = true; e.target.textContent = 'Backing up…';
+      try { const r = await POST('/api/gdrive/backup'); toast(`Backed up ${r.records} records to Google Drive`); } catch (err) { toast(err.message, 'err'); }
+      drive();
+    };
+    $('#goff').onclick = async () => {
+      if (!confirm('Stop backing up to Google Drive? Backups already in your Drive stay there.')) return;
+      try { await api('DELETE', '/api/gdrive'); toast('Disconnected'); drive(); } catch (err) { toast(err.message, 'err'); }
+    };
+  };
+  drive();
+  const dq = q && q.get('drive');
+  if (dq) toast({ ok: 'Google Drive connected. First backup saved.', fail: 'Google Drive connected, but the backup failed. Try “Back up now”.', cancel: 'Google Drive was not connected.',
+    norefresh: 'Google did not give offline access. Remove SmartTrader in your Google account’s third-party access, then connect again.', bad: 'That link expired. Connect again.' }[dq] || 'Done', dq === 'ok' ? 'ok' : 'err');
   if ($('#revokeall')) $('#revokeall').onclick = async () => {
     if (!confirm('Turn off ALL invoice and khata links you have shared? Customers who open an old link will see that it is not valid. Sharing again makes a new link.')) return;
     try { const r = await POST('/api/org/revoke-links'); toast(`${r.invoices + r.khata} link(s) turned off`); } catch (e) { toast(e.message, 'err'); }
