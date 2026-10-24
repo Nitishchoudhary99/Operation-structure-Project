@@ -2210,6 +2210,10 @@ route(/^plan$/, async (el, m, q) => {
         <div class="upiqr" id="upiqr"></div><button class="btn primary" id="upisave">Save QR · QR सेव करें</button>
         ${shareOk ? '<button class="btn" id="upishare">Share QR to Google Pay</button>' : ''}
         ${u.amount_paise > 200000 ? '<p class="muted small">Above ₹2,000 some UPI apps do not accept a QR from the gallery. Then scan this QR from another phone, or open this page on a computer and scan it.</p>' : ''}`;
+    // Always works: every UPI app can pay to a typed UPI ID.
+    const idBlock = u.vpa ? `<details class="upimore"><summary>Scan not working? Pay to a UPI ID</summary>
+        <p class="small muted">Open any UPI app, choose <b>Pay to UPI ID</b>, paste the ID and pay exactly <b>${amt}</b>.</p>
+        <div class="upito small"><code>${esc(u.vpa)}</code> <button class="btn sm" id="upivpacopy">Copy UPI ID</button></div></details>` : '';
     state(`<div class="panel upipay" id="upibox">
       <div class="upihead"><div><div class="muted small">Pay exactly</div><div class="upiamt">${amt}</div></div>
         <button class="btn sm" id="upiamtcopy">Copy amount</button></div>
@@ -2220,6 +2224,7 @@ route(/^plan$/, async (el, m, q) => {
           <details class="upimore" id="upiqrmore"><summary>App not opening? Pay with the QR instead</summary>${qrBlock}</details>`
         : `${qrBlock}<details class="upimore"><summary>Or open a UPI app directly</summary>${appBtns ? `<div class="upiapps">${appBtns}</div>` : ''}</details>`)
         : `<div class="upiqr" id="upiqr"></div><p class="muted small upimid">Scan with any UPI app</p>`}
+      ${idBlock}
       <div class="upito small">To <b>${esc(u.payee || '')}</b></div>
       <div class="muted small">Code ${esc(u.note || '')} · expires in <b id="upicd">--:--</b></div>
       <div class="upimsg" id="upimsg"></div>
@@ -2235,6 +2240,7 @@ route(/^plan$/, async (el, m, q) => {
     const openRef = () => { const d = $('#upiref'); if (d && !d.open) d.open = true; };
     const copy = async (text, what) => { try { await navigator.clipboard.writeText(text); toast(what + ' copied'); } catch (e) { prompt(what + ':', text); } };
     $('#upiamtcopy').onclick = () => copy(String(u.amount), 'Amount');
+    if ($('#upivpacopy')) $('#upivpacopy').onclick = () => copy(String(u.vpa || ''), 'UPI ID');
     let png = '';
     import('/vendor/qrcode.mjs').then(({ default: qrcode }) => {
       const qr = qrcode(0, 'M'); qr.addData(u.qr_text); qr.make();
