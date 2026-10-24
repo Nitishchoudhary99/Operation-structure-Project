@@ -22,6 +22,11 @@ database_id = "65271993-a4d4-4929-93fe-fcb649d132d3"
 binding = "PAYHUB_API"
 service = "docbrisk-api"
 
+# Recurring invoices and bills (06:00 India time, then hourly catch-up) and Google Drive backups (hourly, a few at a time).
+# Keep in step with cloud-erp/wrangler.toml.
+[triggers]
+crons = ["30 0 * * *", "45 * * * *"]
+
 [observability]
 enabled = true
 
