@@ -19,8 +19,15 @@ export async function readJson(request, max = 200000) {
   const text = await request.text();
   if (text.length > max) throw new HttpError(413, 'Request too large.');
   if (!text) return {};
-  try { return JSON.parse(text); } catch (e) { throw bad('Could not read the request (invalid JSON).'); }
+  let v;
+  try { v = JSON.parse(text); } catch (e) { throw bad('Could not read the request (invalid JSON).'); }
+  if (v === null || typeof v !== 'object' || Array.isArray(v)) throw bad('Could not read the request (expected a JSON object).');
+  return v;
 }
+
+/* Own-key lookup for maps keyed by anything that came from a request or from stored user data: 'constructor',
+   'toString' or '__proto__' must never resolve to something inherited from Object.prototype. */
+export const own = (obj, key) => (obj != null && Object.hasOwn(obj, key) ? obj[key] : undefined);
 
 /* ---------- validation ---------- */
 export const str = (v, max = 200) => String(v == null ? '' : v).replace(/[\u0000-\u001f\u007f]/g, ' ').trim().slice(0, max);
@@ -79,8 +86,9 @@ export function counterStatements(db, orgId, key) {
   return db.prepare(`INSERT INTO counters (org_id, key, next) VALUES (?, ?, 2)
                      ON CONFLICT(org_id, key) DO UPDATE SET next = next + 1`).bind(orgId, key);
 }
-/* SQL that reads the number just reserved by counterStatements, inside the same batch */
-export const counterValueSql = `(SELECT printf('%s-%05d', ?, next - 1) FROM counters WHERE org_id = ? AND key = ?)`;
+/* SQL that reads the number just reserved by counterStatements, inside the same batch.
+   Binds: printf format (e.g. 'INV-%05d' or 'SHT/26-27/%04d'), org id, counter key. */
+export const counterValueSql = `(SELECT printf(?, next - 1) FROM counters WHERE org_id = ? AND key = ?)`;
 
 export const uid = () => crypto.randomUUID();
 
@@ -100,7 +108,7 @@ export class Router {
       if (!m) continue;
       if (r.method !== method) { allowed = true; continue; }
       const params = {};
-      r.keys.forEach((k, i) => { params[k] = decodeURIComponent(m[i + 1]); });
+      try { r.keys.forEach((k, i) => { params[k] = decodeURIComponent(m[i + 1]); }); } catch (e) { return null; }
       return { route: r, params };
     }
     return allowed ? { methodNotAllowed: true } : null;

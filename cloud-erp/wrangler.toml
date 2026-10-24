@@ -4,6 +4,8 @@
 name = "operation-structure-project"
 main = "src/worker.js"
 compatibility_date = "2025-09-01"
+# keep variables set in the Cloudflare dashboard (PAYHUB_URL, SUPPORT_WHATSAPP, ...) across deploys
+keep_vars = true
 
 # The web app. API calls (/api/*) run the worker first; everything else is a static file,
 # and unknown paths fall back to index.html so the single-page app can route them.
@@ -11,7 +13,7 @@ compatibility_date = "2025-09-01"
 directory = "./public"
 binding = "ASSETS"
 not_found_handling = "single-page-application"
-run_worker_first = ["/api/*"]
+run_worker_first = ["/api/*", "/k/*", "/i/*"]
 
 # Create once with:  npx wrangler d1 create smarttrader-erp
 # then paste the database_id it prints below. Tables are created automatically on first request.
@@ -20,5 +22,19 @@ binding = "DB"
 database_name = "smarttrader-erp"
 database_id = "65271993-a4d4-4929-93fe-fcb649d132d3"
 
+# DocBrisk Pay (automatic UPI plan payments): optional private link to the docbrisk-api worker on the same account.
+# Set the PAYHUB_SECRET secret (and PAYHUB_URL if you do not use this binding); see README "One-time setup".
+[[services]]
+binding = "PAYHUB_API"
+service = "docbrisk-api"
+
+# Recurring invoices and bills (06:00 India time, then hourly catch-up) and Google Drive backups (hourly, a few at a time).
+[triggers]
+crons = ["30 0 * * *", "45 * * * *"]
+
 [observability]
 enabled = true
+
+# WhatsApp number for customer support (shown in the app, pricing and Plan & Billing)
+[vars]
+SUPPORT_WHATSAPP = "919068446139"

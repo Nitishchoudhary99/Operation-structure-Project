@@ -3,10 +3,14 @@
    D1 batch, which runs as a single transaction: it all happens or none of it does.
    Rows created inside a batch are found again through their unique `txk` key. */
 import {
-  bad, notFound, str, reqStr, num, date, addDays, nowIso, uid, lineCalc, toPaise, roundQty,
-  counterStatements, counterValueSql,
+  HttpError, bad, notFound, str, reqStr, num, date, addDays, nowIso, uid, lineCalc, toPaise, roundQty, today,
+  counterStatements, counterValueSql, own,
 } from './lib.js';
-import { requireCan } from './auth.js';
+import { requireCan, can } from './auth.js';
+import { stateCode } from './gst.js';
+import { checkInvoiceLimit, invoiceCap, invoiceCapError, hasFeature, planOf, upgradeError } from './saas.js';
+import { cleanVaada, risk, riskStatements, riskInput } from './vaada.js';
+import { numberSpec, fieldsOf, cleanExtra, LAYOUTS } from './custom.js';
 
 export const DOC_TYPES = {
   QUOTE: { side: 'sales', prefix: 'QT', label: 'Quotation', from: [] },
@@ -18,15 +22,16 @@ export const DOC_TYPES = {
   GRN: { side: 'purchase', prefix: 'GRN', label: 'Goods Receipt (GRN)', from: ['PO'], stock: 'in' },
   BILL: { side: 'purchase', prefix: 'BILL', label: 'Purchase Bill', from: ['PO', 'GRN'], stock: 'in', money: true },
   PRET: { side: 'purchase', prefix: 'DBN', label: 'Purchase Return (Debit Note)', from: ['BILL'], needsRef: true, stock: 'out', money: true },
+  // value notes: rate difference, discount, short/damage claims, with no goods moving
+  CNOTE: { side: 'sales', prefix: 'CRN', label: 'Credit Note (rate difference)', from: ['INV'], money: true, note: true },
+  DNOTE: { side: 'purchase', prefix: 'DRN', label: 'Debit Note (rate difference)', from: ['BILL'], money: true, note: true },
 };
+/* Documents that reduce what the party owes / what we owe, and settle the original invoice or bill. */
+export const NOTE_TYPES = ['SRET', 'PRET', 'CNOTE', 'DNOTE'];
 
 /* ---------------------------------------------------------------- context */
-export async function loadSys(db, orgId) {
-  const { results } = await db.prepare(`SELECT id, sys FROM accounts WHERE org_id = ? AND sys IS NOT NULL`).bind(orgId).all();
-  const sys = {};
-  for (const r of results) sys[r.sys] = r.id;
-  return sys;
-}
+export const SYS_SQL = `SELECT id, sys FROM accounts WHERE org_id = ? AND sys IS NOT NULL`;
+export const sysMap = (rows) => Object.fromEntries(rows.map((r) => [r.sys, r.id]));
 
 export async function cashAccount(db, orgId, id) {
   const a = await db.prepare(`SELECT id, name FROM accounts WHERE id = ? AND org_id = ? AND is_cash = 1`).bind(id, orgId).first();
@@ -48,8 +53,9 @@ export function journalStatements(db, ctx, { date: d, narration, refType, refId,
                            VALUES (?, ?, ?, ?, ${refExpr}, ?, ?, ?)`)
     .bind(ctx.org.id, d, narration.slice(0, 300), refType, refTxk || refId || null, ctx.user.id, nowIso(), txk)];
   for (const l of clean) {
+    // the account and party are looked up again inside this business: an id from another business becomes NULL (no party) or fails the whole batch (no account)
     out.push(db.prepare(`INSERT INTO journal_lines (journal_id, org_id, account_id, party_id, debit, credit, date)
-                         VALUES ((SELECT id FROM journals WHERE txk = ?), ?, ?, ?, ?, ?, ?)`)
+                         VALUES ((SELECT id FROM journals WHERE txk = ?1), ?2, (SELECT id FROM accounts WHERE id = ?3 AND org_id = ?2), (SELECT id FROM parties WHERE id = ?4 AND org_id = ?2), ?5, ?6, ?7)`)
       .bind(txk, ctx.org.id, l.account, l.party || null, l.amount > 0 ? l.amount : 0, l.amount < 0 ? -l.amount : 0, d));
   }
   return out;
@@ -84,15 +90,36 @@ export async function available(db, orgId, itemId, warehouseId) {
   return r ? r.qty : 0;
 }
 
-async function warehouseOf(db, orgId, id) {
-  if (id) {
-    const w = await db.prepare(`SELECT id, name FROM warehouses WHERE id = ? AND org_id = ?`).bind(id, orgId).first();
-    if (!w) throw bad('Unknown warehouse.');
-    return w;
+/* Several rows by id in as few queries as possible (D1 allows 100 bound values per query; the free plan
+   allows 50 queries per request, so per-line lookups would break on long documents). */
+export async function loadByIds(db, sql, fixed, ids) {
+  const out = [], uniq = [...new Set(ids.filter(Boolean))];
+  for (let i = 0; i < uniq.length; i += 90) {
+    const part = uniq.slice(i, i + 90);
+    const { results } = await db.prepare(sql.replace('(?ids)', `(${part.map(() => '?').join(',')})`)).bind(...fixed, ...part).all();
+    out.push(...results);
   }
-  const w = await db.prepare(`SELECT id, name FROM warehouses WHERE org_id = ? ORDER BY id LIMIT 1`).bind(orgId).first();
-  if (!w) throw bad('Create a warehouse first.');
-  return w;
+  return out;
+}
+async function stockIn(db, orgId, warehouseId, itemIds) {
+  const rows = await loadByIds(db, `SELECT item_id, qty FROM stock WHERE org_id = ? AND warehouse_id = ? AND item_id IN (?ids)`, [orgId, warehouseId], itemIds);
+  return new Map(rows.map((r) => [r.item_id, r.qty]));
+}
+
+async function warehouseOf(ctx, id) {
+  const { db, org } = ctx, orgId = org.id;
+  // pos = how many older godowns the business has; a godown past the plan's limit (after a plan lapses) takes no new stock
+  const pos = `(SELECT COUNT(*) FROM warehouses x WHERE x.org_id = w.org_id AND x.id < w.id) AS pos`;
+  let w;
+  if (id) {
+    w = await db.prepare(`SELECT w.id, w.name, ${pos} FROM warehouses w WHERE w.id = ? AND w.org_id = ?`).bind(id, orgId).first();
+    if (!w) throw bad('Unknown warehouse.');
+  } else {
+    w = await db.prepare(`SELECT w.id, w.name, ${pos} FROM warehouses w WHERE w.org_id = ? ORDER BY w.id LIMIT 1`).bind(orgId).first();
+    if (!w) throw bad('Create a warehouse first.');
+  }
+  if (w.pos >= planOf(org).warehouses) throw upgradeError(`${w.name} is over the godown limit of your plan, so it cannot take new stock.`);
+  return { id: w.id, name: w.name };
 }
 
 /* Signed amount: positive -> debit, negative -> credit. */
@@ -105,9 +132,11 @@ export function moneyStatus(total, paid) { return paid <= 0 ? 'unpaid' : paid >=
 export async function createDoc(ctx, body) {
   const { db } = ctx;
   const type = str(body.type, 10).toUpperCase();
-  const T = DOC_TYPES[type];
+  const T = own(DOC_TYPES, type);
   if (!T) throw bad('Unknown document type.');
   requireCan(ctx.user, T.side === 'sales' ? 'sales' : 'purchase');
+  const cap = type === 'INV' ? invoiceCap(ctx.org) : null;
+  if (cap) await checkInvoiceLimit(db, ctx.org);
   const orgId = ctx.org.id;
   const d = date(body.date);
 
@@ -121,7 +150,7 @@ export async function createDoc(ctx, body) {
   if (body.ref_id) {
     src = await db.prepare(`SELECT * FROM docs WHERE id = ? AND org_id = ?`).bind(+body.ref_id, orgId).first();
     if (!src) throw bad('Source document not found.');
-    if (!T.from.includes(src.type)) throw bad(`A ${T.label} cannot be made from a ${DOC_TYPES[src.type].label}.`);
+    if (!T.from.includes(src.type)) throw bad(`A ${T.label} cannot be made from a ${(own(DOC_TYPES, src.type) || {}).label || 'document of that kind'}.`);
     if (src.status === 'cancelled') throw bad('The source document is cancelled.');
     if (src.party_id !== party.id) throw bad('The source document belongs to another party.');
     const { results } = await db.prepare(`SELECT * FROM doc_lines WHERE doc_id = ?`).bind(src.id).all();
@@ -130,19 +159,19 @@ export async function createDoc(ctx, body) {
     throw bad(`A ${T.label} must be made from the original ${type === 'SRET' ? 'invoice' : 'bill'}.`);
   }
 
-  const wh = await warehouseOf(db, orgId, +body.warehouse_id || (src && src.warehouse_id) || 0);
-  const inter = !!(party.state && ctx.org.state && party.state.toLowerCase() !== ctx.org.state.toLowerCase());
+  const wh = await warehouseOf(ctx, +body.warehouse_id || (src && src.warehouse_id) || 0);
+  // inter-state when the two GST state codes differ (from GSTIN, else state name); falls back to comparing names
+  const sc = stateCode(party.state, party.gstin), oc = stateCode(ctx.org.state, ctx.org.gstin);
+  const inter = sc && oc ? sc !== oc : !!(party.state && ctx.org.state && party.state.toLowerCase() !== ctx.org.state.toLowerCase());
   const lines = Array.isArray(body.lines) ? body.lines : [];
   if (!lines.length) throw bad('Add at least one line.');
   if (lines.length > 200) throw bad('At most 200 lines per document.');
 
   // stock movement happens here unless an earlier document already moved the goods
   const moves = T.stock && !(type === 'INV' && src && src.type === 'DN') && !(type === 'BILL' && src && src.type === 'GRN');
-  const itemCache = new Map();
-  const getItem = async (id) => {
-    if (!itemCache.has(id)) itemCache.set(id, await db.prepare(`SELECT * FROM items WHERE id = ? AND org_id = ?`).bind(id, orgId).first());
-    return itemCache.get(id);
-  };
+  // every item on the document in one query
+  const itemCache = new Map((await loadByIds(db, `SELECT * FROM items WHERE org_id = ? AND id IN (?ids)`, [orgId], lines.map((l) => +l.item_id || 0))).map((i) => [i.id, i]));
+  const getItem = (id) => itemCache.get(id);
 
   const L = [];
   const need = new Map();   // item -> qty leaving the warehouse
@@ -151,7 +180,7 @@ export async function createDoc(ctx, body) {
     const item = raw.item_id ? await getItem(+raw.item_id) : null;
     if (raw.item_id && !item) throw bad(`Line ${n}: unknown item.`);
     const qty = roundQty(num(raw.qty, `Line ${n} quantity`, { min: 0.001, max: 1e9 }));
-    const fallbackRate = item ? (T.side === 'sales' ? item.sale_price : item.purchase_price) : 0;
+    const fallbackRate = item && !T.note ? (T.side === 'sales' ? item.sale_price : item.purchase_price) : 0;   // notes: the user types the difference
     const rate = raw.rate === undefined || raw.rate === '' || raw.rate === null ? fallbackRate : toPaise(num(raw.rate, `Line ${n} rate`, { min: 0 }));
     const disc = num(raw.discount_pct, `Line ${n} discount`, { min: 0, max: 100, def: 0 });
     const gst = num(raw.gst_rate, `Line ${n} GST rate`, { min: 0, max: 100, def: item ? item.gst_rate : 0 });
@@ -173,9 +202,12 @@ export async function createDoc(ctx, body) {
     if (moves && stocked && T.stock === 'out') need.set(item.id, (need.get(item.id) || 0) + qty);
   }
 
+  if (T.note && !L.some((l) => l.calc.taxable > 0)) throw bad('Enter the rate difference (amount per unit) on at least one line.');
+
   // stock must be available for anything leaving the warehouse
+  const onHand = await stockIn(db, orgId, wh.id, [...need.keys()]);
   for (const [itemId, q] of need) {
-    const have = await available(db, orgId, itemId, wh.id);
+    const have = onHand.get(itemId) || 0;
     if (have + 0.0005 < q) {
       const it = itemCache.get(itemId);
       throw bad(`Not enough stock of ${it.name} in ${wh.name}: ${roundQty(have)} ${it.unit} available, ${roundQty(q)} needed.`);
@@ -197,13 +229,20 @@ export async function createDoc(ctx, body) {
   const dueDate = T.money ? (body.due_date ? date(body.due_date, 'Due date') : addDays(d, party.credit_days || 0)) : (body.due_date ? date(body.due_date, 'Due date') : null);
   const initialStatus = T.money && ['INV', 'BILL'].includes(type) ? 'unpaid' : 'open';
 
-  st.push(counterStatements(db, orgId, type));
-  st.push(db.prepare(`INSERT INTO docs (org_id, type, number, party_id, date, due_date, warehouse_id, ref_id, status, place_of_supply,
-        inter_state, taxable, cgst, sgst, igst, round_off, total, paid, notes, created_by, created_at, txk)
-      VALUES (?, ?, ${counterValueSql}, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?)`)
-    .bind(orgId, type, T.prefix, orgId, type, party.id, d, dueDate, wh.id, src ? src.id : null, initialStatus,
-      party.state || ctx.org.state || '', inter ? 1 : 0, taxable, cgst, sgst, igst, roundOff, total,
-      str(body.notes, 1000), ctx.user.id, nowIso(), txk));
+  const nspec = numberSpec(ctx.org, type, T.prefix, d);
+  const extra = cleanExtra(fieldsOf(ctx.org), 'doc', body.extra, T.side);
+  st.push(counterStatements(db, orgId, nspec.key));
+  // on a capped plan the insert itself checks the monthly count, so parallel requests cannot all slip under the limit
+  const docCols = `org_id, type, number, party_id, date, due_date, warehouse_id, ref_id, status, place_of_supply,
+        inter_state, taxable, cgst, sgst, igst, round_off, total, paid, notes, created_by, created_at, txk, extra, design`;
+  const docVals = `?, ?, ${counterValueSql}, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?, ?`;
+  const docArgs = [orgId, type, nspec.fmt, orgId, nspec.key, party.id, d, dueDate, wh.id, src ? src.id : null, initialStatus,
+    party.state || ctx.org.state || '', inter ? 1 : 0, taxable, cgst, sgst, igst, roundOff, total,
+    str(body.notes, 1000), ctx.user.id, nowIso(), txk, extra, LAYOUTS.includes(body.design) ? body.design : null];
+  st.push(cap
+    ? db.prepare(`INSERT INTO docs (${docCols}) SELECT ${docVals} WHERE (SELECT COUNT(*) FROM docs WHERE org_id = ? AND type = 'INV' AND created_at >= ?) < ?`)
+      .bind(...docArgs, orgId, cap.since, cap.max)
+    : db.prepare(`INSERT INTO docs (${docCols}) VALUES (${docVals})`).bind(...docArgs));
 
   // lines + stock + per-line cost
   let costOut = 0, costIn = 0, grniClear = 0, variance = 0, serviceCost = 0;
@@ -270,11 +309,27 @@ export async function createDoc(ctx, body) {
       jl = [D(sys.inventory, costIn), D(sys.grni, grniClear), D(varianceAccount, variance), D(sys.misc_exp || sys.cogs, serviceCost),
         D(sys.gst_input, tax), D(sys.round_off, roundOff), C(sys.ap, total, P)];
       break;
+    case 'CNOTE':     // reduce the sale: Dr Sales discounts, Dr GST output / Cr Debtors
+      jl = [D(sys.sales_adj || sys.sales, taxable), D(sys.gst_output, tax), D(sys.round_off, roundOff), C(sys.ar, total, P)];
+      break;
+    case 'DNOTE':     // reduce the purchase: Dr Creditors / Cr Purchase rate difference, Cr GST input
+      jl = [D(sys.ap, total, P), C(sys.pur_adj || sys.cogs, taxable), C(sys.gst_input, tax), C(sys.round_off, roundOff)];
+      break;
     case 'PRET':
       jl = [D(sys.ap, total, P), C(sys.inventory, costOut), C(sys.misc_exp || sys.cogs, -serviceCost), C(sys.gst_input, tax), C(sys.round_off, roundOff)];
       break;
   }
   if (jl.length) st.push(...journalStatements(db, ctx, { date: d, narration: narr, ...ref, lines: jl }));
+
+  // goods receipt made at the gate: link the gate entry and close it
+  if (type === 'GRN' && body.gate_entry_id) {
+    const ge = await db.prepare(`SELECT * FROM gate_entries WHERE id = ? AND org_id = ? AND kind = 'in'`).bind(+body.gate_entry_id, orgId).first();
+    if (!ge) throw bad('Gate entry not found.');
+    if (ge.status !== 'open') throw bad(`Gate entry ${ge.number} is already ${ge.status === 'grn_done' ? 'received' : ge.status}.`);
+    if (ge.party_id && ge.party_id !== party.id) throw bad(`Gate entry ${ge.number} is for another supplier.`);
+    st.push(db.prepare(`UPDATE docs SET gate_entry_id = ? WHERE txk = ?`).bind(ge.id, txk));
+    st.push(db.prepare(`UPDATE gate_entries SET status = 'grn_done', grn_id = (SELECT id FROM docs WHERE txk = ?) WHERE id = ? AND status = 'open'`).bind(txk, ge.id));
+  }
 
   // source document progress
   if (src) {
@@ -288,8 +343,8 @@ export async function createDoc(ctx, body) {
   }
 
   // a credit/debit note settles the original invoice/bill first; anything left is an advance to the party
-  if (['SRET', 'PRET'].includes(type)) {
-    const outstanding = Math.max(0, src.total - src.paid);
+  if (NOTE_TYPES.includes(type)) {
+    const outstanding = src ? Math.max(0, src.total - src.paid) : 0;
     const apply = Math.min(outstanding, total);
     if (apply > 0) {
       st.push(db.prepare(`INSERT INTO payment_allocs (payment_id, doc_id, amount, note_id) VALUES (0, ?, ?, (SELECT id FROM docs WHERE txk = ?))`).bind(src.id, apply, txk));
@@ -299,18 +354,46 @@ export async function createDoc(ctx, body) {
   }
 
   // cash sale / cash purchase: settle immediately
+  let paidNow = 0;
   if (['INV', 'BILL'].includes(type) && body.payment && +body.payment.amount > 0) {
     const acct = await cashAccount(db, orgId, +body.payment.account_id);
     const amt = Math.min(toPaise(body.payment.amount), total);
+    paidNow = amt;
     st.push(...paymentStatements(ctx, {
       kind: type === 'INV' ? 'receipt' : 'payment', party, account: acct.id, date: d, amount: amt,
       reference: str(body.payment.reference, 80), allocs: [{ txk, amount: amt, total }],
     }));
   }
 
+  if (type === 'INV') await creditGate(ctx, party, total - paidNow, body, st);
   st.push(auditStatement(ctx, `create ${type}`, `${party.name} ${total / 100}`));
-  await db.batch(st);
+  try { await db.batch(st); } catch (e) {
+    const msg = String(e && e.message);
+    if (/UNIQUE constraint failed: docs\.org_id, docs\.type, docs\.number/.test(msg)) throw bad('This document number is already used. Change the next number in Settings > Numbering.');
+    if (cap && /NOT NULL constraint failed: doc_lines\.doc_id/.test(msg)) throw invoiceCapError(cap);   // the guarded insert added no row: the cap was reached
+    throw e;
+  }
   return db.prepare(`SELECT * FROM docs WHERE txk = ?`).bind(txk).first();
+}
+
+/* Udhaar check before a credit sale (Vaada Pakka §5.3): old dues, credit limit and broken promises.
+   'warn' mode is advisory, so it applies to clients that ask for it (the app sends credit_ok: false first);
+   API clients and older app versions that do not know about it keep working as before. 'stop' mode is always
+   enforced: only owner/admin may give udhaar then. An allowed override is audited in the invoice's own batch. */
+export const CREDIT_STOP_TEXT = 'Is grahak ka udhaar abhi band hai. Owner ya admin se approve karayein.';
+async function creditGate(ctx, party, unpaid, body, st) {
+  if (unpaid <= 0) return;
+  const s = cleanVaada(ctx.org.vaada);
+  if (s.credit_check === 'off' || !hasFeature(ctx.org, 'vaada')) return;
+  if (s.credit_check === 'warn' && !Object.prototype.hasOwnProperty.call(body, 'credit_ok')) return;
+  const t = today();
+  const r = risk(riskInput(await ctx.db.batch(riskStatements(ctx.db, ctx.org.id, party.id, t, s.grace)), party, unpaid, t), s);
+  if (!r.risky) return;
+  const canOverride = s.credit_check === 'warn' || can(ctx.user, 'settings');
+  const cw = { name: party.name, text: r.text, reasons: r.reasons, mode: s.credit_check, can_override: canOverride, kept_pct: r.kept_pct };
+  if (body.credit_ok !== true) throw new HttpError(409, r.text, { credit_warning: cw });
+  if (!canOverride) throw new HttpError(409, CREDIT_STOP_TEXT, { credit_warning: { ...cw, text: CREDIT_STOP_TEXT } });
+  st.push(auditStatement(ctx, 'credit override', `${party.name} ₹${unpaid / 100}: ${r.reasons.join(', ')}`));
 }
 
 export const auditStatement = (ctx, action, detail = '') =>
@@ -322,10 +405,11 @@ export const auditStatement = (ctx, action, detail = '') =>
 export function paymentStatements(ctx, { kind, party, account, date: d, amount, reference = '', notes = '', allocs = [] }) {
   const { db } = ctx, sys = ctx.sys;
   const ptxk = uid();
-  const st = [counterStatements(db, ctx.org.id, kind),
+  const nspec = numberSpec(ctx.org, kind, kind === 'receipt' ? 'RCT' : 'PAY', d);
+  const st = [counterStatements(db, ctx.org.id, nspec.key),
     db.prepare(`INSERT INTO payments (org_id, number, kind, party_id, account_id, date, amount, reference, notes, created_by, created_at, txk)
                 VALUES (?, ${counterValueSql}, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
-      .bind(ctx.org.id, kind === 'receipt' ? 'RCT' : 'PAY', ctx.org.id, kind, kind, party.id, account, d, amount, reference, notes, ctx.user.id, nowIso(), ptxk)];
+      .bind(ctx.org.id, nspec.fmt, ctx.org.id, nspec.key, kind, party.id, account, d, amount, reference, notes, ctx.user.id, nowIso(), ptxk)];
   for (const a of allocs) {
     if (!a.amount) continue;
     const docExpr = a.txk ? '(SELECT id FROM docs WHERE txk = ?)' : '?';
@@ -388,16 +472,20 @@ export async function cancelDoc(ctx, id) {
   if (!doc) throw notFound('Document not found.');
   requireCan(ctx.user, DOC_TYPES[doc.type].side === 'sales' ? 'sales' : 'purchase');
   if (doc.status === 'cancelled') throw bad('Already cancelled.');
-  const child = await db.prepare(`SELECT number FROM docs WHERE ref_id = ? AND status != 'cancelled' LIMIT 1`).bind(doc.id).first();
+  const child = await db.prepare(`SELECT number FROM docs WHERE ref_id = ? AND org_id = ? AND status != 'cancelled' LIMIT 1`).bind(doc.id, ctx.org.id).first();
   if (child) throw bad(`Cancel ${child.number} first: it was made from this document.`);
   const pay = await db.prepare(`SELECT 1 FROM payment_allocs WHERE doc_id = ? AND payment_id > 0 LIMIT 1`).bind(doc.id).first();
   if (pay) throw bad('Void the payments against this document first.');
 
   const st = [];
   const { results: moves } = await db.prepare(`SELECT * FROM stock_moves WHERE org_id = ? AND ref_type = ? AND ref_id = ?`).bind(ctx.org.id, doc.type, doc.id).all();
+  const haveBy = new Map();
+  for (const w of new Set(moves.filter((m) => m.qty > 0).map((m) => m.warehouse_id))) {
+    for (const [item, q] of await stockIn(db, ctx.org.id, w, moves.filter((m) => m.warehouse_id === w).map((m) => m.item_id))) haveBy.set(w + ':' + item, q);
+  }
   for (const m of moves) {
     if (m.qty > 0) {
-      const have = await available(db, ctx.org.id, m.item_id, m.warehouse_id);
+      const have = haveBy.get(m.warehouse_id + ':' + m.item_id) || 0;
       if (have + 0.0005 < m.qty) throw bad('Cannot cancel: the goods received by this document have already been used.');
     }
     st.push(...stockStatements(db, ctx, { item: m.item_id, warehouse: m.warehouse_id, qty: -m.qty, value: Math.abs(m.value),
@@ -423,6 +511,7 @@ export async function cancelDoc(ctx, id) {
       .bind(a.amount, a.amount, a.amount, a.doc_id));
   }
   if (na.length) st.push(db.prepare(`DELETE FROM payment_allocs WHERE note_id = ?`).bind(doc.id));
+  if (doc.gate_entry_id) st.push(db.prepare(`UPDATE gate_entries SET status = 'open', grn_id = NULL WHERE id = ? AND grn_id = ?`).bind(doc.gate_entry_id, doc.id));
   st.push(db.prepare(`UPDATE docs SET status = 'cancelled' WHERE id = ?`).bind(doc.id));
   st.push(auditStatement(ctx, `cancel ${doc.type}`, doc.number));
   await db.batch(st);
@@ -456,7 +545,7 @@ export async function stockAdjust(ctx, body) {
   requireCan(ctx.user, 'stock');
   const item = await db.prepare(`SELECT * FROM items WHERE id = ? AND org_id = ?`).bind(+body.item_id || 0, ctx.org.id).first();
   if (!item || item.is_service) throw bad('Choose a stocked item.');
-  const wh = await warehouseOf(db, ctx.org.id, +body.warehouse_id || 0);
+  const wh = await warehouseOf(ctx, +body.warehouse_id || 0);
   const qty = roundQty(num(body.qty, 'Quantity', { min: -1e9, max: 1e9 }));
   if (!qty) throw bad('Quantity cannot be zero.');
   const d = date(body.date);
@@ -481,13 +570,46 @@ export async function stockAdjust(ctx, body) {
   return { item_id: item.id, qty, value: value / 100 };
 }
 
+/* Physical stock count (cycle count): the counted quantity of many items in one godown, posted as one
+   set of adjustments and one journal, so the books follow the shelf. Lines: [{ item_id, counted }]. */
+export async function stockCount(ctx, body) {
+  const { db } = ctx;
+  requireCan(ctx.user, 'stock');
+  const wh = await warehouseOf(ctx, +body.warehouse_id || 0);
+  const lines = (Array.isArray(body.lines) ? body.lines : []).filter((l) => l && l.counted !== '' && l.counted !== null && l.counted !== undefined);
+  if (!lines.length) throw bad('Enter the counted quantity for at least one item.');
+  if (lines.length > 300) throw bad('Count at most 300 items at a time.');
+  const d = date(body.date);
+  const items = new Map((await loadByIds(db, `SELECT * FROM items WHERE org_id = ? AND is_service = 0 AND id IN (?ids)`, [ctx.org.id], lines.map((l) => +l.item_id))).map((i) => [i.id, i]));
+  const have = await stockIn(db, ctx.org.id, wh.id, [...items.keys()]);
+  const st = [], diffs = [];
+  let gain = 0, loss = 0;
+  for (const l of lines) {
+    const it = items.get(+l.item_id);
+    if (!it) throw bad('Unknown item in the count.');
+    const counted = roundQty(num(l.counted, `${it.name} counted quantity`, { min: 0, max: 1e9 }));
+    const diff = roundQty(counted - (have.get(it.id) || 0));
+    if (Math.abs(diff) < 0.0005) continue;
+    const value = Math.round(Math.abs(diff) * (it.avg_cost || it.purchase_price));
+    st.push(...stockStatements(db, ctx, { item: it.id, warehouse: wh.id, qty: diff, value, date: d, refType: 'COUNT', refId: null, note: `Stock count ${wh.name}` }));
+    if (diff > 0) gain += value; else loss += value;
+    diffs.push({ item: it.name, system: have.get(it.id) || 0, counted, diff });
+  }
+  if (!diffs.length) return { ok: true, adjusted: 0, diffs };
+  st.push(...journalStatements(db, ctx, { date: d, narration: `Stock count ${wh.name}: ${diffs.length} item(s) adjusted`, refType: 'COUNT', refId: null,
+    lines: [D(ctx.sys.inventory, gain - loss), C(ctx.sys.stock_adj, gain - loss)] }));
+  st.push(auditStatement(ctx, 'stock count', `${wh.name}: ${diffs.length} items, net ${(gain - loss) / 100}`));
+  await db.batch(st);
+  return { ok: true, adjusted: diffs.length, gain: gain / 100, loss: loss / 100, diffs };
+}
+
 export async function stockTransfer(ctx, body) {
   const { db } = ctx;
   requireCan(ctx.user, 'stock');
   const item = await db.prepare(`SELECT * FROM items WHERE id = ? AND org_id = ?`).bind(+body.item_id || 0, ctx.org.id).first();
   if (!item || item.is_service) throw bad('Choose a stocked item.');
-  const from = await warehouseOf(db, ctx.org.id, +body.from_warehouse_id || -1);
-  const to = await warehouseOf(db, ctx.org.id, +body.to_warehouse_id || -1);
+  const from = await warehouseOf(ctx, +body.from_warehouse_id || -1);
+  const to = await warehouseOf(ctx, +body.to_warehouse_id || -1);
   if (from.id === to.id) throw bad('Choose two different warehouses.');
   const qty = roundQty(num(body.qty, 'Quantity', { min: 0.001 }));
   const have = await available(db, ctx.org.id, item.id, from.id);
@@ -527,13 +649,19 @@ export async function createJournal(ctx, body) {
   requireCan(ctx.user, 'finance');
   const lines = Array.isArray(body.lines) ? body.lines : [];
   if (lines.length < 2) throw bad('A journal needs at least two lines.');
+  if (lines.length > 200) throw bad('At most 200 lines per journal.');
   const { results: accts } = await db.prepare(`SELECT id FROM accounts WHERE org_id = ?`).bind(ctx.org.id).all();
   const ok = new Set(accts.map((a) => a.id));
+  // a party id is global across businesses: accept only this business's own (never trust the id from the request)
+  const askedParties = lines.map((l) => (l && l.party_id !== undefined && l.party_id !== null && l.party_id !== '' && l.party_id !== 0 ? Number(l.party_id) : null));
+  const mine = new Set((await loadByIds(db, `SELECT id FROM parties WHERE org_id = ? AND id IN (?ids)`, [ctx.org.id], askedParties.filter((p) => Number.isInteger(p) && p > 0))).map((p) => p.id));
   const out = lines.map((l, i) => {
+    if (!l || typeof l !== 'object') throw bad(`Line ${i + 1}: not a valid line.`);
     if (!ok.has(+l.account_id)) throw bad(`Line ${i + 1}: unknown account.`);
+    if (askedParties[i] !== null && !mine.has(askedParties[i])) throw bad(`Line ${i + 1}: unknown party.`);
     const dr = toPaise(num(l.debit, 'Debit', { min: 0, def: 0 })), cr = toPaise(num(l.credit, 'Credit', { min: 0, def: 0 }));
     if (dr && cr) throw bad(`Line ${i + 1}: put an amount in debit or credit, not both.`);
-    return { account: +l.account_id, party: +l.party_id || null, amount: dr - cr };
+    return { account: +l.account_id, party: askedParties[i], amount: dr - cr };
   });
   if (out.reduce((s, l) => s + l.amount, 0) !== 0) throw bad('Debits and credits must be equal.');
   const d = date(body.date);

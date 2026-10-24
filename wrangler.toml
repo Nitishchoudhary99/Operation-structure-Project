@@ -3,17 +3,33 @@
 name = "operation-structure-project"
 main = "cloud-erp/src/worker.js"
 compatibility_date = "2025-09-01"
+# keep variables set in the Cloudflare dashboard across deploys
+keep_vars = true
 
 [assets]
 directory = "./cloud-erp/public"
 binding = "ASSETS"
 not_found_handling = "single-page-application"
-run_worker_first = ["/api/*"]
+run_worker_first = ["/api/*", "/k/*", "/i/*"]
 
 [[d1_databases]]
 binding = "DB"
 database_name = "smarttrader-erp"
 database_id = "65271993-a4d4-4929-93fe-fcb649d132d3"
 
+# DocBrisk Pay + password-reset e-mails: private link to the docbrisk-api worker (same account)
+[[services]]
+binding = "PAYHUB_API"
+service = "docbrisk-api"
+
+# Recurring invoices and bills (06:00 India time, then hourly catch-up) and Google Drive backups (hourly, a few at a time).
+# Keep in step with cloud-erp/wrangler.toml.
+[triggers]
+crons = ["30 0 * * *", "45 * * * *"]
+
 [observability]
 enabled = true
+
+# WhatsApp number for customer support (shown in the app, pricing and Plan & Billing)
+[vars]
+SUPPORT_WHATSAPP = "919068446139"

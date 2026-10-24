@@ -18,8 +18,25 @@ Market research and pricing advice: see [docs/COMPETITORS.md](docs/COMPETITORS.m
 | **Khata Book** | Khatabook-style "you gave / you got" credit book per contact, with running balance and one-tap **WhatsApp / SMS reminders that include a UPI payment link**. Works well on phones. |
 | **Payments** | Receipts and payments into cash, bank or UPI accounts. Applied to the oldest open invoices or bills first, or to a chosen document. Voiding reverses everything. |
 | **Control** | Multi-user with roles (owner, admin, accountant, store, sales), audit trail, cancel-with-reversal (never silent edits), one database holding many businesses with strict separation. |
+| **Gate entry & gate pass** | Inward gate register (vehicle, driver, challan, packages, weight, against a PO), Goods Receipt made from the gate entry, reject at gate; outward gate pass against a delivery note/invoice with exit time. |
+| **Credit / debit notes** | Return notes (goods come back) and value notes for rate difference, discount or claims (no goods), made from the invoice/bill line by line or standalone, settled against the original, in GST summary, e-invoice (CRN) and Tally. |
+| **Warehouse tools** | Bin/rack location per item, printable pick list sorted by bin, stock count (cycle count) that posts all differences at once, one-click reorder PO for items below reorder level, pending orders/receipts/gate report. |
+| **Collections** | Payment Reminders screen: every customer with invoice or khata dues, one-tap WhatsApp/SMS reminder listing the bills, total and UPI. |
+| **POS & barcodes** | Quick-bill screen for counters: USB/Bluetooth scanner or phone camera, cash / UPI (with a QR for the exact amount) / card / credit, change due, 80 mm thermal receipt, F9 to finish. Barcode labels (Code 128) printed from any item. |
+| **GST portals** | E-invoice JSON (NIC schema 1.1) for B2B invoices and credit notes, and e-way bill bulk-upload JSON with transport details. Save the IRN, Ack and e-way bill numbers back on the document, and they print on the invoice. |
+| **Tally export** | One XML file with ledgers and every voucher for a period, which imports into Tally Prime / ERP 9 with a matching trial balance. |
+| **Plans (SaaS)** | Free / Starter ₹999 / Growth ₹2,499 / Business ₹4,499 a year, with invoice, user and godown limits and feature gates. 14-day Growth trial on signup. One-time activation codes and an admin panel (`#/admin`) to manage every business. |
+| **Installable app (PWA)** | "Install app" on Android/desktop, "Add to Home Screen" on iPhone. Opens full-screen with shortcuts to POS, New invoice and Khata. The app shell opens offline; business data always comes live. |
 | **Dashboard** | Sales, profit, receivables, payables, stock value, GST due, 12-month chart, overdue invoices, low stock. |
 | **Documents** | Printable GST tax invoice with the amount in words, UPI ID and signature block (Print → Save as PDF). WhatsApp invoice sharing. CSV export of every list and report. |
+
+### Vaada Pakka (payment promises) and Kal ka Cash
+- Every khata link (`/k/`) and invoice link (`/i/`) asks the customer **"Kab tak denge?"**: pick a pay date (full or part) or, on Starter and above, an instalment plan the shop allows. The shop can also write down a promise made on the phone.
+- Each instalment is marked **kept** or **broken** from the receipts (invoice receipts, or sent khata "got" entries) whenever a screen is opened. Voids and back-dated receipts correct it within 30 days. No interest or late fee is ever charged.
+- `#/vaade` lists today's, upcoming and broken promises; the dashboard shows **Aaj ke Vaade**; reminders change their tone with the promise.
+- **Udhaar check** at billing (Starter and above): old dues, credit limit and broken promises give a warning, or a stop that only owner/admin can override (audited).
+- **Kal ka Cash** (`#/cash`, Growth and above): a deterministic 4-week cash view and whom to remind today.
+- Privacy: payment promises a customer makes on a shop's link are visible only to that shop. Only the date, the amount and an optional name are stored (no IP or device id). It is never shared across businesses and never called a score.
 
 ### How each document hits the books
 
@@ -77,13 +94,58 @@ npx wrangler deploy
 once you add the repository secrets `CLOUDFLARE_API_TOKEN` (a token from the "Edit Cloudflare Workers"
 template with D1 edit permission) and `CLOUDFLARE_ACCOUNT_ID`.
 
+## Selling it: plans, online payment and the admin panel
+
+Customers buy a plan in **Plan & Billing**: they tap *Pay by UPI*, pay the exact amount shown (for example ₹5,309.07) from
+GPay, PhonePe, Paytm or any UPI app, and the plan switches on by itself. Phones get app buttons; computers get a QR made in
+the browser. Payments are confirmed by **DocBrisk Pay**, our own automatic UPI hub in the `docbrisk-api` worker (it reads the
+bank's signed credit e-mails). The browser talks only to this worker; this worker talks to the hub with signed requests, and
+the plan is switched on only by the hub's signed callback (or a signed status check if the callback is late).
+
+**One-time setup (DocBrisk Pay)**, after the hub itself is live in `docbrisk-api`:
+
+1. Make one long random text (e.g. `openssl rand -hex 32`). On the `docbrisk-api` worker set it as the secret
+   `PAYHUB_SECRET` (or `PAYHUB_SECRET_ERP` to give the ERP its own).
+2. On this worker (`operation-structure-project`), **Settings → Variables and Secrets**:
+   - secret `PAYHUB_SECRET` = the same text;
+   - variable `PAYHUB_URL` = the address of the `docbrisk-api` worker (its custom domain, e.g. `https://api.docbrisk.com`).
+3. Both workers are on the same Cloudflare account, so a service binding is faster and private, and it is needed if the hub
+   only has a `workers.dev` address (Cloudflare blocks worker-to-worker calls to `workers.dev` on one account). Uncomment the
+   `PAYHUB_API` lines in `wrangler.toml` here, and the `ERP` service lines in `docbrisk-api/wrangler.toml` for the callbacks.
+4. Deploy both. **Admin** (below) then shows "Online payments: on (DocBrisk Pay, automatic UPI)". Buy the cheapest plan once
+   with your own phone to see it switch on.
+
+The hub sends its callbacks to the fixed address `https://erp.docbrisk.com/api/billing/upi-callback`; nothing to set for it.
+If the hub is busy or not ready, the page offers card / netbanking when Razorpay is set up, or asks to try again in a minute.
+
+**Optional: card and netbanking (Razorpay).** Shown as a second button only when its keys are set. It is the same setup as
+docbrisk.com's Pro keys. Every ERP payment carries `notes.product = smarttrader-erp`, so the two sites never take each
+other's payments. Choose ONE of the two ways:
+
+| Way | Secrets | Razorpay dashboard |
+|---|---|---|
+| Webhook (no Key Secret needed) | `RAZORPAY_WEBHOOK_SECRET` = any long random text | Settings → Webhooks → **Add**: URL `https://erp.docbrisk.com/api/billing/webhook`, event **payment.captured**, secret = the same text |
+| Order + signature (instant) | `RAZORPAY_KEY_ID`, `RAZORPAY_KEY_SECRET` | nothing more (adding the webhook too is a safety net if a buyer closes the browser early) |
+
+Without DocBrisk Pay, Razorpay (if set) is the main way to pay.
+
+Optional: `ADMIN_KEY` (16+ characters) opens `https://erp.docbrisk.com/#/admin` to see every business and payment and to set a
+plan by hand (1200 months = lifetime, e.g. for your own business). `SUPPORT_WHATSAPP` (e.g. 919876543210) shows a WhatsApp
+button while online payment is not switched on.
+
+Forgot password: the sign-in page e-mails a one-time reset link (valid 30 minutes) through docbrisk.com's e-mail account: the ERP asks the docbrisk-api worker over the private `PAYHUB_API` link, signed with `PAYHUB_SECRET` (the same secret as DocBrisk Pay), so no extra key is needed. Setting `RESEND_API_KEY` here instead sends directly. Owners can always set a staff member's password in Settings → Users → Set password.
+
+Prices are in `src/saas.js` (`PLANS`, per year before GST); the buyer pays the price plus 18% GST.
+
 ## Run locally
 
 ```bash
 cd cloud-erp
 npm install
 npx wrangler dev            # http://localhost:8787, with a local D1 database in .wrangler/
-node test/run.mjs           # in another terminal: 47-check end-to-end business test
+node test/run.mjs           # in another terminal: end-to-end business and security test
+                            # (put ADMIN_KEY=local-test-admin-key-0001 and RAZORPAY_WEBHOOK_SECRET=local-test-webhook-secret-0001 in cloud-erp/.dev.vars)
+node test/perf.mjs          # D1 calls and rows per screen stay within budget (QUERY_COUNT=1 in .dev.vars)
 ```
 
 ## Project layout
@@ -95,25 +157,81 @@ cloud-erp/
   src/engine.js        posting engine: documents → stock + double-entry journals (atomic batches)
   src/reports.js       trial balance, P&L, balance sheet, GST, ageing, stock, ledgers, dashboard
   src/schema.js        tables + default chart of accounts; auto-migrates on first request
-  src/auth.js          PBKDF2 passwords, signed session cookies, roles, rate limits
+  src/auth.js          PBKDF2 passwords, signed session cookies, revocation, roles, rate limits, login throttle
+  src/headers.js       Content-Security-Policy and the other security headers (public/_headers repeats them)
   src/lib.js           validation, GST maths, numbering, router
-  public/              the web app (plain HTML/CSS/JS, no build step)
+  src/gst.js           state codes, units, e-invoice and e-way bill JSON
+  src/tally.js         Tally XML export
+  src/saas.js          plans, limits, activation codes
+  public/              the web app (plain HTML/CSS/JS, no build step), PWA manifest + service worker, csv.js (export), _headers
   test/run.mjs         end-to-end test against a running worker
+  test/perf.mjs        speed budgets per screen, next to a second, busy business
   docs/COMPETITORS.md  market and competitor research
 ```
 
 ## Security notes
 
-- Passwords are hashed with PBKDF2-SHA256 and a per-user salt. Sessions are HMAC-signed, HttpOnly,
-  SameSite cookies, and changing a password logs out other sessions.
+- Passwords are hashed with PBKDF2-SHA256 and a per-user salt. Sessions are HMAC-signed, HttpOnly, SameSite=Lax cookies
+  (Secure on https) that carry a session id. **Sign out** puts that id on a revoked list, so a copied cookie stops working at once;
+  changing a password, a password set by the owner, switching a user off and **Sign out everywhere** (Settings) end every token of that user.
 - Every write needs a custom request header and a same-origin check, which protects against CSRF.
-- Login and signup are rate-limited.
-- Every query is scoped to the signed-in user's business, and roles are checked on the server for every write.
+- Login is throttled by address, by account + address and by account, counting only failed attempts (a good login writes nothing to the
+  database). Signup, reset, forgot, public links and admin have their own limits. Old counters are cleaned up automatically.
+- Sign-up: when e-mail works (`RESEND_API_KEY`, or the hub link) the business is created only after the owner opens the e-mailed link,
+  and the answer is the same whether or not the address already has an account. Set `SIGNUP_VERIFY=off` to turn this off. If the mail
+  cannot be sent, sign-up falls back to creating the account at once rather than locking people out.
+- Every query is scoped to the signed-in user's business, and roles are checked on the server for every write. Ids that come from a
+  request (party, account, item, godown, document) are looked up inside the business before use, and the journal insert re-checks the
+  account and party itself. Reads for custom roles go through one table (`READ_AREAS` in `src/worker.js`): anything not listed is refused.
+- Tables keyed by something a user can type (reports, plans, document types, states, units, numbering, custom fields) are read with
+  own-key lookups only (`own()` in `src/lib.js`), so names like `constructor` or `__proto__` never resolve.
+- The request context keeps `env` (the secrets) non-enumerable, so a handler that serialises the context cannot dump it. Error answers
+  carry a fixed message only; details go to the Worker log.
+- Security headers on the app, the API and the `/k/` and `/i/` pages: a strict Content-Security-Policy (no inline or eval scripts, no
+  framing), X-Frame-Options, HSTS, Referrer-Policy, Permissions-Policy, nosniff. They live in `src/headers.js` and in `public/_headers`
+  (for the static files); `test/run.mjs` checks the two agree. The app has no inline scripts or handlers; use `data-act` buttons.
+- Customer links (`/i/<token>`, `/k/<token>`) are created only by roles that may sell (invoices) or write the khata, and can be turned off
+  one by one (invoice page, khata page) or all at once (Settings → Customer links). A cancelled invoice's link stops working.
+- CSV exports prefix cells that start with `= + - @` with an apostrophe, so a formula typed into a name cannot run in Excel (`public/csv.js`).
+- Plan limits hold when a plan lapses: staff beyond the user limit are paused (the owner and the oldest staff keep working), godowns beyond
+  the limit take no new stock, and the monthly invoice cap counts by the time an invoice was created (cancelled ones included) with the check
+  inside the insert, so parallel requests cannot slip past it.
 - Never put secrets in `wrangler.toml`; this repository is public. Use `wrangler secret put` or the dashboard.
+
+### Tests
+
+```bash
+npx wrangler dev --port 8799 --persist-to /tmp/erp-test      # fresh folder each time (signup is limited per address)
+node test/run.mjs http://localhost:8799                       # whole suite, including the security checks
+# sign-up by e-mailed link: start the worker with a mail sink, then run only those checks
+npx wrangler dev --port 8799 --persist-to /tmp/erp-mail --var RESEND_API_KEY:test-key --var RESEND_URL:http://127.0.0.1:8798/send
+ERP_MAIL_SINK=8798 node test/run.mjs http://localhost:8799
+# Google Drive backup against a stand-in Google: start the worker with these, then run the whole suite with ERP_GDRIVE_MOCK
+npx wrangler dev --port 8799 --persist-to /tmp/erp-test --var GDRIVE_CLIENT_ID:test-client --var GDRIVE_CLIENT_SECRET:test-secret \
+  --var GDRIVE_TOKEN_URL:http://127.0.0.1:8797/token --var GDRIVE_REVOKE_URL:http://127.0.0.1:8797/revoke --var GDRIVE_API:http://127.0.0.1:8797
+ERP_GDRIVE_MOCK=8797 node test/run.mjs http://localhost:8799
+```
+
+### Google Drive auto-backup (one-time setup by the SmartTrader operator)
+
+Customers connect their own Google Drive in **Settings → Backup**; a full backup then goes to a
+"SmartTrader Backup" folder in their Drive every day (or week), and the newest 30 are kept. The app asks only for
+`drive.file`, so it sees just the files it made. To switch it on for everyone:
+
+1. Google Cloud Console → create a project → **APIs & Services → Library** → enable **Google Drive API**.
+2. **OAuth consent screen**: External, app name SmartTrader ERP, your support e-mail, scopes `drive.file` and `email`.
+   Publish it (these scopes need no security review).
+3. **Credentials → Create credentials → OAuth client ID** → Web application. Authorised redirect URI:
+   `https://erp.docbrisk.com/api/gdrive/callback`.
+4. Cloudflare → the ERP worker → Settings → Variables and Secrets → add **GDRIVE_CLIENT_ID** and **GDRIVE_CLIENT_SECRET**
+   (type Secret). The hourly cron in wrangler.toml does the backups.
+
+Keep `SESSION_SECRET` fixed: the stored Google tokens are encrypted with a key made from it, so changing it means
+every business has to connect Drive again.
 
 ## Not built yet (next steps)
 
-- Direct IRN e-invoice and e-way bill generation (needs a GSP/IRP API account). Today the GST
-  registers and summary can be exported as CSV for your filing tool or CA.
-- Tally XML export, barcode scanning and POS mode, batch/expiry and serial numbers, manufacturing
-  (bill of materials), approval workflows, and plan/billing limits for selling it as SaaS.
+- Direct IRN / e-way bill generation through an API. This needs a GSP account; today the JSON files
+  are uploaded on the government portals.
+- Batch/expiry and serial numbers, manufacturing (bill of
+  materials), and approval workflows.
