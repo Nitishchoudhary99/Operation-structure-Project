@@ -1766,8 +1766,10 @@ route(/^settings$/, async (el, m, q) => {
     ${ME.can.settings ? `<div class="panel"><h2>Customer links</h2><p class="muted">Invoice and khata links you sent on WhatsApp or SMS work for anyone who has them. If a link went to the wrong person, turn it off on that invoice or khata page. To turn off every link of this business at once:</p>
       <div class="row"><button type="button" class="btn danger" id="revokeall">Turn off all customer links</button></div></div>` : ''}
     ${ME.user.role === 'owner' ? `<div class="panel"><h2>Backup</h2><p class="muted">Download every record of your business (invoices, parties, items, stock, khata, payments, accounts) in one file. Keep it safe on your phone, PC or Google Drive. Your data is yours: you can take it with you anytime.<br>अपने पूरे कारोबार का डेटा एक फ़ाइल में डाउनलोड करें।</p>
-      <div class="row"><button type="button" class="btn" id="backup">Download full backup</button></div>
-      <h3 style="margin-top:16px">Google Drive auto-backup</h3><div id="gdrive"><span class="muted">Checking…</span></div></div>` : ''}
+      <div class="row"><button type="button" class="btn" id="backup">Download full backup (.json)</button><button type="button" class="btn" id="backupx">Download as Excel</button></div>
+      <p class="muted small">The .json file can be restored into SmartTrader. The Excel file is for reading: one sheet each for bills, items, customers, payments, khata and accounts, amounts in rupees.</p>
+      <h3 style="margin-top:16px">Google Drive auto-backup</h3><div id="gdrive"><span class="muted">Checking…</span></div>
+      <h3 style="margin-top:16px">Restore from a backup</h3><div id="restorebox"><span class="muted">Checking…</span></div></div>` : ''}
     <p class="muted">Selling SmartTrader to other businesses? <a href="#/admin">Open the admin panel</a> (needs the ADMIN_KEY secret).</p>
     ${canUsers ? `<div class="panel flush"><div style="padding:14px 16px 0"><h3>Audit trail</h3></div>${table([{ h: 'When', f: (a) => new Date(a.at).toLocaleString('en-IN') }, { h: 'User', k: 'user' }, { h: 'Action', k: 'action' }, { h: 'Detail', k: 'detail', cls: 'hide-sm' }], audit.slice(0, 100))}</div>` : ''}`;
   $$('[name=mode]', el).forEach((r) => r.onchange = async () => {
@@ -1782,6 +1784,49 @@ route(/^settings$/, async (el, m, q) => {
     await POST('/api/me/logout-all'); ME = null; location.hash = ''; renderAuth();
   };
   if ($('#backup')) $('#backup').onclick = () => fileDownload('/api/export/backup');
+  if ($('#backupx')) $('#backupx').onclick = () => fileDownload('/api/export/excel');
+  /* Restore: like restoring WhatsApp on a new phone, into an empty business only */
+  const restoreUi = async () => {
+    const box = $('#restorebox'); if (!box) return;
+    const chk = await GET('/api/restore/check').catch(() => null);
+    if (!chk) { box.innerHTML = '<p class="muted">Could not check right now.</p>'; return; }
+    if (!chk.empty) {
+      box.innerHTML = '<p class="muted">Restore brings a backup into a <b>new, empty</b> business, like restoring WhatsApp on a new phone. This business already has records, so to restore, make a new SmartTrader account and open Settings → Backup there.</p>';
+      return;
+    }
+    const day = (t) => t ? new Date(t).toLocaleString('en-IN', { day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' }) : '';
+    box.innerHTML = `<p class="muted">This business is empty, so you can bring back a backup: bills, parties, items, stock, payments, khata, accounts and settings. Staff logins are not in a backup; add them again under Users. Recurring bills come back paused. बैकअप से पूरा डेटा वापस लाएँ।</p>
+      <div class="row"><label class="btn primary">Choose backup file (.json)<input type="file" id="rfile" accept=".json,application/json" hidden></label>
+      <button type="button" class="btn" id="rdrive">Restore from Google Drive</button></div><div id="rlist"></div>`;
+    const run = async (fn, label) => {
+      if (!confirm(`Restore ${label}? It fills this empty business with the backup's records.`)) return;
+      box.insertAdjacentHTML('beforeend', '<p class="muted" id="rbusy">Restoring… this can take a minute. <span class="spin"></span></p>');
+      try {
+        const r = await fn();
+        dirty('items', 'accounts', 'parties'); ME = await GET('/api/me'); shell();
+        toast(`Restored ${r.records} records${r.staff_not_restored ? `. Add your ${r.staff_not_restored} staff login(s) again under Users.` : ''}`);
+        go('dashboard');
+      } catch (e) { const b = $('#rbusy'); if (b) b.remove(); toast(e.message, 'err'); }
+    };
+    $('#rfile').onchange = async (e) => {
+      const f = e.target.files[0]; if (!f) return;
+      if (f.size > 30e6) { toast('This file is too big to restore here.', 'err'); return; }
+      let data = null; try { data = JSON.parse(await f.text()); } catch (err) { data = null; }
+      if (!data || data.format !== 'smarttrader-backup') { toast('That is not a SmartTrader backup (.json) file.', 'err'); return; }
+      run(() => POST('/api/restore', data), `the backup of ${(data.org && data.org.name) || 'your business'} from ${day(data.exported_at) || 'an earlier date'}`);
+    };
+    $('#rdrive').onclick = async () => {
+      const l = $('#rlist'); l.innerHTML = '<p class="muted">Looking in your Google Drive…</p>';
+      try {
+        const { files } = await GET('/api/gdrive/backups');
+        l.innerHTML = files.length ? `<p class="muted">Pick the backup to bring back (newest first):</p><div class="row">${files.slice(0, 15).map((f) =>
+          `<button type="button" class="btn sm" data-rf="${esc(f.id)}" data-rn="${esc(day(f.created))}">${esc(day(f.created) || f.name)} · ${Math.max(1, Math.round(f.size / 1024))} KB</button>`).join('')}</div>`
+          : '<p class="muted">No SmartTrader backups were found in this Google Drive.</p>';
+        $$('[data-rf]', l).forEach((b) => { b.onclick = () => run(() => POST('/api/restore/drive', { file_id: b.dataset.rf }), `the Google Drive backup of ${b.dataset.rn}`); });
+      } catch (e) { l.innerHTML = `<p class="err">${esc(e.message)}</p>`; }
+    };
+  };
+  restoreUi();
   /* Google Drive auto-backup, like WhatsApp's chat backup */
   const drive = async () => {
     const box = $('#gdrive'); if (!box) return;
@@ -1813,7 +1858,7 @@ route(/^settings$/, async (el, m, q) => {
   };
   drive();
   const dq = q && q.get('drive');
-  if (dq) toast({ ok: 'Google Drive connected. First backup saved.', fail: 'Google Drive connected, but the backup failed. Try “Back up now”.', cancel: 'Google Drive was not connected.',
+  if (dq) toast({ ok: 'Google Drive connected. First backup saved.', okempty: 'Google Drive connected. Backups start once you have records; to bring back an old backup, use Restore below.', fail: 'Google Drive connected, but the backup failed. Try “Back up now”.', cancel: 'Google Drive was not connected.',
     noscope: 'Google Drive permission was not given. Tap Connect Google Drive again and, on Google’s page, tick the Google Drive box (“See, edit, create and delete only the specific Google Drive files…”).',
     norefresh: 'Google did not give offline access. Remove SmartTrader in your Google account’s third-party access, then connect again.', bad: 'That link expired. Connect again.' }[dq] || 'Done', dq === 'ok' ? 'ok' : 'err');
   if ($('#revokeall')) $('#revokeall').onclick = async () => {
@@ -1951,11 +1996,14 @@ route(/^recurring$/, async (el) => {
       { h: 'Next', f: (r) => r.active ? fdate(r.next_on) : '<span class="badge">stopped</span>' },
       { h: 'Amount', num: 1, cls: 'hide-sm', f: (r) => inr(r.total) },
       { h: 'Last made', cls: 'hide-sm', f: (r) => (r.last_doc_id ? `<a href="#/doc/${r.last_doc_id}">${esc(r.last_number)}</a>` : '—') + (r.last_error ? `<div class="neg small">${esc(r.last_error)}</div>` : '') },
-      { h: '', f: (r) => r.active ? `<button class="btn sm danger" data-stop="${r.id}">Stop</button>` : '' }],
+      { h: '', f: (r) => r.active ? `<button class="btn sm danger" data-stop="${r.id}">Stop</button>` : `<button class="btn sm" data-resume="${r.id}">Resume</button>` }],
     rows, { empty: emptyCta('No recurring bills yet. Open an invoice and choose "Make it every month".', '<a class="btn primary" href="#/sales/INV">Open invoices</a>') })}</div>`;
   $$('[data-stop]', el).forEach((b) => { b.onclick = async () => {
     if (!confirm('Stop this schedule? Bills already made stay as they are.')) return;
     try { await POST(`/api/recurring/${b.dataset.stop}/stop`); toast('Stopped'); render(); } catch (e) { toast(e.message, 'err'); }
+  }; });
+  $$('[data-resume]', el).forEach((b) => { b.onclick = async () => {
+    try { await POST(`/api/recurring/${b.dataset.resume}/resume`); toast('Started again'); render(); } catch (e) { toast(e.message, 'err'); }
   }; });
   if ($('#rundue')) $('#rundue').onclick = async () => {
     try { const r = await POST('/api/recurring/run'); dirty('items', 'accounts', 'parties'); toast(r.made ? `${r.made} made` : 'Nothing is due today'); render(); } catch (e) { toast(e.message, 'err'); }

@@ -7,10 +7,11 @@
 import { HttpError, bad, forbidden, str, today, nowIso } from './lib.js';
 import { sessionSecret } from './auth.js';
 import { auditStatement } from './engine.js';
+import { isEmptyOrg } from './restore.js';
 
 /* ---------- the backup file ---------- */
 const BACKUP_TABLES = ['accounts', 'warehouses', 'parties', 'items', 'stock', 'stock_moves', 'docs', 'payments', 'journals', 'journal_lines',
-  'khata', 'counters', 'gate_entries', 'roles', 'vaade', 'vaada_kisht', 'recurring', 'billing_orders', 'audit'];
+  'khata', 'counters', 'gate_entries', 'roles', 'vaade', 'vaada_kisht', 'recurring', 'billing_orders', 'audit', 'org_files'];
 
 /* Every record of this business. Login secrets (password hashes, salts), private link tokens and caches rebuilt
    from the records are left out. */
@@ -128,6 +129,8 @@ export async function backupToDrive(env, orgId, by) {
   const link = await db.prepare(`SELECT * FROM drive_links WHERE org_id = ?`).bind(orgId).first();
   if (!link) throw bad('Google Drive is not connected.');
   const org = await db.prepare(`SELECT id, name FROM orgs WHERE id = ?`).bind(orgId).first();
+  // an empty business has nothing to back up (and an empty file would only crowd the list when restoring)
+  if (!by && await isEmptyOrg(db, orgId)) return { ok: true, skipped: true };
   try {
     let refresh;
     try { refresh = await unseal(env, link.refresh_enc); } catch (e) { const g = new Error('sealed'); g.gone = true; throw g; }   // the session secret changed
@@ -150,6 +153,32 @@ export async function backupToDrive(env, orgId, by) {
     await db.prepare(`UPDATE drive_links SET last_error = ?, last_try_at = ? WHERE org_id = ?`).bind(msg, nowIso(), orgId).run();
     return { ok: false, error: msg };
   }
+}
+
+/* ---------- restoring from Drive ---------- */
+async function driveToken(env, orgId) {
+  const link = await env.DB.prepare(`SELECT refresh_enc FROM drive_links WHERE org_id = ?`).bind(orgId).first();
+  if (!link) throw bad('Connect Google Drive first.');
+  let refresh;
+  try { refresh = await unseal(env, link.refresh_enc); } catch (e) { throw bad('Google access was removed. Connect Google Drive again.'); }
+  try { return (await tokenCall(env, { grant_type: 'refresh_token', refresh_token: refresh })).access_token; }
+  catch (e) { throw bad(e.gone ? 'Google access was removed. Connect Google Drive again.' : 'Could not reach Google Drive. Please try again.'); }
+}
+/* The SmartTrader backups this Google account has (from any business it was connected to), newest first */
+export async function listDriveBackups(env, orgId) {
+  const token = await driveToken(env, orgId);
+  const q = encodeURIComponent(`name contains 'smarttrader-backup-' and trashed = false`);
+  const r = await gjson(await fetch(`${G(env).api}/drive/v3/files?q=${q}&orderBy=createdTime desc&pageSize=50&fields=files(id,name,createdTime,size)`, { headers: authed(token) }), 'Drive list');
+  return (r.files || []).filter((f) => /\.json$/i.test(f.name || '')).map((f) => ({ id: f.id, name: f.name, created: f.createdTime || '', size: +f.size || 0 }));
+}
+export async function readDriveBackup(env, orgId, fileId) {
+  if (!/^[A-Za-z0-9_-]{8,200}$/.test(String(fileId || ''))) throw bad('Choose a backup.');
+  const token = await driveToken(env, orgId);
+  const res = await fetch(`${G(env).api}/drive/v3/files/${fileId}?alt=media`, { headers: authed(token) });
+  if (!res.ok) throw bad('Could not download that backup from Google Drive.');
+  const text = await res.text();
+  if (text.length > 30e6) throw bad('This backup is too big to restore here. Please contact support.');
+  try { return JSON.parse(text); } catch (e) { throw bad('That file is not a SmartTrader backup.'); }
 }
 
 /* ---------- routes ---------- */
@@ -194,6 +223,7 @@ export function driveRoutes(router) {
           .bind(c.org.id, c.user.id, str(email, 120), await seal(c.env, t.refresh_token), nowIso()),
         auditStatement(c, 'drive connected', email),
       ]);
+      if (await isEmptyOrg(c.db, c.org.id)) return back('okempty');     // nothing to back up yet; a backup can be restored instead
       const r = await backupToDrive(c.env, c.org.id, c.user);
       return back(r.ok ? 'ok' : 'fail');
     } catch (e) {

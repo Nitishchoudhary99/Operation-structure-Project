@@ -59,6 +59,17 @@ export async function stopRecurring(c, id) {
   await c.db.batch([c.db.prepare(`UPDATE recurring SET active = 0 WHERE id = ?`).bind(id), auditStatement(c, 'recurring off', r.number)]);
 }
 
+/* Start a stopped or paused schedule again; a date already past moves to today, so no backlog is made */
+export async function resumeRecurring(c, id) {
+  const r = await c.db.prepare(`SELECT r.*, d.type, d.number, d.status FROM recurring r JOIN docs d ON d.id = r.src_doc_id WHERE r.id = ? AND r.org_id = ?`).bind(id, c.org.id).first();
+  if (!r) throw notFound('Schedule not found.');
+  requireCan(c.user, DOC_TYPES[r.type].side === 'sales' ? 'sales' : 'purchase');
+  if (r.status === 'cancelled') throw bad('The original document is cancelled.');
+  const next = r.next_on < today() ? today() : r.next_on;
+  if (r.ends_on && next > r.ends_on) throw bad('This schedule has already ended.');
+  await c.db.batch([c.db.prepare(`UPDATE recurring SET active = 1, next_on = ?, last_error = NULL WHERE id = ?`).bind(next, id), auditStatement(c, 'recurring on', r.number)]);
+}
+
 /* One schedule: make the document, then move the schedule on. Returns the new document id, or null. */
 async function runOne(env, r, day) {
   const db = env.DB;
