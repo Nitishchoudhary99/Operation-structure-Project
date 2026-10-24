@@ -542,7 +542,7 @@ route(/^new\/([A-Z]+)$/, async (el, m, q) => {
       <tbody id="lines">${draft.lines.map(lineRow).join('')}</tbody></table></div>
       ${fromDoc ? '' : '<div style="padding:10px"><button type="button" class="btn sm" id="addline">+ Add line</button></div>'}</div>
     <div class="grid g2">
-      <div class="panel"><label class="f">Notes / terms<textarea name="notes" rows="3"></textarea></label>
+      <div class="panel"><label class="f">Design <span class="muted">(how this bill looks)</span><select name="design">${designOptions(draft.design || '', true)}</select></label><label class="f">Notes / terms<textarea name="notes" rows="3"></textarea></label>
         ${money ? `<div class="form" style="margin-top:12px"><label class="f">${isSale ? 'Amount received now' : 'Amount paid now'} (₹)<input type="number" step="any" min="0" inputmode="decimal" name="pay_amount" placeholder="0"><small class="help">Leave empty for credit (udhaar).</small></label>
           <label class="f">${isSale ? 'Money went into' : 'Paid from'}<select name="pay_account">${cashAccts.map((o) => `<option value="${o.v}">${esc(o.t)}</option>`).join('')}</select></label></div>` : ''}</div>
       <div class="panel"><div class="totals" id="totals"></div></div>
@@ -614,7 +614,7 @@ route(/^new\/([A-Z]+)$/, async (el, m, q) => {
       const g = (n) => { const x = $(`[name=${n}]`, tr); return x ? x.value : ''; };
       return { item_id: +g('item_id') || null, description: g('description'), qty: g('qty'), rate: g('rate'), discount_pct: g('discount_pct'), gst_rate: g('gst_rate'), src_line_id: +g('src_line_id') || undefined };
     }).filter((l) => +l.qty > 0 && (!isNote || +l.rate > 0));
-    const body = { type, party_id: +f.party_id.value, date: f.date.value, warehouse_id: +f.warehouse_id.value, notes: f.notes.value, lines, ref_id: draft.ref_id, extra: cfRead(form) };
+    const body = { type, party_id: +f.party_id.value, date: f.date.value, warehouse_id: +f.warehouse_id.value, notes: f.notes.value, lines, ref_id: draft.ref_id, extra: cfRead(form), design: f.design ? f.design.value : '' };
     if (ge) body.gate_entry_id = ge.id;
     if (f.due_date && f.due_date.value) body.due_date = f.due_date.value;
     if (f.pay_amount && +f.pay_amount.value > 0) body.payment = { amount: +f.pay_amount.value, account_id: +f.pay_account.value };
@@ -639,22 +639,43 @@ route(/^new\/([A-Z]+)$/, async (el, m, q) => {
 
 /* ======================================================================= document view / print */
 /* The printable document (invoice, bill, order...). Used in the app and on the customer's public link. */
+/* Invoice designs (same keys as LAYOUTS in src/custom.js) */
+const DESIGNS = [['classic', 'Classic'], ['modern', 'Modern'], ['elegant', 'Elegant'], ['bold', 'Bold'], ['minimal', 'Minimal'], ['gst', 'GST detailed (HSN summary)'],
+  ['compact', 'Thermal 80 mm'], ['compact58', 'Thermal 58 mm']];
+const designOptions = (cur, withDefault) => (withDefault ? `<option value="">Default (${esc((DESIGNS.find(([k]) => k === ((ME.org.print || {}).layout || 'classic')) || DESIGNS[0])[1])})</option>` : '')
+  + DESIGNS.map(([k, t]) => `<option value="${k}" ${k === cur ? 'selected' : ''}>${esc(t)}</option>`).join('');
+/* HSN-wise tax summary (GST detailed design) */
+function hsnSummary(d, inter) {
+  const g = new Map();
+  for (const l of d.lines) {
+    const k = (l.hsn || '-') + '|' + l.gst_rate, r = g.get(k) || { hsn: l.hsn || '-', rate: l.gst_rate, taxable: 0, cgst: 0, sgst: 0, igst: 0 };
+    r.taxable += +l.taxable || 0; r.cgst += +l.cgst || 0; r.sgst += +l.sgst || 0; r.igst += +l.igst || 0; g.set(k, r);
+  }
+  const rows = [...g.values()];
+  return `<table class="dl hsn"><thead><tr><th>HSN/SAC</th><th class="num">Taxable</th><th class="num">Rate</th>${inter ? '<th class="num">IGST</th>' : '<th class="num">CGST</th><th class="num">SGST</th>'}<th class="num">Total tax</th></tr></thead><tbody>`
+    + rows.map((r) => `<tr><td>${esc(r.hsn)}</td><td class="num">${inr(r.taxable)}</td><td class="num">${r.rate}%</td>${inter ? `<td class="num">${inr(r.igst)}</td>` : `<td class="num">${inr(r.cgst)}</td><td class="num">${inr(r.sgst)}</td>`}<td class="num">${inr(r.cgst + r.sgst + r.igst)}</td></tr>`).join('')
+    + '</tbody></table>';
+}
+
 function docPaper(d) {
   const o = d.org, p = d.party || {}, P = o.print || {};
   const isTax = ['INV', 'BILL', 'SRET', 'PRET', 'CNOTE', 'DNOTE'].includes(d.type);
   const title = d.type === 'INV' ? (P.title || (o.gstin ? 'TAX INVOICE' : 'INVOICE')) : String(d.label || '').toUpperCase();
-  const inter = !!d.inter_state, compact = P.layout === 'compact', ours = d.side === 'sales' || d.type === 'PO';
+  const L = DESIGNS.some(([k]) => k === d.design) ? d.design : DESIGNS.some(([k]) => k === P.layout) ? P.layout : 'classic';
+  const inter = !!d.inter_state, compact = L === 'compact' || L === 'compact58', ours = d.side === 'sales' || d.type === 'PO';
+  // columns nobody uses on this bill are left out (no discount anywhere, no HSN anywhere)
+  const hasDisc = d.lines.some((l) => +l.discount_pct), hasHsn = d.lines.some((l) => l.hsn);
   const color = /^#[0-9a-f]{6}$/i.test(P.color || '') ? P.color : '#0f766e';
   const bank = ours && P.bank_account ? `<p class="bank"><b>Bank details</b><br>${[P.bank_name, 'A/c ' + P.bank_account, P.bank_ifsc && 'IFSC ' + P.bank_ifsc, P.bank_branch].filter(Boolean).map(esc).join(' &middot; ')}</p>` : '';
   const upi = d.type === 'INV' && o.upi_id && d.balance > 0 && P.show_upi !== false;
   const lineCells = (l, i) => compact
     ? `<td>${esc(l.item || l.description)}${l.print_extra ? `<div class="muted">${esc(l.print_extra)}</div>` : ''}<div class="muted">${qtyf(l.qty)} ${esc(l.unit || '')} &times; ${inr(l.rate)}${l.discount_pct ? ` &minus;${l.discount_pct}%` : ''}${l.gst_rate ? ` &middot; GST ${l.gst_rate}%` : ''}</div></td><td class="num">${inr(l.total)}</td>`
-    : `<td>${i + 1}</td><td>${esc(l.item || l.description)}${l.item && l.description && l.description !== l.item ? `<div class="muted">${esc(l.description)}</div>` : ''}${l.print_extra ? `<div class="muted">${esc(l.print_extra)}</div>` : ''}</td><td>${esc(l.hsn || '')}</td>
-        <td class="num">${qtyf(l.qty)} ${esc(l.unit || '')}</td><td class="num">${inr(l.rate)}</td><td class="num">${l.discount_pct ? l.discount_pct + '%' : ''}</td><td class="num">${inr(l.taxable)}</td><td class="num">${l.gst_rate}%</td>
+    : `<td>${i + 1}</td><td>${esc(l.item || l.description)}${l.item && l.description && l.description !== l.item ? `<div class="muted">${esc(l.description)}</div>` : ''}${l.print_extra ? `<div class="muted">${esc(l.print_extra)}</div>` : ''}</td>${hasHsn ? `<td>${esc(l.hsn || '')}</td>` : ''}
+        <td class="num">${qtyf(l.qty)} ${esc(l.unit || '')}</td><td class="num">${inr(l.rate)}</td>${hasDisc ? `<td class="num">${l.discount_pct ? l.discount_pct + '%' : ''}</td>` : ''}<td class="num">${inr(l.taxable)}</td><td class="num">${l.gst_rate}%</td>
         ${inter ? `<td class="num">${inr(l.igst)}</td>` : `<td class="num">${inr(l.cgst)}</td><td class="num">${inr(l.sgst)}</td>`}<td class="num">${inr(l.total)}</td>`;
   const heads = compact ? '<th>Item</th><th class="num">Amount</th>'
-    : `<th>#</th><th>Item</th><th>HSN</th><th class="num">Qty</th><th class="num">Rate</th><th class="num">Disc</th><th class="num">Taxable</th><th class="num">GST</th>${inter ? '<th class="num">IGST</th>' : '<th class="num">CGST</th><th class="num">SGST</th>'}<th class="num">Amount</th>`;
-  return `<div class="doc-paper L-${esc(P.layout || 'classic')}" style="--ac:${color}">
+    : `<th>#</th><th>Item</th>${hasHsn ? '<th>HSN</th>' : ''}<th class="num">Qty</th><th class="num">Rate</th>${hasDisc ? '<th class="num">Disc</th>' : ''}<th class="num">Taxable</th><th class="num">GST</th>${inter ? '<th class="num">IGST</th>' : '<th class="num">CGST</th><th class="num">SGST</th>'}<th class="num">Amount</th>`;
+  return `<div class="doc-paper L-${L} F-${P.font === 'serif' ? 'serif' : 'sans'}" style="--ac:${color}">
       <div class="hdr"><div class="org">${d.logo_url ? `<img class="logo" src="${esc(d.logo_url)}" alt="">` : ''}<div><div class="oname">${esc(o.name)}</div><div>${esc(o.address)}</div>
         <div>${[o.gstin ? 'GSTIN: ' + esc(o.gstin) : '', o.state ? 'State: ' + esc(o.state) : ''].filter(Boolean).join(' &middot; ')}</div><div>${esc(o.phone)}</div></div></div>
         <div class="meta"><div class="title">${esc(title)}</div><div>No: <b>${esc(d.number)}</b></div><div>Date: ${fdate(d.date)}</div>
@@ -664,6 +685,7 @@ function docPaper(d) {
       ${(d.print_fields || []).length ? `<div class="cfp">${d.print_fields.map((f) => `<span><b>${esc(f.label)}:</b> ${esc(f.value)}</span>`).join('')}</div>` : ''}
       <div class="tbl-wrap"><table class="dl"><thead><tr>${heads}</tr></thead>
       <tbody>${d.lines.map((l, i) => `<tr>${lineCells(l, i)}</tr>`).join('')}</tbody></table></div>
+      ${L === 'gst' && isTax ? `<div class="tbl-wrap hsn-wrap"><b>HSN-wise tax summary</b>${hsnSummary(d, inter)}</div>` : ''}
       <div class="foot"><div class="words"><b>Amount in words:</b> ${esc(words(d.total))}${d.notes ? `<p><b>Notes:</b> ${esc(d.notes)}</p>` : ''}
         ${upi ? `<p>Pay by UPI: <b>${esc(o.upi_id)}</b></p>` : ''}${bank}</div>
         <div class="totals"><div><span>Taxable</span><span>${inr(d.taxable)}</span></div>
@@ -701,9 +723,13 @@ route(/^doc\/(\d+)$/, async (el, m) => {
       ${d.parent ? `<span>From <a href="#/doc/${d.parent.id}">${esc(d.parent.number)}</a></span>` : ''}
       ${d.children.length ? `<span>Follow-ups: ${d.children.map((c) => `<a href="#/doc/${c.id}">${esc(c.number)}</a> ${badge(c.status)}`).join(' ')}</span>` : ''}
       ${['INV', 'BILL'].includes(d.type) ? `<span class="spacer"></span><span>Paid <b>${inr(d.paid)}</b> &middot; Balance <b>${inr(d.balance)}</b></span>` : ''}
+      <label class="f inline-f">Design<select id="design">${designOptions(d.design || '', true)}</select></label>
     </div>${d.settlements.length ? `<div class="muted" style="margin-top:8px">Settled by: ${d.settlements.map((s) => `${esc(s.number)} (${inr(s.amount)})`).join(', ')}</div>` : ''}</div>
     ${docPaper(d)}`;
   if (d.type === 'INV' && o.upi_id && d.balance > 0 && o.print.show_upi !== false) upiQr($('#upiqr'), o, d.balance, d.number, 'Scan to pay with any UPI app');
+  $('#design').onchange = async (e) => {
+    try { await api('PUT', `/api/docs/${d.id}/design`, { design: e.target.value }); toast('Design changed'); render(); } catch (err) { toast(err.message, 'err'); }
+  };
   if ($('#einv')) $('#einv').onclick = (e) => { e.preventDefault(); fileDownload(`/api/docs/${d.id}/einvoice`); };
   if ($('#ewb')) $('#ewb').onclick = () => modal('E-way bill (bulk upload JSON)', [
     { k: 'distance', label: 'Distance (km)', type: 'number', required: true }, { k: 'vehicle_no', label: 'Vehicle number', placeholder: 'RJ14AB1234' },
@@ -1550,17 +1576,20 @@ route(/^settings\/print$/, async (el) => {
   let P = cur.print, urls = { logo_url: cur.logo_url, sign_url: cur.sign_url };
   const canEdit = ME.can.settings;
   const sample = () => ({ type: 'INV', label: 'Sales Invoice', side: 'sales', number: 'INV-00042', date: ME.today, due_date: '', place_of_supply: ME.org.state || 'Rajasthan', inter_state: 0,
-    party: { name: 'Mehta Stores', address: 'Shop 4, MI Road', phone: '9876543210' }, notes: '', balance: 1050, taxable: 1000, cgst: 25, sgst: 25, igst: 0, round_off: 0, total: 1050,
-    lines: [{ item: 'Basmati Rice 5kg', hsn: '1006', qty: 2, unit: 'Bag', rate: 500, discount_pct: 0, gst_rate: 5, taxable: 1000, cgst: 25, sgst: 25, igst: 0, total: 1050 }],
+    party: { name: 'Mehta Stores', address: 'Shop 4, MI Road', phone: '9876543210' }, notes: '', balance: 1758, taxable: 1600, cgst: 79, sgst: 79, igst: 0, round_off: 0, total: 1758,
+    lines: [{ item: 'Basmati Rice 5kg', hsn: '1006', qty: 2, unit: 'Bag', rate: 500, discount_pct: 0, gst_rate: 5, taxable: 1000, cgst: 25, sgst: 25, igst: 0, total: 1050 },
+      { item: 'Steel Water Bottle', hsn: '7323', qty: 4, unit: 'Pcs', rate: 150, discount_pct: 0, gst_rate: 18, taxable: 600, cgst: 54, sgst: 54, igst: 0, total: 708 }],
     org: { ...ME.org, print: P }, ...urls });
   const v = (k) => esc(P[k] || '');
   el.innerHTML = head('Branding & print') + setTabs('settings/print') + `
     <div class="grid g2 brand-grid">
     <form class="panel" id="pf"><div class="err" hidden></div>
       <h2>Look</h2>
-      <div class="seg" id="lay">${[['classic', 'Classic'], ['modern', 'Modern'], ['compact', 'Compact (80 mm)']].map(([k, t]) => `<button type="button" data-l="${k}" class="${P.layout === k ? 'on' : ''}">${t}</button>`).join('')}</div>
+      <div class="seg seg-wrap" id="lay">${DESIGNS.map(([k, t]) => `<button type="button" data-l="${k}" class="${(P.layout || 'classic') === k ? 'on' : ''}">${esc(t)}</button>`).join('')}</div>
+      <p class="muted small">This is the default. Any single bill can use another design: pick it on the bill.</p>
       <div class="form" style="margin-top:12px">
         <label class="f">Brand colour<input type="color" name="color" value="${v('color')}"></label>
+        <label class="f">Font<select name="font"><option value="sans" ${P.font !== 'serif' ? 'selected' : ''}>Clean (sans)</option><option value="serif" ${P.font === 'serif' ? 'selected' : ''}>Classic (serif)</option></select></label>
         <label class="f">Invoice title<input name="title" value="${v('title')}" placeholder="${ME.org.gstin ? 'TAX INVOICE' : 'INVOICE'}" maxlength="40"><small class="help">Leave empty for the normal title.</small></label>
       </div>
       <div class="imgs" id="imgs"></div>
@@ -1582,7 +1611,7 @@ route(/^settings\/print$/, async (el) => {
   const form = $('#pf');
   const read = () => {
     const f = form.elements;
-    return { ...P, layout: $('#lay .on').dataset.l, color: f.color.value, title: f.title.value, signatory: f.signatory.value, show_upi: f.show_upi.checked,
+    return { ...P, layout: $('#lay .on').dataset.l, font: f.font.value, color: f.color.value, title: f.title.value, signatory: f.signatory.value, show_upi: f.show_upi.checked,
       bank_name: f.bank_name.value, bank_account: f.bank_account.value, bank_ifsc: f.bank_ifsc.value.toUpperCase(), bank_branch: f.bank_branch.value, terms: f.terms.value, footer: f.footer.value };
   };
   const preview = () => { P = read(); $('#pv').innerHTML = docPaper(sample()); };

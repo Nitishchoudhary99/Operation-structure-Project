@@ -3,7 +3,9 @@
    Images (logo, signature) live in org_files and are fetched only by <img> tags, with an immutable cache. */
 import { HttpError, bad, str, own } from './lib.js';
 
-export const LAYOUTS = ['classic', 'modern', 'compact'];
+/* Invoice designs. compact / compact58 are thermal-roll receipts (80 / 58 mm); gst adds the HSN-wise tax summary. */
+export const LAYOUTS = ['classic', 'modern', 'elegant', 'bold', 'minimal', 'gst', 'compact', 'compact58'];
+export const FONTS = ['sans', 'serif'];
 export const FILE_KINDS = ['logo', 'signature'];
 export const MAX_FILE = 64 * 1024;
 const MIMES = ['image/png', 'image/jpeg', 'image/webp'];
@@ -15,6 +17,7 @@ export function printOf(org) {
   const p = parse(org && org.print, {});
   return {
     layout: LAYOUTS.includes(p.layout) ? p.layout : 'classic', color: /^#[0-9a-f]{6}$/i.test(p.color || '') ? p.color : '#0f766e',
+    font: FONTS.includes(p.font) ? p.font : 'sans',
     title: p.title || '', terms: p.terms || '', footer: p.footer || '', signatory: p.signatory || '', show_upi: p.show_upi !== false,
     bank_name: p.bank_name || '', bank_account: p.bank_account || '', bank_ifsc: p.bank_ifsc || '', bank_branch: p.bank_branch || '',
     logo: p.logo || '', signature: p.signature || '',
@@ -26,13 +29,15 @@ export function cleanPrint(b, cur) {
   const layout = b.layout || 'classic';
   if (!LAYOUTS.includes(layout)) throw bad(`Layout must be one of: ${LAYOUTS.join(', ')}.`);
   const color = str(b.color, 7) || '#0f766e';
+  const font = b.font || 'sans';
+  if (!FONTS.includes(font)) throw bad(`Font must be one of: ${FONTS.join(', ')}.`);
   if (!/^#[0-9a-f]{6}$/i.test(color)) throw bad('Colour must look like #0f766e.');
   const ifsc = str(b.bank_ifsc, 11).toUpperCase();
   if (ifsc && !/^[A-Z]{4}0[A-Z0-9]{6}$/.test(ifsc)) throw bad('IFSC code looks wrong. It has 11 characters, like SBIN0001234.');
   const account = str(b.bank_account, 20).replace(/\s+/g, '');
   if (account && !/^[0-9A-Za-z]{6,20}$/.test(account)) throw bad('Bank account number looks wrong.');
   return {
-    layout, color: color.toLowerCase(), title: str(b.title, 40), terms: String(b.terms ?? '').replace(/\r/g, '').slice(0, 600).trim(),
+    layout, font, color: color.toLowerCase(), title: str(b.title, 40), terms: String(b.terms ?? '').replace(/\r/g, '').slice(0, 600).trim(),
     footer: str(b.footer, 160), signatory: str(b.signatory, 60), show_upi: b.show_upi !== false && b.show_upi !== 'false' && b.show_upi !== 0,
     bank_name: str(b.bank_name, 60), bank_account: account, bank_ifsc: ifsc, bank_branch: str(b.bank_branch, 60),
     logo: cur.logo, signature: cur.signature,

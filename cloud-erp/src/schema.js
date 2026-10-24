@@ -3,7 +3,7 @@
    Every business table carries org_id: one database serves many businesses (multi-tenant).
    migrate() runs on the first request after each deploy, so no manual migration step is needed. */
 
-export const SCHEMA_VERSION = 18;
+export const SCHEMA_VERSION = 19;
 
 // document types whose monthly totals doc_month keeps (sales and purchase money documents)
 const MONTH_TYPES = `('INV','SRET','CNOTE','BILL','PRET','DNOTE')`;
@@ -354,6 +354,8 @@ export const MIGRATIONS = {
     `CREATE INDEX IF NOT EXISTS ix_recurring_due ON recurring (active, next_on)`,
     `CREATE INDEX IF NOT EXISTS ix_recurring_org ON recurring (org_id)`,
   ],
+  // per-document print design (NULL = the business's default from Branding & print)
+  19: [`ALTER TABLE docs ADD COLUMN design TEXT`],
 };
 
 const ATOMIC = [6, 7, 9];

@@ -74,7 +74,7 @@ async function runOne(env, r, day) {
   const ctx = { db, org, user, sys, body: {} };
   Object.defineProperty(ctx, 'env', { value: env, enumerable: false });
   try {
-    const made = await createDoc(ctx, { type: src.type, party_id: src.party_id, warehouse_id: src.warehouse_id, date: r.next_on, notes: src.notes || '',
+    const made = await createDoc(ctx, { type: src.type, party_id: src.party_id, warehouse_id: src.warehouse_id, date: r.next_on, notes: src.notes || '', design: src.design || undefined,
       extra: src.extra ? JSON.parse(src.extra) : undefined, lines: lines.map((l) => ({ ...l, rate: l.rate / 100 })) });   // rates are stored in paise
     const next = advance(r.next_on, r.every, r.anchor_day);
     const done = r.ends_on && next > r.ends_on;

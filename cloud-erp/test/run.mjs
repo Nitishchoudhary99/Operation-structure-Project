@@ -363,6 +363,10 @@ cookie = ownerCookie;
   check('bad colour is refused', (await api('PUT', '/api/settings/print', { color: 'red' }, true)).status === 400);
   check('bad IFSC is refused', (await api('PUT', '/api/settings/print', { bank_ifsc: 'SBI12' }, true)).status === 400);
   check('bad layout is refused', (await api('PUT', '/api/settings/print', { layout: 'fancy' }, true)).status === 400);
+  const pe = await api('PUT', '/api/settings/print', { ...p0.print, layout: 'elegant', font: 'serif' });
+  check('new designs and the serif font save', pe.print.layout === 'elegant' && pe.print.font === 'serif', JSON.stringify(pe.print));
+  check('bad font is refused', (await api('PUT', '/api/settings/print', { ...p0.print, font: 'comic' }, true)).status === 400);
+  await api('PUT', '/api/settings/print', { ...p0.print });
   cookie = storeCookie;
   check('store user cannot change print settings', (await api('PUT', '/api/settings/print', { layout: 'modern' }, true)).status === 403);
   check('store user can read print settings', (await api('GET', '/api/settings/print')).print.layout === 'classic');
@@ -444,6 +448,18 @@ check('IRN saved on invoice', (await api('GET', `/api/docs/${inv.id}`)).irn.leng
   check('a stopped schedule shows as stopped', (await api('GET', '/api/recurring')).rows.find((r) => r.id === rec.id).active === 0);
   tb = await api('GET', '/api/reports/trial-balance');
   check('books balance after a recurring invoice', tb.balanced);
+}
+{
+  // one bill can use its own design; it survives Repeat and can be changed after saving
+  const dd = await api('POST', '/api/docs', { type: 'INV', party_id: inv.party_id, design: 'bold', lines: [{ item_id: (await api('GET', `/api/docs/${inv.id}`)).lines[0].item_id, qty: 1, rate: 100 }] });
+  check('an invoice keeps the design chosen while making it', dd.design === 'bold');
+  check('Repeat keeps the design', (await api('GET', `/api/docs/${dd.id}/copy`)).design === 'bold');
+  await api('PUT', `/api/docs/${dd.id}/design`, { design: 'gst' });
+  check('the design can be changed after saving', (await api('GET', `/api/docs/${dd.id}`)).design === 'gst');
+  check('an unknown design is refused', (await api('PUT', `/api/docs/${dd.id}/design`, { design: 'fancy' }, true)).status === 400);
+  await api('PUT', `/api/docs/${dd.id}/design`, { design: '' });
+  check('empty design goes back to the default', (await api('GET', `/api/docs/${dd.id}`)).design === null);
+  await api('POST', `/api/docs/${dd.id}/cancel`);
 }
 const tx = await raw('/api/export/tally');
 const xml = await tx.text();

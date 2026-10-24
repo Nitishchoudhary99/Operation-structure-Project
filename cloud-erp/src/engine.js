@@ -10,7 +10,7 @@ import { requireCan, can } from './auth.js';
 import { stateCode } from './gst.js';
 import { checkInvoiceLimit, invoiceCap, invoiceCapError, hasFeature, planOf, upgradeError } from './saas.js';
 import { cleanVaada, risk, riskStatements, riskInput } from './vaada.js';
-import { numberSpec, fieldsOf, cleanExtra } from './custom.js';
+import { numberSpec, fieldsOf, cleanExtra, LAYOUTS } from './custom.js';
 
 export const DOC_TYPES = {
   QUOTE: { side: 'sales', prefix: 'QT', label: 'Quotation', from: [] },
@@ -234,11 +234,11 @@ export async function createDoc(ctx, body) {
   st.push(counterStatements(db, orgId, nspec.key));
   // on a capped plan the insert itself checks the monthly count, so parallel requests cannot all slip under the limit
   const docCols = `org_id, type, number, party_id, date, due_date, warehouse_id, ref_id, status, place_of_supply,
-        inter_state, taxable, cgst, sgst, igst, round_off, total, paid, notes, created_by, created_at, txk, extra`;
-  const docVals = `?, ?, ${counterValueSql}, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?`;
+        inter_state, taxable, cgst, sgst, igst, round_off, total, paid, notes, created_by, created_at, txk, extra, design`;
+  const docVals = `?, ?, ${counterValueSql}, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?, ?`;
   const docArgs = [orgId, type, nspec.fmt, orgId, nspec.key, party.id, d, dueDate, wh.id, src ? src.id : null, initialStatus,
     party.state || ctx.org.state || '', inter ? 1 : 0, taxable, cgst, sgst, igst, roundOff, total,
-    str(body.notes, 1000), ctx.user.id, nowIso(), txk, extra];
+    str(body.notes, 1000), ctx.user.id, nowIso(), txk, extra, LAYOUTS.includes(body.design) ? body.design : null];
   st.push(cap
     ? db.prepare(`INSERT INTO docs (${docCols}) SELECT ${docVals} WHERE (SELECT COUNT(*) FROM docs WHERE org_id = ? AND type = 'INV' AND created_at >= ?) < ?`)
       .bind(...docArgs, orgId, cap.since, cap.max)

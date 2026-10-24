@@ -23,7 +23,7 @@ import { cleanVaada, splitPlan, planOptions, minPart, risk, riskStatements, risk
 import { STATES, einvoiceJson, ewaybillJson } from './gst.js';
 import { tallyXml } from './tally.js';
 import { printOf, cleanPrint, imageFromDataUrl, shortHash, imageResponse, FILE_KINDS, seriesOf, numberSpec, formatNumber, cleanSeries, fyParts,
-  fieldsOf, extraOf, cleanField, cleanExtra, extraFilter, printExtra } from './custom.js';
+  fieldsOf, extraOf, cleanField, cleanExtra, extraFilter, printExtra, LAYOUTS } from './custom.js';
 import { billingMode, razorpayMode, grossPaise, billingStart, billingVerify, billingWebhook, billingStatus, billingHistory, hubFetch, hubOn,
   billingUpiCallback, billingUpiClaim, billingUpiCancel } from './billing.js';
 
@@ -697,6 +697,17 @@ router.add('GET', '/api/docs/:id/convert', async (c) => {
   return json({ type: to, party_id: src.party_id, ref_id: src.id, ref_number: src.number, warehouse_id: src.warehouse_id, date: today(), extra: src.extra, lines });
 });
 
+/* Print design of one document (presentation only, so it can change after saving; '' goes back to the business default) */
+router.add('PUT', '/api/docs/:id/design', async (c) => {
+  const d = await c.db.prepare(`SELECT id, type, number FROM docs WHERE id = ? AND org_id = ?`).bind(+c.params.id, c.org.id).first();
+  if (!d) throw notFound('Document not found.');
+  requireCan(c.user, DOC_TYPES[d.type].side === 'sales' ? 'sales' : 'purchase');
+  const design = String(c.body.design || '');
+  if (design && !LAYOUTS.includes(design)) throw bad(`Design must be one of: ${LAYOUTS.join(', ')}.`);
+  await c.db.batch([c.db.prepare(`UPDATE docs SET design = ? WHERE id = ?`).bind(design || null, d.id), auditStatement(c, 'design', `${d.number}: ${design || 'default'}`)]);
+  return json({ ok: true, design: design || null });
+});
+
 /* Recurring: the document is made again by itself every week / month / quarter / year (src/recurring.js) */
 router.add('POST', '/api/docs/:id/recurring', async (c) => json({ id: await createRecurring(c, +c.params.id) }));
 router.add('GET', '/api/recurring', async (c) => json({ rows: await listRecurring(c) }));
@@ -712,7 +723,7 @@ const REPEATABLE = ['INV', 'BILL', 'QUOTE', 'SO', 'PO'];
 router.add('GET', '/api/docs/:id/copy', async (c) => {
   const src = await docDetail(c, +c.params.id);
   if (!REPEATABLE.includes(src.type)) throw bad(`A ${src.type} cannot be repeated.`);
-  return json({ type: src.type, party_id: src.party_id, warehouse_id: src.warehouse_id, date: today(), extra: src.extra, notes: src.notes || '',
+  return json({ type: src.type, party_id: src.party_id, warehouse_id: src.warehouse_id, date: today(), extra: src.extra, notes: src.notes || '', design: src.design || '',
     lines: src.lines.map((l) => ({ item_id: l.item_id, item: l.item, unit: l.unit, description: l.description, qty: l.qty, rate: l.rate, discount_pct: l.discount_pct, gst_rate: l.gst_rate })) });
 });
 

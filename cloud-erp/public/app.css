@@ -162,6 +162,41 @@ input[type=checkbox] { width: auto; }
 .doc-paper.L-modern th { background: var(--ac); color: #fff; border-color: var(--ac); }
 .doc-paper.L-modern .parties > div { border: 0; background: #f5f7f9; }
 .doc-paper.L-modern .grand { color: var(--ac); }
+/* more invoice designs */
+.doc-paper.F-serif { font-family: Georgia, 'Times New Roman', serif; }
+.doc-paper.L-elegant .hdr { flex-direction: column; align-items: center; text-align: center; border-bottom: 2px solid var(--ac); padding-bottom: 12px; }
+.doc-paper.L-elegant .org { flex-direction: column; align-items: center; }
+.doc-paper.L-elegant .meta { text-align: center; }
+.doc-paper.L-elegant .oname { font-family: Georgia, 'Times New Roman', serif; font-size: 22px; letter-spacing: .03em; }
+.doc-paper.L-elegant .title { font-family: Georgia, 'Times New Roman', serif; letter-spacing: .25em; font-weight: 600; font-size: 16px; }
+.doc-paper.L-elegant th { background: none; border: 0; border-bottom: 2px solid var(--ac); }
+.doc-paper.L-elegant td { border: 0; border-bottom: 1px solid #e5e7eb; }
+.doc-paper.L-elegant .parties > div { border: 0; border-top: 2px solid var(--ac); border-radius: 0; }
+.doc-paper.L-bold { border-left: 10px solid var(--ac); }
+.doc-paper.L-bold .title { font-size: 26px; font-weight: 900; text-transform: uppercase; white-space: nowrap; }
+.doc-paper.L-bold th { background: #111; color: #fff; border-color: #111; }
+.doc-paper.L-bold .grand { background: var(--ac); color: #fff; padding: 10px 12px; border-radius: 8px; font-size: 20px; margin-top: 6px; }
+.doc-paper.L-minimal { border-color: #eef0f2; }
+.doc-paper.L-minimal th, .doc-paper.L-minimal td { border: 0; border-bottom: 1px solid #eef0f2; }
+.doc-paper.L-minimal th { background: none; color: #6b7280; font-size: 11px; text-transform: uppercase; letter-spacing: .06em; }
+.doc-paper.L-minimal .parties > div { border: 0; padding: 0; }
+.doc-paper.L-minimal .title { color: #111; font-weight: 600; font-size: 16px; letter-spacing: .12em; }
+.doc-paper.L-minimal .grand { border-top: 2px solid #111; padding-top: 6px; }
+.doc-paper.L-gst th { border-top: 2px solid var(--ac); }
+.doc-paper .hsn-wrap { margin-top: 12px; font-size: 13px; }
+.doc-paper .hsn-wrap b { display: block; margin-bottom: 4px; }
+.doc-paper.L-compact58 { max-width: 58mm; margin: 0 auto; padding: 8px; font-size: 11px; }
+.doc-paper.L-compact58 .hdr, .doc-paper.L-compact58 .foot { flex-direction: column; gap: 4px; }
+.doc-paper.L-compact58 .meta, .doc-paper.L-compact58 .sign { text-align: left; margin-top: 6px; }
+.doc-paper.L-compact58 .parties { grid-template-columns: 1fr; gap: 4px; }
+.doc-paper.L-compact58 .parties > div { padding: 4px; }
+.doc-paper.L-compact58 .words { max-width: none; }
+.doc-paper.L-compact58 th, .doc-paper.L-compact58 td { font-size: 11px; padding: 3px; }
+.doc-paper.L-compact58 .title { font-size: 13px; }
+.doc-paper.L-compact58 .logo { max-height: 40px; }
+.seg.seg-wrap { flex-wrap: wrap; }
+.inline-f { display: inline-flex; align-items: center; gap: 6px; margin: 0; }
+.inline-f select { width: auto; min-width: 160px; }
 .doc-paper.L-compact { max-width: 80mm; margin: 0 auto; padding: 12px; font-size: 12px; }
 .doc-paper.L-compact .hdr, .doc-paper.L-compact .foot { flex-direction: column; gap: 6px; }
 .doc-paper.L-compact .meta, .doc-paper.L-compact .sign { text-align: left; margin-top: 8px; }
@@ -180,6 +215,8 @@ input[type=checkbox] { width: auto; }
   .doc-paper.L-modern { border-top: 0; }
   .doc-paper.L-modern .hdr { margin: 0 0 16px; }
   .doc-paper.L-compact { width: 72mm; max-width: 72mm; margin: 0; }
+  .doc-paper.L-compact58 { width: 48mm; max-width: 48mm; margin: 0; }
+  .doc-paper.L-bold { border-left: 0; }
   .doc-paper, .doc-paper th, .doc-paper .hdr { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
   .panel { box-shadow: none; border: 0; }
 }
