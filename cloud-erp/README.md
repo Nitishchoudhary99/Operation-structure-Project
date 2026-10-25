@@ -300,6 +300,8 @@ Cloud API (the 24-hour customer service window), so the bot itself costs nothing
 2. Cloudflare → the ERP worker → Variables and Secrets, type **Secret**: **WHATSAPP_VERIFY_TOKEN** (that token) and
    **WHATSAPP_APP_SECRET** (Meta app → App settings → Basic → *App secret*). As a plain variable: **WHATSAPP_NUMBER**,
    the WhatsApp number customers write to, with country code and no + (e.g. `919876543210`). Deploy.
+   The Meta app's **Privacy Policy URL** (App settings → Basic, needed to switch the app to Live) is
+   `https://erp.docbrisk.com/privacy/` (made by `tools/gen-seo-pages.py`).
 3. Meta app → WhatsApp → Configuration → Webhook → *Edit*: Callback URL `https://erp.docbrisk.com/api/wa/webhook`,
    Verify token = the same token → *Verify and save*. Then under Webhook fields subscribe to **messages**.
 4. Each shop turns it on in Settings → *WhatsApp bot* and prints its QR poster. Customers already on the shop's list

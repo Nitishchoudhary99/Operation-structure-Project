@@ -57,7 +57,7 @@ def page(path, title, desc, h1, lead, sections, faqs, keywords):
 <section><h2>Frequently asked questions</h2>{faq}</section>
 <section class="cta"><h2>Shuru karein aaj hi</h2><p>Free plan me 50 invoices har mahine aur unlimited khata. Card ki zaroorat nahi.</p><a class="btn primary big" href="/#signup">Create your free account</a></section>
 </main>
-<footer><nav>{nav}<a href="https://wa.me/919068446139" rel="noopener">WhatsApp support</a><a href="https://docbrisk.com/">DocBrisk</a></nav><p>© 2026 SmartTrader ERP by DocBrisk. GST billing, inventory, accounts and khata for Indian businesses.</p></footer>
+<footer><nav>{nav}<a href="https://wa.me/919068446139" rel="noopener">WhatsApp support</a><a href="/privacy/">Privacy</a><a href="https://docbrisk.com/">DocBrisk</a></nav><p>© 2026 SmartTrader ERP by DocBrisk. GST billing, inventory, accounts and khata for Indian businesses.</p></footer>
 </body>
 </html>
 '''
@@ -144,4 +144,54 @@ page('/pricing/', 'Pricing: Free GST Billing, Khata & Inventory | SmartTrader ER
       ('How do I upgrade?', 'Open Plan & Billing in the app, pay by UPI and enter the activation code you receive.'),
       ('Is my data safe?', 'Data is stored on Cloudflare, every business is kept separate, passwords are hashed, and staff get role-based access with an audit trail.')],
      'billing software price, GST software price India, cheap billing software, ERP for small business price, khata app free')
+
+# the privacy policy: what SmartTrader keeps and why (Meta asks for it before the WhatsApp app goes live)
+def privacy():
+    path, title = '/privacy/', 'Privacy Policy | SmartTrader ERP'
+    desc = 'What SmartTrader ERP keeps, why, for how long, and how to get it or have it deleted. Includes the WhatsApp bot and reminders.'
+    nav = ''.join(f'<a href="{h}">{t}</a>' for h, t in NAV)
+    secs = [
+        ('who', 'Who we are', '<p>SmartTrader ERP (erp.docbrisk.com) is run by DocBrisk, India. Questions, data requests and complaints: <a href="https://wa.me/919068446139" rel="noopener">WhatsApp support, +91 90684 46139</a>.</p>'),
+        ('business', 'What a business keeps in SmartTrader', '<p>A business enters its own records: its profile, customers and suppliers (names, phone numbers, GSTIN, addresses), items and stock, bills, payments, khata, staff and attendance. The business owns these records and decides what goes in; we keep and process them only to run SmartTrader for that business. Each business is kept separate, and its people see only what their role allows. Changes are kept in an audit trail.</p>'),
+        ('account', 'Your account', '<ul><li>Name, e-mail and the business you sign up for.</li><li>Your password is stored only as a salted hash; nobody, including us, can read it.</li><li>One cookie keeps you signed in. There are no advertising or tracking cookies, and no third-party analytics scripts.</li><li>Sign-up and password e-mails are sent through an e-mail delivery service.</li></ul>'),
+        ('whatsapp', 'WhatsApp bot and reminders', '<p>SmartTrader has its own WhatsApp Business number on Meta\'s official WhatsApp Business Platform (Cloud API). Only shops that turn these on use them.</p><ul><li><b>Reminders</b>: a shop\'s customers who have a payment due get a reminder with the amount and a link to their bills, sent to the mobile number the shop saved.</li><li><b>When you write to our number</b>, we receive your WhatsApp number, your message and its time. The bot answers from the shop\'s records: bills, amounts due and payment links are sent only to the mobile number that the shop saved for that customer (Indian +91 numbers). A message the bot cannot answer is shown to that shop so it can reply.</li><li>Messages to and from our number are kept for up to <b>6 months</b>, visible only to the shop they are about, and then deleted.</li><li>Reply <b>STOP</b> to stop automatic reminders from a shop, and <b>START</b> to turn them on again.</li><li>Messages travel through WhatsApp, which Meta runs under its own terms and privacy policy.</li></ul>'),
+        ('links', 'Bill and khata links', '<p>A bill or khata link that a shop sends opens for anyone who has the link, so it can be opened without an account. The shop can turn a link off at any time.</p>'),
+        ('scan', 'Scanning a supplier\'s bill', '<p>A bill photo or PDF is read on your own phone or computer. The picture is not uploaded to us.</p>'),
+        ('drive', 'Google Drive backup (optional)', '<p>If the owner connects Google Drive, a backup file goes to a SmartTrader folder in their own Drive. The app asks only for access to the files it makes itself (<code>drive.file</code>) and the e-mail of the account. The access is kept encrypted and can be disconnected at any time in Settings.</p>'),
+        ('pay', 'Paying for a plan', '<p>Plans are paid through a payment provider (Razorpay) or UPI. We receive the payment status and amount, never your card or bank login.</p>'),
+        ('where', 'Where it is kept and who else processes it', '<p>Data is stored with Cloudflare, our hosting provider, and is sent only over encrypted connections (HTTPS). Other services process data only for the parts above: Meta (WhatsApp messages), Google (Drive backup, if connected), the payment provider and the e-mail delivery service. We do not sell data, show ads or share it for advertising.</p>'),
+        ('delete', 'Getting your data, and deleting it', '<ul><li>The owner can download a full backup at any time (Settings → Backup), as a file or a readable Excel sheet.</li><li>To close a business and delete its data, the owner writes to WhatsApp support from the business\'s registered mobile or e-mail. We delete it within 30 days, except records the law requires us to keep (such as our own GST invoices for plans).</li><li>A shop\'s customer who wants a record changed or deleted should ask the shop, which controls its records. For messages to our WhatsApp number, write to WhatsApp support.</li></ul>'),
+        ('other', 'Children and changes', '<p>SmartTrader is for businesses and is not meant for anyone under 18. If this policy changes, the date below changes; a big change is also shown in the app.</p>'),
+    ]
+    body = ''.join(f'<section id="{i}"><h2>{html.escape(t)}</h2>{c}</section>' for i, t, c in secs)
+    doc = f'''<!doctype html>
+<html lang="en-IN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{title}</title>
+<meta name="description" content="{html.escape(desc)}">
+<link rel="canonical" href="{SITE}{path}">
+<meta name="robots" content="index, follow">
+<meta name="theme-color" content="#0f766e">
+<link rel="icon" href="/icons/icon-192.png"><link rel="apple-touch-icon" href="/icons/apple-touch-icon.png">
+<link rel="stylesheet" href="/site.css">
+</head>
+<body>
+<header class="top"><a class="logo" href="/"><img src="/icons/icon-192.png" alt="" width="32" height="32">SmartTrader ERP</a><nav>{nav}</nav>
+<a class="btn" href="/#login">Login</a><a class="btn primary" href="/#signup">Start free</a></header>
+<main>
+<section class="hero"><h1>Privacy Policy</h1><p class="lead">Saar: aapka data aapka hai. Hum use sirf SmartTrader chalane ke liye rakhte hain, bechte nahi, ads nahi dikhate, aur aap jab chahein backup le sakte hain ya delete karwa sakte hain.</p>
+<p class="small">Last updated: {PRIVACY_DATE}</p></section>
+{body}
+</main>
+<footer><nav>{nav}<a href="https://wa.me/919068446139" rel="noopener">WhatsApp support</a><a href="/privacy/" class=on>Privacy</a><a href="https://docbrisk.com/">DocBrisk</a></nav><p>© 2026 SmartTrader ERP by DocBrisk. GST billing, inventory, accounts and khata for Indian businesses.</p></footer>
+</body>
+</html>
+'''
+    os.makedirs(OUT + path, exist_ok=True)
+    open(OUT + path + 'index.html', 'w').write(doc)
+
+PRIVACY_DATE = '25 October 2026'
+privacy()
 print('ok')
