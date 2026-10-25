@@ -3,7 +3,7 @@
    Every business table carries org_id: one database serves many businesses (multi-tenant).
    migrate() runs on the first request after each deploy, so no manual migration step is needed. */
 
-export const SCHEMA_VERSION = 20;
+export const SCHEMA_VERSION = 21;
 
 // document types whose monthly totals doc_month keeps (sales and purchase money documents)
 const MONTH_TYPES = `('INV','SRET','CNOTE','BILL','PRET','DNOTE')`;
@@ -360,6 +360,24 @@ export const MIGRATIONS = {
   20: [
     `CREATE TABLE IF NOT EXISTS drive_links (org_id INTEGER PRIMARY KEY, user_id INTEGER NOT NULL, email TEXT, refresh_enc TEXT NOT NULL, folder_id TEXT,
       every TEXT NOT NULL DEFAULT 'day', connected_at TEXT NOT NULL, last_backup_at TEXT, last_try_at TEXT, last_file TEXT, last_size INTEGER, last_error TEXT)`,
+  ],
+  /* vasooli (src/vasooli.js, src/msg.js): the customer's message language and VIP flag, the business's default language
+     and Udyam number (MSMED interest), every reminder sent (evidence, and the schedule's memory), and the monthly
+     balance statements customers confirm or dispute on /c/<token> */
+  21: [
+    `ALTER TABLE parties ADD COLUMN lang TEXT DEFAULT ''`,
+    `ALTER TABLE parties ADD COLUMN vip INTEGER NOT NULL DEFAULT 0`,
+    `ALTER TABLE orgs ADD COLUMN msg_lang TEXT NOT NULL DEFAULT 'hl'`,
+    `ALTER TABLE orgs ADD COLUMN udyam TEXT DEFAULT ''`,
+    `CREATE TABLE IF NOT EXISTS reminder_log (id INTEGER PRIMARY KEY, org_id INTEGER NOT NULL, party_id INTEGER NOT NULL, step INTEGER NOT NULL,
+       via TEXT NOT NULL, lang TEXT DEFAULT '', user_id INTEGER, sent_at TEXT NOT NULL)`,
+    `CREATE INDEX IF NOT EXISTS ix_remlog_party ON reminder_log (org_id, party_id, id)`,
+    `CREATE INDEX IF NOT EXISTS ix_remlog_sent ON reminder_log (org_id, sent_at)`,
+    `CREATE TABLE IF NOT EXISTS confirmations (id INTEGER PRIMARY KEY, org_id INTEGER NOT NULL, party_id INTEGER NOT NULL, token TEXT NOT NULL UNIQUE,
+       as_of TEXT NOT NULL, balance INTEGER NOT NULL, bills TEXT NOT NULL DEFAULT '[]',
+       status TEXT NOT NULL DEFAULT 'sent' CHECK (status IN ('sent','agreed','disputed')), note TEXT DEFAULT '', disputed_bill TEXT DEFAULT '',
+       sent_via TEXT, sent_at TEXT, created_by INTEGER, created_at TEXT NOT NULL, answered_at TEXT, answered_ua TEXT)`,
+    `CREATE INDEX IF NOT EXISTS ix_conf_party ON confirmations (org_id, party_id, id)`,
   ],
 };
 

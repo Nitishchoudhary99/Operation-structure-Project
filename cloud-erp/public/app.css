@@ -585,3 +585,25 @@ a.vcard:hover { background: var(--soft); }
 .upirefrow { display: flex; gap: 8px; }
 .upirefrow input { flex: 1; min-width: 0; font-size: 16px; letter-spacing: 1px; }
 .auth .forgot { margin: -4px 0 10px; text-align: right; font-size: 14px; }
+
+/* sending: the customer's language, a WhatsApp preview, PDF / link / SMS */
+.send-modal .sd-lang { margin: 4px 0 0; }
+.send-modal .langs { margin: 4px 0 0; padding-bottom: 4px; }
+.send-btns { display: flex; flex-wrap: wrap; gap: 8px; margin: 8px 0; }
+.send-btns .btn.big { flex: 1 1 220px; justify-content: center; }
+
+/* vasooli and the recovery file */
+.vq-later > summary { padding: 10px 16px; cursor: pointer; color: var(--muted); }
+.recovery h3 { margin: 22px 0 6px; font-size: 16px; }
+.recovery h4 { margin: 14px 0 6px; font-size: 14px; }
+.recovery table + h4, .recovery p + h4 { margin-top: 16px; }
+.recovery .claim { font-size: 15px; margin: 12px 0; }
+.recovery .notice { border: 1px dashed #cfd6dd; border-radius: 8px; padding: 14px 18px; line-height: 1.55; }
+@media print { .recovery .pb { break-before: page; } .recovery .notice { border: 0; padding: 0; } }
+
+/* the customer's balance statement (/c/) */
+.cf-ask h3 { margin: 0 0 10px; }
+.cf-ask form { margin-top: 10px; }
+.cf-done { font-size: 15px; line-height: 1.5; }
+.cf-done.ok { border-left: 4px solid var(--ok); background: var(--ok-soft); }
+.cf-done.bad { border-left: 4px solid var(--danger); background: var(--danger-soft); }

@@ -429,7 +429,9 @@ export function paymentStatements(ctx, { kind, party, account, date: d, amount, 
 export async function createPayment(ctx, body) {
   const { db } = ctx;
   const kind = body.kind === 'payment' ? 'payment' : 'receipt';
-  requireCan(ctx.user, 'finance');
+  // the built-in salesperson role may record what a customer paid them (the customer gets a WhatsApp receipt naming
+  // them at once); paying out, and custom roles without Finance, stay as they were
+  if (!(kind === 'receipt' && ctx.user.role === 'sales')) requireCan(ctx.user, 'finance');
   const party = await db.prepare(`SELECT * FROM parties WHERE id = ? AND org_id = ?`).bind(+body.party_id || 0, ctx.org.id).first();
   if (!party) throw bad('Choose a party.');
   const acct = await cashAccount(db, ctx.org.id, +body.account_id);

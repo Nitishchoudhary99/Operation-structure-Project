@@ -1153,5 +1153,130 @@ else {
   check('CSV: the injected name is safe in a whole file', !toCsv([{ h: 'Name', k: 'n' }, { h: 'Amt', k: 'a' }], [{ n: '=cmd|\' /C calc\'!A0', a: -5 }]).split('\n')[1].startsWith('='));
 }
 
+/* --- vasooli: the customer's language, the reminder schedule, balance statements, receipts, the recovery file --- */
+{
+  const ip = '203.0.113.120';
+  const su = await rq('POST', '/api/auth/signup', { business: 'Vasooli Traders', name: 'V', email: `vasooli${Date.now()}@test.in`, password: 'Vasooli-pass-1', state: 'Rajasthan' }, { ip });
+  const V = async (m, p, b) => { const r = await rq(m, p, b, { cookie: su.cookie, ip }); if (r.status >= 400) throw new Error(`${m} ${p} -> ${r.status} ${r.data.error}`); return r.data; };
+  const pg = async (u) => (await fetch(u.replace(/^https?:\/\/[^/]+/, BASE))).text();
+  const day = (n) => new Date(Date.now() + 5.5 * 3600e3 + n * 864e5).toISOString().slice(0, 10);   // IST, like the server
+  const me = await V('GET', '/api/me');
+  check('a new business sends in Hinglish until it picks another language', me.org.msg_lang === 'hl');
+  await V('PUT', '/api/org', { ...me.org, udyam: 'udyam-rj-17-0012345' });
+  check('the Udyam number is saved', (await V('GET', '/api/me')).org.udyam === 'UDYAM-RJ-17-0012345');
+  const cu = await V('POST', '/api/parties', { name: 'Gupta Medical', kind: 'customer', phone: '9876500001', state: 'Rajasthan', credit_days: 30 });
+  const vip = await V('POST', '/api/parties', { name: 'Big Buyer', kind: 'customer', phone: '9876500002', state: 'Rajasthan', vip: true, lang: 'en' });
+  check('a contact keeps its language and VIP mark', vip.lang === 'en' && vip.vip === 1 && cu.lang === '' && cu.vip === 0, JSON.stringify(vip));
+  const it = await V('POST', '/api/items', { name: 'Courier service', unit: 'job', sale_price: 1000, gst_rate: 0, is_service: true });
+  const inv1 = await V('POST', '/api/docs', { type: 'INV', party_id: cu.id, date: day(-60), lines: [{ item_id: it.id, qty: 10, rate: 1000 }] });
+  const inv2 = await V('POST', '/api/docs', { type: 'INV', party_id: vip.id, date: day(-60), lines: [{ item_id: it.id, qty: 5, rate: 1000 }] });
+
+  // the bill message in the customer's language, and its link preview
+  const hi = await V('GET', `/api/docs/${inv1.id}/share?lang=hi`);
+  check('bill message in Hindi, with a Hindi link', hi.lang === 'hi' && hi.text.includes('नमस्ते Gupta Medical जी') && hi.text.includes('बकाया') && hi.url.endsWith('?l=hi')
+    && hi.file_name === `${inv1.number}.pdf`, hi.text);
+  const again = await V('GET', `/api/docs/${inv1.id}/share`);
+  check("the customer's language is remembered", again.lang === 'hi' && again.text.includes('राशि'), again.text);
+  const en = await V('GET', `/api/docs/${inv1.id}/share?lang=en`);
+  check('bill message in English', en.text.includes('Dear Gupta Medical,') && en.text.includes('Balance due') && en.url.endsWith('?l=en') && !en.text.includes('dekhein'), en.text);
+  const hl = await V('GET', `/api/docs/${inv1.id}/share?lang=hl`);
+  check('Hinglish keeps the plain link', /\/i\/[0-9a-f]{24}$/.test(hl.url) && hl.text.includes('Namaste Gupta Medical ji'), hl.url);
+  const hiPage = await pg(hi.url);
+  check('the link preview is in Hindi too', hiPage.includes('og-invoice-hi.png') && hiPage.includes('राशि') && hiPage.includes('?l=hi'), hiPage.slice(0, 400));
+  check('...and in English', (await pg(en.url)).includes('og-invoice-en.png'));
+  const posters = ['og-invoice-en.png', 'og-invoice-hi.png', 'og-khata-en.png', 'og-khata-hi.png', 'og-confirm.png', 'og-confirm-en.png', 'og-confirm-hi.png'];
+  check('every preview poster is served', (await Promise.all(posters.map(async (f) => { const r = await fetch(`${BASE}/${f}`); return r.ok && (r.headers.get('content-type') || '').includes('image/png'); }))).every(Boolean));
+  check('the PDF maker is served', (await fetch(`${BASE}/vendor/html-to-image.js`)).ok);
+
+  // reminders get firmer with age; a VIP customer only ever gets gentle wording
+  const r1 = await V('GET', `/api/parties/${cu.id}/reminder?lang=en`);
+  check('30 days late: firmer wording and the MSMED line', r1.step === 30 && r1.tone === 'late30' && r1.text.includes('more than 30 days') && r1.text.includes('UDYAM-RJ-17-0012345'), r1.text);
+  const r2 = await V('GET', `/api/parties/${vip.id}/reminder`);
+  check('a VIP customer gets gentle wording, in their language', r2.lang === 'en' && r2.step === 45 && r2.tone === 'gentle' && r2.text.includes('gentle reminder')
+    && !r2.text.includes('Final') && !r2.text.includes('MSMED'), r2.text);
+  const r3 = await V('GET', `/api/parties/${vip.id}/reminder?lang=hi`);
+  check('reminder in Hindi', r3.text.includes('भुगतान याद-दिहानी') && r3.text.includes('कुल बकाया'), r3.text);
+  await V('PUT', `/api/parties/${vip.id}`, { ...vip, vip: false, lang: 'en' });
+  const r4 = await V('GET', `/api/parties/${vip.id}/reminder`);
+  check('45+ days late, not VIP: the final reminder', r4.tone === 'final' && r4.text.includes('Final reminder') && r4.text.includes('within 7 days'), r4.text);
+
+  // the day's list
+  let q = await V('GET', '/api/vasooli');
+  const qa = q.queue.find((r) => r.party_id === cu.id);
+  check('both customers are due a reminder today', qa && qa.status === 'due' && qa.step === 30 && q.queue.find((r) => r.party_id === vip.id).status === 'due', JSON.stringify(q.queue));
+  check('the owner sees the week', q.summary && q.summary.outstanding === 15000 && q.summary.late45 === 5000 && q.summary.late45_n === 1 && q.msme === true, JSON.stringify(q.summary));
+  await V('POST', `/api/vasooli/${cu.id}/sent`, { step: 30, via: 'whatsapp', lang: 'en' });
+  q = await V('GET', '/api/vasooli');
+  const qb = q.queue.find((r) => r.party_id === cu.id);
+  check('once sent, the next reminder waits for the 45-day step', qb.status === 'sent' && qb.next_on === day(15) && qb.last_sent.via === 'whatsapp', JSON.stringify(qb));
+  await V('POST', '/api/vaade', { party_id: vip.id, book: 'inv', kind: 'date', date: day(5) });
+  q = await V('GET', '/api/vasooli');
+  check("the customer's own promise date pauses the reminders", q.queue.find((r) => r.party_id === vip.id).status === 'promised', JSON.stringify(q.queue));
+
+  // monthly balance statement: one tap to confirm or dispute, kept as proof
+  const cf = await V('POST', `/api/parties/${cu.id}/confirm?lang=hi`, {});
+  const tok = (cf.text.match(/\/c\/([0-9a-f]{24})\?l=hi/) || [])[1];
+  check('balance statement message with a private link', !!tok && cf.text.includes('बकाया पुष्टि') && cf.text.includes('₹10,000.00') && cf.lang === 'hi', cf.text);
+  check('sending it again the same day reuses the statement', (await V('POST', `/api/parties/${cu.id}/confirm`, {})).id === cf.id);
+  await V('POST', `/api/vasooli/confirm/${cf.id}/sent`, { via: 'whatsapp' });
+  const pub = await rq('GET', `/api/public/confirm/${tok}`);
+  check('the customer sees every open bill and the balance, without logging in', pub.status === 200 && pub.data.balance === 10000 && pub.data.bills.length === 1
+    && pub.data.bills[0].number === inv1.number && pub.data.status === 'sent' && !('org_id' in pub.data) && !('token' in pub.data), JSON.stringify(pub.data));
+  check('a dispute needs a reason', (await rq('POST', `/api/public/confirm/${tok}`, { answer: 'dispute' })).status === 400);
+  const ans = await rq('POST', `/api/public/confirm/${tok}`, { answer: 'dispute', bill: inv1.number, note: '2 boxes short' }, { ip: '198.18.0.9' });
+  check('the customer disputes with one tap', ans.status === 200 && ans.data.status === 'disputed', JSON.stringify(ans.data));
+  check('an answered statement cannot be changed', (await rq('POST', `/api/public/confirm/${tok}`, { answer: 'agree' })).status === 400);
+  q = await V('GET', '/api/vasooli');
+  const cr = q.confirmations.find((f) => f.party_id === cu.id);
+  check('the shop sees the dispute and which bill', cr && cr.status === 'disputed' && cr.note === '2 boxes short' && cr.disputed_bill === inv1.number, JSON.stringify(cr));
+  const cpage = await pg(`${BASE}/c/${tok}?l=hi`);
+  check('the statement link previews in Hindi', cpage.includes('og-confirm-hi.png') && cpage.includes('बकाया पुष्टि'), cpage.slice(0, 300));
+  check('a made-up statement link is rejected', (await rq('GET', `/api/public/confirm/${'a'.repeat(24)}`)).status === 404);
+  const cf2 = await V('POST', `/api/parties/${vip.id}/confirm?lang=en`, {});
+  const tok2 = cf2.text.match(/\/c\/([0-9a-f]{24})/)[1];
+  check('the customer agrees with one tap', (await rq('POST', `/api/public/confirm/${tok2}`, { answer: 'agree' })).data.status === 'agreed');
+
+  // receipts: the customer's proof, naming who collected
+  const cash = (await V('GET', '/api/accounts')).rows.find((a) => a.sys === 'cash');
+  const rc = await V('POST', '/api/payments', { kind: 'receipt', party_id: cu.id, account_id: cash.id, amount: 4000 });
+  const rm = await V('GET', `/api/payments/${rc.id}/message?lang=en`);
+  check('receipt message names who collected it and what is left', rm.text.includes('Payment received') && rm.text.includes('Collected by: V') && rm.text.includes('₹6,000.00')
+    && rm.whatsapp_url.includes('phone=919876500001'), rm.text);
+  const rmh = await V('GET', `/api/payments/${rc.id}/message?lang=hi`);
+  check('receipt in Hindi', rmh.text.includes('भुगतान प्राप्त') && rmh.text.includes('प्राप्तकर्ता: V'), rmh.text);
+  const em = `raju${Date.now()}@test.in`;
+  await V('POST', '/api/users', { name: 'Raju', email: em, password: 'Raju-pass-123', role: 'sales' });
+  const lg = await rq('POST', '/api/auth/login', { email: em, password: 'Raju-pass-123' }, { ip });
+  const S = (m, p, b) => rq(m, p, b, { cookie: lg.cookie, ip });
+  const sr = await S('POST', '/api/payments', { kind: 'receipt', party_id: cu.id, account_id: cash.id, amount: 1000 });
+  check('a salesperson records a customer payment they collected', sr.status === 200, JSON.stringify(sr.data));
+  check('...and can send the receipt', (await S('GET', `/api/payments/${sr.data.id}/message`)).data.text.includes('Raju'));
+  check('...but cannot pay money out', (await S('POST', '/api/payments', { kind: 'payment', party_id: cu.id, account_id: cash.id, amount: 1 })).status === 403);
+  check('...nor open the recovery file or the week summary', (await S('GET', `/api/parties/${cu.id}/recovery`)).status === 403 && (await S('GET', '/api/vasooli')).data.summary === null);
+  q = await V('GET', '/api/vasooli');
+  const staff = Object.fromEntries(q.summary.staff.map((x) => [x.name, x]));
+  check('who collected what', staff.V && staff.V.week === 4000 && staff.Raju && staff.Raju.week === 1000 && staff.Raju.cash_week === 1000 && q.summary.received === 5000, JSON.stringify(q.summary.staff));
+
+  // the recovery file: MSMED interest and the evidence
+  const rf = await V('GET', `/api/parties/${vip.id}/recovery?rate=6.5`);
+  const b0 = rf.bills[0];
+  // ₹5,000 due since 60 days (no credit days): 3 × 6.5% a year, monthly rests -> about ₹161.6
+  check('recovery file: MSMED interest on a 60-day-late bill', rf.msme && rf.bank_rate === 6.5 && b0.days_late === 60 && b0.appointed === day(-60) && b0.interest > 155 && b0.interest < 168, JSON.stringify(b0));
+  const rf2 = await V('GET', `/api/parties/${cu.id}/recovery`);
+  check('recovery file carries the evidence', rf2.reminders.length === 1 && rf2.confirmations.length === 1 && rf2.confirmations[0].status === 'disputed' && rf2.payments.length === 2
+    && rf2.bills[0].interest === 0 && rf2.bank_rate === null && rf2.totals.bal === 5000, JSON.stringify(rf2).slice(0, 400));
+
+  // khata messages follow the customer's language too
+  const kh = await V('POST', '/api/khata', { party_id: cu.id, kind: 'gave', amount: 250, note: 'cash' });
+  check("khata entry message in the customer's language", kh.lang === 'hi' && kh.text.includes('उधार लिखा गया'), kh.text);
+  const khEn = await V('GET', `/api/khata/entries/${kh.entry_id}/message?lang=en`);
+  check('...and it can be switched before sending', khEn.lang === 'en' && khEn.text.includes('Credit given'), khEn.text);
+  const wr = await V('GET', '/api/vasooli/report?lang=en');
+  check('the week report for the owner', wr.text.includes('Your week in collections') && wr.text.includes('Received: *₹5,000.00*'), wr.text);
+  const bk = await (await fetch(BASE + '/api/export/backup', { headers: { Cookie: su.cookie, 'CF-Connecting-IP': ip } })).json();
+  check('backups keep the reminder log and statements, without their private links', bk.tables.reminder_log.length === 1 && bk.tables.confirmations.length === 2
+    && bk.tables.confirmations.every((f) => !('token' in f)) && bk.org.udyam === 'UDYAM-RJ-17-0012345');
+}
+
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

@@ -10,12 +10,13 @@
    happens completely or not at all. The ledger, party balances and monthly totals are rebuilt by the database's
    own triggers as the rows go in. */
 import { bad, nowIso, uid } from './lib.js';
+import { randomHex } from './auth.js';
 import { auditStatement } from './engine.js';
 
 const ID_TABLES = ['accounts', 'warehouses', 'roles', 'parties', 'items', 'docs', 'doc_lines', 'payments', 'journals', 'journal_lines', 'khata',
-  'stock_moves', 'gate_entries', 'vaade', 'vaada_kisht', 'recurring'];
+  'stock_moves', 'gate_entries', 'vaade', 'vaada_kisht', 'recurring', 'reminder_log', 'confirmations'];
 const OTHER_TABLES = ['payment_allocs', 'stock', 'counters', 'org_files'];
-const ORG_FIELDS = ['name', 'gstin', 'state', 'address', 'phone', 'upi_id', 'fy_start', 'city', 'pincode', 'email', 'mode', 'print', 'series', 'fields', 'vaada'];
+const ORG_FIELDS = ['name', 'gstin', 'state', 'address', 'phone', 'upi_id', 'fy_start', 'city', 'pincode', 'email', 'mode', 'print', 'series', 'fields', 'vaada', 'msg_lang', 'udyam'];
 const JSON_FIELDS = ['print', 'series', 'fields', 'vaada'];
 const PAY_REFS = ['payment', 'receipt', 'payment-X', 'receipt-X'];
 const MAX_ROWS = 300000, MAX_SQL = 90000;
@@ -106,12 +107,14 @@ export async function restoreBackup(c, backup) {
       vaada_kisht: (r) => ({ vaada_id: to('vaade', r.vaada_id), party_id: to('parties', r.party_id) }),
       recurring: (r) => ({ src_doc_id: to('docs', r.src_doc_id), last_doc_id: to('docs', r.last_doc_id), created_by: me, active: 0,
         last_error: 'Paused after the restore. Tap Resume to start it again.' }),
+      reminder_log: (r) => ({ party_id: to('parties', r.party_id), user_id: me }),
+      confirmations: (r) => ({ party_id: to('parties', r.party_id), created_by: me, token: randomHex(12) }),   // old links stay dead
       counters: () => ({}),
       org_files: () => ({}),
     };
     // a row whose own record of the link is gone is left out (it could not be shown or posted anyway)
     const NEED = { doc_lines: ['doc_id'], payment_allocs: ['payment_id', 'doc_id'], journal_lines: ['journal_id', 'account_id'], stock: ['item_id', 'warehouse_id'],
-      vaada_kisht: ['vaada_id'], recurring: ['src_doc_id'], stock_moves: ['item_id', 'warehouse_id'], payments: ['party_id', 'account_id'], khata: ['party_id'] };
+      vaada_kisht: ['vaada_id'], recurring: ['src_doc_id'], reminder_log: ['party_id'], confirmations: ['party_id'], stock_moves: ['item_id', 'warehouse_id'], payments: ['party_id', 'account_id'], khata: ['party_id'] };
 
     const st = [];
     const insert = (t, rows, verb = 'INSERT') => {
@@ -159,7 +162,7 @@ export async function restoreBackup(c, backup) {
     counts.accounts = insert('accounts', newAccounts);
     counts.warehouses = insert('warehouses', whs.filter((w) => w !== firstWh));
     for (const t of ['roles', 'parties', 'items', 'docs', 'doc_lines', 'payments', 'payment_allocs', 'journals', 'journal_lines', 'khata', 'stock', 'stock_moves',
-      'gate_entries', 'vaade', 'vaada_kisht', 'recurring']) counts[t] = insert(t, T[t]);
+      'gate_entries', 'vaade', 'vaada_kisht', 'recurring', 'reminder_log', 'confirmations']) counts[t] = insert(t, T[t]);
     counts.counters = insert('counters', T.counters, 'INSERT OR REPLACE');
     counts.org_files = insert('org_files', T.org_files.filter((f) => typeof f.data === 'string' && f.data.length <= 120000 && /^image\//.test(String(f.mime))), 'INSERT OR REPLACE');
     // promise stats are kept by a trigger on changes only, so they are worked out once here
