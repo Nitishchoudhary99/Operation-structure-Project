@@ -224,8 +224,9 @@ export async function stockAgeing(db, org, q) {
 const roundQ = (q) => Math.round(q * 1000) / 1000;
 
 export async function itemMoves(db, org, itemId) {
-  const { results } = await db.prepare(`SELECT m.date, m.qty, m.unit_cost, m.value, m.ref_type, m.ref_id, m.note, w.name AS warehouse, d.number
+  const { results } = await db.prepare(`SELECT m.date, m.qty, m.unit_cost, m.value, m.ref_type, m.ref_id, m.note, w.name AS warehouse, COALESCE(d.number, pr.number) AS number
       FROM stock_moves m JOIN warehouses w ON w.id = m.warehouse_id LEFT JOIN docs d ON d.id = m.ref_id AND d.org_id = m.org_id AND m.ref_type = d.type
+      LEFT JOIN productions pr ON pr.id = m.ref_id AND pr.org_id = m.org_id AND m.ref_type IN ('MFG', 'MFG-X')
       WHERE m.org_id = ? AND m.item_id = ? ORDER BY m.date, m.id`).bind(org.id, itemId).all();
   let bal = 0;
   return results.map((m) => ({ ...m, unit_cost: R(m.unit_cost), value: R(m.value), balance: (bal = Math.round((bal + m.qty) * 1000) / 1000) }));

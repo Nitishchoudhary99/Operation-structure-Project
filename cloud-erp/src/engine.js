@@ -7,7 +7,7 @@ import {
   counterStatements, counterValueSql, own,
 } from './lib.js';
 import { requireCan, can } from './auth.js';
-import { lotState, takeOut, putIn, lotStatements, planBatchText, cleanBatch } from './lots.js';
+import { lotState, takeOut, putIn, lotStatements, planBatchText, cleanBatch, cleanSerials } from './lots.js';
 export { loadByIds };
 import { stateCode } from './gst.js';
 import { checkInvoiceLimit, invoiceCap, invoiceCapError, hasFeature, planOf, upgradeError } from './saas.js';
@@ -65,7 +65,7 @@ export function journalStatements(db, ctx, { date: d, narration, refType, refId,
 
 /* ---------------------------------------------------------------- stock */
 /* qty > 0 adds stock (value = total cost in paise), qty < 0 removes it (value = cost taken out, positive). */
-export function stockStatements(db, ctx, { item, warehouse, qty, value, date: d, refType, refId, refTxk, refTable, note = '', lots = null }) {
+export function stockStatements(db, ctx, { item, warehouse, qty, value, date: d, refType, refId, refTxk, refTable, note = '', lots = null, party = null }) {
   const refExpr = refTxk ? `(SELECT id FROM ${refTable} WHERE txk = ?)` : '?';
   const out = [];
   if (qty > 0) {
@@ -84,7 +84,7 @@ export function stockStatements(db, ctx, { item, warehouse, qty, value, date: d,
   out.push(db.prepare(`INSERT INTO stock_moves (org_id, date, item_id, warehouse_id, qty, unit_cost, value, ref_type, ref_id, note)
                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ${refExpr}, ?)`)
     .bind(ctx.org.id, d, item, warehouse, qty, Math.abs(value / qty), qty > 0 ? value : -value, refType, refTxk || refId || null, note));
-  out.push(...lotStatements(db, ctx.org.id, { item, warehouse, plan: lots, date: d, refType, refId, refTxk, refTable }));   // bins and batches (src/lots.js)
+  out.push(...lotStatements(db, ctx.org.id, { item, warehouse, plan: lots, date: d, refType, refId, refTxk, refTable, party }));   // bins, batches, serials (src/lots.js)
   return out;
 }
 
@@ -98,7 +98,7 @@ async function stockIn(db, orgId, warehouseId, itemIds) {
   return new Map(rows.map((r) => [r.item_id, r.qty]));
 }
 
-async function warehouseOf(ctx, id) {
+export async function warehouseOf(ctx, id) {
   const { db, org } = ctx, orgId = org.id;
   // pos = how many older godowns the business has; a godown past the plan's limit (after a plan lapses) takes no new stock
   const pos = `(SELECT COUNT(*) FROM warehouses x WHERE x.org_id = w.org_id AND x.id < w.id) AS pos, EXISTS (SELECT 1 FROM bins b WHERE b.org_id = w.org_id AND b.warehouse_id = w.id) AS has_bins`;
@@ -117,6 +117,23 @@ async function warehouseOf(ctx, id) {
 /* Signed amount: positive -> debit, negative -> credit. */
 const D = (account, amount, party) => ({ account, amount, party });
 const C = (account, amount, party) => ({ account, amount: -amount, party });
+
+/* approval rules of a business: { po_above: rupees } (0 = no approval needed) */
+export function approvalsOf(org) {
+  let a = {};
+  try { a = JSON.parse(org.approvals || '{}') || {}; } catch (e) { a = {}; }
+  return { po_above: Math.max(0, +a.po_above || 0) };
+}
+
+export async function approveDoc(ctx, id) {
+  const { db } = ctx;
+  requireCan(ctx.user, 'settings');
+  const doc = await db.prepare(`SELECT id, type, number, status FROM docs WHERE id = ? AND org_id = ?`).bind(id, ctx.org.id).first();
+  if (!doc) throw notFound('Document not found.');
+  if (doc.status !== 'pending') throw bad(`${doc.number} is not waiting for approval.`);
+  await db.batch([db.prepare(`UPDATE docs SET status = 'open', approved_by = ? WHERE id = ? AND status = 'pending'`).bind(ctx.user.id, doc.id),
+    auditStatement(ctx, `approve ${doc.type}`, doc.number)]);
+}
 
 export function moneyStatus(total, paid) { return paid <= 0 ? 'unpaid' : paid >= total ? 'paid' : 'partial'; }
 
@@ -144,6 +161,7 @@ export async function createDoc(ctx, body) {
     if (!src) throw bad('Source document not found.');
     if (!T.from.includes(src.type)) throw bad(`A ${T.label} cannot be made from a ${(own(DOC_TYPES, src.type) || {}).label || 'document of that kind'}.`);
     if (src.status === 'cancelled') throw bad('The source document is cancelled.');
+    if (src.status === 'pending') throw bad(`${src.number} is waiting for approval by the owner or an admin.`);
     if (src.party_id !== party.id) throw bad('The source document belongs to another party.');
     const { results } = await db.prepare(`SELECT * FROM doc_lines WHERE doc_id = ?`).bind(src.id).all();
     for (const l of results) srcLines.set(l.id, l);
@@ -193,7 +211,19 @@ export async function createDoc(ctx, body) {
     // batch and expiry: typed on the line, else carried from the line it was made from (returns, bill from GRN, invoice from DN)
     const batch = cleanBatch(raw), fromSrc = !batch.no && srcLine && srcLine.batch_no;
     if (fromSrc) { batch.no = srcLine.batch_no.split(',')[0].trim(); batch.expiry = batch.expiry || srcLine.expiry || ''; }
-    L.push({ item, qty, rate, disc, gst, desc, srcLine, calc, stocked, batch, softBatch: !!fromSrc });
+    // serial / IMEI numbers: typed or scanned on the line, else all of those on the line it was made from
+    let serials = [], softSerials = false;
+    if (stocked && item.track_serial) {
+      serials = cleanSerials(raw.serials);
+      const fromLine = srcLine && srcLine.serials ? cleanSerials(srcLine.serials) : [];
+      if (fromLine.length) for (const x of serials) if (!fromLine.includes(x)) throw bad(`Line ${n}: serial ${x} is not on ${src.number}.`);
+      if (!serials.length && fromLine.length) {
+        if (Math.abs(fromLine.length - qty) < 0.0005) { serials = fromLine; softSerials = true; }
+        else if (type === 'SRET') throw bad(`Line ${n}: type which serial numbers of ${item.name} come back.`);
+      }
+      if (serials.length && Math.abs(serials.length - qty) > 0.0005) throw bad(`Line ${n}: ${serials.length} serial number(s) typed for a quantity of ${qty}.`);
+    }
+    L.push({ item, qty, rate, disc, gst, desc, srcLine, calc, stocked, batch, softBatch: !!fromSrc, serials, softSerials });
     if (moves && stocked && T.stock === 'out') need.set(item.id, (need.get(item.id) || 0) + qty);
   }
 
@@ -222,7 +252,9 @@ export async function createDoc(ctx, body) {
   const st = [];
   const ref = { refType: type, refTxk: txk, refTable: 'docs' };
   const dueDate = T.money ? (body.due_date ? date(body.due_date, 'Due date') : addDays(d, party.credit_days || 0)) : (body.due_date ? date(body.due_date, 'Due date') : null);
-  const initialStatus = T.money && ['INV', 'BILL'].includes(type) ? 'unpaid' : 'open';
+  // a purchase order above the business's limit waits for the owner or an admin (they approve their own straight away)
+  const limit = type === 'PO' ? approvalsOf(ctx.org).po_above * 100 : 0;
+  const initialStatus = limit > 0 && total > limit && !can(ctx.user, 'settings') ? 'pending' : T.money && ['INV', 'BILL'].includes(type) ? 'unpaid' : 'open';
 
   const nspec = numberSpec(ctx.org, type, T.prefix, d);
   const extra = cleanExtra(fieldsOf(ctx.org), 'doc', body.extra, T.side);
@@ -240,7 +272,8 @@ export async function createDoc(ctx, body) {
     : db.prepare(`INSERT INTO docs (${docCols}) VALUES (${docVals})`).bind(...docArgs));
 
   // lines + stock + per-line cost; bins and batches: src/lots.js
-  const lots = moves && L.some((l) => l.stocked) ? await lotState(db, orgId, wh.id, L.filter((l) => l.stocked).map((l) => l.item), { hasBins: wh.hasBins, have: onHand }) : null;
+  const incoming = moves && T.stock === 'in' ? L.flatMap((l) => l.serials) : [];
+  const lots = moves && L.some((l) => l.stocked) ? await lotState(db, orgId, wh.id, L.filter((l) => l.stocked).map((l) => l.item), { hasBins: wh.hasBins, have: onHand, incoming }) : null;
   let costOut = 0, costIn = 0, grniClear = 0, variance = 0, serviceCost = 0;
   for (const l of L) {
     let cost = 0;
@@ -248,15 +281,16 @@ export async function createDoc(ctx, body) {
       if (moves && T.stock === 'out') {
         if (type === 'PRET') cost = l.calc.taxable;                     // goods go back at the billed rate
         else cost = Math.round(l.qty * l.item.avg_cost);
-        const plan = takeOut(lots, l.item, l.qty, l.item.track_batch ? l.batch.no : '', l.softBatch);
+        const plan = takeOut(lots, l.item, l.qty, l.item.track_batch ? l.batch.no : '', l.softBatch, l.serials, l.softSerials);
         if (plan.batches.length) Object.assign(l.batch, (({ batch_no, expiry }) => ({ no: batch_no, expiry }))(planBatchText(plan)));
-        st.push(...stockStatements(db, ctx, { item: l.item.id, warehouse: wh.id, qty: -l.qty, value: cost, date: d, ...ref, note: l.desc, lots: plan }));
+        l.serials = plan.serials.map((x) => x.serial);
+        st.push(...stockStatements(db, ctx, { item: l.item.id, warehouse: wh.id, qty: -l.qty, value: cost, date: d, ...ref, note: l.desc, lots: plan, party: party.id }));
         costOut += cost;
       } else if (moves && T.stock === 'in') {
         if (type === 'SRET') cost = Math.round(l.srcLine.cost * l.qty / l.srcLine.qty);   // back at the cost it left at
         else cost = l.calc.taxable;
-        const plan = putIn(lots, l.item, l.qty, l.item.track_batch ? l.batch : null);
-        st.push(...stockStatements(db, ctx, { item: l.item.id, warehouse: wh.id, qty: l.qty, value: cost, date: d, ...ref, note: l.desc, lots: plan }));
+        const plan = putIn(lots, l.item, l.qty, l.item.track_batch ? l.batch : null, '', l.serials);
+        st.push(...stockStatements(db, ctx, { item: l.item.id, warehouse: wh.id, qty: l.qty, value: cost, date: d, ...ref, note: l.desc, lots: plan, party: party.id }));
         costIn += cost;
       } else if (type === 'INV' && src && src.type === 'DN') {
         cost = Math.round(l.srcLine.cost * l.qty / l.srcLine.qty);       // COGS was booked by the delivery note
@@ -271,10 +305,10 @@ export async function createDoc(ctx, body) {
     } else if (!l.item && ['BILL', 'PRET'].includes(type)) {
       serviceCost += l.calc.taxable * (type === 'PRET' ? -1 : 1);   // free-text purchase lines are expenses
     }
-    st.push(db.prepare(`INSERT INTO doc_lines (doc_id, item_id, description, qty, rate, discount_pct, gst_rate, taxable, cgst, sgst, igst, total, src_line_id, cost, batch_no, expiry)
-                        VALUES ((SELECT id FROM docs WHERE txk = ?), ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+    st.push(db.prepare(`INSERT INTO doc_lines (doc_id, item_id, description, qty, rate, discount_pct, gst_rate, taxable, cgst, sgst, igst, total, src_line_id, cost, batch_no, expiry, serials)
+                        VALUES ((SELECT id FROM docs WHERE txk = ?), ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
       .bind(txk, l.item ? l.item.id : null, l.desc, l.qty, l.rate, l.disc, l.gst, l.calc.taxable, l.calc.cgst, l.calc.sgst, l.calc.igst, l.calc.total,
-        l.srcLine ? l.srcLine.id : null, cost, l.batch.no, l.batch.expiry));
+        l.srcLine ? l.srcLine.id : null, cost, l.batch.no, l.batch.expiry, l.serials.join(', ')));
     if (l.srcLine) st.push(db.prepare(`UPDATE doc_lines SET done_qty = ROUND(done_qty + ?, 3) WHERE id = ?`).bind(l.qty, l.srcLine.id));
   }
 
@@ -465,6 +499,54 @@ export async function createPayment(ctx, body) {
   return db.prepare(`SELECT * FROM payments WHERE org_id = ? AND kind = ? ORDER BY id DESC LIMIT 1`).bind(ctx.org.id, kind).first();
 }
 
+/* Statements that put back every stock movement of a document or production run (refType, refId) exactly: goods,
+   bins, the very same batches and serials. Refuses when goods it brought in have already gone out. */
+export async function reverseStock(ctx, { refType, refId, date: d, label }) {
+  const { db } = ctx, st = [];
+  const { results: moves } = await db.prepare(`SELECT m.*, i.name, i.unit, i.location, i.is_service, i.track_batch, i.track_serial,
+      EXISTS (SELECT 1 FROM bins b WHERE b.org_id = m.org_id AND b.warehouse_id = m.warehouse_id) AS has_bins
+      FROM stock_moves m JOIN items i ON i.id = m.item_id WHERE m.org_id = ? AND m.ref_type = ? AND m.ref_id = ?`).bind(ctx.org.id, refType, refId).all();
+  const haveBy = new Map();
+  for (const w of new Set(moves.filter((m) => m.qty > 0).map((m) => m.warehouse_id))) {
+    for (const [item, q] of await stockIn(db, ctx.org.id, w, moves.filter((m) => m.warehouse_id === w).map((m) => m.item_id))) haveBy.set(w + ':' + item, q);
+  }
+  // batches: every batch movement of this document is undone exactly; bins: as for any goods in or out
+  const bms = moves.some((m) => m.track_batch) ? (await db.prepare(`SELECT bm.item_id, bm.warehouse_id, bm.qty, b.batch_no, b.expiry, b.mfg, b.qty AS left_qty FROM batch_moves bm
+      JOIN batches b ON b.id = bm.batch_id WHERE bm.org_id = ? AND bm.ref_type = ? AND bm.ref_id = ?`).bind(ctx.org.id, refType, refId).all()).results : [];
+  for (const b of bms) if (b.qty > 0 && b.left_qty + 0.0005 < b.qty) throw bad(`Cannot cancel: batch ${b.batch_no} received by ${label} has already been used.`);
+  // serials: those received go void (they must still be in stock there), those sold come back in
+  const sms = moves.some((m) => m.track_serial) ? (await db.prepare(`SELECT sm.item_id, sm.warehouse_id, sm.dir, s.serial, s.status, s.warehouse_id AS now_wh FROM serial_moves sm
+      JOIN serials s ON s.id = sm.serial_id WHERE sm.org_id = ? AND sm.ref_type = ? AND sm.ref_id = ?`).bind(ctx.org.id, refType, refId).all()).results : [];
+  for (const x of sms) {
+    if (x.dir > 0 && (x.status !== 'in' || x.now_wh !== x.warehouse_id)) throw bad(`Cannot cancel: serial ${x.serial} received by ${label} has already gone out.`);
+    if (x.dir < 0 && x.status === 'in') throw bad(`Cannot cancel: serial ${x.serial} is back in stock already.`);
+  }
+  const lotOf = new Map();
+  for (const w of new Set(moves.map((m) => m.warehouse_id))) {
+    const here = moves.filter((m) => m.warehouse_id === w);
+    const items = [...new Map(here.map((m) => [m.item_id, { id: m.item_id, name: m.name, unit: m.unit, location: m.location, is_service: m.is_service, track_batch: 0 }])).values()];
+    lotOf.set(w, await lotState(db, ctx.org.id, w, items, { hasBins: !!here[0].has_bins }));    // bins only here; batches come from batch_moves
+  }
+  const batchesDone = new Set();
+  for (const m of moves) {
+    if (m.qty > 0) {
+      const have = haveBy.get(m.warehouse_id + ':' + m.item_id) || 0;
+      if (have + 0.0005 < m.qty) throw bad(`Cannot cancel: the goods received by ${label} have already been used.`);
+    }
+    const S = lotOf.get(m.warehouse_id), it = S.item.get(m.item_id);
+    const plan = m.qty > 0 ? takeOut(S, it, m.qty) : putIn(S, it, -m.qty);
+    const key = m.warehouse_id + ':' + m.item_id;
+    if (!batchesDone.has(key)) {
+      batchesDone.add(key);
+      plan.batches = bms.filter((b) => b.item_id === m.item_id && b.warehouse_id === m.warehouse_id).map((b) => ({ no: b.batch_no, expiry: b.expiry, mfg: b.mfg, qty: -b.qty }));
+      plan.serials = sms.filter((x) => x.item_id === m.item_id && x.warehouse_id === m.warehouse_id).map((x) => ({ serial: x.serial, dir: -x.dir, void: x.dir > 0 }));
+    }
+    st.push(...stockStatements(db, ctx, { item: m.item_id, warehouse: m.warehouse_id, qty: -m.qty, value: Math.abs(m.value),
+      date: d, refType: refType + '-X', refId, note: 'Cancelled ' + label, lots: plan }));
+  }
+  return st;
+}
+
 /* ---------------------------------------------------------------- cancellation */
 /* Reverses a document's journal and stock exactly, and undoes its effect on the source document. */
 export async function cancelDoc(ctx, id) {
@@ -478,40 +560,7 @@ export async function cancelDoc(ctx, id) {
   const pay = await db.prepare(`SELECT 1 FROM payment_allocs WHERE doc_id = ? AND payment_id > 0 LIMIT 1`).bind(doc.id).first();
   if (pay) throw bad('Void the payments against this document first.');
 
-  const st = [];
-  const { results: moves } = await db.prepare(`SELECT m.*, i.name, i.unit, i.location, i.is_service, i.track_batch,
-      EXISTS (SELECT 1 FROM bins b WHERE b.org_id = m.org_id AND b.warehouse_id = m.warehouse_id) AS has_bins
-      FROM stock_moves m JOIN items i ON i.id = m.item_id WHERE m.org_id = ? AND m.ref_type = ? AND m.ref_id = ?`).bind(ctx.org.id, doc.type, doc.id).all();
-  const haveBy = new Map();
-  for (const w of new Set(moves.filter((m) => m.qty > 0).map((m) => m.warehouse_id))) {
-    for (const [item, q] of await stockIn(db, ctx.org.id, w, moves.filter((m) => m.warehouse_id === w).map((m) => m.item_id))) haveBy.set(w + ':' + item, q);
-  }
-  // batches: every batch movement of this document is undone exactly; bins: as for any goods in or out
-  const bms = moves.some((m) => m.track_batch) ? (await db.prepare(`SELECT bm.item_id, bm.warehouse_id, bm.qty, b.batch_no, b.expiry, b.mfg, b.qty AS left_qty FROM batch_moves bm
-      JOIN batches b ON b.id = bm.batch_id WHERE bm.org_id = ? AND bm.ref_type = ? AND bm.ref_id = ?`).bind(ctx.org.id, doc.type, doc.id).all()).results : [];
-  for (const b of bms) if (b.qty > 0 && b.left_qty + 0.0005 < b.qty) throw bad(`Cannot cancel: batch ${b.batch_no} received by this document has already been used.`);
-  const lotOf = new Map();
-  for (const w of new Set(moves.map((m) => m.warehouse_id))) {
-    const here = moves.filter((m) => m.warehouse_id === w);
-    const items = [...new Map(here.map((m) => [m.item_id, { id: m.item_id, name: m.name, unit: m.unit, location: m.location, is_service: m.is_service, track_batch: 0 }])).values()];
-    lotOf.set(w, await lotState(db, ctx.org.id, w, items, { hasBins: !!here[0].has_bins }));    // bins only here; batches come from batch_moves
-  }
-  const batchesDone = new Set();
-  for (const m of moves) {
-    if (m.qty > 0) {
-      const have = haveBy.get(m.warehouse_id + ':' + m.item_id) || 0;
-      if (have + 0.0005 < m.qty) throw bad('Cannot cancel: the goods received by this document have already been used.');
-    }
-    const S = lotOf.get(m.warehouse_id), it = S.item.get(m.item_id);
-    const plan = m.qty > 0 ? takeOut(S, it, m.qty) : putIn(S, it, -m.qty);
-    const key = m.warehouse_id + ':' + m.item_id;
-    if (!batchesDone.has(key)) {
-      batchesDone.add(key);
-      plan.batches = bms.filter((b) => b.item_id === m.item_id && b.warehouse_id === m.warehouse_id).map((b) => ({ no: b.batch_no, expiry: b.expiry, mfg: b.mfg, qty: -b.qty }));
-    }
-    st.push(...stockStatements(db, ctx, { item: m.item_id, warehouse: m.warehouse_id, qty: -m.qty, value: Math.abs(m.value),
-      date: doc.date, refType: doc.type + '-X', refId: doc.id, note: 'Cancelled ' + doc.number, lots: plan }));
-  }
+  const st = await reverseStock(ctx, { refType: doc.type, refId: doc.id, date: doc.date, label: doc.number });
   const { results: jls } = await db.prepare(`SELECT jl.* FROM journal_lines jl JOIN journals j ON j.id = jl.journal_id
       WHERE j.org_id = ? AND j.ref_type = ? AND j.ref_id = ?`).bind(ctx.org.id, doc.type, doc.id).all();
   if (jls.length) {
@@ -582,8 +631,11 @@ export async function stockAdjust(ctx, body) {
     value = Math.round(-qty * item.avg_cost);
   }
   const ref = { refType: opening ? 'OPEN' : 'ADJ', refId: null };
-  const S = await lotState(db, ctx.org.id, wh.id, [item]), batch = cleanBatch(body);
-  const plan = qty > 0 ? putIn(S, item, qty, item.track_batch ? batch : null, str(body.bin, 30).toUpperCase()) : takeOut(S, item, -qty, item.track_batch ? batch.no : '');
+  const serials = item.track_serial ? cleanSerials(body.serials) : [];
+  if (serials.length && Math.abs(serials.length - Math.abs(qty)) > 0.0005) throw bad(`${serials.length} serial number(s) typed for a quantity of ${Math.abs(qty)}.`);
+  const S = await lotState(db, ctx.org.id, wh.id, [item], { incoming: qty > 0 ? serials : [] }), batch = cleanBatch(body);
+  const plan = qty > 0 ? putIn(S, item, qty, item.track_batch ? batch : null, str(body.bin, 30).toUpperCase(), serials) : takeOut(S, item, -qty, item.track_batch ? batch.no : '', false, serials);
+  for (const x of qty < 0 ? plan.serials : []) x.void = true;     // written off, not sold
   st.push(...stockStatements(db, ctx, { item: item.id, warehouse: wh.id, qty, value, date: d, ...ref, note: reason + (batch.no && item.track_batch ? ` (batch ${batch.no})` : ''), lots: plan }));
   const other = opening ? ctx.sys.opening : ctx.sys.stock_adj;
   st.push(...journalStatements(db, ctx, { date: d, narration: `${reason}: ${item.name} ${qty > 0 ? '+' : ''}${qty} ${item.unit}`, ...ref,
@@ -616,6 +668,7 @@ export async function stockCount(ctx, body) {
     if (Math.abs(diff) < 0.0005) continue;
     const value = Math.round(Math.abs(diff) * (it.avg_cost || it.purchase_price));
     const plan = diff > 0 ? putIn(S, it, diff) : takeOut(S, it, -diff);
+    for (const x of plan.serials) x.void = true;
     st.push(...stockStatements(db, ctx, { item: it.id, warehouse: wh.id, qty: diff, value, date: d, refType: 'COUNT', refId: null, note: `Stock count ${wh.name}`, lots: plan }));
     if (diff > 0) gain += value; else loss += value;
     diffs.push({ item: it.name, system: have.get(it.id) || 0, counted, diff });
@@ -642,8 +695,11 @@ export async function stockTransfer(ctx, body) {
   const d = date(body.date), value = Math.round(qty * item.avg_cost);
   const ref = { refType: 'XFER', refId: null };
   const [Sf, St] = await Promise.all([lotState(db, ctx.org.id, from.id, [item]), lotState(db, ctx.org.id, to.id, [item])]);
-  const outPlan = takeOut(Sf, item, qty, item.track_batch ? cleanBatch(body).no : '');
-  const inPlan = { bins: putIn(St, { ...item, track_batch: 0 }, qty).bins, batches: outPlan.batches.map((b) => ({ ...b, qty: -b.qty })) };
+  const serials = item.track_serial ? cleanSerials(body.serials) : [];
+  if (serials.length && Math.abs(serials.length - qty) > 0.0005) throw bad(`${serials.length} serial number(s) typed for a quantity of ${qty}.`);
+  const outPlan = takeOut(Sf, item, qty, item.track_batch ? cleanBatch(body).no : '', false, serials);
+  const inPlan = { bins: putIn(St, { ...item, track_batch: 0, track_serial: 0 }, qty).bins, batches: outPlan.batches.map((b) => ({ ...b, qty: -b.qty })),
+    serials: outPlan.serials.map((x) => ({ serial: x.serial, dir: 1 })) };
   await db.batch([
     ...stockStatements(db, ctx, { item: item.id, warehouse: from.id, qty: -qty, value, date: d, ...ref, note: `To ${to.name}`, lots: outPlan }),
     ...stockStatements(db, ctx, { item: item.id, warehouse: to.id, qty, value, date: d, ...ref, note: `From ${from.name}`, lots: inPlan }),

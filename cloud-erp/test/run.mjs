@@ -1364,5 +1364,150 @@ else {
     ['bins', 'bin_stock', 'batches', 'batch_moves'].map((t) => `${t} ${bk.tables[t].length}`).join(' '));
 }
 
+/* serial / IMEI numbers, manufacturing, purchase order approval, marketplace orders, today */
+{
+  const ip = '203.0.113.140';
+  const email = `mob${Date.now()}@test.in`;
+  const su = await rq('POST', '/api/auth/signup', { business: 'Mobile Point', name: 'M', email, password: 'Mob-pass-1234', state: 'Rajasthan' }, { ip });
+  const V = async (m, p, b) => { const r = await rq(m, p, b, { cookie: su.cookie, ip }); if (r.status >= 400) throw new Error(`${m} ${p} -> ${r.status} ${r.data.error}`); return r.data; };
+  const E = (m, p, b) => rq(m, p, b, { cookie: su.cookie, ip });
+  const wh = (await V('GET', '/api/warehouses')).rows[0];
+  const sup = await V('POST', '/api/parties', { name: 'Phone Distributor', kind: 'supplier', state: 'Rajasthan' });
+  const cust = await V('POST', '/api/parties', { name: 'Ravi Kumar', kind: 'customer', state: 'Rajasthan', phone: '9876500004' });
+  const phone = await V('POST', '/api/items', { name: 'Galaxy A15', unit: 'pc', sale_price: 15000, purchase_price: 12000, gst_rate: 18, track_serial: true, warranty_months: 12, sku: 'GA15' });
+  check('an item can track serial numbers with a warranty', phone.track_serial === 1 && phone.warranty_months === 12, JSON.stringify(phone));
+
+  // purchase with IMEIs; a wrong count or a serial already in stock is refused
+  const short = await E('POST', '/api/docs', { type: 'BILL', party_id: sup.id, lines: [{ item_id: phone.id, qty: 3, rate: 12000, serials: 'IMEI001 IMEI002' }] });
+  check('the number of serials must match the quantity', short.status === 400 && /2 serial number/.test(short.data.error), JSON.stringify(short.data));
+  const twice = await E('POST', '/api/docs', { type: 'BILL', party_id: sup.id, lines: [{ item_id: phone.id, qty: 2, rate: 12000, serials: 'IMEI001, IMEI001' }] });
+  check('a serial cannot be typed twice', twice.status === 400 && /typed twice/.test(twice.data.error), JSON.stringify(twice.data));
+  const bill = await V('POST', '/api/docs', { type: 'BILL', party_id: sup.id, lines: [{ item_id: phone.id, qty: 3, rate: 12000, serials: 'imei001\nIMEI002\nIMEI003' }] });
+  const dupIn = await E('POST', '/api/stock/adjust', { item_id: phone.id, qty: 1, rate: 12000, reason: 'Found', serials: 'IMEI002' });
+  check('a serial already in stock cannot come in again', dupIn.status === 400 && /already in stock/.test(dupIn.data.error), JSON.stringify(dupIn.data));
+  let lots = await V('GET', `/api/items/${phone.id}/lots`);
+  check('serials in stock are listed (upper-cased)', lots.serials.length === 3 && lots.serials.map((x) => x.serial).join() === 'IMEI001,IMEI002,IMEI003', JSON.stringify(lots.serials));
+
+  // a sale of a chosen IMEI; a sale without serials takes the oldest
+  const notHere = await E('POST', '/api/docs', { type: 'INV', party_id: cust.id, lines: [{ item_id: phone.id, qty: 1, rate: 15000, serials: 'IMEI999' }] });
+  check('a serial not in stock cannot be sold', notHere.status === 400 && /IMEI999 .* not in stock/.test(notHere.data.error), JSON.stringify(notHere.data));
+  const inv = await V('POST', '/api/docs', { type: 'INV', party_id: cust.id, lines: [{ item_id: phone.id, qty: 1, rate: 15000, serials: 'IMEI002' }] });
+  check('the bill line carries the IMEI', inv.lines[0].serials === 'IMEI002', JSON.stringify(inv.lines[0]));
+  const inv2 = await V('POST', '/api/docs', { type: 'INV', party_id: cust.id, lines: [{ item_id: phone.id, qty: 1, rate: 15000 }] });
+  check('without a serial the oldest in stock goes', inv2.lines[0].serials === 'IMEI001', JSON.stringify(inv2.lines[0]));
+  let look = await V('GET', '/api/serials?q=imei002');
+  const s2 = look.rows[0];
+  check('serial lookup: sold to whom, when, and warranty until', s2.serial === 'IMEI002' && s2.status === 'out' && s2.party === 'Ravi Kumar' && s2.in_warranty === true && s2.warranty_until > s2.out_date && s2.history.length === 2,
+    JSON.stringify(s2));
+  // a return brings the IMEI back; cancelling a sale does too
+  const ret = await V('GET', `/api/docs/${inv.id}/convert?to=SRET`);
+  check('a return carries the serials of the invoice line', ret.lines[0].serials === 'IMEI002', JSON.stringify(ret.lines[0]));
+  await V('POST', '/api/docs', ret);
+  await V('POST', `/api/docs/${inv2.id}/cancel`);
+  lots = await V('GET', `/api/items/${phone.id}/lots`);
+  check('returned and cancelled serials are back in stock', lots.serials.length === 3, JSON.stringify(lots.serials));
+  const cancelBill = await E('POST', `/api/docs/${bill.id}/cancel`);
+  look = await V('GET', '/api/serials?q=IMEI00');
+  check('a purchase whose serials are all back in stock can be cancelled, and they become void', cancelBill.status === 200 && look.rows.length === 3 && look.rows.every((r) => r.status === 'void'),
+    JSON.stringify(cancelBill.data) + JSON.stringify(look.rows.map((r) => [r.serial, r.status])));
+  // a fresh purchase cancelled while its serials are in stock: they become void
+  const bill2 = await V('POST', '/api/docs', { type: 'BILL', party_id: sup.id, lines: [{ item_id: phone.id, qty: 1, rate: 12000, serials: 'IMEI050' }] });
+  await V('POST', `/api/docs/${bill2.id}/cancel`);
+  look = await V('GET', '/api/serials?q=IMEI050');
+  check('a cancelled purchase makes its serials void', look.rows[0].status === 'void', JSON.stringify(look.rows[0]));
+  // transfer moves the serial to the other godown
+  await V('POST', '/api/stock/adjust', { item_id: phone.id, qty: 2, rate: 12000, reason: 'opening', serials: 'IMEI010 IMEI011' });
+  const w2 = await V('POST', '/api/warehouses', { name: 'Shop 2' });
+  await V('POST', '/api/stock/transfer', { item_id: phone.id, from_warehouse_id: wh.id, to_warehouse_id: w2.id, qty: 1, serials: 'IMEI011' });
+  const l2 = await V('GET', `/api/items/${phone.id}/lots?warehouse_id=${w2.id}`);
+  check('a transfer moves the serial to the other godown', l2.serials.length === 1 && l2.serials[0].serial === 'IMEI011', JSON.stringify(l2.serials));
+
+  // manufacturing: a gift hamper made of 2 chocolates and 1 box
+  const choc = await V('POST', '/api/items', { name: 'Chocolate', unit: 'pc', sale_price: 50, purchase_price: 30, gst_rate: 18 });
+  const box = await V('POST', '/api/items', { name: 'Gift box', unit: 'pc', sale_price: 20, purchase_price: 10, gst_rate: 18 });
+  const hamper = await V('POST', '/api/items', { name: 'Gift hamper', unit: 'pc', sale_price: 150, gst_rate: 18 });
+  await V('POST', '/api/stock/adjust', { item_id: choc.id, qty: 10, rate: 30, reason: 'opening' });
+  await V('POST', '/api/stock/adjust', { item_id: box.id, qty: 3, rate: 10, reason: 'opening' });
+  const self = await E('PUT', `/api/items/${hamper.id}/bom`, { out_qty: 1, lines: [{ item_id: hamper.id, qty: 1 }] });
+  check('an item cannot be its own component', self.status === 400, JSON.stringify(self.data));
+  const bom = await V('PUT', `/api/items/${hamper.id}/bom`, { out_qty: 1, lines: [{ item_id: choc.id, qty: 2 }, { item_id: box.id, qty: 1 }] });
+  check('recipe saved, with its cost and how many can be made', bom.lines.length === 2 && bom.unit_cost === 70 && bom.can_make === 3, JSON.stringify(bom));
+  const tooMany = await E('POST', '/api/productions', { item_id: hamper.id, qty: 4 });
+  check('production needs the components in stock', tooMany.status === 400 && /Gift box: 3/.test(tooMany.data.error), JSON.stringify(tooMany.data));
+  const run = await V('POST', '/api/productions', { item_id: hamper.id, qty: 3 });
+  const stk = await V('GET', '/api/reports/stock');
+  const q = (id) => stk.rows.find((r) => r.id === id).qty;
+  check('a production run uses the components and makes the item at their cost', run.number === 'MFG-00001' && run.value === 210 && run.unit_cost === 70 && q(choc.id) === 4 && q(box.id) === 0 && q(hamper.id) === 3,
+    JSON.stringify(run) + JSON.stringify(stk.rows.map((r) => [r.name, r.qty])));
+  const hItem = (await V('GET', '/api/items')).rows.find((i) => i.id === hamper.id);
+  check('...and the finished item\'s average cost is the components\' cost', hItem.avg_cost === 70, JSON.stringify(hItem));
+  await V('POST', '/api/docs', { type: 'INV', party_id: cust.id, lines: [{ item_id: hamper.id, qty: 1, rate: 150 }] });
+  const busy = await E('POST', `/api/productions/${run.id}/cancel`);
+  check('a run whose goods were sold cannot be cancelled', busy.status === 400 && /already been used/.test(busy.data.error), JSON.stringify(busy.data));
+  const run2 = await V('POST', '/api/productions', { item_id: hamper.id, qty: 1, lines: [{ item_id: choc.id, qty: 3 }] });
+  await V('POST', `/api/productions/${run2.id}/cancel`);
+  const stk2 = await V('GET', '/api/reports/stock');
+  check('cancelling a run puts the components back', stk2.rows.find((r) => r.id === choc.id).qty === 4 && stk2.rows.find((r) => r.id === hamper.id).qty === 2, JSON.stringify(stk2.rows.map((r) => [r.name, r.qty])));
+  const plist = await V('GET', '/api/productions');
+  check('production list', plist.rows.length === 2 && plist.rows[0].status === 'cancelled' && plist.rows[1].status === 'done', JSON.stringify(plist.rows));
+
+  // purchase order approval: above 50,000 a store user's PO waits for the owner
+  await V('PUT', '/api/settings/approvals', { po_above: 50000 });
+  await V('POST', '/api/users', { email: 'store' + email, name: 'Store', role: 'store', password: 'Store-pass-1' });
+  const sl = await rq('POST', '/api/auth/login', { email: 'store' + email, password: 'Store-pass-1' }, { ip });
+  const S = (m, p, b) => rq(m, p, b, { cookie: sl.cookie, ip });
+  const small = await S('POST', '/api/docs', { type: 'PO', party_id: sup.id, lines: [{ item_id: choc.id, qty: 10, rate: 30 }] });
+  const big = await S('POST', '/api/docs', { type: 'PO', party_id: sup.id, lines: [{ item_id: phone.id, qty: 5, rate: 12000 }] });
+  check('a PO under the limit is open, above it waits for approval', small.data.status === 'open' && big.data.status === 'pending', `${small.data.status} ${big.data.status}`);
+  const early = await S('GET', `/api/docs/${big.data.id}/convert?to=GRN`);
+  check('a PO waiting for approval cannot be received', early.status === 400 && /waiting for approval/.test(early.data.error), JSON.stringify(early.data));
+  check('only the owner or an admin can approve', (await S('POST', `/api/docs/${big.data.id}/approve`)).status === 403);
+  let td = await V('GET', '/api/today');
+  check('today shows the PO to approve', td.rows.some((r) => r.key === 'approve' && r.n === 1 && r.value === 70800), JSON.stringify(td.rows));
+  const ok = await V('POST', `/api/docs/${big.data.id}/approve`);
+  check('approved: the PO is open and can be received', ok.status === 'open' && (await S('GET', `/api/docs/${big.data.id}/convert?to=GRN`)).status === 200, ok.status);
+  const ownPo = await V('POST', '/api/docs', { type: 'PO', party_id: sup.id, lines: [{ item_id: phone.id, qty: 10, rate: 12000 }] });
+  check('the owner\'s own big PO needs no approval', ownPo.status === 'open', ownPo.status);
+  const stTd = await S('GET', '/api/today');
+  check('today for the store user leaves out money they do not handle', stTd.status === 200 && !stTd.data.rows.some((r) => ['approve', 'overdue', 'bills_due'].includes(r.key)), JSON.stringify(stTd.data.rows));
+
+  // marketplace orders: an Amazon report, two orders (one with two lines), one cancelled, one unknown SKU
+  await V('PUT', `/api/items/${choc.id}`, { name: choc.name, unit: choc.unit, sale_price: 50, gst_rate: 18, sku: 'CHOC-1' });
+  const csv = [
+    'amazon-order-id\tpurchase-date\torder-status\tsku\tproduct-name\tquantity-purchased\titem-price\tship-state',
+    '402-111\t2026-10-20T10:00:00+05:30\tShipped\tCHOC-1\tChocolate\t2\t118.00\tMAHARASHTRA',
+    '402-111\t2026-10-20T10:00:00+05:30\tShipped\tGA15\tGalaxy A15\t1\t17700.00\tMAHARASHTRA',
+    '402-222\t2026-10-21T11:00:00+05:30\tShipped\tCHOC-1\tChocolate\t1\t59.00\trajasthan',
+    '402-333\t2026-10-21T12:00:00+05:30\tCancelled\tCHOC-1\tChocolate\t1\t59.00\tDelhi',
+    '402-444\t2026-10-22T12:00:00+05:30\tShipped\tNOPE-9\tSomething\t1\t99.00\tDelhi',
+  ].join('\n');
+  const look1 = await V('POST', '/api/channels/import', { channel: 'amazon', csv });
+  check('marketplace file: orders grouped, cancelled left out, unknown SKUs flagged', look1.orders.length === 3 && look1.ready === 2 && look1.problems === 1
+    && look1.orders[0].lines.length === 2 && look1.orders[0].party === 'Amazon (Maharashtra)' && look1.orders[0].lines[0].rate === 50, JSON.stringify(look1));
+  const imp = await V('POST', '/api/channels/import', { channel: 'amazon', csv, only: ['402-111', '402-222'] });
+  check('orders become invoices', imp.results.every((r) => r.number), JSON.stringify(imp));
+  const d1 = await V('GET', `/api/docs/${imp.results[0].doc_id}`), d2 = await V('GET', `/api/docs/${imp.results[1].doc_id}`);
+  check('out-of-state order is IGST, in-state CGST+SGST, at the price incl. GST', d1.igst > 0 && d1.cgst === 0 && d1.total === 17818 && d2.cgst > 0 && d2.igst === 0 && d2.total === 59,
+    JSON.stringify([d1.total, d1.igst, d2.total, d2.cgst]));
+  check('the IMEI goes out with the online order', d1.lines.find((l) => l.item_id === phone.id).serials === 'IMEI010', JSON.stringify(d1.lines));
+  const again = await V('POST', '/api/channels/import', { channel: 'amazon', csv, only: ['402-111'] });
+  const look2 = await V('POST', '/api/channels/import', { channel: 'amazon', csv });
+  check('an order is never imported twice', again.results[0].skipped === 'already imported' && look2.already === 2 && look2.ready === 0, JSON.stringify([again, look2.already]));
+  const flip = await V('POST', '/api/channels/import', { channel: 'flipkart', csv: 'Order Id,Ordered On,SKU,Quantity,Final Invoice Amount,Customer State,Order State\n"OD1","20/10/2026","CHOC-1","1","59","Rajasthan","Delivered"\n"OD2","20/10/2026","CHOC-1","1","59","Delhi","Cancelled"\n' });
+  check('a Flipkart report with its own column names and Indian dates (cancelled left out)', flip.ready === 1 && flip.orders.length === 1 && flip.orders[0].date === '2026-10-20' && flip.orders[0].party === 'Flipkart (Rajasthan)', JSON.stringify(flip));
+  const noCols = await E('POST', '/api/channels/import', { channel: 'meesho', csv: 'a,b\n1,2\n' });
+  check('a file without the needed columns says which are missing', noCols.status === 400 && /Order ID/.test(noCols.data.error), JSON.stringify(noCols.data));
+  const sf = await fetch(BASE + '/api/channels/stock', { headers: { Cookie: su.cookie, 'CF-Connecting-IP': ip } });
+  const sfText = await sf.text();
+  check('stock file for the marketplace: SKU and quantity', sf.headers.get('content-type').startsWith('text/csv') && /^sku,quantity,price,name/.test(sfText) && /CHOC-1,1,50\.00,Chocolate/.test(sfText), sfText);
+
+  td = await V('GET', '/api/today');
+  check('today lists what needs doing', Array.isArray(td.rows) && td.rows.some((r) => r.key === 'to_receive'), JSON.stringify(td.rows));
+  const bk = await (await fetch(BASE + '/api/export/backup', { headers: { Cookie: su.cookie, 'CF-Connecting-IP': ip } })).json();
+  check('backups carry serials, recipes, production runs and imported orders', bk.tables.serials.length >= 6 && bk.tables.serial_moves.length >= 10 && bk.tables.boms.length === 1
+    && bk.tables.bom_lines.length === 2 && bk.tables.productions.length === 2 && bk.tables.channel_orders.length === 2,
+    ['serials', 'serial_moves', 'boms', 'bom_lines', 'productions', 'channel_orders'].map((t) => `${t} ${(bk.tables[t] || []).length}`).join(' '));
+}
+
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);
