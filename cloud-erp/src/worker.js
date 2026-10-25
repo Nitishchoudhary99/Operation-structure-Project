@@ -21,6 +21,7 @@ import { waConfigured, runAutoReminders, remindOrg } from './autowa.js';
 import { listHooks, addHook, deleteHook, receiveHook } from './hooks.js';
 import { receivePending, matchBill, learnCode, autoBins, writeOff, cancelWriteOff, writeOffOut } from './receive.js';
 import { listClaims, claimDetail, saveClaim, claimReceipt, closeClaim, cancelClaimEntry } from './claims.js';
+import { botReady, botLink, verifyWebhook, receiveWebhook, setBot, inbox, thread, reply as waReply, markDone } from './wabot.js';
 import { listStaff, saveStaff, markAttendance, staffDetail, giveAdvance, paySalary, cancelStaffTxn, payslip, todayStaffQueries } from './payroll.js';
 import * as rep from './reports.js';
 import { PLANS, planOut, planOf, usage, checkCount, countError, seatBlocked, seatError, requireFeature, extendPlan, adminKey, trialUntil, hasFeature } from './saas.js';
@@ -237,6 +238,7 @@ router.add('GET', '/api/me', async (c) => json({
   can: Object.fromEntries(['settings', 'users', 'items', 'purchase', 'sales', 'stock', 'finance', 'khata', 'masters', 'gate'].map((a) => [a, can(c.user, a)])),
   ui: uiOf(c.user.ui), role_ui: uiOf(c.user.role_ui), rules: rulesOf(c.user),
   view: Object.fromEntries(AREAS.map((a) => [a, canView(c.user, a)])), costs: seesCosts(c.user), wa_auto: waConfigured(c.env),
+  wa_bot: botReady(c.env), wa_bot_link: c.org.wa_bot ? botLink(c.env, c.org.bot_code) : '',
   doc_types: Object.fromEntries(Object.entries(DOC_TYPES).map(([k, v]) => [k, { label: v.label, side: v.side, from: v.from, prefix: v.prefix, note: !!v.note, stock: v.stock || '' }])),
   gst_rates: GST_RATES, today: today(), states: STATES.map(([, n]) => n), plan: planOut(c.org),
 }));
@@ -640,6 +642,15 @@ router.add('POST', '/api/staff/:id/salary', async (c) => json(await paySalary(c,
 router.add('POST', '/api/staff/txns/:id/cancel', async (c) => json(await cancelStaffTxn(c, +c.params.id)));
 router.add('GET', '/api/staff/payslip/:id', async (c) => json(await payslip(c, +c.params.id)));
 
+/* ======================================================================= WhatsApp bot: src/wabot.js */
+router.add('GET', '/api/wa/webhook', async (c) => verifyWebhook(c), { public: true });
+router.add('POST', '/api/wa/webhook', async (c) => json(await receiveWebhook(c)), { public: true, webhook: true, rawOk: true });
+router.add('PUT', '/api/settings/wa-bot', async (c) => json(await setBot(c, !!c.body.on)));
+router.add('GET', '/api/wa/inbox', async (c) => json(await inbox(c)));
+router.add('GET', '/api/wa/inbox/:phone', async (c) => json(await thread(c, c.params.phone)));
+router.add('POST', '/api/wa/inbox/:phone/reply', async (c) => json(await waReply(c, c.params.phone, c.body)));
+router.add('POST', '/api/wa/inbox/:phone/done', async (c) => json(await markDone(c, c.params.phone)));
+
 /* ======================================================================= automatic WhatsApp reminders: src/autowa.js */
 router.add('PUT', '/api/settings/auto-wa', async (c) => {
   requireCan(c.user, 'settings');
@@ -658,7 +669,7 @@ router.add('POST', '/api/settings/auto-wa/run', async (c) => {
   requireFeature(c.org, 'autowa');
   await rateLimit(c.env, 'autowa-run:' + c.org.id, 5, 86400);
   const r = await remindOrg(c.env, c.org);
-  return json({ sent: r.sent, failed: r.failed, skipped: r.skipped, errors: r.errors });
+  return json({ sent: r.sent, free: r.free, failed: r.failed, skipped: r.skipped, errors: r.errors });
 });
 
 /* ======================================================================= live orders from web stores: src/hooks.js */
@@ -684,6 +695,7 @@ router.add('GET', '/api/today', async (c) => {
   add('to_receive', 'purchase', `SELECT COUNT(*) AS n, 0 AS v FROM docs WHERE org_id = ? AND type = 'PO' AND status IN ('open','partial')`, o);
   add('at_gate', 'purchase', `SELECT COUNT(*) AS n, 0 AS v FROM gate_entries WHERE org_id = ? AND kind = 'in' AND status = 'open'`, o);
   add('in_transit', 'purchase', `SELECT COUNT(*) AS n, COALESCE(SUM(total), 0) AS v FROM docs WHERE org_id = ? AND type = 'BILL' AND transit = 1 AND status != 'cancelled'`, o);
+  add('wa_asks', 'sales', `SELECT COUNT(DISTINCT phone) AS n, 0 AS v FROM wa_messages WHERE org_id = ? AND dir = 'in' AND kind = 'ask' AND handled = 0`, o);
   add('claims', 'finance', `SELECT COUNT(*) AS n, COALESCE(SUM(value + cgst + sgst + igst - received - closed), 0) AS v FROM write_offs
     WHERE org_id = ? AND mode = 'claim' AND status = 'done' AND value + cgst + sgst + igst > received + closed AND (follow_up = '' OR follow_up <= ?)`, o, t);
   add('low_stock', 'items', `SELECT COUNT(*) AS n, 0 AS v FROM items WHERE org_id = ? AND is_service = 0 AND reorder_level > 0 AND qty_on_hand <= reorder_level`, o);
@@ -1968,6 +1980,7 @@ const READ_AREAS = [
   [/^\/api\/gate(\/|$)/, ['purchase', 'gate']],
   [/^\/api\/receive\/?$/, 'purchase'],
   [/^\/api\/claims(\/\d+)?\/?$/, ['purchase', 'finance']],
+  [/^\/api\/wa\/inbox(\/\d+)?\/?$/, ['sales', 'khata', 'finance']],
   [/^\/api\/(audit|users|roles|billing\/status|settings\/series)\/?$/, 'settings'],
 ];
 function readArea(url) {
@@ -2118,6 +2131,10 @@ export default {
       const g = await runDriveBackups(env);
       if (g.due) console.log('drive backups', JSON.stringify(g));
       await env.DB.prepare(`DELETE FROM idem_keys WHERE created_at < ?`).bind(new Date(Date.now() - 7 * 864e5).toISOString()).run();   // replay window: a week
+      // WhatsApp chats are kept six months
+      const half = new Date(Date.now() - 183 * 864e5).toISOString();
+      await env.DB.batch([env.DB.prepare(`DELETE FROM wa_messages WHERE id IN (SELECT id FROM wa_messages WHERE at < ? LIMIT 2000)`).bind(half),
+        env.DB.prepare(`DELETE FROM wa_contacts WHERE updated_at < ?`).bind(half)]);
       const w = await runAutoReminders(env);
       if (w.due) console.log('auto whatsapp', JSON.stringify(w));
     })());

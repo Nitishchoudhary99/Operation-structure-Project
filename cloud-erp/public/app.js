@@ -343,11 +343,12 @@ const ADV_DOCS = ['QUOTE', 'SO', 'DN', 'PO', 'GRN'];
 const simple = () => !ME || (ME.org.mode || 'simple') !== 'advanced';
 /* which permission area a menu entry needs (custom roles may not see every area); the gate register also opens with 'gate' */
 const navArea = (h) => /^(receipts|payments|expenses|accounts|journal|staff)$/.test(h) ? 'finance' : /^(sales\/|pos$|recurring$|channels$)/.test(h) ? 'sales' : /^(purchase\/|receive$)/.test(h) ? 'purchase'
-  : /^gate\/in$/.test(h) ? ['purchase', 'gate'] : /^gate\/out$/.test(h) ? ['items', 'gate'] : h === 'claims' ? ['purchase', 'finance']
+  : /^gate\/in$/.test(h) ? ['purchase', 'gate'] : /^gate\/out$/.test(h) ? ['items', 'gate'] : h === 'claims' ? ['purchase', 'finance'] : h === 'wa-inbox' ? ['sales', 'khata', 'finance']
   : /^(items|stock|stockcount|pending|bins|expiry|stock-ageing|serials|production|wave|putaway)$/.test(h) ? 'items' : /^(parties|reminders)$/.test(h) ? 'masters' : /^(khata|vaade)$/.test(h) ? 'khata'
   : /^(reports\/|tally$|daybook$)/.test(h) ? 'reports' : h === 'plan' ? 'settings' : '';
 const seen = (h) => {
   if (h === 'cash') return !ME.view || ME.view.finance !== false || ME.view.reports !== false;
+  if (h === 'wa-inbox' && !(ME.wa_bot && ME.org.wa_bot)) return false;      // only once the shop turned the bot on
   const a = navArea(h);
   return !a || !ME.view || [].concat(a).some((x) => ME.view[x] !== false);
 };
@@ -355,15 +356,15 @@ const seen = (h) => {
    screen the app opens on. Without one, the role picks the job. Only the menu changes; what a user may do stays with the role. */
 const JOBS = {
   all: { t: 'Owner / manager: everything', home: 'dashboard' },
-  counter: { t: 'Billing counter', home: 'pos', screens: ['pos', 'sales/INV', 'sales/SRET', 'receipts', 'khata', 'parties', 'items', 'stock', 'serials'] },
+  counter: { t: 'Billing counter', home: 'pos', screens: ['pos', 'sales/INV', 'sales/SRET', 'receipts', 'khata', 'parties', 'items', 'stock', 'serials', 'wa-inbox'] },
   store: { t: 'Godown / store keeper', home: 'receive', screens: ['receive', 'gate/in', 'purchase/GRN', 'purchase/PO', 'purchase/PRET', 'putaway', 'bins', 'items', 'stock', 'expiry', 'serials',
     'production', 'stockcount', 'wave', 'pending', 'gate/out', 'stock-ageing', 'claims'] },
   gate: { t: 'Gate / security guard', home: 'gate/in', screens: ['gate/in', 'gate/out'] },
   accounts: { t: 'Accountant', home: 'dashboard', screens: ['dashboard', 'sales/INV', 'sales/SRET', 'sales/CNOTE', 'receipts', 'purchase/BILL', 'purchase/PRET', 'purchase/DNOTE', 'payments',
     'parties', 'khata', 'reminders', 'vaade', 'staff', 'expenses', 'accounts', 'journal', 'daybook', 'reports/pnl', 'reports/balance-sheet', 'reports/trial-balance', 'reports/gst', 'reports/ageing',
-    'reports/register', 'cash', 'tally', 'claims'] },
+    'reports/register', 'cash', 'tally', 'claims', 'wa-inbox'] },
   sales: { t: 'Salesman', home: 'sales/INV', screens: ['dashboard', 'pos', 'sales/INV', 'sales/QUOTE', 'sales/SO', 'sales/DN', 'sales/SRET', 'receipts', 'channels', 'recurring', 'parties', 'khata',
-    'reminders', 'vaade', 'items', 'stock'] },
+    'reminders', 'vaade', 'items', 'stock', 'wa-inbox'] },
 };
 const ROLE_JOB = { owner: 'all', admin: 'all', accountant: 'accounts', store: 'store', sales: 'sales' };
 /* screens that follow a document flow the business may have switched off (Simple mode) */
@@ -396,7 +397,7 @@ const NAV = [
   ['Sales', [['pos', 'Quick Bill (POS)'], ['sales/INV', 'Invoices'], ['channels', 'Online Orders (Amazon…)'], ['recurring', 'Recurring Bills'], ['sales/SO', 'Sales Orders'], ['sales/DN', 'Delivery Notes'], ['sales/QUOTE', 'Quotations'], ['sales/SRET', 'Sales Returns'], ['sales/CNOTE', 'Credit Notes (rate diff)'], ['receipts', 'Receipts']]],
   ['Purchase', [['receive', 'Receive Goods (scan)'], ['purchase/PO', 'Purchase Orders'], ['gate/in', 'Gate Entry (inward)'], ['purchase/GRN', 'Goods Receipts (GRN)'], ['purchase/BILL', 'Purchase Bills'], ['purchase/PRET', 'Purchase Returns'], ['purchase/DNOTE', 'Debit Notes (rate diff)'], ['claims', 'Transit Claims'], ['payments', 'Payments']]],
   ['Inventory', [['items', 'Items'], ['stock', 'Stock & Godowns'], ['stock-ageing', 'Stock Ageing'], ['bins', 'Bins & Racks'], ['expiry', 'Batch & Expiry'], ['serials', 'Serial / IMEI'], ['production', 'Production (BOM)'], ['wave', 'Wave Pick List'], ['stockcount', 'Stock Count'], ['gate/out', 'Gate Pass (outward)'], ['pending', 'Pending Orders']]],
-  ['Contacts', [['parties', 'Customers & Suppliers'], ['khata', 'Khata Book'], ['reminders', 'Vasooli (Collections)'], ['vaade', 'Vaade (Promises)']]],
+  ['Contacts', [['parties', 'Customers & Suppliers'], ['khata', 'Khata Book'], ['reminders', 'Vasooli (Collections)'], ['vaade', 'Vaade (Promises)'], ['wa-inbox', 'WhatsApp Inbox']]],
   ['Accounts', [['staff', 'Staff & Salary'], ['expenses', 'Expenses'], ['accounts', 'Chart of Accounts'], ['journal', 'Journal Voucher'], ['daybook', 'Day Book']]],
   ['Reports', [['reports/pnl', 'Profit & Loss'], ['reports/balance-sheet', 'Balance Sheet'], ['reports/trial-balance', 'Trial Balance'], ['reports/gst', 'GST Summary'], ['reports/ageing', 'Outstanding (Ageing)'], ['reports/register', 'Registers'], ['cash', 'Kal ka Cash'], ['tally', 'Tally Export']]],
   ['Settings', [['settings', 'Settings'], ['plan', 'Plan & Billing']]],
@@ -587,6 +588,7 @@ const TODAY = {
   at_gate: ['amber', (n) => `${n} vehicle${n > 1 ? 's' : ''} at the gate, goods not received`, '#/receive', 'Receive'],
   in_transit: ['blue', (n) => `${n} bill${n > 1 ? 's' : ''} booked, goods still on the way`, '#/receive', 'Receive'],
   claims: ['amber', (n) => `${n} transit claim${n > 1 ? 's' : ''} to follow up, not paid yet`, '#/claims', 'Follow up'],
+  wa_asks: ['red', (n) => `${n} customer${n > 1 ? 's' : ''} wrote on WhatsApp and wait for your answer`, '#/wa-inbox', 'Answer'],
   put_away: ['blue', (n) => `${n} item${n > 1 ? 's' : ''} not put away in bins`, '#/bins', 'Put away'],
   attendance: ['blue', (n) => `Mark today's attendance (${n} staff)`, '#/staff', 'Mark'],
   salary_due: ['amber', (n) => `Last month's salary not paid for ${n} staff`, '#/staff?month=last', 'Pay'],
@@ -2953,6 +2955,12 @@ route(/^settings$/, async (el, m, q) => {
         ${o.auto_wa_note ? `<p class="muted small">Last run: ${esc(o.auto_wa_note.replace(/^more /, ''))}</p>` : ''}
         <div class="row" style="margin-top:8px"><span class="spacer"></span><button type="button" class="btn" id="awrun" ${o.auto_wa ? '' : 'disabled'}>Send today's now</button></div>`
         : '<p>Included in the <b>Growth</b> and <b>Business</b> plans. <a href="#/plan">See plans</a></p>'}</div>` : ''}
+    ${ME.can.settings && ME.wa_bot ? `<div class="panel" id="wabot"><h2>WhatsApp bot</h2>
+      <p class="muted">Customers write to SmartTrader's WhatsApp number and get an answer at once: <b>hisab</b> (what is due, every bill with its UPI link), <b>bill</b>, <b>pay</b>, a pay date, or a message to you. Answers are free on WhatsApp's official API (the customer wrote first), and a reminder to a customer who wrote in the last 24 hours goes free too. What they write comes to your <a href="#/wa-inbox">WhatsApp Inbox</a>.</p>
+      <label class="mode-opt"><input type="checkbox" id="wabon" ${o.wa_bot ? 'checked' : ''}> <span><b>Answer my customers on WhatsApp</b><br><span class="muted">Customers with their mobile number on your list are found by it; others scan your QR.</span></span></label>
+      ${o.wa_bot && ME.wa_bot_link ? `<div class="row qrbox" style="margin-top:12px"><div id="wabqr"></div><div><b>Your WhatsApp link</b><br><a href="${esc(ME.wa_bot_link)}" target="_blank" rel="noopener" class="small">${esc(ME.wa_bot_link)}</a>
+        <p class="muted small">Print the QR at the counter (“Scan, get your hisab on WhatsApp”), or send the link with bills.</p>
+        <div class="row"><button type="button" class="btn sm" id="wabcopy">Copy link</button><a class="btn sm" href="#/wa-poster">Print QR poster</a></div></div></div>` : ''}</div>` : ''}
     ${canUsers ? `<div class="panel flush"><div class="row" style="padding:14px 16px"><h2 style="margin:0">Users</h2><span class="spacer"></span><button class="btn" id="adduser">+ Add user</button></div>
       ${table([{ h: 'Name', k: 'name' }, { h: 'Email', k: 'email', cls: 'hide-sm' }, { h: 'Role', f: (u) => u.role_key === 'owner' ? 'owner' : `<select data-role="${u.id}" aria-label="Role">${roleOpts.map((o) => `<option value="${esc(o.v)}" ${o.v === u.role_key ? 'selected' : ''}>${esc(o.t)}</option>`).join('')}</select>` },
         { h: 'Menu', f: (u) => u.role_key === 'owner' && u.id !== ME.user.id ? '' : `<button class="btn sm" data-menu="${u.id}">${esc(menuLabel(u))}</button>` },
@@ -2971,13 +2979,19 @@ route(/^settings$/, async (el, m, q) => {
       <h3 style="margin-top:16px">Restore from a backup</h3><div id="restorebox"><span class="muted">Checking…</span></div></div>` : ''}
     <p class="muted">Selling SmartTrader to other businesses? <a href="#/admin">Open the admin panel</a> (needs the ADMIN_KEY secret).</p>
     ${canUsers ? `<div class="panel flush"><div style="padding:14px 16px 0"><h3>Audit trail</h3></div>${table([{ h: 'When', f: (a) => new Date(a.at).toLocaleString('en-IN') }, { h: 'User', k: 'user' }, { h: 'Action', k: 'action' }, { h: 'Detail', k: 'detail', cls: 'hide-sm' }], audit.slice(0, 100))}</div>` : ''}`;
+  if ($('#wabon')) $('#wabon').onchange = async (e) => {
+    try { await api('PUT', '/api/settings/wa-bot', { on: e.target.checked }); ME = await GET('/api/me'); shell(); wireInstall(); toast(e.target.checked ? 'WhatsApp bot on' : 'WhatsApp bot off'); render(); }
+    catch (err) { e.target.checked = !e.target.checked; toast(err.message, 'err'); }
+  };
+  if ($('#wabqr') && ME.wa_bot_link) qrInto($('#wabqr'), ME.wa_bot_link);
+  if ($('#wabcopy')) $('#wabcopy').onclick = async () => { try { await navigator.clipboard.writeText(ME.wa_bot_link); toast('Link copied'); } catch (e) { toast(ME.wa_bot_link); } };
   if ($('#awon')) $('#awon').onchange = async (e) => {
     try { await api('PUT', '/api/settings/auto-wa', { on: e.target.checked }); ME = await GET('/api/me'); toast(e.target.checked ? 'Automatic reminders on' : 'Automatic reminders off'); render(); }
     catch (err) { e.target.checked = !e.target.checked; toast(err.message, 'err'); }
   };
   if ($('#awrun')) $('#awrun').onclick = async (e) => {
     e.target.disabled = true;
-    try { const r = await POST('/api/settings/auto-wa/run'); ME = await GET('/api/me'); toast(`${r.sent} sent${r.failed ? `, ${r.failed} failed` : ''}${r.skipped ? `, ${r.skipped} without a mobile` : ''}`); render(); }
+    try { const r = await POST('/api/settings/auto-wa/run'); ME = await GET('/api/me'); toast(`${r.sent} sent${r.free ? ` (${r.free} free)` : ''}${r.failed ? `, ${r.failed} failed` : ''}${r.skipped ? `, ${r.skipped} skipped (no mobile or sent STOP)` : ''}`); render(); }
     catch (err) { toast(err.message, 'err'); e.target.disabled = false; }
   };
   if ($('#apprf')) $('#apprf').onsubmit = async (e) => {
@@ -3525,6 +3539,65 @@ route(/^claim\/(\d+)$/, async (el, m) => {
   });
 });
 
+/* ======================================================================= WhatsApp inbox (src/wabot.js) */
+const waPhone = (p) => (/^91\d{10}$/.test(p) ? `+91 ${p.slice(2, 7)} ${p.slice(7)}` : '+' + p);
+const waWhen = (t) => (t ? new Date(t).toLocaleString('en-IN', { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' }) : '');
+// WhatsApp's *bold* and the links in what the bot sent, on escaped text
+const waBody = (s) => esc(s).replace(/\*([^*\n]+)\*/g, '<b>$1</b>').replace(/(https?:\/\/[^\s<]+)/g, '<a href="$1" target="_blank" rel="noopener">$1</a>').replace(/\n/g, '<br>');
+const WA_KIND = { bot: 'Bot', reply: 'Shop', reminder: 'Reminder' };
+route(/^wa-inbox$/, async (el, m, q) => {
+  const tab = q.get('tab') || 'waiting';
+  const { rows, waiting } = await GET('/api/wa/inbox');
+  const list = tab === 'waiting' ? rows.filter((r) => r.waiting) : rows;
+  el.innerHTML = head('WhatsApp Inbox', '<button class="btn" id="warf">Refresh</button>') + `
+    <p class="muted">Customers who write to your shop on WhatsApp. The bot answers on its own: what is due, bills, the UPI link, a pay date, and stopping reminders. What it cannot answer waits here for you. Replies are free within 24 hours of the customer's message.</p>
+    <div class="tabs">${[['waiting', `Waiting for you${waiting ? ` (${waiting})` : ''}`], ['all', 'All chats']].map(([k, t]) => `<a href="#/wa-inbox?tab=${k}" class="${tab === k ? 'on' : ''}">${t}</a>`).join('')}</div>
+    <div class="panel flush">${table([
+      { h: 'Customer', f: (r) => `<b>${esc(r.name || waPhone(r.phone))}</b>${r.name ? `<div class="muted">${waPhone(r.phone)}</div>` : ''}` },
+      { h: 'Last message', f: (r) => r.last ? `<span class="muted">${r.last.dir === 'in' ? '' : (WA_KIND[r.last.kind] || 'Shop') + ': '}</span>${esc(r.last.body.replace(/^\*[^*\n]+\*\n/, '').replace(/\*/g, '').slice(0, 90))}` : '' },
+      { h: 'When', cls: 'hide-sm', f: (r) => (r.last ? waWhen(r.last.at) : '') },
+      { h: '', f: (r) => (r.waiting ? `<span class="badge b-unpaid">waiting</span>` : '') + (r.window_open ? ' <span class="badge b-paid" title="The customer wrote in the last 24 hours: your reply is free">can reply</span>' : '') }], list,
+    { empty: tab === 'waiting' ? (rows.length ? 'Nobody is waiting. Sab theek hai ✓' : `No message yet. Share your shop's WhatsApp link or QR (Settings → WhatsApp bot) on bills, the counter and your status.`) : 'No chats yet.', onRow: true })}</div>`;
+  $('#warf').onclick = () => render();
+  bindRows(el, list, (r) => go('wa-inbox/' + r.phone));
+});
+
+/* the counter poster: the shop's QR that opens WhatsApp with its code */
+route(/^wa-poster$/, async (el) => {
+  if (!ME.wa_bot_link) { el.innerHTML = head('WhatsApp QR poster') + `<div class="panel">${emptyCta('Turn on the WhatsApp bot in Settings first.', '<a class="btn primary" href="#/settings">Settings</a>')}</div>`; return; }
+  el.innerHTML = head('WhatsApp QR poster', '<a class="btn" href="#/settings">Back</a><button class="btn primary" data-act="print">Print</button>') + `
+    <div class="panel wa-poster"><h1>${esc(ME.org.name)}</h1><p class="big">Scan karein, WhatsApp par apna hisab paayein</p>
+      <div id="wapq"></div><p>Bills · Kitna baaki hai · UPI payment link · Payment ki date</p>
+      <p class="muted">स्कैन करें, WhatsApp पर अपना हिसाब पाएं · Scan to get your account on WhatsApp</p></div>`;
+  qrInto($('#wapq'), ME.wa_bot_link);
+});
+
+route(/^wa-inbox\/(\d+)$/, async (el, m) => {
+  const t = await GET('/api/wa/inbox/' + m[1]);
+  const p = t.party, waiting = t.messages.some((x) => x.dir === 'in' && x.kind === 'ask' && !x.handled);
+  el.innerHTML = head(esc(p ? p.name : waPhone(t.phone)), `<a class="btn" href="#/wa-inbox">All chats</a>${p ? ` <a class="btn" href="#/khata/${p.id}">Khata</a>` : ''}`) + `
+    <p class="muted">${waPhone(t.phone)}${p && p.wa_optout ? ' · <span class="neg">sent STOP: gets no automatic reminders</span>' : ''}${p ? '' : ' · not on your customer list'}</p>
+    <div class="panel wa-chat" id="wachat">${t.messages.map((x) => `<div class="wa-msg ${x.dir === 'in' ? 'in' : 'out'}${x.dir === 'in' && x.kind === 'ask' && !x.handled ? ' ask' : ''}">
+      <div>${waBody(x.body)}</div><div class="wa-meta">${x.dir === 'in' ? '' : (WA_KIND[x.kind] || 'Shop') + ' · '}${waWhen(x.at)}</div></div>`).join('')}</div>
+    ${t.window_open ? `<form class="panel wa-reply" id="waform"><textarea name="text" rows="2" maxlength="1500" placeholder="Type your reply…" required></textarea>
+      <div class="row"><span class="muted small">Free: the customer wrote in the last 24 hours. It goes with your shop's name on top.</span><span class="spacer"></span>
+      ${waiting ? '<button type="button" class="btn" id="wadone">Mark answered</button>' : ''}<button class="btn primary">Send</button></div></form>`
+    : `<div class="panel"><p class="muted">More than 24 hours since the customer wrote, so WhatsApp allows only an approved template now.
+      ${p && p.phone ? `Call them on <a href="tel:${esc(p.phone)}">${esc(p.phone)}</a>, or send a reminder from <a href="#/khata/${p.id}">their khata</a>.` : 'Call them, or ask them to write again.'}</p>
+      ${waiting ? '<button class="btn" id="wadone">Mark answered</button>' : ''}</div>`}`;
+  const box = $('#wachat');
+  box.scrollTop = box.scrollHeight;
+  if ($('#waform')) $('#waform').onsubmit = async (e) => {
+    e.preventDefault();
+    const b = e.target.querySelector('button.primary');
+    b.disabled = true;
+    try { await POST(`/api/wa/inbox/${t.phone}/reply`, { text: e.target.text.value }); toast('Sent'); render(); } catch (err) { toast(err.message, 'err'); b.disabled = false; }
+  };
+  if ($('#wadone')) $('#wadone').onclick = async () => {
+    try { await POST(`/api/wa/inbox/${t.phone}/done`, {}); toast('Marked answered'); render(); } catch (err) { toast(err.message, 'err'); }
+  };
+});
+
 /* ======================================================================= stock count (cycle count) */
 route(/^stockcount$/, async (el, m, q) => {
   dirty('warehouses');
@@ -3873,6 +3946,14 @@ async function fileDownload(url) {
 }
 // '@' stays literal: UPI apps show "name%40bank" for an encoded one and will not let the payer continue.
 const upiLink = (vpa, name, amount, note) => `upi://pay?pa=${encodeURIComponent(vpa).replace(/%40/g, '@')}&pn=${encodeURIComponent(name)}${amount ? `&am=${(+amount).toFixed(2)}` : ''}&cu=INR${note ? `&tn=${encodeURIComponent(note)}` : ''}`;
+/* any text as a QR code (the WhatsApp bot link) */
+async function qrInto(el, text) {
+  try {
+    const { default: qrcode } = await import('/vendor/qrcode.mjs');
+    const qr = qrcode(0, 'M'); qr.addData(text); qr.make();
+    el.innerHTML = `<div class="qr">${qr.createSvgTag({ cellSize: 3, margin: 2, scalable: true })}</div>`;
+  } catch (e) { el.innerHTML = ''; }
+}
 async function upiQr(el, org, amount, note, caption = '') {
   if (!el || !org.upi_id) return;
   try {

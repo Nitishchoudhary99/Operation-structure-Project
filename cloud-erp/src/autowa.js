@@ -37,6 +37,30 @@ export async function sendReminder(env, to, lang, params) {
   return data.messages && data.messages[0] ? data.messages[0].id : '';
 }
 
+/* a plain text message: allowed (and free) only within 24 hours of the customer's own last message to this number */
+export async function sendText(env, to, body) {
+  const base = (env.WHATSAPP_API || 'https://graph.facebook.com/v21.0').replace(/\/$/, '');
+  const res = await fetch(`${base}/${env.WHATSAPP_PHONE_ID}/messages`, {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${env.WHATSAPP_TOKEN}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ messaging_product: 'whatsapp', recipient_type: 'individual', to, type: 'text', text: { preview_url: true, body: String(body).slice(0, 4000) } }),
+  });
+  let data = {};
+  try { data = await res.json(); } catch (e) { /* not json */ }
+  if (!res.ok) throw new Error((data.error && data.error.message) || `WhatsApp said ${res.status}`);
+  return data.messages && data.messages[0] ? data.messages[0].id : '';
+}
+/* the customer wrote to this number within the last 24 hours (minus a margin): text replies cost nothing */
+export async function windowOpen(db, to) {
+  const ct = await db.prepare(`SELECT last_in FROM wa_contacts WHERE phone = ?`).bind(to).first();
+  return !!(ct && ct.last_in && Date.parse(ct.last_in) > Date.now() - 23.5 * 3600e3);
+}
+const REMIND_TEXT = {
+  en: (n, s, a, l) => `*${s}*\nHello ${n}, ${a} is due. Your bills and UPI payment: ${l}\nReply HISAB for your account, STOP to stop reminders.`,
+  hi: (n, s, a, l) => `*${s}*\nनमस्ते ${n} जी, आपके ${a} बाकी हैं। बिल और UPI से भुगतान: ${l}\nहिसाब के लिए HISAB लिखें, रिमाइंडर बंद करने के लिए STOP.`,
+  hl: (n, s, a, l) => `*${s}*\nNamaste ${n} ji, aapke ${a} baaki hain. Bill aur UPI se payment: ${l}\nHisab ke liye HISAB likhein, reminder band karne ke liye STOP.`,
+};
+
 /* the customer's link: their oldest unpaid invoice, which lists the bill and the UPI button */
 async function linkFor(env, org, partyId, base, lang) {
   const d = await env.DB.prepare(`SELECT id, share_token FROM docs WHERE org_id = ? AND party_id = ? AND type = 'INV' AND status IN ('unpaid','partial')
@@ -56,23 +80,35 @@ export async function remindOrg(env, org, budget = PER_ORG) {
   const t = today(), base = (env.APP_URL || 'https://erp.docbrisk.com').replace(/\/$/, '');
   const { results: done } = await env.DB.prepare(`SELECT DISTINCT party_id FROM reminder_log WHERE org_id = ? AND sent_at >= ?`).bind(org.id, addDays(t, -1) + 'T18:30:00Z').all();
   const already = new Set(done.map((r) => r.party_id));
-  const out = { sent: 0, failed: 0, skipped: 0, errors: [], complete: true };
+  // customers who answered STOP get no automatic reminders
+  const { results: off } = await env.DB.prepare(`SELECT id FROM parties WHERE org_id = ? AND wa_optout = 1`).bind(org.id).all();
+  const stopped = new Set(off.map((r) => r.id));
+  const out = { sent: 0, free: 0, failed: 0, skipped: 0, errors: [], complete: true };
   for (const r of await queue(c)) {
     if (out.sent + out.failed >= budget) { out.complete = false; break; }
     if (r.status !== 'due' || already.has(r.party_id)) continue;
     const to = waNumber(r.phone);
-    if (!to) { out.skipped++; continue; }
+    if (!to || stopped.has(r.party_id)) { out.skipped++; continue; }
     const lang = r.lang || org.msg_lang || 'hl';
     try {
       const link = await linkFor(env, org, r.party_id, base, lang);
-      await sendReminder(env, to, lang, [r.name, org.name, inr(r.due * 100), link]);
-      await env.DB.prepare(`INSERT INTO reminder_log (org_id, party_id, step, via, lang, user_id, sent_at) VALUES (?, ?, ?, 'auto', ?, NULL, ?)`)
-        .bind(org.id, r.party_id, r.step ?? 0, lang, nowIso()).run();
-      out.sent++;
+      // a customer who wrote to us in the last 24 hours gets it as a free text; the others get the (paid) approved template
+      const free = await windowOpen(env.DB, to), body = (REMIND_TEXT[lang] || REMIND_TEXT.hl)(r.name, org.name, inr(r.due * 100), link);
+      if (free) await sendText(env, to, body); else await sendReminder(env, to, lang, [r.name, org.name, inr(r.due * 100), link]);
+      const now = nowIso();
+      await env.DB.batch([
+        env.DB.prepare(`INSERT INTO reminder_log (org_id, party_id, step, via, lang, user_id, sent_at) VALUES (?, ?, ?, 'auto', ?, NULL, ?)`).bind(org.id, r.party_id, r.step ?? 0, lang, now),
+        // the customer's answer to this reminder comes back to this shop (src/wabot.js)
+        env.DB.prepare(`INSERT INTO wa_contacts (phone, org_id, party_id, last_out, updated_at) VALUES (?, ?, ?, ?, ?)
+          ON CONFLICT(phone) DO UPDATE SET org_id = excluded.org_id, party_id = excluded.party_id, choices = NULL, last_out = excluded.last_out, updated_at = excluded.updated_at`)
+          .bind(to, org.id, r.party_id, now, now),
+        env.DB.prepare(`INSERT INTO wa_messages (org_id, party_id, phone, dir, body, kind, handled, at) VALUES (?, ?, ?, 'out', ?, 'reminder', 1, ?)`).bind(org.id, r.party_id, to, body, now),
+      ]);
+      out.sent++; if (free) out.free++;
     } catch (e) { out.failed++; if (out.errors.length < 3) out.errors.push(`${r.name}: ${e.message}`.slice(0, 160)); }
   }
   // a business with more to send than this run allows is picked up again next hour (the note then starts "more ")
-  const note = `${out.complete ? t : 'more ' + t}: ${out.sent} sent${out.failed ? `, ${out.failed} failed (${out.errors.join('; ')})` : ''}${out.skipped ? `, ${out.skipped} without a mobile number` : ''}`;
+  const note = `${out.complete ? t : 'more ' + t}: ${out.sent} sent${out.free ? ` (${out.free} free, inside the customer's 24 hours)` : ''}${out.failed ? `, ${out.failed} failed (${out.errors.join('; ')})` : ''}${out.skipped ? `, ${out.skipped} skipped (no mobile number or reminders stopped)` : ''}`;
   await env.DB.prepare(`UPDATE orgs SET auto_wa_note = ? WHERE id = ?`).bind(note.slice(0, 500), org.id).run();
   return out;
 }
