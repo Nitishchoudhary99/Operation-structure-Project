@@ -46,6 +46,12 @@ Market research and pricing advice: see [docs/COMPETITORS.md](docs/COMPETITORS.m
 - **Receipts on WhatsApp** at once, naming who collected the money; the built-in *sales* role may record customer receipts. The owner sees **who collected what** (7 days, cash, month) and the **week** (received, promised, 45+ days late, days to get paid), and can share it.
 - **Recovery file** (`#/recovery/<party>`, finance roles): MSMED Act interest (3 × RBI Bank Rate, monthly rests, from the agreed due date or the 46th day) for a business with a Udyam number, the evidence (statements, promises, reminders, receipts), a demand-notice draft and what MSME Samadhaan asks for. The notice is a draft for an advocate to check.
 
+### Stock: bins, batches with expiry, stock ageing
+- **Bins & Racks** (`#/bins`): make racks and shelves once (A-01-1 = rack A, shelf 1, level 1), print bin labels with barcodes, put away stock that is in no bin yet, and move stock between bins. Each item has a default bin; goods coming in go there, goods going out are taken from what is not put away first, then from the bins. The pick list shows the bins (with quantities) and the batch to pick.
+- **Batch & Expiry** (`#/expiry`): an item can track batches. Purchase bills, GRNs and opening stock take a batch number and expiry month; sales take the chosen batch, or the one that expires first (FEFO). The batch and expiry print on the bill; returns go back to their batch; cancelling a bill puts goods back into the very same batches; transfers take the batch along. The expiry screen lists expired and soon-expiring stock with its value.
+- **Stock Ageing** (`#/stock-ageing`): the stock on hand by age (0-30, 31-60, 61-90, 91-180, 181-365, 366+ days, first in first out), dead and slow-moving stock from the last sale, and an ABC class from the last 12 months of sales.
+- Bins and batches are detail under each godown's quantity (`stock`), which stays the only figure the books and stock value use (`src/lots.js`).
+
 ### How each document hits the books
 
 | Document | Stock | Ledger |
@@ -173,6 +179,7 @@ cloud-erp/
   src/saas.js          plans, limits, activation codes
   src/vasooli.js       collections: reminder schedule, balance statements, receipts, weekly summary, recovery file
   src/msg.js           every customer message and link preview in English, Hindi and Hinglish
+  src/lots.js          bins (racks / shelves) and batches with expiry under each godown's stock: FEFO, put-away, expiry
   tools/gen-og.mjs     makes the link-preview posters (public/og-*.png) in the three languages
   public/              the web app (plain HTML/CSS/JS, no build step), PWA manifest + service worker, csv.js (export), _headers
   test/run.mjs         end-to-end test against a running worker
@@ -247,5 +254,4 @@ every business has to connect Drive again.
 
 - Direct IRN / e-way bill generation through an API. This needs a GSP account; today the JSON files
   are uploaded on the government portals.
-- Batch/expiry and serial numbers, manufacturing (bill of
-  materials), and approval workflows.
+- Serial numbers (IMEI), manufacturing (bill of materials), and approval workflows.

@@ -3,7 +3,7 @@
    Every business table carries org_id: one database serves many businesses (multi-tenant).
    migrate() runs on the first request after each deploy, so no manual migration step is needed. */
 
-export const SCHEMA_VERSION = 21;
+export const SCHEMA_VERSION = 22;
 
 // document types whose monthly totals doc_month keeps (sales and purchase money documents)
 const MONTH_TYPES = `('INV','SRET','CNOTE','BILL','PRET','DNOTE')`;
@@ -378,6 +378,27 @@ export const MIGRATIONS = {
        status TEXT NOT NULL DEFAULT 'sent' CHECK (status IN ('sent','agreed','disputed')), note TEXT DEFAULT '', disputed_bill TEXT DEFAULT '',
        sent_via TEXT, sent_at TEXT, created_by INTEGER, created_at TEXT NOT NULL, answered_at TEXT, answered_ua TEXT)`,
     `CREATE INDEX IF NOT EXISTS ix_conf_party ON confirmations (org_id, party_id, id)`,
+  ],
+  /* bins (racks / shelves) and batches with expiry (src/lots.js): detail under each godown's quantity in `stock`.
+     items.location stays the item's default bin; doc lines carry the batch they moved and its expiry. */
+  22: [
+    `ALTER TABLE items ADD COLUMN track_batch INTEGER NOT NULL DEFAULT 0`,
+    `ALTER TABLE doc_lines ADD COLUMN batch_no TEXT DEFAULT ''`,
+    `ALTER TABLE doc_lines ADD COLUMN expiry TEXT DEFAULT ''`,
+    `CREATE TABLE IF NOT EXISTS bins (id INTEGER PRIMARY KEY, org_id INTEGER NOT NULL, warehouse_id INTEGER NOT NULL, code TEXT NOT NULL,
+       zone TEXT DEFAULT '', capacity REAL NOT NULL DEFAULT 0, created_at TEXT NOT NULL, UNIQUE (org_id, warehouse_id, code))`,
+    `CREATE TABLE IF NOT EXISTS bin_stock (org_id INTEGER NOT NULL, item_id INTEGER NOT NULL, bin_id INTEGER NOT NULL, warehouse_id INTEGER NOT NULL,
+       qty REAL NOT NULL DEFAULT 0, PRIMARY KEY (item_id, bin_id))`,
+    `CREATE INDEX IF NOT EXISTS ix_binstock_wh ON bin_stock (org_id, warehouse_id, item_id)`,
+    `CREATE INDEX IF NOT EXISTS ix_binstock_bin ON bin_stock (bin_id)`,
+    `CREATE TABLE IF NOT EXISTS batches (id INTEGER PRIMARY KEY, org_id INTEGER NOT NULL, item_id INTEGER NOT NULL, warehouse_id INTEGER NOT NULL,
+       batch_no TEXT NOT NULL, mfg TEXT DEFAULT '', expiry TEXT DEFAULT '', qty REAL NOT NULL DEFAULT 0, created_at TEXT NOT NULL,
+       UNIQUE (org_id, item_id, warehouse_id, batch_no))`,
+    `CREATE INDEX IF NOT EXISTS ix_batches_exp ON batches (org_id, expiry)`,
+    `CREATE TABLE IF NOT EXISTS batch_moves (id INTEGER PRIMARY KEY, org_id INTEGER NOT NULL, batch_id INTEGER NOT NULL, item_id INTEGER NOT NULL,
+       warehouse_id INTEGER NOT NULL, date TEXT NOT NULL, qty REAL NOT NULL, ref_type TEXT NOT NULL, ref_id INTEGER)`,
+    `CREATE INDEX IF NOT EXISTS ix_bmoves_ref ON batch_moves (org_id, ref_type, ref_id)`,
+    `CREATE INDEX IF NOT EXISTS ix_bmoves_batch ON batch_moves (batch_id)`,
   ],
 };
 

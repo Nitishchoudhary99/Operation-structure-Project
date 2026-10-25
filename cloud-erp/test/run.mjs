@@ -1278,5 +1278,91 @@ else {
     && bk.tables.confirmations.every((f) => !('token' in f)) && bk.org.udyam === 'UDYAM-RJ-17-0012345');
 }
 
+/* --- bins (racks / shelves), batches with expiry (FEFO), stock ageing --- */
+{
+  const ip = '203.0.113.130';
+  const su = await rq('POST', '/api/auth/signup', { business: 'Lots Pharma', name: 'L', email: `lots${Date.now()}@test.in`, password: 'Lots-pass-123', state: 'Rajasthan' }, { ip });
+  const V = async (m, p, b) => { const r = await rq(m, p, b, { cookie: su.cookie, ip }); if (r.status >= 400) throw new Error(`${m} ${p} -> ${r.status} ${r.data.error}`); return r.data; };
+  const E = (m, p, b) => rq(m, p, b, { cookie: su.cookie, ip });
+  const wh = (await V('GET', '/api/warehouses')).rows[0];
+  const sup = await V('POST', '/api/parties', { name: 'Cipla Distributor', kind: 'supplier', state: 'Rajasthan' });
+  const cust = await V('POST', '/api/parties', { name: 'Shree Chemist', kind: 'customer', state: 'Rajasthan', phone: '9876500003' });
+  const syrup = await V('POST', '/api/items', { name: 'Cough Syrup 100ml', unit: 'btl', sale_price: 120, purchase_price: 80, gst_rate: 12, track_batch: true, location: 'a-01-1' });
+  const strip = await V('POST', '/api/items', { name: 'Bandage roll', unit: 'pc', sale_price: 30, purchase_price: 15, gst_rate: 12 });
+  check('an item can track batches and has a default bin', syrup.track_batch === 1 && syrup.location === 'A-01-1' && strip.track_batch === 0, JSON.stringify(syrup));
+
+  // bins: racks A-B, 2 shelves, 2 levels
+  const nb = await V('POST', '/api/bins', { warehouse_id: wh.id, racks: 'A-B', shelves: 2, levels: 2 });
+  let bl = await V('GET', `/api/bins?warehouse_id=${wh.id}`);
+  check('bins made from racks, shelves and levels', nb.added === 8 && bl.bins.length === 8 && bl.bins[0].code === 'A-01-1' && bl.bins[7].code === 'B-02-2', JSON.stringify(bl.bins.map((b) => b.code)));
+  const bin = (code) => bl.bins.find((b) => b.code === code);
+
+  // opening stock with a batch goes into the default bin; a purchase with an earlier-expiring batch
+  await V('POST', '/api/stock/adjust', { item_id: syrup.id, qty: 50, rate: 80, reason: 'opening', batch_no: 'B1', expiry: '2027-03' });
+  await V('POST', '/api/docs', { type: 'BILL', party_id: sup.id, lines: [{ item_id: syrup.id, qty: 30, rate: 80, batch_no: 'B2', expiry: '2026-12-15' }] });
+  let lots = await V('GET', `/api/items/${syrup.id}/lots`);
+  const bq = (no) => (lots.batches.find((b) => b.batch_no === no) || { qty: 0 }).qty;
+  check('batches with expiry: the month means its last day', bq('B1') === 50 && bq('B2') === 30 && lots.batches[0].batch_no === 'B2' && lots.batches.find((b) => b.batch_no === 'B1').expiry === '2027-03-31', JSON.stringify(lots.batches));
+  check('incoming stock lands in the default bin', lots.bins.length === 1 && lots.bins[0].code === 'A-01-1' && lots.bins[0].qty === 80, JSON.stringify(lots.bins));
+
+  // a sale without a batch takes the batch that expires first (FEFO)
+  const inv = await V('POST', '/api/docs', { type: 'INV', party_id: cust.id, lines: [{ item_id: syrup.id, qty: 40, rate: 120 }] });
+  const invD = await V('GET', `/api/docs/${inv.id}`);
+  lots = await V('GET', `/api/items/${syrup.id}/lots`);
+  check('FEFO: the earlier expiry goes first, and the bill shows the batches', invD.lines[0].batch_no === 'B2, B1' && invD.lines[0].expiry === '2026-12-15' && bq('B2') === 0 && bq('B1') === 40, JSON.stringify(invD.lines[0]) + JSON.stringify(lots.batches));
+  check('...and the bin gives up the goods', lots.bins[0].qty === 40, JSON.stringify(lots.bins));
+  const tooMuch = await E('POST', '/api/docs', { type: 'INV', party_id: cust.id, lines: [{ item_id: syrup.id, qty: 5, rate: 120, batch_no: 'B2' }] });
+  check('a batch cannot give more than it has', tooMuch.status === 400 && /Batch B2 .* has only 0/.test(tooMuch.data.error), JSON.stringify(tooMuch.data));
+  // cancelling puts the goods back into the very same batches and the default bin
+  await V('POST', `/api/docs/${inv.id}/cancel`);
+  lots = await V('GET', `/api/items/${syrup.id}/lots`);
+  check('cancelling a sale puts goods back into the same batches', bq('B2') === 30 && bq('B1') === 50 && lots.bins[0].qty === 80, JSON.stringify(lots));
+  // a sale of a chosen batch, then its return goes back to that batch
+  const inv2 = await V('POST', '/api/docs', { type: 'INV', party_id: cust.id, lines: [{ item_id: syrup.id, qty: 10, rate: 120, batch_no: 'B1' }] });
+  const ret = await V('GET', `/api/docs/${inv2.id}/convert?to=SRET`);
+  check('a return carries the batch of the invoice line', ret.lines[0].batch_no === 'B1', JSON.stringify(ret.lines[0]));
+  await V('POST', '/api/docs', { ...ret, lines: [{ ...ret.lines[0], qty: 4 }] });
+  lots = await V('GET', `/api/items/${syrup.id}/lots`);
+  check('returned goods go back to their batch', bq('B1') === 44 && bq('B2') === 30, JSON.stringify(lots.batches));
+  const cancelBill = await E('POST', `/api/docs/${(await V('GET', '/api/docs?type=BILL')).rows[0].id}/cancel`);
+  check('a purchase whose batch is still in stock can be cancelled', cancelBill.status === 200, JSON.stringify(cancelBill.data));
+  lots = await V('GET', `/api/items/${syrup.id}/lots`);
+  check('...and its batch leaves with it', bq('B2') === 0 && bq('B1') === 44, JSON.stringify(lots.batches));
+
+  // bins: what is not put away, put-away, moving between bins
+  await V('POST', '/api/stock/adjust', { item_id: strip.id, qty: 10, rate: 15, reason: 'opening' });
+  bl = await V('GET', `/api/bins?warehouse_id=${wh.id}`);
+  const np = bl.not_put_away.find((r) => r.id === strip.id);
+  check('stock without a bin is listed as not put away', np && np.free === 10, JSON.stringify(bl.not_put_away));
+  await V('POST', '/api/bins/move', { item_id: strip.id, warehouse_id: wh.id, from_bin_id: 0, to_bin_id: bin('A-01-2').id, qty: 10 });
+  const tooFar = await E('POST', '/api/bins/move', { item_id: strip.id, warehouse_id: wh.id, from_bin_id: bin('A-01-2').id, to_bin_id: bin('B-02-2').id, qty: 11 });
+  check('a bin cannot give more than it holds', tooFar.status === 400 && /Only 10/.test(tooFar.data.error), JSON.stringify(tooFar.data));
+  await V('POST', '/api/bins/move', { item_id: strip.id, warehouse_id: wh.id, from_bin_id: bin('A-01-2').id, to_bin_id: bin('B-02-2').id, qty: 4 });
+  await V('POST', '/api/docs', { type: 'INV', party_id: cust.id, lines: [{ item_id: strip.id, qty: 3, rate: 30 }] });
+  const inB = await V('GET', `/api/bins/${bin('A-01-2').id}`), inB2 = await V('GET', `/api/bins/${bin('B-02-2').id}`);
+  check('put away, moved, then sold from the bins', inB.items[0].qty === 3 && inB2.items[0].qty === 4, JSON.stringify([inB.items, inB2.items]));
+  check('a bin with stock cannot be deleted', (await E('DELETE', `/api/bins/${bin('B-02-2').id}`)).status === 400);
+  check('an empty bin can be deleted', (await E('DELETE', `/api/bins/${bin('B-01-1').id}`)).status === 200);
+  const stk = await V('GET', '/api/reports/stock');
+  check('godown totals are unchanged by bins and batches', stk.rows.find((r) => r.id === strip.id).qty === 7 && stk.rows.find((r) => r.id === syrup.id).qty === 44, JSON.stringify(stk.rows.map((r) => [r.name, r.qty])));
+
+  // a transfer takes its batches along to the other godown
+  const w2 = await V('POST', '/api/warehouses', { name: 'Branch' });
+  await V('POST', '/api/stock/transfer', { item_id: syrup.id, from_warehouse_id: wh.id, to_warehouse_id: w2.id, qty: 5 });
+  const l2 = await V('GET', `/api/items/${syrup.id}/lots?warehouse_id=${w2.id}`);
+  check('a transfer takes its batch along', l2.batches.length === 1 && l2.batches[0].batch_no === 'B1' && l2.batches[0].qty === 5 && l2.batches[0].expiry === '2027-03-31', JSON.stringify(l2.batches));
+
+  // expiry report and stock ageing
+  const ex = await V('GET', '/api/reports/expiry?days=730');
+  check('expiry report lists batches by expiry with their value', ex.rows.length === 2 && ex.rows.every((r) => r.batch_no === 'B1' && r.days_left > 0) && ex.soon_value > 0, JSON.stringify(ex));
+  const ag = await V('GET', '/api/reports/stock-ageing');
+  const ar = ag.rows.find((r) => r.id === syrup.id);
+  check('stock ageing: every unit on hand falls in an age bucket', ar && Math.abs(ar.qtys.reduce((a, b) => a + b, 0) - ar.qty) < 0.001 && ag.buckets.length === 6 && ag.totals.length === 6, JSON.stringify(ar));
+  check('stock ageing marks sales class and movement', ['A', 'B', 'C', '-'].includes(ar.abc) && ['moving', 'slow', 'dead', 'new'].includes(ar.move) && ar.last_sale, JSON.stringify(ar));
+  const bk = await (await fetch(BASE + '/api/export/backup', { headers: { Cookie: su.cookie, 'CF-Connecting-IP': ip } })).json();
+  check('backups carry bins, bin stock, batches and their moves', bk.tables.bins.length === 7 && bk.tables.bin_stock.length >= 2 && bk.tables.batches.length >= 3 && bk.tables.batch_moves.length >= 6,
+    ['bins', 'bin_stock', 'batches', 'batch_moves'].map((t) => `${t} ${bk.tables[t].length}`).join(' '));
+}
+
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

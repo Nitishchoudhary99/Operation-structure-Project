@@ -114,3 +114,15 @@ export class Router {
     return allowed ? { methodNotAllowed: true } : null;
   }
 }
+
+/* Several rows by id in as few queries as possible (D1 allows 100 bound values per query; the free plan
+   allows 50 queries per request, so per-line lookups would break on long documents). */
+export async function loadByIds(db, sql, fixed, ids) {
+  const out = [], uniq = [...new Set(ids.filter(Boolean))];
+  for (let i = 0; i < uniq.length; i += 90) {
+    const part = uniq.slice(i, i + 90);
+    const { results } = await db.prepare(sql.replace('(?ids)', `(${part.map(() => '?').join(',')})`)).bind(...fixed, ...part).all();
+    out.push(...results);
+  }
+  return out;
+}

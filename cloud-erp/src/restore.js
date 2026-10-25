@@ -14,8 +14,8 @@ import { randomHex } from './auth.js';
 import { auditStatement } from './engine.js';
 
 const ID_TABLES = ['accounts', 'warehouses', 'roles', 'parties', 'items', 'docs', 'doc_lines', 'payments', 'journals', 'journal_lines', 'khata',
-  'stock_moves', 'gate_entries', 'vaade', 'vaada_kisht', 'recurring', 'reminder_log', 'confirmations'];
-const OTHER_TABLES = ['payment_allocs', 'stock', 'counters', 'org_files'];
+  'stock_moves', 'gate_entries', 'vaade', 'vaada_kisht', 'recurring', 'reminder_log', 'confirmations', 'bins', 'batches', 'batch_moves'];
+const OTHER_TABLES = ['payment_allocs', 'stock', 'counters', 'org_files', 'bin_stock'];
 const ORG_FIELDS = ['name', 'gstin', 'state', 'address', 'phone', 'upi_id', 'fy_start', 'city', 'pincode', 'email', 'mode', 'print', 'series', 'fields', 'vaada', 'msg_lang', 'udyam'];
 const JSON_FIELDS = ['print', 'series', 'fields', 'vaada'];
 const PAY_REFS = ['payment', 'receipt', 'payment-X', 'receipt-X'];
@@ -108,13 +108,19 @@ export async function restoreBackup(c, backup) {
       recurring: (r) => ({ src_doc_id: to('docs', r.src_doc_id), last_doc_id: to('docs', r.last_doc_id), created_by: me, active: 0,
         last_error: 'Paused after the restore. Tap Resume to start it again.' }),
       reminder_log: (r) => ({ party_id: to('parties', r.party_id), user_id: me }),
+      bins: (r) => ({ warehouse_id: to('warehouses', r.warehouse_id) }),
+      bin_stock: (r) => ({ item_id: to('items', r.item_id), bin_id: to('bins', r.bin_id), warehouse_id: to('warehouses', r.warehouse_id) }),
+      batches: (r) => ({ item_id: to('items', r.item_id), warehouse_id: to('warehouses', r.warehouse_id) }),
+      batch_moves: (r) => ({ batch_id: to('batches', r.batch_id), item_id: to('items', r.item_id), warehouse_id: to('warehouses', r.warehouse_id),
+        ref_id: /^[A-Z]+(-X)?$/.test(String(r.ref_type)) && !['OPEN', 'ADJ', 'COUNT', 'XFER'].includes(String(r.ref_type)) ? to('docs', r.ref_id) : null }),
       confirmations: (r) => ({ party_id: to('parties', r.party_id), created_by: me, token: randomHex(12) }),   // old links stay dead
       counters: () => ({}),
       org_files: () => ({}),
     };
     // a row whose own record of the link is gone is left out (it could not be shown or posted anyway)
     const NEED = { doc_lines: ['doc_id'], payment_allocs: ['payment_id', 'doc_id'], journal_lines: ['journal_id', 'account_id'], stock: ['item_id', 'warehouse_id'],
-      vaada_kisht: ['vaada_id'], recurring: ['src_doc_id'], reminder_log: ['party_id'], confirmations: ['party_id'], stock_moves: ['item_id', 'warehouse_id'], payments: ['party_id', 'account_id'], khata: ['party_id'] };
+      vaada_kisht: ['vaada_id'], recurring: ['src_doc_id'], reminder_log: ['party_id'], confirmations: ['party_id'],
+      bins: ['warehouse_id'], bin_stock: ['item_id', 'bin_id', 'warehouse_id'], batches: ['item_id', 'warehouse_id'], batch_moves: ['batch_id', 'item_id', 'warehouse_id'], stock_moves: ['item_id', 'warehouse_id'], payments: ['party_id', 'account_id'], khata: ['party_id'] };
 
     const st = [];
     const insert = (t, rows, verb = 'INSERT') => {
@@ -162,7 +168,8 @@ export async function restoreBackup(c, backup) {
     counts.accounts = insert('accounts', newAccounts);
     counts.warehouses = insert('warehouses', whs.filter((w) => w !== firstWh));
     for (const t of ['roles', 'parties', 'items', 'docs', 'doc_lines', 'payments', 'payment_allocs', 'journals', 'journal_lines', 'khata', 'stock', 'stock_moves',
-      'gate_entries', 'vaade', 'vaada_kisht', 'recurring', 'reminder_log', 'confirmations']) counts[t] = insert(t, T[t]);
+      'gate_entries', 'vaade', 'vaada_kisht', 'recurring', 'reminder_log', 'confirmations', 'bins', 'batches', 'batch_moves']) counts[t] = insert(t, T[t]);
+    counts.bin_stock = insert('bin_stock', T.bin_stock);
     counts.counters = insert('counters', T.counters, 'INSERT OR REPLACE');
     counts.org_files = insert('org_files', T.org_files.filter((f) => typeof f.data === 'string' && f.data.length <= 120000 && /^image\//.test(String(f.mime))), 'INSERT OR REPLACE');
     // promise stats are kept by a trigger on changes only, so they are worked out once here
