@@ -38,3 +38,7 @@ summary { font-weight: 700; cursor: pointer; }
 .cta h2 { margin-top: 0; }
 footer { border-top: 1px solid var(--line); padding: 24px 20px; color: var(--muted); font-size: 14px; max-width: 1080px; margin: 0 auto; }
 @media (max-width: 640px) { .top nav { order: 3; width: 100%; overflow-x: auto; } .hero { padding-top: 32px; } }
+
+/* privacy page: a link to a section (#whatsapp, #delete) lands below the sticky header */
+section[id] { scroll-margin-top: 90px; }
+@media (max-width: 700px) { section[id] { scroll-margin-top: 180px; } }
