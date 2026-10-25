@@ -17,8 +17,8 @@ Market research and pricing advice: see [docs/COMPETITORS.md](docs/COMPETITORS.m
 | **Finance** | True double-entry ledger. Every document posts balanced journals automatically. Chart of accounts, expenses with input GST, journal vouchers, party opening balances, day book, account and party ledgers, Trial Balance, Profit & Loss, Balance Sheet, receivable/payable ageing. |
 | **Khata Book** | Khatabook-style "you gave / you got" credit book per contact, with running balance and one-tap **WhatsApp / SMS reminders that include a UPI payment link**. Works well on phones. |
 | **Payments** | Receipts and payments into cash, bank or UPI accounts. Applied to the oldest open invoices or bills first, or to a chosen document. Voiding reverses everything. |
-| **Control** | Multi-user with roles (owner, admin, accountant, store, sales), audit trail, cancel-with-reversal (never silent edits), one database holding many businesses with strict separation. |
-| **Gate entry & gate pass** | Inward gate register (vehicle, driver, challan, packages, weight, against a PO), Goods Receipt made from the gate entry, reject at gate; outward gate pass against a delivery note/invoice with exit time. |
+| **Control** | Multi-user with roles (owner, admin, accountant, store, sales, and custom roles with see / change switches per area, a gate-only guard among them), **each user's own menu** (a job, or screens ticked one by one, and the screen the app opens on), audit trail, cancel-with-reversal (never silent edits), one database holding many businesses with strict separation. |
+| **Gate entry & gate pass** | Inward gate register (vehicle, driver, challan, packages, weight, against a PO), filled from the **QR on the supplier's e-invoice** (supplier by GSTIN, bill number, date, value, IRN; one entry per IRN) and matched to the purchase bill; goods received against it on the Receive Goods screen; reject at gate; outward gate pass against a delivery note/invoice with exit time. |
 | **Credit / debit notes** | Return notes (goods come back) and value notes for rate difference, discount or claims (no goods), made from the invoice/bill line by line or standalone, settled against the original, in GST summary, e-invoice (CRN) and Tally. |
 | **Warehouse tools** | Bin/rack location per item, printable pick list sorted by bin, stock count (cycle count) that posts all differences at once, one-click reorder PO for items below reorder level, pending orders/receipts/gate report. |
 | **Collections** | Payment Reminders screen: every customer with invoice or khata dues, one-tap WhatsApp/SMS reminder listing the bills, total and UPI. |
@@ -66,6 +66,12 @@ Market research and pricing advice: see [docs/COMPETITORS.md](docs/COMPETITORS.m
 - **Live web store orders** (Online orders → *Connect a store*, `src/hooks.js`): Shopify (paste the signing key from Settings → Notifications → Webhooks, event *Order payment*), WooCommerce (a secret is made here, topic *Order updated*), or any website (HMAC-SHA256 header `X-Signature`). Each store has a private address; a paid order is checked against the secret and becomes a GST invoice at once (party per store and buyer state, items by SKU, never twice). An order that cannot be billed (unknown SKU) is answered 200 and the reason shows on the connection.
 - **Guided put-away** (`#/putaway`): each item waiting in no bin with the bin it should go to (its default bin, a bin that already holds it, else an empty bin that is nobody's default); scan the bin label and the row is done. **Wave pick list** (`#/wave`, advanced mode): choose many open sales orders / delivery notes of one godown and get one list walked bin by bin, FEFO batches, and how much goes to each order.
 
+### Bill first, goods later, and receiving by scan
+- **A purchase bill before its goods**: tick *Goods not received yet (on the way)* on the bill. It owes the supplier at once, but the goods sit in **Goods in Transit** (asset 1210), not in stock. The supplier's own bill number is kept on the bill (*Supplier bill no.*, `docs.party_ref`) and the same number of the same supplier cannot be entered twice.
+- **Receive Goods** (`#/receive`, `src/receive.js`, shown in Simple mode too): what is expected (trucks at the gate, bills waiting for their goods, open purchase orders) and **goods without a bill or order**. Pick one and scan each piece like the POS, with a USB scanner or the phone camera: the count goes up, a beep says right or wrong, an item not on the bill or more than billed is refused. A serial-tracked item takes its IMEIs as the next scans. A code never seen before is **taught once** (which item, how many pieces in the pack: a carton code counts 12 at once) and works from then on everywhere, POS included (`item_codes`). **Put into bins**: each item goes to its default bin, a bin that already holds it, the first empty bin nobody calls home, or a **new bin made on the spot** next to the last one (A-01 → A-02); an item without a default bin gets the one it was given. Saving makes one GRN (from the bill: out of Goods in Transit at the bill's value, the last part taking the paise left; from a PO: at the PO rate, as before), closes the gate entry and shows what went where, with labels to print.
+- **Shortage**: goods that will never come are closed with **Close short** on the bill, a debit note at the bill's price (Dr Creditors / Cr Goods in Transit, Cr GST Input). A return from such a bill is only of goods that came. Cancelling a receipt or a shortage note puts the goods back on the waiting list.
+- **Each user's own menu** (Settings → Users → Menu): a job (owner, billing counter, godown / store keeper, gate guard, accountant, salesman), or screens ticked one by one, and the screen the app opens on. By default the role decides (store → godown screens opening on Receive Goods, accountant → money and reports). A **gate guard** is a custom role with only *Gate register*: the gate screens, nothing else to see or change. Only the menu follows the job; what a user may do still comes from the role, checked on the server.
+
 ### Speed
 - The worker runs with **Smart Placement** (`[placement] mode = "smart"` in wrangler.toml): Cloudflare moves it next to the D1 database, so the several database calls of a screen stay local and only one round trip crosses to the phone.
 - A screen opened again within 20 seconds is drawn from memory at once (`pageCache` in app.js); any save empties it.
@@ -76,6 +82,9 @@ Market research and pricing advice: see [docs/COMPETITORS.md](docs/COMPETITORS.m
 | Document | Stock | Ledger |
 |---|---|---|
 | GRN | + stock at PO rate | Dr Inventory / Cr Goods Received Not Billed |
+| Purchase Bill (goods on the way) | — | Dr Goods in Transit, Dr GST Input / Cr Creditors |
+| GRN (from such a bill) | + stock at the bill's value | Dr Inventory / Cr Goods in Transit |
+| Shortage note (debit note, short) | — | Dr Creditors / Cr Goods in Transit, Cr GST Input |
 | Purchase Bill (from GRN) | — | Dr GRNI (+ price variance), Dr GST Input / Cr Creditors |
 | Purchase Bill (direct) | + stock | Dr Inventory, Dr GST Input / Cr Creditors |
 | Purchase Return | − stock at billed rate | Dr Creditors / Cr Inventory, Cr GST Input |
@@ -204,6 +213,7 @@ cloud-erp/
   src/hooks.js         live orders from web stores (Shopify, WooCommerce, any site) by signed webhook
   src/payroll.js       staff, attendance, advances, salary and payslips
   src/autowa.js        automatic payment reminders on the WhatsApp Cloud API (daily, opt-in)
+  src/receive.js       receiving: what is expected (bills in transit, orders, gate), codes learnt while scanning, bins chosen or made
   tools/gen-og.mjs     makes the link-preview posters (public/og-*.png) in the three languages
   public/              the web app (plain HTML/CSS/JS, no build step), PWA manifest + service worker, csv.js (export), _headers
   public/billocr.js    reads a supplier's bill photo / PDF on the phone (Tesseract OCR and pdf.js in public/vendor/)
@@ -300,3 +310,6 @@ every business has to connect Drive again.
   Shopify / WooCommerce / own sites). Amazon SP-API and Flipkart's API need SmartTrader to be registered as a
   developer with each marketplace first.
 - Handheld (HHT) app with put-away rules per zone; statutory payroll (PF / ESI / TDS) on salaries.
+- Checking the e-invoice QR's signature against NIC's public key (today the QR is read, not verified; the IRN is kept,
+  and one IRN can come in at the gate only once). A shortage written off as a loss (transit damage) instead of claimed
+  from the supplier: today a debit note, or a journal by hand.

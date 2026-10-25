@@ -8,7 +8,7 @@ import {
 } from './lib.js';
 import {
   hashPassword, randomHex, sameText, passwordProblem, issueSession, sessionCookie, clearCookie, sessionFromRequest, sessionValid, USER_SQL, REVOKED_SQL, ROLES, can, requireCan, rateLimit,
-  AREAS, canView, seesCosts, permsOf, loginGate, loginFailed, revokeSession, endAllSessions,
+  AREAS, canView, seesCosts, permsOf, uiOf, loginGate, loginFailed, revokeSession, endAllSessions,
 } from './auth.js';
 import {
   DOC_TYPES, NOTE_TYPES, stockCount, loadByIds, SYS_SQL, sysMap, createDoc, cancelDoc, createPayment, voidPayment, stockAdjust, stockTransfer, createExpense, createJournal, partyOpening,
@@ -18,6 +18,7 @@ import { getBom, saveBom, listProductions, createProduction, cancelProduction } 
 import { importOrders, stockFile } from './channels.js';
 import { waConfigured, runAutoReminders, remindOrg } from './autowa.js';
 import { listHooks, addHook, deleteHook, receiveHook } from './hooks.js';
+import { receivePending, matchBill, learnCode, autoBins } from './receive.js';
 import { listStaff, saveStaff, markAttendance, staffDetail, giveAdvance, paySalary, cancelStaffTxn, payslip, todayStaffQueries } from './payroll.js';
 import * as rep from './reports.js';
 import { PLANS, planOut, planOf, usage, checkCount, countError, seatBlocked, seatError, requireFeature, extendPlan, adminKey, trialUntil, hasFeature } from './saas.js';
@@ -230,8 +231,9 @@ router.add('POST', '/api/me/logout-all', async (c) => {
 });
 
 router.add('GET', '/api/me', async (c) => json({
-  user: publicUser(c.user), org: orgOut(c.org),
-  can: Object.fromEntries(['settings', 'users', 'items', 'purchase', 'sales', 'stock', 'finance', 'khata', 'masters'].map((a) => [a, can(c.user, a)])),
+  user: { ...publicUser(c.user), role_key: c.user.role }, org: orgOut(c.org),
+  can: Object.fromEntries(['settings', 'users', 'items', 'purchase', 'sales', 'stock', 'finance', 'khata', 'masters', 'gate'].map((a) => [a, can(c.user, a)])),
+  ui: uiOf(c.user.ui),
   view: Object.fromEntries(AREAS.map((a) => [a, canView(c.user, a)])), costs: seesCosts(c.user), wa_auto: waConfigured(c.env),
   doc_types: Object.fromEntries(Object.entries(DOC_TYPES).map(([k, v]) => [k, { label: v.label, side: v.side, from: v.from, prefix: v.prefix, note: !!v.note, stock: v.stock || '' }])),
   gst_rates: GST_RATES, today: today(), states: STATES.map(([, n]) => n), plan: planOut(c.org),
@@ -385,11 +387,11 @@ router.add('DELETE', '/api/settings/fields/:id', async (c) => {
 
 router.add('GET', '/api/users', async (c) => {
   requireCan(c.user, 'users');
-  const [u, r] = await c.db.batch([c.db.prepare(`SELECT u.id, u.email, u.name, u.role, u.role_id, r.name AS role_name, u.active, u.created_at FROM users u
+  const [u, r] = await c.db.batch([c.db.prepare(`SELECT u.id, u.email, u.name, u.role, u.role_id, r.name AS role_name, u.active, u.created_at, u.ui FROM users u
       LEFT JOIN roles r ON r.id = u.role_id WHERE u.org_id = ? ORDER BY u.id`).bind(c.org.id), c.db.prepare(`SELECT id, name FROM roles WHERE org_id = ? ORDER BY name`).bind(c.org.id)]);
   const max = planOf(c.org).users;
   let seat = 0;       // staff past the plan's user limit are paused (see seatBlocked)
-  return json({ rows: u.results.map((x) => ({ ...x, paused: x.active && x.role !== 'owner' && Number.isFinite(max) && seat++ >= max - 1, role_key: x.role === 'custom' ? 'c:' + x.role_id : x.role, role: x.role === 'custom' ? x.role_name : x.role })),
+  return json({ rows: u.results.map((x) => ({ ...x, ui: uiOf(x.ui), paused: x.active && x.role !== 'owner' && Number.isFinite(max) && seat++ >= max - 1, role_key: x.role === 'custom' ? 'c:' + x.role_id : x.role, role: x.role === 'custom' ? x.role_name : x.role })),
     roles: ROLES, custom_roles: r.results });
 });
 /* Custom roles: a name and per-area view / edit switches */
@@ -485,6 +487,19 @@ router.add('PUT', '/api/users/:id', async (c) => {
   return json({ ok: true });
 });
 
+/* A user's own menu: job, screens, start screen (src/auth.js uiOf). The owner's menu is the owner's to change. */
+router.add('PUT', '/api/users/:id/ui', async (c) => {
+  requireCan(c.user, 'users');
+  const u = await c.db.prepare(`SELECT id, email, role FROM users WHERE id = ? AND org_id = ?`).bind(+c.params.id, c.org.id).first();
+  if (!u) throw notFound('User not found.');
+  if (u.role === 'owner' && u.id !== c.user.id) throw bad("Only the owner changes the owner's menu.");
+  const ui = uiOf(c.body);
+  const empty = !ui.job && !ui.screens && !ui.home;
+  await c.db.batch([c.db.prepare(`UPDATE users SET ui = ? WHERE id = ?`).bind(empty ? null : JSON.stringify(ui), u.id),
+    auditStatement(c, 'user menu', `${u.email}: ${ui.job || (ui.screens ? ui.screens.length + ' screens' : 'by role')}${ui.home ? ' → ' + ui.home : ''}`.slice(0, 300))]);
+  return json({ ok: true, ui });
+});
+
 /* ======================================================================= parties */
 const partyFields = (b, c) => ({
   extra: b.extra === undefined ? null : cleanExtra(fieldsOf(c.org), 'party', b.extra),
@@ -546,6 +561,8 @@ router.add('GET', '/api/parties/:id/ledger', async (c) => json(await rep.partyLe
 /* ======================================================================= bins (racks / shelves) and batches: src/lots.js */
 router.add('GET', '/api/bins', async (c) => json(await listBins(c, +c.url.searchParams.get('warehouse_id') || 0)));
 router.add('GET', '/api/bins/putaway', async (c) => json(await putawayPlan(c, +c.url.searchParams.get('warehouse_id') || 0)));
+router.add('POST', '/api/bins/auto', async (c) => json(await autoBins(c, c.body)));
+router.add('GET', '/api/receive', async (c) => json(await receivePending(c)));
 router.add('GET', '/api/picklist', async (c) => json(await wavePick(c, String(c.url.searchParams.get('ids') || '').split(','))));
 router.add('POST', '/api/bins', async (c) => json(await addBins(c, c.body)));
 router.add('POST', '/api/bins/move', async (c) => json(await moveInBins(c, c.body)));
@@ -618,6 +635,8 @@ router.add('GET', '/api/today', async (c) => {
   add('approve', 'settings', `SELECT COUNT(*) AS n, COALESCE(SUM(total), 0) AS v FROM docs WHERE org_id = ? AND type = 'PO' AND status = 'pending'`, o);
   add('to_deliver', 'sales', `SELECT COUNT(*) AS n, 0 AS v FROM docs WHERE org_id = ? AND type = 'SO' AND status IN ('open','partial')`, o);
   add('to_receive', 'purchase', `SELECT COUNT(*) AS n, 0 AS v FROM docs WHERE org_id = ? AND type = 'PO' AND status IN ('open','partial')`, o);
+  add('at_gate', 'purchase', `SELECT COUNT(*) AS n, 0 AS v FROM gate_entries WHERE org_id = ? AND kind = 'in' AND status = 'open'`, o);
+  add('in_transit', 'purchase', `SELECT COUNT(*) AS n, COALESCE(SUM(total), 0) AS v FROM docs WHERE org_id = ? AND type = 'BILL' AND transit = 1 AND status != 'cancelled'`, o);
   add('low_stock', 'items', `SELECT COUNT(*) AS n, 0 AS v FROM items WHERE org_id = ? AND is_service = 0 AND reorder_level > 0 AND qty_on_hand <= reorder_level`, o);
   add('expired', 'items', `SELECT COUNT(*) AS n, COALESCE(SUM(b.qty * i.avg_cost), 0) AS v FROM batches b JOIN items i ON i.id = b.item_id
     WHERE b.org_id = ? AND b.qty > 0.0005 AND b.expiry != '' AND b.expiry < ?`, o, t);
@@ -654,7 +673,9 @@ const itemFields = (b, c) => ({
 });
 async function barcodeTaken(c, code, exceptId = 0) {
   if (!code) return;
-  const hit = await c.db.prepare(`SELECT name FROM items WHERE org_id = ? AND id != ? AND (barcode = ? OR (sku != '' AND sku = ?))`).bind(c.org.id, exceptId, code, code).first();
+  const hit = await c.db.prepare(`SELECT name FROM items WHERE org_id = ? AND id != ? AND (barcode = ? OR (sku != '' AND sku = ?))
+      UNION ALL SELECT i.name FROM item_codes x JOIN items i ON i.id = x.item_id WHERE x.org_id = ? AND x.code = ? AND x.item_id != ? LIMIT 1`)
+    .bind(c.org.id, exceptId, code, code, c.org.id, code, exceptId).first();
   if (hit) throw bad(`Barcode ${code} is already used by ${hit.name}.`);
 }
 const itemOut = (i, c) => {
@@ -702,18 +723,24 @@ router.add('DELETE', '/api/items/:id', async (c) => {
   const id = +c.params.id;
   const used = await c.db.prepare(`SELECT EXISTS (SELECT 1 FROM doc_lines WHERE item_id = ?) + EXISTS (SELECT 1 FROM stock_moves WHERE org_id = ? AND item_id = ?) AS n`).bind(id, c.org.id, id).first();
   if (used.n) throw bad('This item has transactions and cannot be deleted.');
-  await c.db.prepare(`DELETE FROM items WHERE id = ? AND org_id = ?`).bind(id, c.org.id).run();
+  await c.db.batch([c.db.prepare(`DELETE FROM items WHERE id = ? AND org_id = ?`).bind(id, c.org.id),
+    c.db.prepare(`DELETE FROM item_codes WHERE item_id = ? AND org_id = ?`).bind(id, c.org.id)]);
   return json({ ok: true });
 });
-/* Scanner lookup: barcode, SKU, or the printed label code ST<id> */
+router.add('POST', '/api/items/:id/codes', async (c) => json(await learnCode(c, +c.params.id, c.body)));
+/* Scanner lookup: barcode, SKU, the printed label code ST<id>, or a code learnt while receiving */
 router.add('GET', '/api/items/lookup', async (c) => {
   const code = str(c.url.searchParams.get('code'), 60).replace(/\s+/g, '');
   if (!code) throw bad('Scan or type a code.');
   const m = code.toUpperCase().match(/^ST(\d+)$/);
   const it = await c.db.prepare(`SELECT * FROM items WHERE org_id = ? AND (barcode = ? OR (sku != '' AND sku = ?) OR id = ?) ORDER BY barcode = ? DESC LIMIT 1`)
     .bind(c.org.id, code, code, m ? +m[1] : -1, code).first();
-  if (!it) throw notFound(`No item with code ${code}.`);
-  return json(itemOut(it, c));
+  if (it) return json({ ...itemOut(it, c), pack_qty: 1 });
+  // a code learnt while receiving (a supplier's barcode, a carton)
+  const x = await c.db.prepare(`SELECT i.*, x.pack_qty AS pack FROM item_codes x JOIN items i ON i.id = x.item_id WHERE x.org_id = ? AND x.code = ?`).bind(c.org.id, code).first();
+  if (!x) throw notFound(`No item with code ${code}.`);
+  const { pack, ...row } = x;
+  return json({ ...itemOut(row, c), pack_qty: pack });
 });
 router.add('GET', '/api/items/:id/moves', async (c) => {
   const rows = await rep.itemMoves(c.db, c.org, +c.params.id);
@@ -798,7 +825,10 @@ async function docDetail(c, id) {
     party: party && { ...party, extra: extraOf(party.extra) }, parent, children: children.results.map((x) => ({ ...x, total: money(x.total) })),
     settlements: pays.results.map((p) => ({ ...p, amount: money(p.amount), number: p.number || p.note_number })),
     lines: lines.results.map(({ item_extra, ...l }) => ({ ...l, print_extra: printExtra(defs, 'item', item_extra).map((x) => `${x.label}: ${x.value}`).join(' · '), rate: money(l.rate), taxable: money(l.taxable), cgst: money(l.cgst), sgst: money(l.sgst), igst: money(l.igst),
-      total: money(l.total), cost: c.user && !seesCosts(c.user) ? undefined : money(l.cost), remaining: Math.round((l.qty - l.done_qty) * 1000) / 1000 })),
+      total: money(l.total), cost: c.user && !seesCosts(c.user) ? undefined : money(l.cost),
+      // a bill booked before its goods came: returns only from what came, receipts from what has not
+      remaining: Math.round((d.transit && d.type === 'BILL' ? l.recv_qty - l.done_qty : l.qty - l.done_qty) * 1000) / 1000,
+      to_receive: d.transit && d.type === 'BILL' && l.item_id && !l.is_service ? Math.round((l.qty - l.recv_qty - l.short_qty) * 1000) / 1000 : 0 })),
     org: orgOut(c.org), ...fileUrls(printOf(c.org), '/api/org/files'),
   };
 }
@@ -814,17 +844,28 @@ router.add('GET', '/api/docs/:id/convert', async (c) => {
   const T = own(DOC_TYPES, to);
   if (!T || !T.from.includes(src.type)) throw bad(`Cannot make a ${to} from a ${src.type}.`);
   if (src.status === 'pending') throw bad(`${src.number} is waiting for approval by the owner or an admin.`);
+  const receiving = to === 'GRN' && src.type === 'BILL', short = to === 'DNOTE' && c.url.searchParams.get('short') === '1';
+  if ((receiving || short) && src.transit !== 1) throw bad(`${src.number} has no goods left to receive.`);
+  if (short) {      // shortage note: what has not come, at the bill's price
+    const lines = src.lines.filter((l) => l.to_receive > 0.0005).map((l) => ({ item_id: l.item_id, item: l.item, unit: l.unit, description: l.description, qty: l.to_receive,
+      rate: l.rate, discount_pct: l.discount_pct, gst_rate: l.gst_rate, src_line_id: l.id }));
+    return json({ type: to, short: true, party_id: src.party_id, ref_id: src.id, ref_number: src.number, ref_type: src.type, warehouse_id: src.warehouse_id, date: today(),
+      notes: `Goods short received against ${src.party_ref ? 'bill ' + src.party_ref + ' / ' : ''}${src.number}`, lines });
+  }
   if (T.note) {     // value note: every line of the bill/invoice, the user types the rate difference per unit
     return json({ type: to, party_id: src.party_id, ref_id: src.id, ref_number: src.number, warehouse_id: src.warehouse_id, date: today(), extra: src.extra,
       lines: src.lines.map((l) => ({ item_id: l.item_id, item: l.item, unit: l.unit, description: l.description || l.item, qty: l.qty, rate: '', discount_pct: 0, gst_rate: l.gst_rate, orig_rate: l.rate })) });
   }
-  const lines = src.lines.filter((l) => l.remaining > 0.0005).map((l) => ({
-    item_id: l.item_id, item: l.item, unit: l.unit, description: l.description, qty: l.remaining, rate: l.rate,
+  const left = (l) => (receiving ? l.to_receive : l.remaining);
+  const lines = src.lines.filter((l) => left(l) > 0.0005).map((l) => ({
+    item_id: l.item_id, item: l.item, unit: l.unit, description: l.description, qty: left(l), rate: l.rate,
     discount_pct: l.discount_pct, gst_rate: l.gst_rate, src_line_id: l.id, batch_no: l.batch_no || '', expiry: l.expiry || '',
-    serials: l.serials && Math.abs(l.remaining - l.qty) < 0.0005 ? l.serials : '', src_serials: l.serials || '',
+    serials: l.serials && Math.abs(left(l) - l.qty) < 0.0005 ? l.serials : '', src_serials: l.serials || '',
+    track_batch: l.track_batch, track_serial: l.track_serial, location: l.location,
   }));
-  if (!lines.length) throw bad(`Nothing left to ${['SRET', 'PRET'].includes(to) ? 'return' : 'process'} on ${src.number}.`);
-  return json({ type: to, party_id: src.party_id, ref_id: src.id, ref_number: src.number, ref_type: src.type, warehouse_id: src.warehouse_id, date: today(), extra: src.extra, lines });
+  if (!lines.length) throw bad(`Nothing left to ${['SRET', 'PRET'].includes(to) ? 'return' : receiving ? 'receive' : 'process'} on ${src.number}.`);
+  return json({ type: to, party_id: src.party_id, ref_id: src.id, ref_number: src.number, ref_type: src.type, warehouse_id: src.warehouse_id, date: today(), extra: src.extra,
+    party_ref: src.party_ref || '', lines });
 });
 
 /* Print design of one document (presentation only, so it can change after saving; '' goes back to the business default) */
@@ -1058,26 +1099,40 @@ router.add('GET', '/api/admin/payments', async (c) => {
    packages. The goods receipt (GRN) is then made from the gate entry, and the entry closes.
    Outward (GP, gate pass): goods leaving against a delivery note / invoice, with vehicle and exit time. */
 const nowTime = () => new Date(Date.now() + 5.5 * 3600e3).toISOString().slice(11, 16);
-const geOut = (g) => g;
+const geOut = (g) => ({ ...g, value: R(g.value || 0) });      // invoice value read from the e-invoice QR, in rupees
 router.add('GET', '/api/gate', async (c) => {
   const q = c.url.searchParams, kind = q.get('kind') === 'out' ? 'out' : 'in';
-  const { results } = await c.db.prepare(`SELECT g.*, p.name AS party, r.number AS ref_number, r.type AS ref_type, n.number AS grn_number
-      FROM gate_entries g LEFT JOIN parties p ON p.id = g.party_id LEFT JOIN docs r ON r.id = g.ref_doc_id LEFT JOIN docs n ON n.id = g.grn_id
+  const { results } = await c.db.prepare(`SELECT g.*, p.name AS party, r.number AS ref_number, r.type AS ref_type, n.number AS grn_number, b.number AS bill_number
+      FROM gate_entries g LEFT JOIN parties p ON p.id = g.party_id LEFT JOIN docs r ON r.id = g.ref_doc_id LEFT JOIN docs n ON n.id = g.grn_id LEFT JOIN docs b ON b.id = g.bill_id AND b.org_id = g.org_id
       WHERE g.org_id = ? AND g.kind = ? AND (? = '' OR g.status = ?) ORDER BY g.date DESC, g.id DESC LIMIT 300`)
     .bind(c.org.id, kind, q.get('status') || '', q.get('status') || '').all();
   return json({ rows: results.map(geOut) });
 });
 router.add('GET', '/api/gate/:id', async (c) => {
-  const g = await c.db.prepare(`SELECT g.*, p.name AS party, r.number AS ref_number, r.type AS ref_type, n.number AS grn_number FROM gate_entries g
-      LEFT JOIN parties p ON p.id = g.party_id LEFT JOIN docs r ON r.id = g.ref_doc_id LEFT JOIN docs n ON n.id = g.grn_id WHERE g.id = ? AND g.org_id = ?`).bind(+c.params.id, c.org.id).first();
+  const g = await c.db.prepare(`SELECT g.*, p.name AS party, r.number AS ref_number, r.type AS ref_type, n.number AS grn_number, b.number AS bill_number FROM gate_entries g
+      LEFT JOIN parties p ON p.id = g.party_id LEFT JOIN docs r ON r.id = g.ref_doc_id LEFT JOIN docs n ON n.id = g.grn_id LEFT JOIN docs b ON b.id = g.bill_id AND b.org_id = g.org_id
+      WHERE g.id = ? AND g.org_id = ?`).bind(+c.params.id, c.org.id).first();
   if (!g) throw notFound('Gate entry not found.');
-  return json(g);
+  return json(geOut(g));
 });
+const gateWriter = (u) => can(u, 'gate') || can(u, 'stock') || can(u, 'purchase') || can(u, 'sales');
 router.add('POST', '/api/gate', async (c) => {
-  if (!can(c.user, 'stock') && !can(c.user, 'purchase') && !can(c.user, 'sales')) throw forbidden();
+  if (!gateWriter(c.user)) throw forbidden();
   const b = c.body, kind = b.kind === 'out' ? 'out' : 'in';
-  const partyId = +b.party_id || null;
+  let partyId = +b.party_id || null;
   if (partyId && !(await c.db.prepare(`SELECT 1 FROM parties WHERE id = ? AND org_id = ?`).bind(partyId, c.org.id).first())) throw bad('Unknown party.');
+  // read from the supplier's e-invoice QR at the gate: the supplier by GSTIN, the IRN (one entry per invoice) and its value
+  const gstin = str(b.party_gstin, 15).toUpperCase(), irn = kind === 'in' ? str(b.irn, 64).toLowerCase() : '';
+  if (irn && !/^[0-9a-f]{64}$/.test(irn)) throw bad('The IRN read from the QR is not valid.');
+  if (!partyId && /^\d{2}[A-Z0-9]{13}$/.test(gstin)) {
+    const p = await c.db.prepare(`SELECT id FROM parties WHERE org_id = ? AND UPPER(gstin) = ? AND kind != 'customer' LIMIT 1`).bind(c.org.id, gstin).first();
+    if (p) partyId = p.id;
+  }
+  if (irn) {
+    const dup = await c.db.prepare(`SELECT number FROM gate_entries WHERE org_id = ? AND irn = ? AND status != 'rejected' LIMIT 1`).bind(c.org.id, irn).first();
+    if (dup) throw bad(`This invoice already came in at the gate: ${dup.number}.`);
+  }
+  const value = kind === 'in' ? toPaise(num(b.value, 'Invoice value', { min: 0, max: 1e10, def: 0 })) : 0;
   let refId = +b.ref_doc_id || null;
   if (refId) {
     const r = await c.db.prepare(`SELECT type, party_id, status FROM docs WHERE id = ? AND org_id = ?`).bind(refId, c.org.id).first();
@@ -1089,15 +1144,18 @@ router.add('POST', '/api/gate', async (c) => {
   const vehicle = str(b.vehicle_no, 20).toUpperCase().replace(/[^A-Z0-9]/g, '');
   if (!vehicle && !b.by_hand) throw bad('Enter the vehicle number (or tick "By hand / courier").');
   const key = kind === 'in' ? 'GE' : 'GP';
+  const challan = str(b.challan_no, 40);
+  const billId = kind === 'in' && !refId ? await matchBill(c.db, c.org.id, partyId, challan, value) : null;
+  const remarks = [str(b.remarks, 300), !partyId && gstin ? `Supplier GSTIN ${gstin}` : ''].filter(Boolean).join(' · ').slice(0, 300);
   await c.db.batch([
     counterStatements(c.db, c.org.id, key),
     c.db.prepare(`INSERT INTO gate_entries (org_id, number, kind, date, time_in, time_out, party_id, ref_doc_id, vehicle_no, driver_name, driver_phone, transporter, lr_no,
-        challan_no, challan_date, packages, weight_kg, remarks, status, created_by, created_at)
-      VALUES (?, ${counterValueSql}, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'open', ?, ?)`)
+        challan_no, challan_date, packages, weight_kg, remarks, status, created_by, created_at, irn, value, bill_id)
+      VALUES (?, ${counterValueSql}, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'open', ?, ?, ?, ?, ?)`)
       .bind(c.org.id, key + '-%05d', c.org.id, key, kind, date(b.date), str(b.time_in, 5) || nowTime(), kind === 'out' && b.exited ? nowTime() : '', partyId, refId, vehicle || 'BY HAND',
-        str(b.driver_name, 60), str(b.driver_phone, 15), str(b.transporter, 80), str(b.lr_no, 30), str(b.challan_no, 40), b.challan_date ? date(b.challan_date) : '',
-        int(b.packages, 'Packages', { min: 0, max: 100000, def: 0 }), num(b.weight_kg, 'Weight', { min: 0, max: 1e7, def: 0 }), str(b.remarks, 300),
-        c.user.id, nowIso()),
+        str(b.driver_name, 60), str(b.driver_phone, 15), str(b.transporter, 80), str(b.lr_no, 30), challan, b.challan_date ? date(b.challan_date) : '',
+        int(b.packages, 'Packages', { min: 0, max: 100000, def: 0 }), num(b.weight_kg, 'Weight', { min: 0, max: 1e7, def: 0 }), remarks,
+        c.user.id, nowIso(), irn, value, billId),
   ]);
   const g = await c.db.prepare(`SELECT * FROM gate_entries WHERE org_id = ? AND kind = ? ORDER BY id DESC LIMIT 1`).bind(c.org.id, kind).first();
   if (kind === 'out' && b.exited) await c.db.prepare(`UPDATE gate_entries SET status = 'closed' WHERE id = ?`).bind(g.id).run();
@@ -1106,7 +1164,7 @@ router.add('POST', '/api/gate', async (c) => {
 });
 /* exit time, reject at gate (goods sent back unloaded), or close */
 router.add('POST', '/api/gate/:id/:action', async (c) => {
-  if (!can(c.user, 'stock') && !can(c.user, 'purchase') && !can(c.user, 'sales')) throw forbidden();
+  if (!gateWriter(c.user)) throw forbidden();
   const action = oneOf(c.params.action, ['exit', 'reject', 'close'], 'Action');
   const g = await c.db.prepare(`SELECT * FROM gate_entries WHERE id = ? AND org_id = ?`).bind(+c.params.id, c.org.id).first();
   if (!g) throw notFound('Gate entry not found.');
@@ -1846,7 +1904,8 @@ const READ_AREAS = [
   [/^\/api\/parties\/\d+\/(ledger|reminder)\/?$/, 'masters'],
   [/^\/api\/khata(\/|$)/, 'khata'],
   [/^\/api\/vaade(\/|$)/, 'khata'],         // coarse gate; rows are filtered per book in the handler
-  [/^\/api\/gate(\/|$)/, 'purchase'],
+  [/^\/api\/gate(\/|$)/, ['purchase', 'gate']],
+  [/^\/api\/receive\/?$/, 'purchase'],
   [/^\/api\/(audit|users|roles|billing\/status|settings\/series)\/?$/, 'settings'],
 ];
 function readArea(url) {

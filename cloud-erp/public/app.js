@@ -341,15 +341,47 @@ function renderVerify(token) {
 const ADVANCED = new Set(['sales/SO', 'sales/DN', 'sales/QUOTE', 'purchase/PO', 'gate/in', 'purchase/GRN', 'gate/out', 'stockcount', 'pending', 'wave']);
 const ADV_DOCS = ['QUOTE', 'SO', 'DN', 'PO', 'GRN'];
 const simple = () => !ME || (ME.org.mode || 'simple') !== 'advanced';
-/* which permission area a menu entry needs (custom roles may not see every area) */
-const navArea = (h) => /^(receipts|payments|expenses|accounts|journal|staff)$/.test(h) ? 'finance' : /^(sales\/|pos$|recurring$|channels$)/.test(h) ? 'sales' : /^(purchase\/|gate\/in$)/.test(h) ? 'purchase'
-  : /^(items|stock|stockcount|gate\/out|pending|bins|expiry|stock-ageing|serials|production|wave|putaway)$/.test(h) ? 'items' : /^(parties|reminders)$/.test(h) ? 'masters' : /^(khata|vaade)$/.test(h) ? 'khata'
+/* which permission area a menu entry needs (custom roles may not see every area); the gate register also opens with 'gate' */
+const navArea = (h) => /^(receipts|payments|expenses|accounts|journal|staff)$/.test(h) ? 'finance' : /^(sales\/|pos$|recurring$|channels$)/.test(h) ? 'sales' : /^(purchase\/|receive$)/.test(h) ? 'purchase'
+  : /^gate\/in$/.test(h) ? ['purchase', 'gate'] : /^gate\/out$/.test(h) ? ['items', 'gate']
+  : /^(items|stock|stockcount|pending|bins|expiry|stock-ageing|serials|production|wave|putaway)$/.test(h) ? 'items' : /^(parties|reminders)$/.test(h) ? 'masters' : /^(khata|vaade)$/.test(h) ? 'khata'
   : /^(reports\/|tally$|daybook$)/.test(h) ? 'reports' : h === 'plan' ? 'settings' : '';
-const seen = (h) => { if (h === 'cash') return !ME.view || ME.view.finance !== false || ME.view.reports !== false; const a = navArea(h); return !a || !ME.view || ME.view[a] !== false; };
+const seen = (h) => {
+  if (h === 'cash') return !ME.view || ME.view.finance !== false || ME.view.reports !== false;
+  const a = navArea(h);
+  return !a || !ME.view || [].concat(a).some((x) => ME.view[x] !== false);
+};
+/* Each user's own menu (Settings → Users → Menu): a job picks the screens, or the owner ticks them one by one, plus the
+   screen the app opens on. Without one, the role picks the job. Only the menu changes; what a user may do stays with the role. */
+const JOBS = {
+  all: { t: 'Owner / manager: everything', home: 'dashboard' },
+  counter: { t: 'Billing counter', home: 'pos', screens: ['pos', 'sales/INV', 'sales/SRET', 'receipts', 'khata', 'parties', 'items', 'stock', 'serials'] },
+  store: { t: 'Godown / store keeper', home: 'receive', screens: ['receive', 'gate/in', 'purchase/GRN', 'purchase/PO', 'purchase/PRET', 'putaway', 'bins', 'items', 'stock', 'expiry', 'serials',
+    'production', 'stockcount', 'wave', 'pending', 'gate/out', 'stock-ageing'] },
+  gate: { t: 'Gate / security guard', home: 'gate/in', screens: ['gate/in', 'gate/out'] },
+  accounts: { t: 'Accountant', home: 'dashboard', screens: ['dashboard', 'sales/INV', 'sales/SRET', 'sales/CNOTE', 'receipts', 'purchase/BILL', 'purchase/PRET', 'purchase/DNOTE', 'payments',
+    'parties', 'khata', 'reminders', 'vaade', 'staff', 'expenses', 'accounts', 'journal', 'daybook', 'reports/pnl', 'reports/balance-sheet', 'reports/trial-balance', 'reports/gst', 'reports/ageing',
+    'reports/register', 'cash', 'tally'] },
+  sales: { t: 'Salesman', home: 'sales/INV', screens: ['dashboard', 'pos', 'sales/INV', 'sales/QUOTE', 'sales/SO', 'sales/DN', 'sales/SRET', 'receipts', 'channels', 'recurring', 'parties', 'khata',
+    'reminders', 'vaade', 'items', 'stock'] },
+};
+const ROLE_JOB = { owner: 'all', admin: 'all', accountant: 'accounts', store: 'store', sales: 'sales' };
+/* screens that follow a document flow the business may have switched off (Simple mode) */
+const FLOW = new Set(['sales/SO', 'sales/DN', 'sales/QUOTE', 'purchase/PO', 'wave', 'pending']);
+const jobOf = (ui = ME.ui || {}) => (JOBS[ui.job] ? ui.job : ROLE_JOB[ME.user.role_key] || 'all');
+/* is this menu entry on the user's menu? (whether the role may open it is seen()) */
+function onMenu(h) {
+  const ui = ME.ui || {};
+  if (ui.screens) return ui.screens.includes(h);
+  const job = JOBS[jobOf()];
+  if (!job.screens) return !simple() || !ADVANCED.has(h);
+  return job.screens.includes(h) && (!simple() || !FLOW.has(h));
+}
+const myHome = () => { const ui = ME.ui || {}; const h = ui.home || JOBS[jobOf()].home; return h === 'dashboard' || seen(h) ? h : 'dashboard'; };
 const NAV = [
   ['', [['dashboard', 'Dashboard']]],
   ['Sales', [['pos', 'Quick Bill (POS)'], ['sales/INV', 'Invoices'], ['channels', 'Online Orders (Amazon…)'], ['recurring', 'Recurring Bills'], ['sales/SO', 'Sales Orders'], ['sales/DN', 'Delivery Notes'], ['sales/QUOTE', 'Quotations'], ['sales/SRET', 'Sales Returns'], ['sales/CNOTE', 'Credit Notes (rate diff)'], ['receipts', 'Receipts']]],
-  ['Purchase', [['purchase/PO', 'Purchase Orders'], ['gate/in', 'Gate Entry (inward)'], ['purchase/GRN', 'Goods Receipts (GRN)'], ['purchase/BILL', 'Purchase Bills'], ['purchase/PRET', 'Purchase Returns'], ['purchase/DNOTE', 'Debit Notes (rate diff)'], ['payments', 'Payments']]],
+  ['Purchase', [['receive', 'Receive Goods (scan)'], ['purchase/PO', 'Purchase Orders'], ['gate/in', 'Gate Entry (inward)'], ['purchase/GRN', 'Goods Receipts (GRN)'], ['purchase/BILL', 'Purchase Bills'], ['purchase/PRET', 'Purchase Returns'], ['purchase/DNOTE', 'Debit Notes (rate diff)'], ['payments', 'Payments']]],
   ['Inventory', [['items', 'Items'], ['stock', 'Stock & Godowns'], ['stock-ageing', 'Stock Ageing'], ['bins', 'Bins & Racks'], ['expiry', 'Batch & Expiry'], ['serials', 'Serial / IMEI'], ['production', 'Production (BOM)'], ['wave', 'Wave Pick List'], ['stockcount', 'Stock Count'], ['gate/out', 'Gate Pass (outward)'], ['pending', 'Pending Orders']]],
   ['Contacts', [['parties', 'Customers & Suppliers'], ['khata', 'Khata Book'], ['reminders', 'Vasooli (Collections)'], ['vaade', 'Vaade (Promises)']]],
   ['Accounts', [['staff', 'Staff & Salary'], ['expenses', 'Expenses'], ['accounts', 'Chart of Accounts'], ['journal', 'Journal Voucher'], ['daybook', 'Day Book']]],
@@ -358,16 +390,18 @@ const NAV = [
 ];
 
 /* the + New menu: the everyday actions, only those the user's role may do */
-const NEW_MENU = [['new/INV', 'Sales invoice', 'sales'], ['pos', 'Quick bill (POS)', 'sales'], ['new/BILL', 'Purchase bill', 'purchase'], ['receipts?new=1', 'Receive payment', 'finance'],
-  ['expenses?new=1', 'Expense', 'finance'], ['khata?new=1', 'Khata entry', 'khata'], ['items?new=1', 'Item', 'items'], ['parties?new=1', 'Customer / supplier', 'masters']];
+const NEW_MENU = [['new/INV', 'Sales invoice', 'sales', 'sales/INV'], ['pos', 'Quick bill (POS)', 'sales', 'pos'], ['new/BILL', 'Purchase bill', 'purchase', 'purchase/BILL'],
+  ['receive', 'Receive goods', 'purchase', 'receive'], ['gate/in?new=1', 'Gate entry', 'gate', 'gate/in'], ['receipts?new=1', 'Receive payment', 'finance', 'receipts'],
+  ['expenses?new=1', 'Expense', 'finance', 'expenses'], ['khata?new=1', 'Khata entry', 'khata', 'khata'], ['items?new=1', 'Item', 'items', 'items'], ['parties?new=1', 'Customer / supplier', 'masters', 'parties']];
 
 function shell() {
-  const news = NEW_MENU.filter(([, , a]) => ME.can[a]);
+  // the gate entry is a quick action only for those who do not make bills (guard, godown)
+  const news = NEW_MENU.filter(([, , a, h]) => ME.can[a] && onMenu(h) && (h !== 'gate/in' || !onMenu('purchase/BILL')));
   $('#app').innerHTML = `<div class="shell">
     <nav class="side" id="side">
       <div class="brand"><i>&#x2197;</i><span>SmartTrader<small>${esc(ME.org.name)}</small></span></div>
-      ${NAV.map(([g, all]) => { const items = all.filter(([h]) => (!simple() || !ADVANCED.has(h)) && seen(h)); return items.length ? `${g ? `<div class="nav-group">${g}</div>` : ''}${items.map(([h, t]) => `<a href="#/${h}" data-h="${h}">${t}</a>`).join('')}` : ''; }).join('')}
-      <div class="side-foot"><div class="muted">${esc(ME.user.name)} &middot; ${esc(ME.user.role)}</div>
+      ${NAV.map(([g, all]) => { const items = all.filter(([h]) => onMenu(h) && seen(h)); return items.length ? `${g ? `<div class="nav-group">${g}</div>` : ''}${items.map(([h, t]) => `<a href="#/${h}" data-h="${h}">${t}</a>`).join('')}` : ''; }).join('')}
+      <div class="side-foot"><div class="muted">${esc(ME.user.name)} &middot; ${esc(ME.user.role)}${onMenu('settings') ? '' : ' &middot; <a href="#/settings">My account</a>'}</div>
         <button class="btn sm" id="install" hidden>Install app</button><a class="btn sm" href="https://wa.me/919068446139?text=${encodeURIComponent('Hi, I need help with SmartTrader ERP')}" target="_blank" rel="noopener" title="WhatsApp support: +91 90684 46139">Help</a><button class="btn sm" id="logout">Sign out</button></div>
     </nav>
     <div class="main">
@@ -537,6 +571,8 @@ const TODAY = {
   low_stock: ['amber', (n) => `${n} item${n > 1 ? 's' : ''} at reorder level`, '#/new/PO?reorder=1', 'Order'],
   to_deliver: ['blue', (n) => `${n} sales order${n > 1 ? 's' : ''} to deliver`, '#/pending', 'Open'],
   to_receive: ['blue', (n) => `${n} purchase order${n > 1 ? 's' : ''} to receive`, '#/pending', 'Open'],
+  at_gate: ['amber', (n) => `${n} vehicle${n > 1 ? 's' : ''} at the gate, goods not received`, '#/receive', 'Receive'],
+  in_transit: ['blue', (n) => `${n} bill${n > 1 ? 's' : ''} booked, goods still on the way`, '#/receive', 'Receive'],
   put_away: ['blue', (n) => `${n} item${n > 1 ? 's' : ''} not put away in bins`, '#/bins', 'Put away'],
   attendance: ['blue', (n) => `Mark today's attendance (${n} staff)`, '#/staff', 'Mark'],
   salary_due: ['amber', (n) => `Last month's salary not paid for ${n} staff`, '#/staff?month=last', 'Pay'],
@@ -633,7 +669,7 @@ route(/^new\/([A-Z]+)$/, async (el, m, q) => {
     if (ge.ref_doc_id && !q.get('from')) draft = { ...draft, ...(await GET(`/api/docs/${ge.ref_doc_id}/convert?to=${type}`)) };
     if (!draft.party_id) draft.party_id = ge.party_id;
   }
-  if (q.get('from')) draft = { ...draft, ...(await GET(`/api/docs/${q.get('from')}/convert?to=${type}`)) };
+  if (q.get('from')) draft = { ...draft, ...(await GET(`/api/docs/${q.get('from')}/convert?to=${type}${q.get('short') ? '&short=1' : ''}`)) };
   else if (q.get('scan')) { try { const sd = JSON.parse(sessionStorage.getItem('st_scan') || 'null'); if (sd && sd.type === type) draft = { ...draft, ...sd }; } catch (e) { /* no draft */ } }
   else if (q.get('copy')) draft = { ...draft, ...(await GET(`/api/docs/${encodeURIComponent(q.get('copy'))}/copy`)) };
   // purchase order for everything at or below its reorder level
@@ -642,7 +678,9 @@ route(/^new\/([A-Z]+)$/, async (el, m, q) => {
     if (low.length) draft.lines = low.map((r) => { const it = items.find((i) => i.id === r.id) || {}; return { item_id: r.id, qty: r.suggested_order, rate: it.purchase_price || r.avg_cost, gst_rate: it.gst_rate }; });
   }
   const fromDoc = !!draft.ref_id;
-  const isNote = !!T.note;
+  const isNote = !!T.note, isShort = !!draft.short;     // isShort: goods that never came, claimed back at the bill's price
+  // a purchase bill can be booked before its goods come; the supplier's own bill number guards against entering it twice
+  const billFirst = type === 'BILL' && draft.ref_type !== 'GRN', refField = billFirst || type === 'GRN';
   const isSale = T.side === 'sales', money = ['INV', 'BILL'].includes(type);
   // batches (items that track batch & expiry): typed when goods come in, chosen (or first-to-expire) when they go out
   const movesStock = !!T.stock && !(type === 'INV' && draft.ref_type === 'DN') && !(type === 'BILL' && draft.ref_type === 'GRN');
@@ -668,7 +706,7 @@ route(/^new\/([A-Z]+)$/, async (el, m, q) => {
       <td class="c-item">${fromDoc ? `<b>${esc(l.item || l.description)}</b>${isNote && l.orig_rate !== undefined ? `<div class="muted">billed at ${inr(l.orig_rate)}</div>` : ''}<input type="hidden" name="item_id" value="${esc(l.item_id || '')}"><input type="hidden" name="src_line_id" value="${esc(l.src_line_id || '')}"><input type="hidden" name="description" value="${esc(l.description || '')}">`
         : `<select name="item_id" aria-label="Item">${itemOpt(l.item_id)}</select><input name="description" placeholder="or type a name / note" value="${esc(l.description || '')}" style="margin-top:4px">`}${lotCell(l)}</td>
       <td class="c-n" data-l="Qty"><input name="qty" type="number" step="any" min="0" inputmode="decimal" value="${esc(l.qty ?? 1)}" aria-label="Quantity"></td>
-      <td class="c-n" data-l="${isNote ? 'Rate diff ₹' : 'Rate ₹'}"><input name="rate" type="number" step="any" min="0" inputmode="decimal" value="${esc(l.rate ?? '')}" aria-label="Rate"></td>
+      <td class="c-n" data-l="${isNote && !isShort ? 'Rate diff ₹' : 'Rate ₹'}"><input name="rate" type="number" step="any" min="0" inputmode="decimal" value="${esc(l.rate ?? '')}" aria-label="Rate"${isShort ? ' readonly' : ''}></td>
       <td class="c-n" data-l="Disc %"><input name="discount_pct" type="number" step="any" min="0" max="100" inputmode="decimal" value="${esc(l.discount_pct ?? 0)}" aria-label="Discount percent"></td>
       <td class="c-n" data-l="GST"><select name="gst_rate" aria-label="GST rate">${gstOpt(l.gst_rate ?? 0)}</select></td>
       <td class="num c-amt" data-amt data-l="Amount"></td>
@@ -679,13 +717,16 @@ route(/^new\/([A-Z]+)$/, async (el, m, q) => {
     ${q.get('scan') && draft.scan_note ? `<div class="panel ${draft.scan_ok ? '' : 'warnbox'}">${draft.scan_note}</div>` : ''}
     <form id="docf"><div class="err" hidden></div>
     ${ge ? `<div class="panel warnbox">Receiving against gate entry <b>${esc(ge.number)}</b>: vehicle ${esc(ge.vehicle_no)}${ge.challan_no ? `, challan ${esc(ge.challan_no)}` : ''}${ge.packages ? `, ${ge.packages} packages` : ''}.</div>` : ''}
-    ${isNote ? `<div class="panel muted">${isSale ? 'A credit note lowers what the customer owes' : 'A debit note lowers what you owe the supplier'} without any goods moving: rate difference, discount, short supply or damage claim. Enter the difference per unit on each line that changes.</div>` : ''}
+    ${isShort ? `<div class="panel warnbox">Goods that never came on ${esc(draft.ref_number)}: they are claimed back from the supplier at the bill's price, and ${esc(draft.ref_number)} stops waiting for them. Keep only the lines and quantities that are short.</div>`
+      : isNote ? `<div class="panel muted">${isSale ? 'A credit note lowers what the customer owes' : 'A debit note lowers what you owe the supplier'} without any goods moving: rate difference, discount, short supply or damage claim. Enter the difference per unit on each line that changes.</div>` : ''}
     <div class="panel"><div class="form">
       <label class="f">${isSale ? 'Customer' : 'Supplier'}
         ${fromDoc ? `<input value="${esc((parties.find((p) => p.id === draft.party_id) || {}).name || '')}" disabled><input type="hidden" name="party_id" value="${draft.party_id}">`
           : `<select name="party_id" required><option value="">Choose…</option>${plist.map((p) => `<option value="${p.id}" ${p.id === +draft.party_id ? 'selected' : ''}>${esc(p.name)}</option>`).join('')}</select>`}</label>
       ${fromDoc ? '' : `<label class="f">&nbsp;<button type="button" class="btn" id="newparty">+ New ${side}</button></label>`}
       <label class="f">Date<input type="date" name="date" value="${esc(draft.date)}"></label>
+      ${refField ? `<label class="f">${type === 'GRN' ? 'Supplier challan / bill no.' : 'Supplier bill no.'}<input name="party_ref" maxlength="40" value="${esc(draft.party_ref || '')}" autocomplete="off"></label>` : ''}
+      ${billFirst ? `<label class="f check wide"><input type="checkbox" name="transit"> <span>Goods not received yet (on the way)<small class="help">Stock comes in when the goods arrive: Purchase → Receive Goods.</small></span></label>` : ''}
       ${money || type === 'PO' || type === 'SO' || type === 'QUOTE' ? `<label class="f">${money ? 'Due date' : type === 'QUOTE' ? 'Valid until' : 'Expected by'}<input type="date" name="due_date" placeholder="auto"></label>` : ''}
       ${whs.length > 1 ? `<label class="f">Godown<select name="warehouse_id">${whs.map((w) => `<option value="${w.id}" ${w.id === +draft.warehouse_id ? 'selected' : ''}>${esc(w.name)}</option>`).join('')}</select></label>`
         : `<input type="hidden" name="warehouse_id" value="${whs[0] ? whs[0].id : ''}">`}
@@ -810,6 +851,9 @@ route(/^new\/([A-Z]+)$/, async (el, m, q) => {
     }).filter((l) => +l.qty > 0 && (!isNote || +l.rate > 0));
     const body = { type, party_id: +f.party_id.value, date: f.date.value, warehouse_id: +f.warehouse_id.value, notes: f.notes.value, lines, ref_id: draft.ref_id, extra: cfRead(form), design: f.design ? f.design.value : '' };
     if (ge) body.gate_entry_id = ge.id;
+    if (f.party_ref) body.party_ref = f.party_ref.value.trim();
+    if (f.transit && f.transit.checked) body.transit = true;
+    if (isShort) body.short = true;
     if (f.due_date && f.due_date.value) body.due_date = f.due_date.value;
     if (f.pay_amount && +f.pay_amount.value > 0) body.payment = { amount: +f.pay_amount.value, account_id: +f.pay_account.value };
     if (type === 'INV') body.credit_ok = false;
@@ -819,7 +863,7 @@ route(/^new\/([A-Z]+)$/, async (el, m, q) => {
         const d = await POST('/api/docs', body);
         if (d.queued) { toast('No internet: saved on this device. It is sent by itself when you are back online.', 'info'); go('outbox'); return; }
         dirty('items', 'parties', 'accounts');
-        toast(`${d.number} saved`); go('doc/' + d.id);
+        toast(d.transit === 1 ? `${d.number} saved. When the goods come, receive them in Purchase → Receive Goods.` : `${d.number} saved`); go('doc/' + d.id);
       } catch (err) {
         if (err.status === 409 && err.data.credit_warning) {
           return creditSheet(err.data.credit_warning, { yes: () => { body.credit_ok = true; save(); },
@@ -878,7 +922,7 @@ function docPaper(d) {
       <div class="hdr"><div class="org">${d.logo_url ? `<img class="logo" src="${esc(d.logo_url)}" alt="">` : ''}<div><div class="oname">${esc(o.name)}</div><div>${esc(o.address)}</div>
         <div>${[o.gstin ? 'GSTIN: ' + esc(o.gstin) : '', o.state ? 'State: ' + esc(o.state) : ''].filter(Boolean).join(' &middot; ')}</div><div>${esc(o.phone)}</div></div></div>
         <div class="meta"><div class="title">${esc(title)}</div><div>No: <b>${esc(d.number)}</b></div><div>Date: ${fdate(d.date)}</div>
-        ${d.due_date ? `<div>${d.type === 'QUOTE' ? 'Valid till' : 'Due'}: ${fdate(d.due_date)}</div>` : ''}${d.parent ? `<div>Ref: ${esc(d.parent.number)}</div>` : ''}</div></div>
+        ${d.due_date ? `<div>${d.type === 'QUOTE' ? 'Valid till' : 'Due'}: ${fdate(d.due_date)}</div>` : ''}${d.parent ? `<div>Ref: ${esc(d.parent.number)}</div>` : ''}${d.party_ref ? `<div>Supplier ref: ${esc(d.party_ref)}</div>` : ''}</div></div>
       <div class="parties"><div><b>${d.side === 'sales' ? 'Bill to' : 'Supplier'}</b><br>${esc(p.name)}<br>${esc(p.address || '')}<br>${p.gstin ? 'GSTIN: ' + esc(p.gstin) + '<br>' : ''}${esc(p.phone || '')}</div>
         <div><b>Place of supply</b><br>${esc(d.place_of_supply || '-')}<br>${isTax ? (inter ? 'Inter-state (IGST)' : 'Intra-state (CGST + SGST)') : ''}${d.warehouse ? '<br>Godown: ' + esc(d.warehouse) : ''}</div></div>
       ${(d.print_fields || []).length ? `<div class="cfp">${d.print_fields.map((f) => `<span><b>${esc(f.label)}:</b> ${esc(f.value)}</span>`).join('')}</div>` : ''}
@@ -900,12 +944,15 @@ function docPaper(d) {
 route(/^doc\/(\d+)$/, async (el, m) => {
   const d = await GET('/api/docs/' + m[1]);
   const T = ME.doc_types[d.type], o = d.org, p = d.party || {};
-  const next = Object.entries(ME.doc_types).filter(([k, v]) => v.from.includes(d.type) && !(simple() && ADV_DOCS.includes(k)));
+  // a receipt (GRN) is made from a bill only when the bill was booked before its goods (Receive Goods screen)
+  const next = Object.entries(ME.doc_types).filter(([k, v]) => v.from.includes(d.type) && !(simple() && ADV_DOCS.includes(k)) && !(k === 'GRN' && d.type === 'BILL'));
+  const toCome = d.transit === 1 ? d.lines.reduce((s, l) => s + (l.to_receive || 0), 0) : 0;
   const hasOpen = d.lines.some((l) => l.remaining > 0.0005);
   const main = [], more = [];   // main: the few big buttons; more: everything else, in a menu
   const waiting = d.status === 'pending';      // a big purchase order waiting for the owner or an admin
   if (waiting && ME.can.settings) main.push('<button class="btn primary" id="approve">Approve</button>');
   if (d.status !== 'cancelled') {
+    if (toCome > 0.0005 && ME.can.purchase) { main.push(`<a class="btn primary" href="#/receive?bill=${d.id}">Receive goods</a>`); more.push(`<a class="btn" href="#/new/DNOTE?from=${d.id}&short=1">Close short (goods never came)</a>`); }
     if (['INV', 'BILL'].includes(d.type) && d.balance > 0) main.push(`<button class="btn" id="pay">${d.type === 'INV' ? 'Receive payment' : 'Record payment'}</button>`);
     if (['INV', 'SRET', 'CNOTE', 'QUOTE', 'SO'].includes(d.type)) { main.push(`<button class="btn got" id="wa">WhatsApp</button>`); more.push(...(p.phone ? ['<button class="btn" id="sms">Send SMS</button>'] : []), `<button class="btn" id="link">Copy customer link</button>`, ...(ME.can.sales ? ['<button class="btn" id="unshare">Stop sharing link</button>'] : [])); }
     for (const [k, v] of next) if (!waiting && (hasOpen || v.note)) more.push(`<a class="btn" href="#/new/${k}?from=${d.id}">${['SRET', 'PRET'].includes(k) ? 'Return goods' : v.note ? (k === 'CNOTE' ? 'Credit note' : 'Debit note') : 'Make ' + esc(v.label)}</a>`);
@@ -921,6 +968,8 @@ route(/^doc\/(\d+)$/, async (el, m) => {
   main.push(`<button class="btn primary" data-act="print">Print / PDF</button>`);
   const actions = [...main, more.length ? `<details class="more-menu"><summary class="btn" aria-label="More actions">More &#9662;</summary><div class="menu">${more.join('')}</div></details>` : ''];
   el.innerHTML = head(`${esc(d.number)} ${badge(d.status)}`, actions.join('')) + `
+    ${toCome > 0.0005 ? `<div class="panel warnbox no-print">Goods on the way: <b>${qtyf(toCome)}</b> of ${qtyf(d.lines.filter((l) => l.item_id && !l.is_service).reduce((s, l) => s + l.qty, 0))} still to come${d.lines.some((l) => l.to_receive > 0.0005 && l.to_receive < l.qty) ? ' (part received)' : ''}. Stock goes up as they are received.</div>` : ''}
+    ${d.short ? `<div class="panel muted no-print">Shortage: goods billed on ${d.parent ? esc(d.parent.number) : 'the bill'} that never came.</div>` : ''}
     ${waiting ? `<div class="panel warnbox no-print">This purchase order is above the approval limit of ${inr0(ME.org.approvals.po_above)}. ${ME.can.settings ? 'Check it and tap <b>Approve</b>; to refuse it, cancel it.' : 'The owner or an admin has to approve it before goods can be received against it.'}</div>` : ''}
     <div class="panel no-print"><div class="row">
       ${d.parent ? `<span>From <a href="#/doc/${d.parent.id}">${esc(d.parent.number)}</a></span>` : ''}
@@ -1615,7 +1664,7 @@ async function scanBillFlow(file, type) {
     dirty('items', 'parties');
     const note = r.adds_up ? `Filled from the scanned bill${r.bill_no ? ` no. <b>${esc(r.bill_no)}</b>` : ''}. Check the lines, then save.`
       : `⚠ The lines add up to <b>${inr(sum)}</b> but the bill says <b>${inr(r.totals.total)}</b>. Check each line against the bill before saving.`;
-    sessionStorage.setItem('st_scan', JSON.stringify({ type, party_id: partyId, date: r.bill_date || ME.today, notes: [r.bill_no && `Supplier bill no. ${r.bill_no}`, r.bill_date && `dated ${r.bill_date}`].filter(Boolean).join(' '),
+    sessionStorage.setItem('st_scan', JSON.stringify({ type, party_id: partyId, date: r.bill_date || ME.today, party_ref: r.bill_no || '', notes: r.bill_date ? `Supplier bill dated ${fdate(r.bill_date)}` : '',
       lines: lines.length ? lines : [{}], scan_note: note + (r.notes ? `<div class="muted small">Note: ${esc(r.notes)}</div>` : ''), scan_ok: r.adds_up }));
     location.hash = `#/new/${type}?scan=${Date.now()}`;
   }, { submit: 'Fill the bill', intro: `
@@ -2723,7 +2772,7 @@ route(/^settings\/fields$/, async (el) => {
 });
 
 const AREA_LABEL = { sales: 'Sales & POS', purchase: 'Purchase', items: 'Items & stock', masters: 'Customers & suppliers', finance: 'Money (receipts, payments, expenses)',
-  khata: 'Khata book', reports: 'Reports, profit & costs', settings: 'Settings' };
+  khata: 'Khata book', reports: 'Reports, profit & costs', settings: 'Settings', gate: 'Gate register (vehicles in / out)' };
 route(/^settings\/roles$/, async (el) => {
   const { rows, areas } = await GET('/api/roles');
   const grid = (p = { view: [], edit: [] }) => `<div class="tbl-wrap"><table class="t perm"><thead><tr><th>Area</th><th>See</th><th>Add &amp; edit</th></tr></thead><tbody>${areas.map((a) => `<tr><td>${esc(AREA_LABEL[a] || a)}</td>
@@ -2784,6 +2833,7 @@ route(/^settings$/, async (el, m, q) => {
         : '<p>Included in the <b>Growth</b> and <b>Business</b> plans. <a href="#/plan">See plans</a></p>'}</div>` : ''}
     ${canUsers ? `<div class="panel flush"><div class="row" style="padding:14px 16px"><h2 style="margin:0">Users</h2><span class="spacer"></span><button class="btn" id="adduser">+ Add user</button></div>
       ${table([{ h: 'Name', k: 'name' }, { h: 'Email', k: 'email', cls: 'hide-sm' }, { h: 'Role', f: (u) => u.role_key === 'owner' ? 'owner' : `<select data-role="${u.id}" aria-label="Role">${roleOpts.map((o) => `<option value="${esc(o.v)}" ${o.v === u.role_key ? 'selected' : ''}>${esc(o.t)}</option>`).join('')}</select>` },
+        { h: 'Menu', f: (u) => u.role_key === 'owner' && u.id !== ME.user.id ? '' : `<button class="btn sm" data-menu="${u.id}">${esc(menuLabel(u))}</button>` },
         { h: 'Status', f: (u) => u.paused ? `${badge('partial')}<div class="muted">over plan limit</div>` : u.active ? badge('ok') : badge('cancelled') },
         { h: '', f: (u) => u.role === 'owner' ? '' : `<button class="btn sm" data-pw="${u.id}" data-email="${esc(u.email)}">Set password</button> <button class="btn sm" data-u="${u.id}" data-a="${u.active}">${u.active ? 'Disable' : 'Enable'}</button>` }], users.rows)}
       <div class="muted" style="padding:10px 16px">Need your own role? <a href="#/settings/roles">Make one in Roles</a>. Built-in: <b>admin</b> everything · <b>accountant</b> money, bills, reports · <b>store</b> stock, items, purchase · <b>sales</b> quotes, orders, invoices, khata, customer receipts.</div></div>` : ''}
@@ -2914,7 +2964,39 @@ route(/^settings$/, async (el, m, q) => {
     { submit: 'Set password', intro: 'For ' + esc(b.dataset.email) + ', who forgot their password. They will be signed out on other devices.' }));
   $$('[data-u]', el).forEach((b) => b.onclick = async () => { await api('PUT', '/api/users/' + b.dataset.u, { active: b.dataset.a !== '1' }); render(); });
   $$('[data-role]', el).forEach((s) => s.onchange = async () => { try { await api('PUT', '/api/users/' + s.dataset.role, { role: s.value }); toast('Role changed'); } catch (e) { toast(e.message, 'err'); render(); } });
+  $$('[data-menu]', el).forEach((b) => b.onclick = () => menuEditor(users.rows.find((u) => u.id === +b.dataset.menu)));
 });
+
+/* Settings → Users → Menu: which screens a user sees and where the app opens for them */
+const roleJob = (u) => ROLE_JOB[u.role_key] || 'all';
+const menuLabel = (u) => (u.ui.screens ? `${u.ui.screens.length} screens` : u.ui.job ? JOBS[u.ui.job].t.split(':')[0] : `By role: ${JOBS[roleJob(u)].t.split(':')[0]}`);
+function menuEditor(u) {
+  const ui = u.ui, all = NAV.flatMap(([, x]) => x);
+  const f = modal(`Menu for ${u.name}`, [
+    { k: 'job', label: 'What does this person do?', type: 'select', value: ui.screens ? 'pick' : ui.job,
+      options: [{ v: '', t: `As the role gives (${JOBS[roleJob(u)].t})` }, ...Object.entries(JOBS).map(([k, j]) => ({ v: k, t: j.t })), { v: 'pick', t: 'Let me tick the screens' }] },
+    { k: 'home', label: 'App opens on', type: 'select', value: ui.home, options: [{ v: '', t: 'The job\'s usual screen' }, ...all.map(([h, t]) => ({ v: h, t }))] }],
+  async (v) => {
+    const screens = $$('[data-scr]', f).filter((x) => x.checked).map((x) => x.dataset.scr);
+    if (v.job === 'pick' && !screens.length) throw new Error('Tick at least one screen.');
+    await api('PUT', `/api/users/${u.id}/ui`, v.job === 'pick' ? { screens, home: v.home } : { job: v.job, home: v.home });
+    if (u.id === ME.user.id) { ME = await GET('/api/me'); shell(); }
+    toast('Menu saved. It shows the next time they open the app.'); render();
+  }, { intro: '<p class="muted">Only what they see changes. What they may do still comes from their role.</p>' });
+  $('.form', f).insertAdjacentHTML('afterend', `<div class="scr-grid">${NAV.filter(([g]) => g).map(([g, x]) => `<fieldset><legend>${esc(g)}</legend>${x.map(([h, t]) =>
+    `<label class="check"><input type="checkbox" data-scr="${h}"> ${esc(t)}</label>`).join('')}</fieldset>`).join('')}</div>`);
+  const sync = () => {
+    const j = f.elements.job.value, pick = j === 'pick', job = JOBS[j || roleJob(u)] || JOBS.all;
+    $$('[data-scr]', f).forEach((x) => {
+      x.disabled = !pick;
+      if (!pick) x.checked = job.screens ? job.screens.includes(x.dataset.scr) : !simple() || !ADVANCED.has(x.dataset.scr);
+      else if (ui.screens && !x.dataset.touched) x.checked = ui.screens.includes(x.dataset.scr);
+    });
+  };
+  $$('[data-scr]', f).forEach((x) => x.addEventListener('change', () => { x.dataset.touched = '1'; }));
+  f.elements.job.onchange = sync;
+  sync();
+}
 
 /* ======================================================================= gate entry (inward) / gate pass (outward) */
 route(/^gate\/(in|out)$/, async (el, m, q) => {
@@ -2924,16 +3006,17 @@ route(/^gate\/(in|out)$/, async (el, m, q) => {
   el.innerHTML = head(inward ? 'Gate Entry (inward)' : 'Gate Pass (outward)', `<button class="btn primary" id="new">+ ${inward ? 'New gate entry' : 'New gate pass'}</button>`) + `
     <div class="tabs">${(inward ? [['open', 'At gate / not received'], ['grn_done', 'Received (GRN done)'], ['rejected', 'Rejected'], ['', 'All']] : [['', 'All'], ['open', 'Inside (not exited)'], ['closed', 'Exited']])
       .map(([k, t]) => `<a href="#/gate/${kind}${k ? '?status=' + k : (inward ? '?status=' : '')}" class="${status === k ? 'on' : ''}">${t}</a>`).join('')}</div>
-    <p class="muted">${inward ? 'Log every vehicle at the gate before unloading. Then make the Goods Receipt (GRN) from the gate entry, so nothing is received without a gate record.'
+    <p class="muted">${inward ? 'Log every vehicle at the gate before unloading: scan the QR on the supplier\'s e-invoice and the supplier, bill number and value fill in by themselves. The godown then receives the goods against it (Receive Goods), so nothing comes in without a gate record.'
       : 'Every dispatch leaves with a gate pass linked to its delivery note or invoice, with vehicle and exit time.'}</p>
     <div class="panel flush">${table([
       { h: 'No.', f: (r) => `<b>${esc(r.number)}</b><div class="muted">${fdate(r.date)} ${esc(r.time_in || '')}${r.time_out ? ' → ' + esc(r.time_out) : ''}</div>` },
-      { h: inward ? 'Supplier' : 'Party', f: (r) => esc(r.party || '-') + (r.ref_number ? `<div class="muted">${esc(r.ref_type)} <a href="#/doc/${r.ref_doc_id}">${esc(r.ref_number)}</a></div>` : '') },
+      { h: inward ? 'Supplier' : 'Party', f: (r) => esc(r.party || '-') + (r.ref_number ? `<div class="muted">${esc(r.ref_type)} <a href="#/doc/${r.ref_doc_id}">${esc(r.ref_number)}</a></div>` : '')
+        + (r.bill_number ? `<div class="muted">Bill <a href="#/doc/${r.bill_id}">${esc(r.bill_number)}</a></div>` : '') + (r.value ? `<div class="muted">Invoice ${inr(r.value)}</div>` : '') },
       { h: 'Vehicle', f: (r) => `${esc(r.vehicle_no)}<div class="muted">${esc(r.driver_name || '')} ${esc(r.driver_phone || '')}</div>` },
       { h: inward ? 'Challan / Invoice' : 'LR / Transporter', cls: 'hide-sm', f: (r) => inward ? `${esc(r.challan_no || '')}${r.packages ? `<div class="muted">${r.packages} pkgs${r.weight_kg ? ', ' + r.weight_kg + ' kg' : ''}</div>` : ''}` : `${esc(r.lr_no || '')}<div class="muted">${esc(r.transporter || '')}</div>` },
       { h: 'Status', f: (r) => r.status === 'grn_done' ? `${badge('closed')} <a href="#/doc/${r.grn_id}">${esc(r.grn_number || 'GRN')}</a>` : badge(r.status === 'open' ? (inward ? 'open' : 'partial') : r.status) },
       { h: '', f: (r) => r.status !== 'open' ? (r.time_out || !inward ? '' : `<button class="btn sm" data-exit="${r.id}">Vehicle out</button>`)
-        : inward ? `<a class="btn sm primary" href="#/new/GRN?ge=${r.id}">Make GRN</a> <button class="btn sm danger" data-rej="${r.id}">Reject</button>`
+        : inward ? `${ME.can.purchase ? `<a class="btn sm primary" href="#/receive?ge=${r.id}">Receive</a> ` : ''}<button class="btn sm danger" data-rej="${r.id}">Reject</button>`
           : `<button class="btn sm primary" data-exit="${r.id}">Vehicle out</button>` }],
     rows, { empty: inward ? 'No vehicles waiting at the gate.' : 'No gate passes yet.' })}</div>`;
   $$('[data-exit]', el).forEach((b) => b.onclick = async () => { await POST(`/api/gate/${b.dataset.exit}/exit`, {}); toast('Exit time saved'); render(); });
@@ -2941,13 +3024,14 @@ route(/^gate\/(in|out)$/, async (el, m, q) => {
     async (v) => { await POST(`/api/gate/${b.dataset.rej}/reject`, v); toast('Rejected'); render(); }));
   $('#new').onclick = async () => {
     const parties = (await master('parties')).filter((p) => inward ? p.kind !== 'customer' : true);
-    const refs = [];
-    for (const t of inward ? ['PO'] : ['DN', 'INV']) refs.push(...(await GET(`/api/docs?type=${t}&limit=100`)).rows.filter((d) => d.status !== 'cancelled' && (!inward || d.status !== 'closed')));
-    modal(inward ? 'New gate entry' : 'New gate pass', [
+    const refs = [];      // a guard who may not see orders or bills just logs the vehicle
+    for (const t of inward ? ['PO'] : ['DN', 'INV']) refs.push(...(await GET(`/api/docs?type=${t}&limit=100`).catch(() => ({ rows: [] }))).rows.filter((d) => d.status !== 'cancelled' && (!inward || d.status !== 'closed')));
+    const f = modal(inward ? 'New gate entry' : 'New gate pass', [
       { k: 'party_id', label: inward ? 'Supplier' : 'Party', type: 'select', options: [{ v: '', t: '—' }, ...opts(parties)] },
       { k: 'ref_doc_id', label: inward ? 'Against purchase order (optional)' : 'Against delivery note / invoice', type: 'select', options: [{ v: '', t: '—' }, ...refs.map((d) => ({ v: d.id, t: `${d.number} · ${d.party || ''}` }))] },
       { k: 'vehicle_no', label: 'Vehicle number', placeholder: 'RJ14GA1234' }, { k: 'driver_name', label: 'Driver name' }, { k: 'driver_phone', label: 'Driver mobile', type: 'tel' },
-      ...(inward ? [{ k: 'challan_no', label: 'Supplier challan / invoice no.' }, { k: 'challan_date', label: 'Challan date', type: 'date' }] : []),
+      ...(inward ? [{ k: 'challan_no', label: 'Supplier challan / invoice no.' }, { k: 'challan_date', label: 'Challan date', type: 'date' }, { k: 'value', label: 'Invoice value (₹)', type: 'number' },
+        { k: 'party_gstin', label: 'Supplier GSTIN (if not in the list)', more: true }, { k: 'irn', label: 'e-invoice IRN', more: true }] : []),
       { k: 'transporter', label: 'Transporter' }, { k: 'lr_no', label: 'LR / docket no.' },
       { k: 'packages', label: 'Packages / boxes', type: 'number', value: 0 }, { k: 'weight_kg', label: 'Weight (kg)', type: 'number', value: 0 },
       { k: 'date', label: 'Date', type: 'date', value: ME.today }, { k: 'by_hand', label: 'By hand / courier (no vehicle)', type: 'checkbox' },
@@ -2957,10 +3041,275 @@ route(/^gate\/(in|out)$/, async (el, m, q) => {
       const refSel = refs.find((d) => d.id === +v.ref_doc_id);
       if (refSel && !v.party_id) { const p = parties.find((x) => x.name === refSel.party); if (p) v.party_id = p.id; }
       const g = await POST('/api/gate', { ...v, kind, party_id: +v.party_id || null, ref_doc_id: +v.ref_doc_id || null });
-      toast(`${g.number} saved`); render();
-    }, { submit: 'Save' });
+      toast(`${g.number} saved${g.bill_id ? ': matched to the purchase bill' : ''}`); render();
+    }, { submit: 'Save', intro: inward ? `<div class="row qrrow"><button type="button" class="btn" id="geqr">&#128247; Scan e-invoice QR</button>
+      <input id="geqrtxt" placeholder="or scan with a 2D scanner here" aria-label="e-invoice QR text" autocomplete="off"></div><p class="muted small" id="geqrnote"></p>` : '' });
+    if (!inward) return;
+    // the signed QR on a GST e-invoice carries the supplier's GSTIN, bill number, date, value and IRN
+    const fill = (text) => {
+      const e = einvoiceQr(text), note = $('#geqrnote', f);
+      if (!e) { note.textContent = 'This is not a GST e-invoice QR. Type the details instead.'; return false; }
+      const p = parties.find((x) => (x.gstin || '').toUpperCase() === e.gstin);
+      if (p) f.elements.party_id.value = p.id; else f.elements.party_gstin.value = e.gstin;
+      f.elements.challan_no.value = e.no; f.elements.challan_date.value = e.date; f.elements.value.value = e.value; f.elements.irn.value = e.irn;
+      note.innerHTML = `Read: <b>${esc(p ? p.name : e.gstin)}</b>, bill ${esc(e.no)}, ${fdate(e.date)}, ${inr(e.value)}${e.buyer && ME.org.gstin && e.buyer !== ME.org.gstin.toUpperCase() ? ' · <b class="neg">this bill is made out to another GSTIN</b>' : ''}`;
+      return true;
+    };
+    $('#geqr', f).onclick = () => cameraScan((code) => fill(code), { once: true });
+    $('#geqrtxt', f).addEventListener('change', (e) => { if (fill(e.target.value)) e.target.value = ''; });
+    $('#geqrtxt', f).addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); if (fill(e.target.value)) e.target.value = ''; } });
   };
+  if (takeNew(q)) $('#new').click();
 });
+
+/* A GST e-invoice's QR code is a signed token (JWT); its payload's data holds SellerGstin, BuyerGstin, DocNo, DocDt
+   (dd/mm/yyyy), TotInvVal and Irn. Read here for the gate and Receive screens (the signature is NIC's; not checked). */
+function einvoiceQr(text) {
+  const parts = String(text || '').trim().split('.');
+  if (parts.length !== 3) return null;
+  try {
+    const b64 = parts[1].replace(/-/g, '+').replace(/_/g, '/');
+    const raw = new TextDecoder().decode(Uint8Array.from(atob(b64 + '='.repeat((4 - b64.length % 4) % 4)), (ch) => ch.charCodeAt(0)));
+    const j = JSON.parse(raw), d = typeof j.data === 'string' ? JSON.parse(j.data) : j.data || j;
+    if (!d || !/^\d{2}[A-Z0-9]{13}$/.test(String(d.SellerGstin || '').toUpperCase())) return null;
+    const [dd, mm, yy] = String(d.DocDt || '').split('/');
+    return { gstin: String(d.SellerGstin).toUpperCase(), buyer: String(d.BuyerGstin || '').toUpperCase(), no: String(d.DocNo || ''), date: yy && mm && dd ? `${yy}-${mm.padStart(2, '0')}-${dd.padStart(2, '0')}` : '',
+      value: +d.TotInvVal || 0, irn: /^[0-9a-f]{64}$/i.test(d.Irn || '') ? d.Irn.toLowerCase() : '', items: +d.ItemCnt || 0 };
+  } catch (e) { return null; }
+}
+
+/* ======================================================================= receive goods (scan, like the POS)
+   Choose what came (a bill booked before its goods, an open purchase order, a truck at the gate, or goods without papers),
+   scan every piece with a USB scanner or the camera, and save one goods receipt (GRN) with each item in its bin.
+   A code never seen before is taught once: which item it is and how many pieces the pack holds. */
+const normRef = (x) => String(x || '').toUpperCase().replace(/\s+/g, '');
+route(/^receive$/, async (el, m, q) => {
+  const src = q.get('bill') ? ['bill', +q.get('bill')] : q.get('po') ? ['po', +q.get('po')] : q.get('ge') ? ['ge', +q.get('ge')] : q.get('free') ? ['free', 0] : null;
+  return src ? receiveScreen(el, src) : receiveLanding(el);
+});
+
+async function receiveLanding(el) {
+  const [r, parties] = await Promise.all([GET('/api/receive'), master('parties')]);
+  const btn = (h) => `<a class="btn sm primary" href="#/receive?${h}">Receive</a>`;
+  el.innerHTML = head('Receive Goods', `<button class="btn" id="rqr">&#128247; Scan bill QR</button><a class="btn primary" href="#/receive?free=1">Goods without bill / order</a>`) + `
+    <p class="muted">Maal aaya? Choose what came, then scan every piece. Stock goes up as you save, and each item goes to its bin.</p>
+    <div class="panel row qrrow"><input id="rqrtxt" placeholder="Or scan the e-invoice QR with a 2D scanner here" aria-label="e-invoice QR text" autocomplete="off"></div>
+    ${r.gates.length ? `<div class="panel flush"><h2 class="ph">At the gate</h2>${table([
+      { h: 'Gate entry', f: (g) => `<b>${esc(g.number)}</b><div class="muted">${fdate(g.date)} ${esc(g.time_in || '')}</div>` },
+      { h: 'Supplier', f: (g) => esc(g.party || '-') + (g.challan_no ? `<div class="muted">Bill / challan ${esc(g.challan_no)}</div>` : '') },
+      { h: 'Vehicle', cls: 'hide-sm', f: (g) => esc(g.vehicle_no) + (g.packages ? `<div class="muted">${g.packages} pkgs</div>` : '') },
+      { h: 'Against', f: (g) => g.bill_number ? `Bill ${esc(g.bill_number)}` : g.ref_number ? `Order ${esc(g.ref_number)}` : '<span class="muted">nothing yet</span>' },
+      { h: '', f: (g) => btn('ge=' + g.id) }], r.gates)}</div>` : ''}
+    <div class="panel flush"><h2 class="ph">Bills waiting for their goods</h2>${table([
+      { h: 'Bill', f: (b) => `<a href="#/doc/${b.id}"><b>${esc(b.number)}</b></a><div class="muted">${fdate(b.date)}</div>` },
+      { h: 'Supplier', f: (b) => esc(b.party) + (b.party_ref ? `<div class="muted">Their bill ${esc(b.party_ref)}</div>` : '') },
+      { h: 'Still to come', num: 1, f: (b) => `${qtyf(b.qty)}<div class="muted">${b.lines} item${b.lines === 1 ? '' : 's'}</div>` },
+      { h: '', f: (b) => btn('bill=' + b.id) }], r.bills, { empty: 'No bill is waiting. When a bill comes before its goods, tick “Goods not received yet” on it and it shows here.' })}</div>
+    ${r.orders.length ? `<div class="panel flush"><h2 class="ph">Open purchase orders</h2>${table([
+      { h: 'Order', f: (o) => `<a href="#/doc/${o.id}"><b>${esc(o.number)}</b></a><div class="muted">${fdate(o.date)}</div>` },
+      { h: 'Supplier', k: 'party' }, { h: 'Still to come', num: 1, f: (o) => qtyf(o.qty) }, { h: '', f: (o) => btn('po=' + o.id) }], r.orders)}</div>` : ''}`;
+  // the bill's QR: straight to its bill (or order); else offer to make the bill from it
+  const open = (text) => {
+    const e = einvoiceQr(text);
+    if (!e) { toast('This is not a GST e-invoice QR.', 'err'); return false; }
+    const p = parties.find((x) => (x.gstin || '').toUpperCase() === e.gstin);
+    if (!p) { toast(`No supplier with GSTIN ${e.gstin} yet. Add them in Customers & suppliers first.`, 'err'); return true; }
+    const b = r.bills.find((x) => x.party_id === p.id && normRef(x.party_ref) === normRef(e.no));
+    if (b) { go('receive?bill=' + b.id); return true; }
+    const o = r.orders.filter((x) => x.party_id === p.id);
+    if (o.length === 1) { go('receive?po=' + o[0].id); return true; }
+    if (ME.can.purchase && confirm(`Bill ${e.no} of ${p.name} (${inr(e.value)}) is not entered yet. Make the purchase bill now? It waits for the goods, then you scan them in.`)) {
+      sessionStorage.setItem('st_scan', JSON.stringify({ type: 'BILL', party_id: p.id, date: e.date || ME.today, party_ref: e.no, lines: [{}],
+        scan_note: `From the e-invoice QR: bill <b>${esc(e.no)}</b> of ${fdate(e.date)}, total <b>${inr(e.value)}</b>${e.items ? `, ${e.items} item(s)` : ''}. Add the lines, tick “Goods not received yet” if they have not come, and save.`, scan_ok: true }));
+      go('new/BILL?scan=' + Date.now());
+    }
+    return true;
+  };
+  $('#rqr').onclick = () => cameraScan((code) => open(code), { once: true });
+  $('#rqrtxt').addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); if (open(e.target.value)) e.target.value = ''; } });
+}
+
+async function receiveScreen(el, [kind, id]) {
+  const [items, whs, parties] = await Promise.all([master('items'), master('warehouses'), master('parties')]);
+  let ge = null, draft = null;
+  if (kind === 'ge') {
+    ge = await GET('/api/gate/' + id);
+    if (ge.status !== 'open') throw new Error(`Gate entry ${ge.number} is already ${ge.status === 'grn_done' ? 'received' : ge.status}.`);
+    [kind, id] = ge.bill_id ? ['bill', ge.bill_id] : ge.ref_doc_id ? ['po', ge.ref_doc_id] : ['free', 0];
+  }
+  if (kind !== 'free') draft = await GET(`/api/docs/${id}/convert?to=GRN`);
+  const free = kind === 'free', sups = parties.filter((p) => p.kind !== 'customer');
+  const what = free ? 'goods without a bill or order' : `${kind === 'bill' ? 'bill' : 'order'} ${draft.ref_number}${draft.party_ref ? ` (their bill ${draft.party_ref})` : ''}`;
+  const itemOf = (iid) => items.find((i) => i.id === iid) || {};
+  const lineOf = (it) => ({ item_id: it.id, name: it.name, unit: it.unit, expected: null, got: 0, rate: it.purchase_price || it.avg_cost || 0, discount_pct: 0, gst_rate: it.gst_rate,
+    batch_no: '', expiry: '', serials: [], track_batch: !!it.track_batch, track_serial: !!it.track_serial, bin: '' });
+  const L = free ? [] : draft.lines.map((l) => ({ ...lineOf({ ...itemOf(l.item_id), id: l.item_id, name: l.item || l.description, unit: l.unit, gst_rate: l.gst_rate, track_batch: l.track_batch, track_serial: l.track_serial }),
+    expected: l.qty, rate: l.rate, discount_pct: l.discount_pct, src_line_id: l.src_line_id, batch_no: l.batch_no || '', expiry: l.expiry || '', src_serials: l.src_serials || '' }));
+  let wid = (draft && draft.warehouse_id) || (whs[0] && whs[0].id), active = -1, useBins = false, binCodes = [];
+  const learnt = new Map();      // codes taught on this screen: code -> { id, pack }
+  el.innerHTML = head(`Receive goods <span class="muted">${esc(what)}</span>`, `<a class="btn" href="#/receive">Back</a>`) + `
+    ${ge ? `<div class="panel warnbox">Gate entry <b>${esc(ge.number)}</b>: vehicle ${esc(ge.vehicle_no)}${ge.challan_no ? `, bill / challan ${esc(ge.challan_no)}` : ''}${ge.packages ? `, ${ge.packages} packages` : ''}.</div>` : ''}
+    <div class="panel"><div class="form">
+      <label class="f">Supplier${free ? `<select id="rparty"><option value="">Choose…</option>${sups.map((p) => `<option value="${p.id}" ${ge && p.id === ge.party_id ? 'selected' : ''}>${esc(p.name)}</option>`).join('')}</select>`
+        : `<input value="${esc((parties.find((p) => p.id === draft.party_id) || {}).name || '')}" disabled>`}</label>
+      ${whs.length > 1 ? `<label class="f">Godown<select id="rwh">${whs.map((w) => `<option value="${w.id}" ${w.id === wid ? 'selected' : ''}>${esc(w.name)}</option>`).join('')}</select></label>` : ''}
+      <label class="f">Date<input type="date" id="rdate" value="${ME.today}"></label>
+      <label class="f">Supplier bill / challan no.<input id="rref" maxlength="40" value="${esc((draft && draft.party_ref) || (ge && ge.challan_no) || '')}" ${kind === 'bill' ? 'disabled' : ''}></label>
+    </div></div>
+    <div class="panel rscanbar"><div class="row"><input id="rscan" placeholder="Scan barcode / IMEI, or type a code and press Enter" autocomplete="off" enterkeyhint="go" aria-label="Scan">
+      <button type="button" class="btn" id="rcam" aria-label="Scan with camera">&#128247;</button>${free ? '<select id="radd" aria-label="Add an item"><option value="">+ Add item…</option>' + items.filter((i) => !i.is_service).map((i) => `<option value="${i.id}">${esc(i.name)}</option>`).join('') + '</select>' : ''}</div>
+      <div class="rmsg" id="rmsg" role="status" aria-live="polite"></div><div class="rprog" id="rprog"></div></div>
+    <div class="rlines" id="rlines"></div><datalist id="binlist"></datalist>
+    <div class="row savebar"><label class="check"><input type="checkbox" id="rbins"> Put into bins <span class="muted small">(new bins are made when needed)</span></label><span class="spacer"></span>
+      <button class="btn primary" id="rsave">Save receipt</button></div>`;
+  const fine = matchMedia('(pointer: fine)').matches, scan = $('#rscan');
+  const msg = (t, kind2 = '') => { const b = $('#rmsg'); b.className = 'rmsg ' + kind2; b.innerHTML = t; };
+  const bins = async (ids) => {
+    if (!ids.length || !wid) return;
+    try {
+      const p = await POST('/api/bins/auto', { warehouse_id: wid, item_ids: ids, skip: L.filter((l) => !ids.includes(l.item_id)).map((l) => l.bin).filter(Boolean) });
+      for (const r of p.rows) for (const l of L) if (l.item_id === r.item_id && !l.bin && r.bin) l.bin = r.bin;
+      if (p.rows.some((r) => r.bin)) useBins = true;
+      binCodes = [...new Set([...binCodes, ...p.rows.map((r) => r.bin).filter(Boolean)])];
+      $('#binlist').innerHTML = binCodes.map((c) => `<option value="${esc(c)}">`).join('');
+      $('#rbins').checked = useBins; draw();
+    } catch (e) { /* bins are optional */ }
+  };
+  const draw = () => {
+    const got = L.reduce((s, l) => s + l.got, 0), exp = L.reduce((s, l) => s + (l.expected || 0), 0);
+    $('#rprog').innerHTML = L.length ? `<b>${qtyf(got)}</b>${free ? '' : ` of ${qtyf(exp)}`} received${free ? '' : `<span class="bar"><i style="width:${Math.min(100, exp ? got / exp * 100 : 0)}%"></i></span>`}` : '';
+    $('#rlines').innerHTML = L.map((l, i) => {
+      const over = l.expected !== null && l.got > l.expected + 0.0005, done = l.expected !== null && Math.abs(l.got - l.expected) < 0.0005;
+      return `<div class="rline ${over ? 'over' : done ? 'done' : ''} ${i === active ? 'act' : ''}" data-i="${i}">
+        <div class="rl-head"><b>${esc(l.name)}</b>${l.expected !== null ? `<span class="muted">${qtyf(l.expected)} ${esc(l.unit || '')} expected</span>` : ''}</div>
+        <div class="rl-qty"><button type="button" class="btn" data-minus aria-label="One less">&minus;</button><input type="number" step="any" min="0" inputmode="decimal" data-got value="${l.got}" aria-label="Received: ${esc(l.name)}">
+          <button type="button" class="btn" data-plus aria-label="One more">+</button>${done ? '<span class="pos">&#10003; all</span>' : over ? '<span class="neg">more than billed</span>' : ''}</div>
+        <div class="rl-more">${useBins ? `<input data-bin list="binlist" placeholder="Bin" value="${esc(l.bin)}" aria-label="Bin" maxlength="30">` : ''}
+          ${l.track_batch ? `<input data-batch placeholder="Batch no." value="${esc(l.batch_no)}" maxlength="40" aria-label="Batch"><input data-exp type="month" value="${esc((l.expiry || '').slice(0, 7))}" aria-label="Expiry">` : ''}</div>
+        ${l.track_serial ? `<div class="rl-sn">${l.serials.map((x) => `<span class="snchip on">${esc(x)}</span>`).join('') || `<span class="muted">${i === active ? 'Scan each piece\'s serial / IMEI now' : 'Tap here, then scan serial / IMEI numbers'}</span>`}</div>` : ''}
+      </div>`;
+    }).join('') || `<div class="empty">${free ? 'Scan the first item, or add it from the list.' : 'Nothing left to receive.'}</div>`;
+  };
+  const hit = (it, pack, code) => {
+    let i = L.findIndex((l) => l.item_id === it.id && (l.expected === null || l.got < l.expected - 0.0005));
+    if (i < 0) i = L.findIndex((l) => l.item_id === it.id);
+    if (i < 0) {
+      if (!free) { beep(false); msg(`<b>${esc(it.name)}</b> is not on ${esc(what)}. Keep it aside.`, 'err'); return; }
+      L.push(lineOf(it)); i = L.length - 1; bins([it.id]);
+    }
+    const l = L[i];
+    if (l.track_serial) { active = i; beep(true); msg(`<b>${esc(l.name)}</b>: now scan each piece's serial / IMEI number.`); draw(); return; }
+    l.got = r2(l.got + pack);
+    const over = l.expected !== null && l.got > l.expected + 0.0005;
+    beep(!over);
+    msg(over ? `<b>${esc(l.name)}</b>: ${qtyf(l.got)} is more than the ${qtyf(l.expected)} billed.` : `<b>${esc(l.name)}</b> +${qtyf(pack)}${pack > 1 ? ' (one pack)' : ''}${l.expected !== null ? ` &rarr; ${qtyf(l.got)} of ${qtyf(l.expected)}` : ''}`, over ? 'err' : 'ok');
+    draw();
+  };
+  const teach = (code) => {
+    beep(false);
+    const choices = [...L.map((l) => itemOf(l.item_id)).filter((x) => x.id), ...items.filter((x) => !x.is_service && !L.some((l) => l.item_id === x.id))];
+    modal(`New code ${code}`, [
+      { k: 'item_id', label: 'Which item is this?', type: 'select', options: [{ v: '', t: 'Choose…' }, ...choices.map((x) => ({ v: x.id, t: x.name }))] },
+      { k: 'pack', label: 'Pieces in this pack', type: 'number', value: 1 }],
+    async (v) => {
+      if (!+v.item_id) throw new Error('Choose the item.');
+      const r = await POST(`/api/items/${v.item_id}/codes`, { code, pack_qty: +v.pack || 1 });
+      learnt.set(code, { id: r.item_id, pack: r.pack_qty }); dirty('items');
+      hit(itemOf(r.item_id), r.pack_qty, code);
+    }, { submit: 'Remember this code', intro: '<p class="muted">Tell SmartTrader once; from now on this code is known everywhere (here, POS, search). A carton code can count 12 or 24 pieces in one scan.</p>' });
+  };
+  const onCode = async (raw) => {
+    const code = String(raw || '').trim(), lc = code.toLowerCase();
+    if (!code) return;
+    if (einvoiceQr(code)) { msg('That is the bill\'s QR. Now scan the barcodes on the goods.'); return; }
+    if (learnt.has(code)) { const k = learnt.get(code); return hit(itemOf(k.id), k.pack, code); }
+    let it = items.find((i) => (i.barcode && i.barcode === code) || (i.sku && i.sku.toLowerCase() === lc) || ('st' + i.id) === lc), pack = 1;
+    const sl = L[active];
+    if (!it && sl && sl.track_serial && (sl.expected === null || sl.serials.length < sl.expected - 0.0005)) {      // a serial / IMEI of the item scanned last
+      if (sl.serials.includes(code)) { beep(false); msg(`${esc(code)} is already scanned.`, 'err'); return; }
+      if (sl.src_serials && !sl.src_serials.split(/,\s*/).includes(code)) { beep(false); msg(`${esc(code)} is not on ${esc(what)}.`, 'err'); return; }
+      sl.serials.push(code); sl.got = sl.serials.length; beep(true);
+      if (sl.expected !== null && sl.got >= sl.expected - 0.0005) active = -1;     // all its serials are in
+      msg(`<b>${esc(sl.name)}</b> serial ${esc(code)}${sl.expected !== null ? ` &rarr; ${sl.got} of ${qtyf(sl.expected)}` : ''}`, 'ok'); draw(); return;
+    }
+    if (!it) {
+      try { const r = await GET('/api/items/lookup?code=' + encodeURIComponent(code)); it = { ...itemOf(r.id), ...r }; pack = r.pack_qty || 1; learnt.set(code, { id: r.id, pack }); } catch (e) {
+        if (e.status === 404) return teach(code);
+        beep(false); msg(esc(e.message), 'err'); return;
+      }
+    }
+    hit(it, pack, code);
+  };
+  scan.addEventListener('keydown', async (e) => { if (e.key === 'Enter') { e.preventDefault(); const v = scan.value; scan.value = ''; await onCode(v); if (fine) scan.focus(); } });
+  $('#rcam').onclick = () => cameraScan(onCode);
+  if ($('#radd')) $('#radd').onchange = (e) => { const it = itemOf(+e.target.value); e.target.value = ''; if (it.id) hit(it, 1, ''); };
+  if ($('#rwh')) $('#rwh').onchange = (e) => { wid = +e.target.value; L.forEach((l) => { l.bin = ''; }); bins(L.map((l) => l.item_id)); };
+  $('#rbins').onchange = (e) => { useBins = e.target.checked; draw(); };
+  const lineAt = (t) => { const r = t.closest('.rline'); return r ? L[+r.dataset.i] : null; };
+  $('#rlines').addEventListener('click', (e) => {
+    const r = e.target.closest('.rline'); if (!r) return;
+    const l = L[+r.dataset.i];
+    if (e.target.closest('[data-plus]')) { if (l.track_serial) { active = +r.dataset.i; msg(`Scan the serial / IMEI of <b>${esc(l.name)}</b>.`); draw(); } else hit(itemOf(l.item_id).id ? itemOf(l.item_id) : { id: l.item_id, name: l.name }, 1, ''); }
+    else if (e.target.closest('[data-minus]')) { if (l.track_serial) { l.serials.pop(); l.got = l.serials.length; } else l.got = Math.max(0, r2(l.got - 1)); draw(); }
+    else if (l.track_serial && e.target.closest('.rl-sn')) { active = +r.dataset.i; draw(); if (fine) scan.focus(); }
+  });
+  $('#rlines').addEventListener('change', (e) => {
+    const l = lineAt(e.target); if (!l) return;
+    if (e.target.matches('[data-got]') && !l.track_serial) { l.got = Math.max(0, +e.target.value || 0); draw(); }
+    if (e.target.matches('[data-bin]')) l.bin = e.target.value.trim().toUpperCase();
+    if (e.target.matches('[data-batch]')) l.batch_no = e.target.value.trim();
+    if (e.target.matches('[data-exp]')) l.expiry = e.target.value ? e.target.value + '-01' : '';
+  });
+  $('#rsave').onclick = async () => {
+    const lines = L.filter((l) => l.got > 0), btn = $('#rsave');
+    const partyId = free ? +$('#rparty').value : draft.party_id;
+    if (!partyId) return msg('Choose the supplier.', 'err');
+    if (!lines.length) return msg('Scan or count at least one piece.', 'err');
+    const over = lines.find((l) => l.expected !== null && l.got > l.expected + 0.0005);
+    if (over) return msg(`<b>${esc(over.name)}</b>: ${qtyf(over.got)} received but only ${qtyf(over.expected)} billed. Keep the extra aside, or ask the supplier for a bill.`, 'err');
+    const nb = lines.find((l) => l.track_batch && !l.batch_no);
+    if (nb && !confirm(`${nb.name} has no batch number. Save without it?`)) return;
+    btn.disabled = true;
+    try {
+      if (useBins) {           // items without a bin get one now (a new bin when every bin is taken)
+        const missing = lines.filter((l) => !l.bin);
+        if (missing.length) {
+          try {
+            const p = await POST('/api/bins/auto', { warehouse_id: wid, item_ids: missing.map((l) => l.item_id), create: true, skip: lines.map((l) => l.bin).filter(Boolean) });
+            for (const r of p.rows) for (const l of missing) if (l.item_id === r.item_id && !l.bin) l.bin = r.bin;
+            if (p.created.length) toast(`New bin${p.created.length > 1 ? 's' : ''} made: ${p.created.join(', ')}`);
+          } catch (e) { if (e.status !== 0) throw e; }       // offline: those go to their default bin, or wait for put-away
+        }
+      }
+      const body = { type: 'GRN', party_id: partyId, date: $('#rdate').value, warehouse_id: wid, ref_id: draft ? draft.ref_id : undefined, party_ref: $('#rref').value.trim(),
+        notes: free ? 'Received without a bill or order' : '',
+        lines: lines.map((l) => ({ item_id: l.item_id, qty: l.got, rate: l.rate, discount_pct: l.discount_pct, gst_rate: l.gst_rate, src_line_id: l.src_line_id, batch_no: l.batch_no, expiry: l.expiry,
+          serials: l.serials.join('\n'), bin: useBins ? l.bin : '' })) };
+      if (ge) body.gate_entry_id = ge.id;
+      const d = await POST('/api/docs', body);
+      if (d.queued) { toast('No internet: saved on this device. It is sent by itself when you are back online.', 'info'); go('outbox'); return; }
+      dirty('items');
+      receiveDone(el, d, { kind, draft, lines, left: L.filter((l) => l.expected !== null && l.got < l.expected - 0.0005), useBins });
+    } catch (e) { msg(esc(e.message), 'err'); beep(false); } finally { btn.disabled = false; }
+  };
+  draw();
+  bins(L.map((l) => l.item_id));
+  msg(free ? 'Scan the goods one by one. Unknown codes are taught once.' : `Scan the goods of ${esc(what)} one by one.`);
+  if (fine) scan.focus();
+}
+
+function receiveDone(el, d, { kind, draft, lines, left, useBins }) {
+  const pcs = lines.reduce((s, l) => s + l.got, 0);
+  el.innerHTML = head(`Received &#10003; <span class="muted">${esc(d.number)}</span>`, `<a class="btn" href="#/doc/${d.id}">Open ${esc(d.number)}</a><a class="btn primary" href="#/receive">Receive more</a>`) + `
+    <div class="panel okbox"><b>${qtyf(pcs)}</b> piece${pcs === 1 ? '' : 's'} of ${lines.length} item${lines.length === 1 ? '' : 's'} are in stock now${useBins ? ', each in its bin' : ''}.${d.gate_entry_id ? ' The gate entry is closed.' : ''}</div>
+    ${left.length ? `<div class="panel warnbox">Still to come on ${esc(draft.ref_number)}: ${left.map((l) => `${esc(l.name)} ${qtyf(r2(l.expected - l.got))}`).join(', ')}.
+      ${kind === 'bill' ? `Receive them when they come, or if they will not come <a href="#/new/DNOTE?from=${draft.ref_id}&short=1">close them short</a> (a debit note claims them back).` : 'Receive them when they come.'}</div>` : ''}
+    <div class="panel flush">${table([{ h: 'Item', f: (l) => `<b>${esc(l.name)}</b>${l.batch_no ? `<div class="muted">Batch ${esc(l.batch_no)}</div>` : ''}${l.serials.length ? `<div class="muted">S/N ${esc(l.serials.join(', '))}</div>` : ''}` },
+      { h: 'Qty', num: 1, f: (l) => `${qtyf(l.got)} ${esc(l.unit || '')}` }, ...(useBins ? [{ h: 'Put in bin', f: (l) => `<b>${esc(l.bin || '-')}</b>` }] : []),
+      { h: '', f: (l) => `<a class="btn sm" href="#/labels/${l.item_id}?n=${Math.min(200, Math.ceil(l.got))}">Labels</a>` }], lines)}</div>
+    ${kind !== 'bill' && ME.can.purchase ? `<div class="row"><span class="muted">When the supplier's bill comes:</span><a class="btn" href="#/new/BILL?from=${d.id}">Make purchase bill from ${esc(d.number)}</a></div>` : ''}`;
+  beep(true);
+}
 
 /* ======================================================================= stock count (cycle count) */
 route(/^stockcount$/, async (el, m, q) => {
@@ -3384,9 +3733,9 @@ route(/^pos$/, async (el) => {
     const lc = code.toLowerCase();
     let it = items.find((i) => i.name.toLowerCase() === lc || (i.barcode && i.barcode === code) || (i.sku && i.sku.toLowerCase() === lc) || ('st' + i.id) === lc);
     if (!it) { try { it = await GET('/api/items/lookup?code=' + encodeURIComponent(code)); } catch (e) { toast(e.message); beep(false); return; } }
-    const line = cart.find((l) => l.item_id === it.id);
-    if (line) line.qty = r2(line.qty + 1);
-    else cart.push({ item_id: it.id, name: it.name, code: labelCode(it), qty: 1, rate: it.sale_price, gst_rate: it.gst_rate, stock: it.qty_on_hand, unit: it.unit });
+    const line = cart.find((l) => l.item_id === it.id), n = it.pack_qty || 1;     // a carton code counts its pieces
+    if (line) line.qty = r2(line.qty + n);
+    else cart.push({ item_id: it.id, name: it.name, code: labelCode(it), qty: n, rate: it.sale_price, gst_rate: it.gst_rate, stock: it.qty_on_hand, unit: it.unit });
     beep(true); draw();
   };
   const scan = $('#scan');
@@ -3449,8 +3798,10 @@ function beep(ok) {
     if (navigator.vibrate) navigator.vibrate(ok ? 40 : [80, 40, 80]);
   } catch (e) { /* no audio */ }
 }
-async function cameraScan(onCode) {
-  const root = $('#modal-root');
+async function cameraScan(onCode, { once = false } = {}) {
+  // its own layer, so it can open over a form without replacing it
+  let root = $('#cam-root');
+  if (!root) { root = document.createElement('div'); root.id = 'cam-root'; document.body.appendChild(root); }
   root.innerHTML = `<div class="modal-bg"><div class="modal"><h2>Point the camera at a barcode</h2><video id="cv" playsinline muted style="width:100%;border-radius:8px;background:#000"></video>
     <div class="actions"><button class="btn" id="cx">Done</button></div></div></div>`;
   let stream, stop = false, last = '', lastAt = 0;
@@ -3464,7 +3815,7 @@ async function cameraScan(onCode) {
       if (stop) return;
       try {
         const codes = await det.detect(v);
-        if (codes.length && (codes[0].rawValue !== last || Date.now() - lastAt > 1500)) { last = codes[0].rawValue; lastAt = Date.now(); await onCode(last); }
+        if (codes.length && (codes[0].rawValue !== last || Date.now() - lastAt > 1500)) { last = codes[0].rawValue; lastAt = Date.now(); if ((await onCode(last)) && once) return close(); }
       } catch (e) { /* frame not ready */ }
       setTimeout(tick, 250);
     };
@@ -3845,6 +4196,8 @@ async function boot() {
     return;
   }
   if (ME._offline) ME.today = new Date(Date.now() - new Date().getTimezoneOffset() * 60000).toISOString().slice(0, 10);
+  // open on the user's own start screen (a link to a particular page still opens that page)
+  if (/^(#\/?(dashboard)?)?$/.test(location.hash) && myHome() !== 'dashboard') history.replaceState(null, '', '/#/' + myHome());
   shell();
   wireInstall();
   outboxBadge(); syncOutbox();
@@ -3852,6 +4205,7 @@ async function boot() {
 }
 window.addEventListener('hashchange', () => {
   $('#modal-root').innerHTML = '';
+  if ($('#cam-root #cx')) $('#cam-root #cx').click();      // a camera left open stops
   ['#gres', '#newmenu'].forEach((x) => { const e = $(x); if (e) e.hidden = true; });
   render();
 });
