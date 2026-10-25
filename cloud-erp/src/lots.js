@@ -7,19 +7,32 @@
    Goods coming in go to the item's default bin in that godown (items.location, when such a bin exists) and to the
    batch on the line. Goods going out are taken first from what is not put away, then from the bins (the default bin
    first), and from the batch on the line, else the batch that expires first (FEFO), then "no batch".
-   Every batch movement is kept in batch_moves, so cancelling a bill puts goods back into the very same batches. */
+   Every batch movement is kept in batch_moves, so cancelling a bill puts goods back into the very same batches.
+   Serial numbers (IMEI) work the same way, one row per unit in `serials` with its history in serial_moves: in stock
+   in a godown, sold (to whom, when: the warranty check), or void when the purchase that brought it is cancelled. */
 import { bad, notFound, str, roundQty, nowIso, today, addDays, loadByIds } from './lib.js';
 import { requireCan } from './auth.js';
 
 const R = (p) => Math.round(p) / 100;
 
 /* The bins of one godown, and the bin and batch detail of the given items there. items: item rows (id, location, track_batch). */
-export async function lotState(db, orgId, warehouseId, items, { hasBins = null, have: known = null } = {}) {
+export async function lotState(db, orgId, warehouseId, items, { hasBins = null, have: known = null, incoming = [] } = {}) {
   const ids = [...new Set(items.filter((i) => i && !i.is_service).map((i) => i.id))];
-  const S = { wh: warehouseId, bins: new Map(), binsOf: new Map(), free: new Map(), batchesOf: new Map(), loose: new Map(), item: new Map() };
+  const S = { wh: warehouseId, bins: new Map(), binsOf: new Map(), free: new Map(), batchesOf: new Map(), loose: new Map(), item: new Map(),
+    serialsOf: new Map(), inStock: new Set() };
   for (const i of items) if (i) S.item.set(i.id, i);
   if (!ids.length) return S;
-  const tracked = ids.filter((id) => S.item.get(id).track_batch);
+  const tracked = ids.filter((id) => S.item.get(id).track_batch), serialItems = ids.filter((id) => S.item.get(id).track_serial);
+  // serials in stock here (oldest first); serials coming in that are already in stock anywhere are refused
+  if (serialItems.length) {
+    const rows = await loadByIds(db, `SELECT item_id, serial FROM serials WHERE org_id = ? AND warehouse_id = ? AND status = 'in' AND item_id IN (?ids) ORDER BY in_date, id`,
+      [orgId, warehouseId], serialItems);
+    for (const id of serialItems) S.serialsOf.set(id, rows.filter((r) => r.item_id === id).map((r) => r.serial));
+    if (incoming.length) {
+      const dup = await loadByIds(db, `SELECT item_id, serial FROM serials WHERE org_id = ? AND status = 'in' AND serial IN (?ids)`, [orgId], incoming);
+      for (const r of dup) S.inStock.add(r.item_id + '|' + r.serial);
+    }
+  }
   // a godown without bins and items without batches need nothing more (hasBins: the caller already knows)
   const bins = hasBins === false ? [] : (await db.prepare(`SELECT id, code FROM bins WHERE org_id = ? AND warehouse_id = ?`).bind(orgId, warehouseId).all()).results;
   if (!bins.length && !tracked.length) return S;
@@ -49,9 +62,18 @@ export async function lotState(db, orgId, warehouseId, items, { hasBins = null, 
 const fefo = (a, b) => (a.expiry || '9999') .localeCompare(b.expiry || '9999') || (a.mfg || '').localeCompare(b.mfg || '') || a.no.localeCompare(b.no, undefined, { numeric: true });
 
 /* Goods leaving: which bins and which batches they come from. wantBatch = the batch typed on the line, if any. */
-export function takeOut(S, item, qty, wantBatch = '', soft = false) {
-  const plan = { bins: [], batches: [] };
+export function takeOut(S, item, qty, wantBatch = '', soft = false, serials = [], softSerials = soft) {
+  const plan = { bins: [], batches: [], serials: [] };
   if (!item || item.is_service) return plan;
+  if (item.track_serial) {
+    // the serials typed or scanned on the line; none (or, from a source line, ones no longer here): the oldest in stock
+    const list = S.serialsOf.get(item.id) || [];
+    const want = serials && serials.length && !(softSerials && serials.some((x) => !list.includes(x))) ? serials : null;
+    if (want) for (const x of want) if (!list.includes(x)) throw bad(`Serial ${x} of ${item.name} is not in stock here.`);
+    const pick = want || list.slice(0, Math.max(0, Math.floor(qty + 0.0005)));
+    S.serialsOf.set(item.id, list.filter((x) => !pick.includes(x)));
+    plan.serials = pick.map((x) => ({ serial: x, dir: -1 }));
+  }
   // bins: what is not put away goes first, then the bins
   let need = qty;
   const free = Math.max(0, S.free.get(item.id) || 0), fromFree = Math.min(free, need);
@@ -84,9 +106,15 @@ export function takeOut(S, item, qty, wantBatch = '', soft = false) {
 }
 
 /* Goods coming in: into the item's default bin here (if that bin exists) and into the batch on the line. */
-export function putIn(S, item, qty, batch = null, binCode = '') {
-  const plan = { bins: [], batches: [] };
+export function putIn(S, item, qty, batch = null, binCode = '', serials = []) {
+  const plan = { bins: [], batches: [], serials: [] };
   if (!item || item.is_service) return plan;
+  if (item.track_serial && serials && serials.length) {
+    const here = S.serialsOf.get(item.id) || [];
+    for (const x of serials) if (here.includes(x) || S.inStock.has(item.id + '|' + x)) throw bad(`Serial ${x} of ${item.name} is already in stock.`);
+    S.serialsOf.set(item.id, [...here, ...serials]);
+    plan.serials = serials.map((x) => ({ serial: x, dir: 1 }));
+  }
   const bin = S.bins.get(binCode || item.location || '');
   if (bin) {
     plan.bins.push({ bin_id: bin.id, code: bin.code, qty });
@@ -103,7 +131,7 @@ export function putIn(S, item, qty, batch = null, binCode = '') {
 }
 
 /* D1 statements for a plan (bins and batches); ref like stock_moves: the document's txk, or a plain id */
-export function lotStatements(db, orgId, { item, warehouse, plan, date: d, refType, refId, refTxk, refTable }) {
+export function lotStatements(db, orgId, { item, warehouse, plan, date: d, refType, refId, refTxk, refTable, party = null }) {
   const out = [];
   if (!plan) return out;
   for (const b of plan.bins) {
@@ -120,6 +148,19 @@ export function lotStatements(db, orgId, { item, warehouse, plan, date: d, refTy
         VALUES (?, (SELECT id FROM batches WHERE org_id = ? AND item_id = ? AND warehouse_id = ? AND batch_no = ?), ?, ?, ?, ?, ?, ${refExpr})`)
       .bind(orgId, orgId, item, warehouse, b.no, item, warehouse, d, b.qty, refType, refTxk || refId || null));
   }
+  for (const x of plan.serials || []) {
+    if (x.dir > 0) {
+      out.push(db.prepare(`INSERT INTO serials (org_id, item_id, serial, warehouse_id, status, in_date, created_at) VALUES (?, ?, ?, ?, 'in', ?, ?)
+          ON CONFLICT(org_id, serial, item_id) DO UPDATE SET status = 'in', warehouse_id = excluded.warehouse_id, in_date = excluded.in_date, out_date = NULL, party_id = NULL`)
+        .bind(orgId, item, x.serial, warehouse, d, nowIso()));
+    } else {
+      out.push(db.prepare(`UPDATE serials SET status = ?, out_date = ?, party_id = ? WHERE org_id = ? AND item_id = ? AND serial = ?`)
+        .bind(x.void ? 'void' : 'out', d, x.void ? null : party, orgId, item, x.serial));
+    }
+    out.push(db.prepare(`INSERT INTO serial_moves (org_id, serial_id, item_id, warehouse_id, date, dir, ref_type, ref_id, party_id)
+        VALUES (?, (SELECT id FROM serials WHERE org_id = ? AND item_id = ? AND serial = ?), ?, ?, ?, ?, ?, ${refExpr}, ?)`)
+      .bind(orgId, orgId, item, x.serial, item, warehouse, d, x.dir, refType, refTxk || refId || null, party));
+  }
   return out;
 }
 
@@ -128,6 +169,37 @@ export const planBatchText = (plan) => {
   const bs = (plan && plan.batches || []).filter((b) => b.no);
   return { batch_no: [...new Set(bs.map((b) => b.no))].join(', ').slice(0, 80), expiry: bs.map((b) => b.expiry).filter(Boolean).sort()[0] || '' };
 };
+/* serial / IMEI numbers typed or scanned on a line: one per line, or separated by commas or spaces */
+export function cleanSerials(raw) {
+  const list = (Array.isArray(raw) ? raw : String(raw || '').split(/[\s,;]+/)).map((x) => str(x, 40).toUpperCase()).filter(Boolean);
+  if (list.length > 1000) throw bad('At most 1000 serial numbers on one line.');
+  const seen = new Set();
+  for (const x of list) { if (seen.has(x)) throw bad(`Serial ${x} is typed twice.`); seen.add(x); }
+  return list;
+}
+
+/* one serial / IMEI: where it is, who bought it and when, and whether it is still under warranty */
+export async function serialLookup(c, q) {
+  const term = str(q, 40).toUpperCase();
+  if (term.length < 3) return { rows: [] };
+  const { results } = await c.db.prepare(`SELECT s.id, s.serial, s.status, s.in_date, s.out_date, i.id AS item_id, i.name AS item, i.warranty_months, w.name AS warehouse, p.name AS party, p.phone
+      FROM serials s JOIN items i ON i.id = s.item_id LEFT JOIN warehouses w ON w.id = s.warehouse_id LEFT JOIN parties p ON p.id = s.party_id
+      WHERE s.org_id = ? AND s.serial LIKE ? ORDER BY s.serial = ? DESC, s.serial LIMIT 20`).bind(c.org.id, `%${term.replace(/[%_]/g, '')}%`, term).all();
+  const ids = results.slice(0, 5).map((r) => r.id);
+  const hist = ids.length ? (await c.db.prepare(`SELECT sm.serial_id, sm.date, sm.dir, sm.ref_type, d.id AS doc_id, d.number, p.name AS party, w.name AS warehouse FROM serial_moves sm
+      LEFT JOIN docs d ON d.id = sm.ref_id AND d.org_id = sm.org_id AND sm.ref_type NOT IN ('OPEN','ADJ','COUNT','XFER','MFG','MFG-X')
+      LEFT JOIN parties p ON p.id = sm.party_id LEFT JOIN warehouses w ON w.id = sm.warehouse_id
+      WHERE sm.org_id = ? AND sm.serial_id IN (${ids.map(() => '?').join(',')}) ORDER BY sm.id`).bind(c.org.id, ...ids).all()).results : [];
+  const t = today();
+  return { rows: results.map((r) => {
+    let until = '';
+    if (r.status === 'out' && r.out_date && r.warranty_months) {
+      const [y, m, d] = r.out_date.split('-').map(Number), e = new Date(Date.UTC(y, m - 1 + r.warranty_months, d));
+      until = e.toISOString().slice(0, 10);
+    }
+    return { ...r, warranty_until: until, in_warranty: !!until && until >= t, history: hist.filter((h) => h.serial_id === r.id) };
+  }) };
+}
 
 /* batch number and expiry typed on a line: expiry as YYYY-MM (the last day of that month) or YYYY-MM-DD */
 export function cleanBatch(raw) {
@@ -236,16 +308,18 @@ export async function moveInBins(c, body) {
 
 /* one item: its bins and batches in every godown (item page, the batch picker on bills) */
 export async function itemLots(c, itemId, warehouseId = 0) {
-  const it = await c.db.prepare(`SELECT id, name, unit, location, track_batch FROM items WHERE id = ? AND org_id = ?`).bind(itemId, c.org.id).first();
+  const it = await c.db.prepare(`SELECT id, name, unit, location, track_batch, track_serial FROM items WHERE id = ? AND org_id = ?`).bind(itemId, c.org.id).first();
   if (!it) throw notFound('Item not found.');
   const w = warehouseId ? ' AND x.warehouse_id = ?' : '', args = warehouseId ? [c.org.id, itemId, warehouseId] : [c.org.id, itemId];
-  const [bins, batches] = await c.db.batch([
+  const [bins, batches, serials] = await c.db.batch([
     c.db.prepare(`SELECT x.bin_id, b.code, x.warehouse_id, w.name AS warehouse, x.qty FROM bin_stock x JOIN bins b ON b.id = x.bin_id JOIN warehouses w ON w.id = x.warehouse_id
       WHERE x.org_id = ? AND x.item_id = ?${w} AND x.qty > 0.0005 ORDER BY w.name, b.code`).bind(...args),
     c.db.prepare(`SELECT x.batch_no, x.expiry, x.mfg, x.warehouse_id, w.name AS warehouse, x.qty FROM batches x JOIN warehouses w ON w.id = x.warehouse_id
       WHERE x.org_id = ? AND x.item_id = ?${w} AND x.qty > 0.0005 ORDER BY COALESCE(NULLIF(x.expiry, ''), '9999'), x.batch_no`).bind(...args),
+    c.db.prepare(`SELECT x.serial, x.warehouse_id, w.name AS warehouse, x.in_date FROM serials x JOIN warehouses w ON w.id = x.warehouse_id
+      WHERE x.org_id = ? AND x.item_id = ?${w} AND x.status = 'in' ORDER BY x.in_date, x.id LIMIT 500`).bind(...args),
   ]);
-  return { item: it, bins: bins.results.map((r) => ({ ...r, qty: roundQty(r.qty) })), batches: batches.results.map((r) => ({ ...r, qty: roundQty(r.qty) })) };
+  return { item: it, bins: bins.results.map((r) => ({ ...r, qty: roundQty(r.qty) })), batches: batches.results.map((r) => ({ ...r, qty: roundQty(r.qty) })), serials: serials.results };
 }
 
 /* expiry: batches in stock that have expired or expire within `days` days, with their value at average cost */

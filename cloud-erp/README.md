@@ -27,7 +27,7 @@ Market research and pricing advice: see [docs/COMPETITORS.md](docs/COMPETITORS.m
 | **Tally export** | One XML file with ledgers and every voucher for a period, which imports into Tally Prime / ERP 9 with a matching trial balance. |
 | **Plans (SaaS)** | Free / Starter ₹999 / Growth ₹2,499 / Business ₹4,499 a year, with invoice, user and godown limits and feature gates. 14-day Growth trial on signup. One-time activation codes and an admin panel (`#/admin`) to manage every business. |
 | **Installable app (PWA)** | "Install app" on Android/desktop, "Add to Home Screen" on iPhone. Opens full-screen with shortcuts to POS, New invoice and Khata. The app shell opens offline; business data always comes live. |
-| **Dashboard** | Sales, profit, receivables, payables, stock value, GST due, 12-month chart, overdue invoices, low stock. |
+| **Dashboard** | **Aaj ke kaam (Today)**: one card with everything that needs doing (overdue bills, promises due, POs to approve, bills to pay, expiring batches, low stock, orders to deliver or receive, stock not put away), one tap each. Then sales, profit, receivables, payables, stock value, GST due, 12-month chart, overdue invoices, low stock. |
 | **Documents** | Printable GST tax invoice with the amount in words, UPI ID and signature block (Print → Save as PDF). WhatsApp invoice sharing. CSV export of every list and report. |
 
 ### Vaada Pakka (payment promises) and Kal ka Cash
@@ -50,7 +50,13 @@ Market research and pricing advice: see [docs/COMPETITORS.md](docs/COMPETITORS.m
 - **Bins & Racks** (`#/bins`): make racks and shelves once (A-01-1 = rack A, shelf 1, level 1), print bin labels with barcodes, put away stock that is in no bin yet, and move stock between bins. Each item has a default bin; goods coming in go there, goods going out are taken from what is not put away first, then from the bins. The pick list shows the bins (with quantities) and the batch to pick.
 - **Batch & Expiry** (`#/expiry`): an item can track batches. Purchase bills, GRNs and opening stock take a batch number and expiry month; sales take the chosen batch, or the one that expires first (FEFO). The batch and expiry print on the bill; returns go back to their batch; cancelling a bill puts goods back into the very same batches; transfers take the batch along. The expiry screen lists expired and soon-expiring stock with its value.
 - **Stock Ageing** (`#/stock-ageing`): the stock on hand by age (0-30, 31-60, 61-90, 91-180, 181-365, 366+ days, first in first out), dead and slow-moving stock from the last sale, and an ABC class from the last 12 months of sales.
-- Bins and batches are detail under each godown's quantity (`stock`), which stays the only figure the books and stock value use (`src/lots.js`).
+- **Serial / IMEI** (`#/serials`): an item can track serial numbers, with a warranty in months. Serials are scanned or typed on the purchase bill, opening stock or production (one per line; the quantity follows the count). On a sale the shop taps the IMEIs in stock, or the oldest goes. They print on the bill (S/N). Scanning a serial shows where it is, who bought it on which bill, and whether it is still under warranty. Returns and cancellations bring it back; a cancelled purchase makes it void; a serial can never be in stock twice.
+- Bins, batches and serials are detail under each godown's quantity (`stock`), which stays the only figure the books and stock value use (`src/lots.js`).
+
+### Manufacturing, approvals, online orders
+- **Production (BOM)** (`#/production`, `src/mfg.js`): an item can have a recipe (which parts, how much, for how many made). The item page shows the cost of parts, the margin and how many can be made from stock now. **Make** takes the parts out (FEFO batches, bins, serials as any goods out) and brings the finished item in at their cost, so the stock value does not change and no journal is needed. A run can be cancelled while its goods are unused; a run may also record what was actually used.
+- **Purchase order approval**: Settings → Approvals sets an amount. A purchase order above it made by staff waits (`pending`) until the owner or an admin approves it; nothing can be received or billed against it before that. The owner's and admins' own orders go straight through. Waiting orders show on the Today card.
+- **Online orders** (`#/channels`, `src/channels.js`): pick the order report from Amazon, Flipkart, Meesho or any store (CSV, TXT or Excel; Excel is read in the browser). Columns are found by their usual names, items by SKU, barcode or name; cancelled and returned rows are left out. Every order becomes a GST invoice billed to one party per channel and buyer state ("Amazon (Maharashtra)", due in 7 days), so IGST or CGST + SGST is right, with the price including GST split back. An order id is billed once only. **Stock file**: SKU and quantity in hand, for the marketplace's inventory upload.
 
 ### How each document hits the books
 
@@ -179,7 +185,9 @@ cloud-erp/
   src/saas.js          plans, limits, activation codes
   src/vasooli.js       collections: reminder schedule, balance statements, receipts, weekly summary, recovery file
   src/msg.js           every customer message and link preview in English, Hindi and Hinglish
-  src/lots.js          bins (racks / shelves) and batches with expiry under each godown's stock: FEFO, put-away, expiry
+  src/lots.js          bins (racks / shelves), batches with expiry and serial / IMEI numbers under each godown's stock
+  src/mfg.js           recipes (bill of materials) and production runs
+  src/channels.js      marketplace order import (Amazon, Flipkart, Meesho, any CSV) and the stock file
   tools/gen-og.mjs     makes the link-preview posters (public/og-*.png) in the three languages
   public/              the web app (plain HTML/CSS/JS, no build step), PWA manifest + service worker, csv.js (export), _headers
   test/run.mjs         end-to-end test against a running worker
@@ -254,4 +262,5 @@ every business has to connect Drive again.
 
 - Direct IRN / e-way bill generation through an API. This needs a GSP account; today the JSON files
   are uploaded on the government portals.
-- Serial numbers (IMEI), manufacturing (bill of materials), and approval workflows.
+- Live marketplace sync through the Amazon / Flipkart seller APIs (today: order report import and a stock file).
+- Offline data entry (a queue that syncs later), purchase-bill scanning (OCR), and staff attendance / payroll.

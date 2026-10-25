@@ -14,10 +14,11 @@ import { randomHex } from './auth.js';
 import { auditStatement } from './engine.js';
 
 const ID_TABLES = ['accounts', 'warehouses', 'roles', 'parties', 'items', 'docs', 'doc_lines', 'payments', 'journals', 'journal_lines', 'khata',
-  'stock_moves', 'gate_entries', 'vaade', 'vaada_kisht', 'recurring', 'reminder_log', 'confirmations', 'bins', 'batches', 'batch_moves'];
-const OTHER_TABLES = ['payment_allocs', 'stock', 'counters', 'org_files', 'bin_stock'];
-const ORG_FIELDS = ['name', 'gstin', 'state', 'address', 'phone', 'upi_id', 'fy_start', 'city', 'pincode', 'email', 'mode', 'print', 'series', 'fields', 'vaada', 'msg_lang', 'udyam'];
-const JSON_FIELDS = ['print', 'series', 'fields', 'vaada'];
+  'stock_moves', 'gate_entries', 'vaade', 'vaada_kisht', 'recurring', 'reminder_log', 'confirmations', 'bins', 'batches', 'batch_moves',
+  'serials', 'serial_moves', 'boms', 'bom_lines', 'productions'];
+const OTHER_TABLES = ['payment_allocs', 'stock', 'counters', 'org_files', 'bin_stock', 'channel_orders'];
+const ORG_FIELDS = ['name', 'gstin', 'state', 'address', 'phone', 'upi_id', 'fy_start', 'city', 'pincode', 'email', 'mode', 'print', 'series', 'fields', 'vaada', 'msg_lang', 'udyam', 'approvals'];
+const JSON_FIELDS = ['print', 'series', 'fields', 'vaada', 'approvals'];
 const PAY_REFS = ['payment', 'receipt', 'payment-X', 'receipt-X'];
 const MAX_ROWS = 300000, MAX_SQL = 90000;
 
@@ -85,7 +86,10 @@ export async function restoreBackup(c, backup) {
     assign('warehouses', whs.filter((w) => w !== firstWh));
     for (const t of ID_TABLES.filter((x) => !['accounts', 'warehouses'].includes(x))) assign(t, T[t]);
 
-    const docOrPay = (r) => (PAY_REFS.includes(String(r.ref_type)) ? to('payments', r.ref_id) : to('docs', r.ref_id));
+    const docOrPay = (r) => (PAY_REFS.includes(String(r.ref_type)) ? to('payments', r.ref_id) : /^MFG(-X)?$/.test(String(r.ref_type)) ? to('productions', r.ref_id) : to('docs', r.ref_id));
+    // batch / serial history: a document or production run; adjustments, counts and transfers carry no reference
+    const lotRef = (r) => (/^[A-Z]+(-X)?$/.test(String(r.ref_type)) && !['OPEN', 'ADJ', 'COUNT', 'XFER'].includes(String(r.ref_type)) ? docOrPay(r) : null);
+    const itemsIn = (json) => { try { return JSON.stringify(JSON.parse(json || '[]').map((l) => ({ ...l, item_id: to('items', l.item_id) }))); } catch (e) { return '[]'; } };
     const FIX = {
       accounts: () => ({}),
       warehouses: () => ({}),
@@ -111,8 +115,14 @@ export async function restoreBackup(c, backup) {
       bins: (r) => ({ warehouse_id: to('warehouses', r.warehouse_id) }),
       bin_stock: (r) => ({ item_id: to('items', r.item_id), bin_id: to('bins', r.bin_id), warehouse_id: to('warehouses', r.warehouse_id) }),
       batches: (r) => ({ item_id: to('items', r.item_id), warehouse_id: to('warehouses', r.warehouse_id) }),
-      batch_moves: (r) => ({ batch_id: to('batches', r.batch_id), item_id: to('items', r.item_id), warehouse_id: to('warehouses', r.warehouse_id),
-        ref_id: /^[A-Z]+(-X)?$/.test(String(r.ref_type)) && !['OPEN', 'ADJ', 'COUNT', 'XFER'].includes(String(r.ref_type)) ? to('docs', r.ref_id) : null }),
+      batch_moves: (r) => ({ batch_id: to('batches', r.batch_id), item_id: to('items', r.item_id), warehouse_id: to('warehouses', r.warehouse_id), ref_id: lotRef(r) }),
+      serials: (r) => ({ item_id: to('items', r.item_id), warehouse_id: to('warehouses', r.warehouse_id), party_id: to('parties', r.party_id) }),
+      serial_moves: (r) => ({ serial_id: to('serials', r.serial_id), item_id: to('items', r.item_id), warehouse_id: to('warehouses', r.warehouse_id),
+        party_id: to('parties', r.party_id), ref_id: lotRef(r) }),
+      boms: (r) => ({ item_id: to('items', r.item_id) }),
+      bom_lines: (r) => ({ bom_id: to('boms', r.bom_id), item_id: to('items', r.item_id) }),
+      productions: (r) => ({ item_id: to('items', r.item_id), warehouse_id: to('warehouses', r.warehouse_id), created_by: me, lines: itemsIn(r.lines) }),
+      channel_orders: (r) => ({ doc_id: to('docs', r.doc_id) }),
       confirmations: (r) => ({ party_id: to('parties', r.party_id), created_by: me, token: randomHex(12) }),   // old links stay dead
       counters: () => ({}),
       org_files: () => ({}),
@@ -120,7 +130,8 @@ export async function restoreBackup(c, backup) {
     // a row whose own record of the link is gone is left out (it could not be shown or posted anyway)
     const NEED = { doc_lines: ['doc_id'], payment_allocs: ['payment_id', 'doc_id'], journal_lines: ['journal_id', 'account_id'], stock: ['item_id', 'warehouse_id'],
       vaada_kisht: ['vaada_id'], recurring: ['src_doc_id'], reminder_log: ['party_id'], confirmations: ['party_id'],
-      bins: ['warehouse_id'], bin_stock: ['item_id', 'bin_id', 'warehouse_id'], batches: ['item_id', 'warehouse_id'], batch_moves: ['batch_id', 'item_id', 'warehouse_id'], stock_moves: ['item_id', 'warehouse_id'], payments: ['party_id', 'account_id'], khata: ['party_id'] };
+      bins: ['warehouse_id'], bin_stock: ['item_id', 'bin_id', 'warehouse_id'], batches: ['item_id', 'warehouse_id'], batch_moves: ['batch_id', 'item_id', 'warehouse_id'],
+      serials: ['item_id'], serial_moves: ['serial_id', 'item_id'], boms: ['item_id'], bom_lines: ['bom_id', 'item_id'], productions: ['item_id', 'warehouse_id'], stock_moves: ['item_id', 'warehouse_id'], payments: ['party_id', 'account_id'], khata: ['party_id'] };
 
     const st = [];
     const insert = (t, rows, verb = 'INSERT') => {
@@ -168,8 +179,10 @@ export async function restoreBackup(c, backup) {
     counts.accounts = insert('accounts', newAccounts);
     counts.warehouses = insert('warehouses', whs.filter((w) => w !== firstWh));
     for (const t of ['roles', 'parties', 'items', 'docs', 'doc_lines', 'payments', 'payment_allocs', 'journals', 'journal_lines', 'khata', 'stock', 'stock_moves',
-      'gate_entries', 'vaade', 'vaada_kisht', 'recurring', 'reminder_log', 'confirmations', 'bins', 'batches', 'batch_moves']) counts[t] = insert(t, T[t]);
+      'gate_entries', 'vaade', 'vaada_kisht', 'recurring', 'reminder_log', 'confirmations', 'bins', 'batches', 'batch_moves',
+      'serials', 'serial_moves', 'boms', 'bom_lines', 'productions']) counts[t] = insert(t, T[t]);
     counts.bin_stock = insert('bin_stock', T.bin_stock);
+    counts.channel_orders = insert('channel_orders', T.channel_orders);
     counts.counters = insert('counters', T.counters, 'INSERT OR REPLACE');
     counts.org_files = insert('org_files', T.org_files.filter((f) => typeof f.data === 'string' && f.data.length <= 120000 && /^image\//.test(String(f.mime))), 'INSERT OR REPLACE');
     // promise stats are kept by a trigger on changes only, so they are worked out once here

@@ -68,6 +68,7 @@ const SCREENS = (a) => {
     [`GET /api/parties/${party}/ledger`, 4, 120],
     ['GET /api/audit', 2, 80],
     ['GET /api/plan', 3, 30],
+    ['GET /api/today', 2, 60],
   ];
 };
 async function reads(a) {

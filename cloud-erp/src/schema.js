@@ -3,7 +3,7 @@
    Every business table carries org_id: one database serves many businesses (multi-tenant).
    migrate() runs on the first request after each deploy, so no manual migration step is needed. */
 
-export const SCHEMA_VERSION = 22;
+export const SCHEMA_VERSION = 23;
 
 // document types whose monthly totals doc_month keeps (sales and purchase money documents)
 const MONTH_TYPES = `('INV','SRET','CNOTE','BILL','PRET','DNOTE')`;
@@ -399,6 +399,34 @@ export const MIGRATIONS = {
        warehouse_id INTEGER NOT NULL, date TEXT NOT NULL, qty REAL NOT NULL, ref_type TEXT NOT NULL, ref_id INTEGER)`,
     `CREATE INDEX IF NOT EXISTS ix_bmoves_ref ON batch_moves (org_id, ref_type, ref_id)`,
     `CREATE INDEX IF NOT EXISTS ix_bmoves_batch ON batch_moves (batch_id)`,
+  ],
+  /* serial / IMEI numbers with warranty (src/lots.js), manufacturing (bill of materials and production runs,
+     src/mfg.js), approval of big purchase orders, and orders imported from marketplaces (src/channels.js). */
+  23: [
+    `ALTER TABLE items ADD COLUMN track_serial INTEGER NOT NULL DEFAULT 0`,
+    `ALTER TABLE items ADD COLUMN warranty_months INTEGER NOT NULL DEFAULT 0`,
+    `ALTER TABLE doc_lines ADD COLUMN serials TEXT DEFAULT ''`,
+    `CREATE TABLE IF NOT EXISTS serials (id INTEGER PRIMARY KEY, org_id INTEGER NOT NULL, item_id INTEGER NOT NULL, serial TEXT NOT NULL,
+       warehouse_id INTEGER, status TEXT NOT NULL DEFAULT 'in' CHECK (status IN ('in','out','void')), in_date TEXT, out_date TEXT,
+       party_id INTEGER, created_at TEXT NOT NULL, UNIQUE (org_id, serial, item_id))`,
+    `CREATE INDEX IF NOT EXISTS ix_serials_stock ON serials (org_id, item_id, warehouse_id, status)`,
+    `CREATE TABLE IF NOT EXISTS serial_moves (id INTEGER PRIMARY KEY, org_id INTEGER NOT NULL, serial_id INTEGER NOT NULL, item_id INTEGER NOT NULL,
+       warehouse_id INTEGER, date TEXT NOT NULL, dir INTEGER NOT NULL, ref_type TEXT NOT NULL, ref_id INTEGER, party_id INTEGER)`,
+    `CREATE INDEX IF NOT EXISTS ix_smoves_ref ON serial_moves (org_id, ref_type, ref_id)`,
+    `CREATE INDEX IF NOT EXISTS ix_smoves_serial ON serial_moves (serial_id)`,
+    `CREATE TABLE IF NOT EXISTS boms (id INTEGER PRIMARY KEY, org_id INTEGER NOT NULL, item_id INTEGER NOT NULL, out_qty REAL NOT NULL DEFAULT 1,
+       notes TEXT DEFAULT '', updated_at TEXT NOT NULL, UNIQUE (org_id, item_id))`,
+    `CREATE TABLE IF NOT EXISTS bom_lines (id INTEGER PRIMARY KEY, bom_id INTEGER NOT NULL, item_id INTEGER NOT NULL, qty REAL NOT NULL)`,
+    `CREATE INDEX IF NOT EXISTS ix_bomlines ON bom_lines (bom_id)`,
+    `CREATE TABLE IF NOT EXISTS productions (id INTEGER PRIMARY KEY, org_id INTEGER NOT NULL, number TEXT NOT NULL, item_id INTEGER NOT NULL,
+       qty REAL NOT NULL, warehouse_id INTEGER NOT NULL, date TEXT NOT NULL, value INTEGER NOT NULL DEFAULT 0, batch_no TEXT DEFAULT '',
+       lines TEXT NOT NULL DEFAULT '[]', status TEXT NOT NULL DEFAULT 'done' CHECK (status IN ('done','cancelled')), notes TEXT DEFAULT '',
+       created_by INTEGER, created_at TEXT NOT NULL, txk TEXT UNIQUE, UNIQUE (org_id, number))`,
+    `CREATE INDEX IF NOT EXISTS ix_prod_org ON productions (org_id, date)`,
+    `ALTER TABLE orgs ADD COLUMN approvals TEXT DEFAULT ''`,
+    `ALTER TABLE docs ADD COLUMN approved_by INTEGER`,
+    `CREATE TABLE IF NOT EXISTS channel_orders (org_id INTEGER NOT NULL, channel TEXT NOT NULL, order_id TEXT NOT NULL, doc_id INTEGER,
+       created_at TEXT NOT NULL, PRIMARY KEY (org_id, channel, order_id))`,
   ],
 };
 
