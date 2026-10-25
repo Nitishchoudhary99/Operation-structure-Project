@@ -1715,5 +1715,180 @@ else {
   }
 }
 
+/* bill first, goods later: a purchase bill booked while the goods are on the way (Goods in Transit), goods received
+   against it (scan screen: GRN from the bill, learnt codes, bins made on the spot), shortage closed by a debit note,
+   the gate's e-invoice QR matched to the bill; each user's own menu and a guard who can only use the gate register */
+{
+  const ip = '203.0.113.170';
+  const email = `recv${Date.now()}@test.in`;
+  const su = await rq('POST', '/api/auth/signup', { business: 'Sharma Hardware', name: 'S', email, password: 'Recv-pass-1234', state: 'Rajasthan' }, { ip });
+  const V = async (m, p, b) => { const r = await rq(m, p, b, { cookie: su.cookie, ip }); if (r.status >= 400) throw new Error(`${m} ${p} -> ${r.status} ${r.data.error}`); return r.data; };
+  const E = (m, p, b) => rq(m, p, b, { cookie: su.cookie, ip });
+  const wh = (await V('GET', '/api/warehouses')).rows[0];
+  const sup = await V('POST', '/api/parties', { name: 'Shree Vinayak Traders', kind: 'supplier', state: 'Rajasthan', gstin: '08AAACS1234F1Z5' });
+  const fan = await V('POST', '/api/items', { name: 'Table fan', unit: 'pc', sale_price: 1800, purchase_price: 1000, gst_rate: 18 });
+  const bolt = await V('POST', '/api/items', { name: 'Hex bolt', unit: 'pc', sale_price: 2, purchase_price: 1, gst_rate: 18 });
+  const freight = await V('POST', '/api/items', { name: 'Freight', unit: 'trip', sale_price: 0, purchase_price: 500, gst_rate: 18, is_service: true });
+  const accts = (await V('GET', '/api/accounts')).rows;
+  const bal = async (sys) => {
+    const tb = await V('GET', '/api/reports/trial-balance'), a = accts.find((x) => x.sys === sys), r = a && tb.rows.find((x) => x.code === a.code);
+    return r ? Math.round(((r.debit || 0) - (r.credit || 0)) * 100) / 100 : 0;
+  };
+  const qty = async (id) => (await V('GET', '/api/items')).rows.find((i) => i.id === id).qty_on_hand;
+  check('every business has a Goods in Transit account', accts.some((a) => a.sys === 'git' && a.name === 'Goods in Transit'));
+
+  // 1. the bill comes first (by e-mail / WhatsApp); the goods are on the truck
+  const bill = await V('POST', '/api/docs', { type: 'BILL', party_id: sup.id, transit: true, party_ref: 'SV/1001', lines: [
+    { item_id: fan.id, qty: 10, rate: 1000 }, { item_id: bolt.id, qty: 3, rate: 1, discount_pct: 12.5 }, { item_id: freight.id, qty: 1, rate: 500 }] });
+  const boltTaxable = bill.lines[1].taxable;
+  check('a bill booked in transit moves no stock and parks the goods in Goods in Transit', bill.transit === 1 && bill.party_ref === 'SV/1001' && await qty(fan.id) === 0
+    && await bal('git') === 10000 + boltTaxable, JSON.stringify([bill.transit, await bal('git'), boltTaxable]));
+  check('the bill still owes the supplier in full (goods, freight, GST)', eq(await bal('ap'), -bill.total), String(await bal('ap')));
+  const dupe = await E('POST', '/api/docs', { type: 'BILL', party_id: sup.id, party_ref: 'sv/1001', lines: [{ item_id: fan.id, qty: 1, rate: 1000 }] });
+  check('the same supplier bill number cannot be entered twice', dupe.status === 400 && /already entered as/.test(dupe.data.error), JSON.stringify(dupe.data));
+  let pend = await V('GET', '/api/receive');
+  const pb = pend.bills.find((b) => b.id === bill.id);
+  check('the Receive screen lists the bill with what is still to come (goods only, not freight)', pb && pb.lines === 2 && pb.qty === 13 && pb.party_ref === 'SV/1001', JSON.stringify(pend.bills));
+
+  // 2. at the gate: the e-invoice QR gives the supplier GSTIN, bill number, value and IRN
+  const irn = 'a'.repeat(63) + 'b';
+  const ge = await V('POST', '/api/gate', { kind: 'in', vehicle_no: 'RJ14 GA 1234', party_gstin: '08AAACS1234F1Z5', challan_no: 'SV/1001', value: bill.total, irn, packages: 4 });
+  const gel = (await V('GET', '/api/gate?kind=in')).rows.find((g) => g.id === ge.id);
+  check('a gate entry from the e-invoice QR finds the supplier by GSTIN and the bill by its number', ge.party_id === sup.id && ge.bill_id === bill.id && gel.bill_number === bill.number
+    && gel.irn === irn && gel.value === bill.total, JSON.stringify(gel));
+  const twice = await E('POST', '/api/gate', { kind: 'in', vehicle_no: 'RJ14GA1234', irn });
+  check('the same e-invoice cannot come in at the gate twice', twice.status === 400 && /already came in/.test(twice.data.error), JSON.stringify(twice.data));
+  check('a malformed IRN is refused', (await E('POST', '/api/gate', { kind: 'in', vehicle_no: 'X1', irn: 'nothex' })).status === 400);
+  const td = (await V('GET', '/api/today')).rows;
+  check('the Today card says a truck is at the gate and a bill waits for its goods', td.some((r) => r.key === 'at_gate' && r.n === 1)
+    && td.some((r) => r.key === 'in_transit' && r.n === 1 && r.value === bill.total), JSON.stringify(td));
+
+  // 3. bins made while receiving: no bins yet -> new ones, and each item gets its home bin
+  const plan0 = await V('POST', '/api/bins/auto', { warehouse_id: wh.id, item_ids: [fan.id, bolt.id, freight.id] });
+  check('without bins nothing is suggested until asked to make them', plan0.rows.length === 2 && plan0.rows.every((r) => !r.bin), JSON.stringify(plan0));
+  const plan = await V('POST', '/api/bins/auto', { warehouse_id: wh.id, item_ids: [fan.id, bolt.id], create: true });
+  const items1 = (await V('GET', '/api/items')).rows;
+  check('bins are made one after another and become the items\' home bins', JSON.stringify(plan.created) === '["A-01","A-02"]' && plan.rows[0].bin === 'A-01' && plan.rows[1].bin === 'A-02'
+    && items1.find((i) => i.id === fan.id).location === 'A-01', JSON.stringify(plan));
+  const plan2 = await V('POST', '/api/bins/auto', { warehouse_id: wh.id, item_ids: [fan.id], create: true });
+  check('asked again, the home bin is used and no bin is made', plan2.rows[0].bin === 'A-01' && plan2.rows[0].why === 'default bin' && !plan2.created.length, JSON.stringify(plan2));
+  await V('POST', '/api/bins', { warehouse_id: wh.id, codes: ['A-03', 'A-04'] });
+  const nut = await V('POST', '/api/items', { name: 'Hex nut', unit: 'pc', sale_price: 1, purchase_price: 0.5, gst_rate: 18 });
+  const plan3 = await V('POST', '/api/bins/auto', { warehouse_id: wh.id, item_ids: [nut.id], skip: ['A-03'] });
+  check('an empty bin already given to another item of the same receipt is not given twice', plan3.rows[0].bin === 'A-04' && plan3.rows[0].why === 'empty bin', JSON.stringify(plan3));
+
+  // 4. receive part of it against the bill and the gate entry, into the bins
+  const draft = await V('GET', `/api/docs/${bill.id}/convert?to=GRN`);
+  check('the receipt draft has the goods still to come, not the freight', draft.lines.length === 2 && draft.lines[0].qty === 10 && draft.lines[1].qty === 3 && draft.ref_type === 'BILL', JSON.stringify(draft.lines));
+  const lineOf = (id) => draft.lines.find((l) => l.item_id === id).src_line_id;
+  const badBin = await E('POST', '/api/docs', { type: 'GRN', party_id: sup.id, ref_id: bill.id, lines: [{ item_id: fan.id, qty: 1, src_line_id: lineOf(fan.id), bin: 'ZZ-9' }] });
+  check('a bin that does not exist is refused', badBin.status === 400 && /no bin ZZ-9/.test(badBin.data.error), JSON.stringify(badBin.data));
+  const g1 = await V('POST', '/api/docs', { type: 'GRN', party_id: sup.id, ref_id: bill.id, gate_entry_id: ge.id, lines: [
+    { item_id: fan.id, qty: 6, src_line_id: lineOf(fan.id), bin: 'A-01' }, { item_id: bolt.id, qty: 1, src_line_id: lineOf(bolt.id), bin: 'A-02' }] });
+  const bins = await V('GET', `/api/bins?warehouse_id=${wh.id}`);
+  check('goods received from the bill come in at the bill\'s price, into the chosen bins', await qty(fan.id) === 6 && g1.lines[0].cost === 6000
+    && bins.bins.find((b) => b.code === 'A-01').qty === 6 && bins.bins.find((b) => b.code === 'A-02').qty === 1, JSON.stringify([g1.lines.map((l) => l.cost), bins.bins]));
+  check('the receipt moves value out of Goods in Transit into stock', eq(await bal('git'), 4000 + boltTaxable - g1.lines[1].cost) && eq(await bal('grni'), 0), String(await bal('git')));
+  const gate1 = (await V('GET', '/api/gate?kind=in')).rows.find((g) => g.id === ge.id);
+  check('the gate entry is closed by the receipt', gate1.status === 'grn_done' && gate1.grn_number === g1.number, JSON.stringify(gate1));
+  const over = await E('POST', '/api/docs', { type: 'GRN', party_id: sup.id, ref_id: bill.id, lines: [{ item_id: fan.id, qty: 5, src_line_id: lineOf(fan.id) }] });
+  check('more than is still to come cannot be received', over.status === 400 && /only 4 left to receive/.test(over.data.error), JSON.stringify(over.data));
+  const ret = await E('POST', '/api/docs', { type: 'PRET', party_id: sup.id, ref_id: bill.id, lines: [{ item_id: fan.id, qty: 7, src_line_id: lineOf(fan.id) }] });
+  check('only goods that came can be returned', ret.status === 400 && /only 6 left to return/.test(ret.data.error), JSON.stringify(ret.data));
+  const detail = await V('GET', `/api/docs/${bill.id}`);
+  check('the bill shows what is still to come per line', detail.lines[0].to_receive === 4 && detail.lines[1].to_receive === 2 && detail.lines[2].to_receive === 0, JSON.stringify(detail.lines.map((l) => l.to_receive)));
+
+  // 5. one fan never comes: a shortage note claims it back from the supplier
+  const sd = await V('GET', `/api/docs/${bill.id}/convert?to=DNOTE&short=1`);
+  check('the shortage draft has what has not come, at the bill\'s price', sd.short === true && sd.lines.length === 2 && sd.lines[0].qty === 4 && sd.lines[0].rate === 1000, JSON.stringify(sd));
+  const apBefore = await bal('ap');
+  const sn = await V('POST', '/api/docs', { type: 'DNOTE', short: true, party_id: sup.id, ref_id: bill.id, lines: [{ item_id: fan.id, qty: 1, rate: 1, src_line_id: lineOf(fan.id) }] });
+  check('a shortage note is at the bill\'s price whatever is typed, and lowers what is owed with its GST', sn.short === 1 && sn.total === 1180 && eq(await bal('ap') - apBefore, 1180)
+    && eq(await bal('git'), 3000 + boltTaxable - g1.lines[1].cost), JSON.stringify([sn.total, await bal('git')]));
+  const g2 = await V('POST', '/api/docs', { type: 'GRN', party_id: sup.id, ref_id: bill.id, lines: [{ item_id: fan.id, qty: 3, src_line_id: lineOf(fan.id) }, { item_id: bolt.id, qty: 1, src_line_id: lineOf(bolt.id) }] });
+  let b2 = await V('GET', `/api/docs/${bill.id}`);
+  check('the bill still waits for the last bolt', b2.transit === 1, String(b2.transit));
+  const g3 = await V('POST', '/api/docs', { type: 'GRN', party_id: sup.id, ref_id: bill.id, lines: [{ item_id: bolt.id, qty: 1, src_line_id: lineOf(bolt.id) }] });
+  b2 = await V('GET', `/api/docs/${bill.id}`);
+  const boltCosts = [g1.lines[1].cost, g2.lines[1].cost, g3.lines[0].cost];
+  check('received in parts, the pieces add up to the bill to the paisa and Goods in Transit is empty', b2.transit === 2 && eq(boltCosts.reduce((s, x) => s + x, 0), boltTaxable)
+    && eq(await bal('git'), 0), JSON.stringify([b2.transit, boltCosts, boltTaxable, await bal('git')]));
+  pend = await V('GET', '/api/receive');
+  check('a bill whose goods all came leaves the Receive list', !pend.bills.some((b) => b.id === bill.id));
+  const noMore = await E('POST', '/api/docs', { type: 'GRN', party_id: sup.id, ref_id: bill.id, lines: [{ item_id: fan.id, qty: 1, src_line_id: lineOf(fan.id) }] });
+  check('nothing more can be received on it', noMore.status === 400 && /no goods left/.test(noMore.data.error), JSON.stringify(noMore.data));
+
+  // 6. cancelling a receipt puts it back on the list; cancelling the shortage note too
+  await V('POST', `/api/docs/${g3.id}/cancel`);
+  b2 = await V('GET', `/api/docs/${bill.id}`);
+  check('a cancelled receipt is to come again', b2.transit === 1 && b2.lines[1].to_receive === 1 && eq(await bal('git'), g3.lines[0].cost), JSON.stringify([b2.transit, b2.lines[1].to_receive]));
+  const g4 = await V('POST', '/api/docs', { type: 'GRN', party_id: sup.id, ref_id: bill.id, lines: [{ item_id: bolt.id, qty: 1, src_line_id: lineOf(bolt.id) }] });
+  await V('POST', `/api/docs/${sn.id}/cancel`);
+  b2 = await V('GET', `/api/docs/${bill.id}`);
+  check('a cancelled shortage note is to come again, and the claim is undone', b2.transit === 1 && b2.lines[0].to_receive === 1 && eq(await bal('git'), 1000) && g4.lines[0].cost === g3.lines[0].cost,
+    JSON.stringify([b2.transit, b2.lines[0].to_receive, await bal('git')]));
+  const cb = await E('POST', `/api/docs/${bill.id}/cancel`);
+  check('the bill cannot be cancelled while receipts made from it stand', cb.status === 400, JSON.stringify(cb.data));
+  check('the books still balance', (await V('GET', '/api/reports/trial-balance')).balanced === true);
+
+  // 7. codes learnt while scanning: the supplier's barcode, a carton of 6
+  await V('POST', `/api/items/${fan.id}/codes`, { code: '8901234567890' });
+  const l1 = await V('GET', '/api/items/lookup?code=8901234567890');
+  check('a new code becomes the item\'s barcode', l1.id === fan.id && l1.pack_qty === 1 && (await V('GET', '/api/items')).rows.find((i) => i.id === fan.id).barcode === '8901234567890', JSON.stringify(l1));
+  await V('POST', `/api/items/${fan.id}/codes`, { code: 'CTN-FAN-6', pack_qty: 6 });
+  const l2 = await V('GET', '/api/items/lookup?code=CTN-FAN-6');
+  check('a carton code finds the item with how many pieces it holds', l2.id === fan.id && l2.pack_qty === 6, JSON.stringify(l2));
+  const clash = await E('POST', `/api/items/${bolt.id}/codes`, { code: 'CTN-FAN-6' });
+  check('a code already used by another item is refused', clash.status === 400 && /Table fan/.test(clash.data.error), JSON.stringify(clash.data));
+  const own = await E('POST', `/api/items/${fan.id}/codes`, { code: '8901234567890', pack_qty: 12 });
+  check('the barcode of one piece cannot be a carton code', own.status === 400, JSON.stringify(own.data));
+  const edit = await E('PUT', `/api/items/${bolt.id}`, { name: 'Hex bolt', unit: 'pc', gst_rate: 18, barcode: 'CTN-FAN-6' });
+  check('an item cannot take a barcode another item learnt', edit.status === 400 && /Table fan/.test(edit.data.error), JSON.stringify(edit.data));
+
+  // 8. each user's own menu, and a gate guard who can only use the gate register
+  const guardRole = await V('POST', '/api/roles', { name: 'Gate guard', perms: { view: [], edit: ['gate'] } });
+  check('a role can have the gate register alone', JSON.stringify(guardRole.perms) === '{"view":["gate"],"edit":["gate"]}', JSON.stringify(guardRole.perms));
+  await V('POST', '/api/users', { email: 'guard' + email, name: 'Guard', role: `c:${guardRole.id}`, password: 'Guard-pass-1234' });
+  await V('POST', '/api/users', { email: 'godown' + email, name: 'Godown', role: 'store', password: 'Godown-pass-1234' });
+  const users = (await V('GET', '/api/users')).rows;
+  const guardU = users.find((u) => u.email === 'guard' + email), storeU = users.find((u) => u.email === 'godown' + email), ownerU = users.find((u) => u.role === 'owner');
+  check('users start with the menu their role gives', guardU.ui.job === '' && guardU.ui.screens === null, JSON.stringify(guardU.ui));
+  await V('PUT', `/api/users/${storeU.id}/ui`, { job: 'store', home: 'receive' });
+  await V('PUT', `/api/users/${guardU.id}/ui`, { screens: ['gate/in', 'gate/out', 'bad screen!'], home: 'gate/in' });
+  const gl = await rq('POST', '/api/auth/login', { email: 'guard' + email, password: 'Guard-pass-1234' }, { ip });
+  const G = (m, p, b) => rq(m, p, b, { cookie: gl.cookie, ip });
+  const gme = (await G('GET', '/api/me')).data;
+  check('the guard\'s menu is the screens the owner ticked, and opens on the gate', JSON.stringify(gme.ui) === '{"job":"","screens":["gate/in","gate/out"],"home":"gate/in"}' && gme.can.gate === true
+    && gme.can.purchase === false && gme.view.gate === true && gme.view.purchase === false, JSON.stringify([gme.ui, gme.can, gme.view]));
+  const gg = await G('POST', '/api/gate', { kind: 'in', vehicle_no: 'RJ14 GB 5678', challan_no: 'X-9' });
+  check('the guard can log a truck and see the gate register', gg.status === 200 && (await G('GET', '/api/gate?kind=in')).status === 200, JSON.stringify(gg.data));
+  check('the guard cannot see bills or make them', (await G('GET', '/api/docs?type=BILL')).status === 403
+    && (await G('POST', '/api/docs', { type: 'BILL', party_id: sup.id, lines: [{ item_id: fan.id, qty: 1, rate: 1 }] })).status === 403
+    && (await G('GET', '/api/receive')).status === 403);
+  const sl = await rq('POST', '/api/auth/login', { email: 'godown' + email, password: 'Godown-pass-1234' }, { ip });
+  const sme = (await rq('GET', '/api/me', undefined, { cookie: sl.cookie, ip })).data;
+  check('the store keeper\'s menu is the store job, opening on Receive goods', sme.ui.job === 'store' && sme.ui.home === 'receive', JSON.stringify(sme.ui));
+  check('menus are for the owner or an admin to set', (await rq('PUT', `/api/users/${storeU.id}/ui`, { job: 'all' }, { cookie: sl.cookie, ip })).status === 403);
+  await V('PUT', `/api/users/${ownerU.id}/ui`, { job: 'all', home: 'pos' });
+  check('the owner sets their own start screen', (await V('GET', '/api/me')).ui.home === 'pos');
+  await V('PUT', `/api/users/${storeU.id}/ui`, {});
+  check('an empty menu goes back to the role\'s', (await V('GET', '/api/users')).rows.find((u) => u.id === storeU.id).ui.job === '');
+
+  // 9. a backup restored into a new business keeps bills in transit, the gate's bill link and the codes learnt
+  const j = await (await fetch(BASE + '/api/export/backup', { headers: { Cookie: su.cookie, 'CF-Connecting-IP': ip } })).json();
+  const nu = await rq('POST', '/api/auth/signup', { business: 'Sharma Restore', name: 'R', email: 'r' + email, password: 'Recv-pass-1234', state: 'Rajasthan' }, { ip: '203.0.113.171' });
+  const R2 = (m, p, b) => rq(m, p, b, { cookie: nu.cookie, ip: '203.0.113.171' });
+  const rr = await R2('POST', '/api/restore', j);
+  const rbills = (await R2('GET', '/api/docs?type=BILL')).data.rows, rb = rbills.find((d) => d.number === bill.number);
+  const rbd = rb && (await R2('GET', `/api/docs/${rb.id}`)).data;
+  const rge = (await R2('GET', '/api/gate?kind=in&status=')).data.rows.find((g) => g.number === ge.number);
+  check('a restored bill keeps its supplier bill number and what is still to come', rr.status === 200 && rbd && rbd.party_ref === 'SV/1001' && rbd.transit === 1 && rbd.lines[0].to_receive === 1,
+    JSON.stringify([rr.status, rbd && [rbd.party_ref, rbd.transit, rbd.lines.map((l) => l.to_receive)]]));
+  check('a restored gate entry points at the restored bill', rge && rge.bill_id === rb.id && rge.bill_number === bill.number, JSON.stringify(rge));
+  check('codes learnt while receiving come back', (await R2('GET', '/api/items/lookup?code=CTN-FAN-6')).data.pack_qty === 6);
+  const tbR = (await R2('GET', '/api/reports/trial-balance')).data, tbO = await V('GET', '/api/reports/trial-balance');
+  check('the restored books match, Goods in Transit included', tbR.balanced && JSON.stringify(tbO.rows.map((r) => [r.code, r.debit, r.credit])) === JSON.stringify(tbR.rows.map((r) => [r.code, r.debit, r.credit])));
+}
+
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

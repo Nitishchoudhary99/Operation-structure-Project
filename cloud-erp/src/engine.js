@@ -21,7 +21,7 @@ export const DOC_TYPES = {
   INV: { side: 'sales', prefix: 'INV', label: 'Sales Invoice', from: ['SO', 'DN', 'QUOTE'], stock: 'out', money: true },
   SRET: { side: 'sales', prefix: 'CN', label: 'Sales Return (Credit Note)', from: ['INV'], needsRef: true, stock: 'in', money: true },
   PO: { side: 'purchase', prefix: 'PO', label: 'Purchase Order', from: [] },
-  GRN: { side: 'purchase', prefix: 'GRN', label: 'Goods Receipt (GRN)', from: ['PO'], stock: 'in' },
+  GRN: { side: 'purchase', prefix: 'GRN', label: 'Goods Receipt (GRN)', from: ['PO', 'BILL'], stock: 'in' },   // from a bill: only one booked in transit
   BILL: { side: 'purchase', prefix: 'BILL', label: 'Purchase Bill', from: ['PO', 'GRN'], stock: 'in', money: true },
   PRET: { side: 'purchase', prefix: 'DBN', label: 'Purchase Return (Debit Note)', from: ['BILL'], needsRef: true, stock: 'out', money: true },
   // value notes: rate difference, discount, short/damage claims, with no goods moving
@@ -138,6 +138,9 @@ export async function approveDoc(ctx, id) {
 export function moneyStatus(total, paid) { return paid <= 0 ? 'unpaid' : paid >= total ? 'paid' : 'partial'; }
 
 /* ---------------------------------------------------------------- documents */
+/* a bill-first bill: 1 while some of its goods are still to come, 2 once every goods line came or was closed short */
+export const TRANSIT_SQL = `UPDATE docs SET transit = CASE WHEN EXISTS (SELECT 1 FROM doc_lines l JOIN items i ON i.id = l.item_id
+    WHERE l.doc_id = ?1 AND i.is_service = 0 AND l.recv_qty + l.short_qty < l.qty - 0.0005) THEN 1 ELSE 2 END WHERE id = ?1 AND transit IN (1, 2)`;
 export async function createDoc(ctx, body) {
   const { db } = ctx;
   const type = str(body.type, 10).toUpperCase();
@@ -168,6 +171,26 @@ export async function createDoc(ctx, body) {
   } else if (T.needsRef) {
     throw bad(`A ${T.label} must be made from the original ${type === 'SRET' ? 'invoice' : 'bill'}.`);
   }
+  // bill first, goods later: a bill booked "in transit" moves no stock; GRNs made from it bring the goods in, and a
+  // shortage note (a debit note with short: true) closes what will never come. Both use the bill's own value.
+  const transit = type === 'BILL' && body.transit && !(src && src.type === 'GRN') ? 1 : 0;
+  const fromBill = type === 'GRN' && !!src && src.type === 'BILL';
+  const short = type === 'DNOTE' && !!body.short;
+  if (fromBill && src.transit !== 1) throw bad(`${src.number} has no goods left to receive.`);
+  if (short && (!src || src.transit !== 1)) throw bad('A shortage note is made from a purchase bill whose goods are still on the way.');
+  const partyRef = T.side === 'purchase' ? str(body.party_ref, 40) : '';
+  if (type === 'BILL' && partyRef) {
+    const dup = await db.prepare(`SELECT number FROM docs WHERE org_id = ? AND type = 'BILL' AND party_id = ? AND status != 'cancelled' AND UPPER(party_ref) = UPPER(?) LIMIT 1`)
+      .bind(orgId, party.id, partyRef).first();
+    if (dup) throw bad(`Bill ${partyRef} of ${party.name} is already entered as ${dup.number}.`);
+  }
+  // what the bill's lines have already handed on to receipts and shortage notes (their cost), so the last part takes the rest
+  const credited = new Map();
+  if (fromBill || short) {
+    const { results } = await db.prepare(`SELECT dl.src_line_id AS id, SUM(dl.cost) AS v FROM doc_lines dl JOIN docs d ON d.id = dl.doc_id
+        WHERE d.org_id = ? AND d.ref_id = ? AND d.status != 'cancelled' AND d.type IN ('GRN', 'DNOTE') GROUP BY dl.src_line_id`).bind(orgId, src.id).all();
+    for (const r of results) credited.set(r.id, r.v || 0);
+  }
 
   const wh = await warehouseOf(ctx, +body.warehouse_id || (src && src.warehouse_id) || 0);
   // inter-state when the two GST state codes differ (from GSTIN, else state name); falls back to comparing names
@@ -178,7 +201,7 @@ export async function createDoc(ctx, body) {
   if (lines.length > 200) throw bad('At most 200 lines per document.');
 
   // stock movement happens here unless an earlier document already moved the goods
-  const moves = T.stock && !(type === 'INV' && src && src.type === 'DN') && !(type === 'BILL' && src && src.type === 'GRN');
+  const moves = T.stock && !transit && !(type === 'INV' && src && src.type === 'DN') && !(type === 'BILL' && src && src.type === 'GRN');
   // every item on the document in one query
   const itemCache = new Map((await loadByIds(db, `SELECT * FROM items WHERE org_id = ? AND id IN (?ids)`, [orgId], lines.map((l) => +l.item_id || 0))).map((i) => [i.id, i]));
   const getItem = (id) => itemCache.get(id);
@@ -191,20 +214,30 @@ export async function createDoc(ctx, body) {
     if (raw.item_id && !item) throw bad(`Line ${n}: unknown item.`);
     const qty = roundQty(num(raw.qty, `Line ${n} quantity`, { min: 0.001, max: 1e9 }));
     const fallbackRate = item && !T.note ? (T.side === 'sales' ? item.sale_price : item.purchase_price) : 0;   // notes: the user types the difference
-    const rate = raw.rate === undefined || raw.rate === '' || raw.rate === null ? fallbackRate : toPaise(num(raw.rate, `Line ${n} rate`, { min: 0 }));
-    const disc = num(raw.discount_pct, `Line ${n} discount`, { min: 0, max: 100, def: 0 });
-    const gst = num(raw.gst_rate, `Line ${n} GST rate`, { min: 0, max: 100, def: item ? item.gst_rate : 0 });
+    let rate = raw.rate === undefined || raw.rate === '' || raw.rate === null ? fallbackRate : toPaise(num(raw.rate, `Line ${n} rate`, { min: 0 }));
+    let disc = num(raw.discount_pct, `Line ${n} discount`, { min: 0, max: 100, def: 0 });
+    let gst = num(raw.gst_rate, `Line ${n} GST rate`, { min: 0, max: 100, def: item ? item.gst_rate : 0 });
     const desc = str(raw.description, 300) || (item ? item.name : '');
     if (!item && !desc) throw bad(`Line ${n}: choose an item or type a description.`);
-    let srcLine = null;
+    let srcLine = null, git = 0;
     if (raw.src_line_id) {
       srcLine = srcLines.get(+raw.src_line_id);
       if (!srcLine) throw bad(`Line ${n} does not belong to the source document.`);
-      const left = roundQty(srcLine.qty - srcLine.done_qty);
-      if (qty > left + 0.0005) throw bad(`Line ${n}: only ${left} left to ${['SRET', 'PRET'].includes(type) ? 'return' : 'process'} on ${src.number}.`);
+      // receiving / closing short counts against what has not come yet; a return from a bill-first bill only against what came
+      const left = fromBill || short ? roundQty(srcLine.qty - srcLine.recv_qty - srcLine.short_qty)
+        : type === 'PRET' && src.transit ? roundQty(srcLine.recv_qty - srcLine.done_qty) : roundQty(srcLine.qty - srcLine.done_qty);
+      if (qty > left + 0.0005) throw bad(`Line ${n}: only ${left} left to ${fromBill ? 'receive' : short ? 'close short' : ['SRET', 'PRET'].includes(type) ? 'return' : 'process'} on ${src.number}.`);
       if (srcLine.item_id !== (item ? item.id : null)) throw bad(`Line ${n}: the item differs from the source line.`);
-    } else if (src && ['SRET', 'PRET'].includes(type)) {
-      throw bad(`Line ${n}: returns must refer to a line of ${src.number}.`);
+      if (fromBill || short) {
+        if (!item || item.is_service) throw bad(`Line ${n}: only goods are received.`);
+        rate = srcLine.rate; disc = srcLine.discount_pct; gst = srcLine.gst_rate;      // at the bill's price
+        const after = srcLine.recv_qty + srcLine.short_qty + qty;
+        git = after >= srcLine.qty - 0.0005 ? srcLine.taxable - (credited.get(srcLine.id) || 0) : Math.round(srcLine.taxable * qty / srcLine.qty);
+        credited.set(srcLine.id, (credited.get(srcLine.id) || 0) + git);
+        if (fromBill) srcLine.recv_qty = roundQty(srcLine.recv_qty + qty); else srcLine.short_qty = roundQty(srcLine.short_qty + qty);
+      } else srcLine.done_qty = roundQty(srcLine.done_qty + qty);     // two lines from one source line share what is left
+    } else if (src && (['SRET', 'PRET'].includes(type) || fromBill || short)) {
+      throw bad(`Line ${n}: ${fromBill ? 'goods received' : short ? 'a shortage' : 'returns'} must refer to a line of ${src.number}.`);
     }
     const calc = lineCalc({ qty, rate, discount_pct: disc, gst_rate: gst }, inter);
     const stocked = item && !item.is_service;
@@ -223,7 +256,8 @@ export async function createDoc(ctx, body) {
       }
       if (serials.length && Math.abs(serials.length - qty) > 0.0005) throw bad(`Line ${n}: ${serials.length} serial number(s) typed for a quantity of ${qty}.`);
     }
-    L.push({ item, qty, rate, disc, gst, desc, srcLine, calc, stocked, batch, softBatch: !!fromSrc, serials, softSerials });
+    const bin = moves && T.stock === 'in' && stocked ? str(raw.bin, 30).toUpperCase() : '';
+    L.push({ item, qty, rate, disc, gst, desc, srcLine, calc, stocked, batch, softBatch: !!fromSrc, serials, softSerials, git, bin });
     if (moves && stocked && T.stock === 'out') need.set(item.id, (need.get(item.id) || 0) + qty);
   }
 
@@ -261,11 +295,12 @@ export async function createDoc(ctx, body) {
   st.push(counterStatements(db, orgId, nspec.key));
   // on a capped plan the insert itself checks the monthly count, so parallel requests cannot all slip under the limit
   const docCols = `org_id, type, number, party_id, date, due_date, warehouse_id, ref_id, status, place_of_supply,
-        inter_state, taxable, cgst, sgst, igst, round_off, total, paid, notes, created_by, created_at, txk, extra, design`;
-  const docVals = `?, ?, ${counterValueSql}, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?, ?`;
+        inter_state, taxable, cgst, sgst, igst, round_off, total, paid, notes, created_by, created_at, txk, extra, design, transit, party_ref, short`;
+  const docVals = `?, ?, ${counterValueSql}, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?, ?, ?, ?, ?`;
   const docArgs = [orgId, type, nspec.fmt, orgId, nspec.key, party.id, d, dueDate, wh.id, src ? src.id : null, initialStatus,
     party.state || ctx.org.state || '', inter ? 1 : 0, taxable, cgst, sgst, igst, roundOff, total,
-    str(body.notes, 1000), ctx.user.id, nowIso(), txk, extra, LAYOUTS.includes(body.design) ? body.design : null];
+    str(body.notes, 1000), ctx.user.id, nowIso(), txk, extra, LAYOUTS.includes(body.design) ? body.design : null,
+    transit && L.some((l) => l.stocked) ? 1 : 0, partyRef, short ? 1 : 0];
   st.push(cap
     ? db.prepare(`INSERT INTO docs (${docCols}) SELECT ${docVals} WHERE (SELECT COUNT(*) FROM docs WHERE org_id = ? AND type = 'INV' AND created_at >= ?) < ?`)
       .bind(...docArgs, orgId, cap.since, cap.max)
@@ -274,7 +309,8 @@ export async function createDoc(ctx, body) {
   // lines + stock + per-line cost; bins and batches: src/lots.js
   const incoming = moves && T.stock === 'in' ? L.flatMap((l) => l.serials) : [];
   const lots = moves && L.some((l) => l.stocked) ? await lotState(db, orgId, wh.id, L.filter((l) => l.stocked).map((l) => l.item), { hasBins: wh.hasBins, have: onHand, incoming }) : null;
-  let costOut = 0, costIn = 0, grniClear = 0, variance = 0, serviceCost = 0;
+  let costOut = 0, costIn = 0, grniClear = 0, variance = 0, serviceCost = 0, transitIn = 0, gitOut = 0;
+  for (const l of L) if (l.bin && !lots.bins.has(l.bin)) throw bad(`There is no bin ${l.bin} in ${wh.name}.`);
   for (const l of L) {
     let cost = 0;
     if (l.stocked) {
@@ -288,8 +324,9 @@ export async function createDoc(ctx, body) {
         costOut += cost;
       } else if (moves && T.stock === 'in') {
         if (type === 'SRET') cost = Math.round(l.srcLine.cost * l.qty / l.srcLine.qty);   // back at the cost it left at
+        else if (fromBill) cost = l.git;                                                 // out of Goods in Transit at the bill's value
         else cost = l.calc.taxable;
-        const plan = putIn(lots, l.item, l.qty, l.item.track_batch ? l.batch : null, '', l.serials);
+        const plan = putIn(lots, l.item, l.qty, l.item.track_batch ? l.batch : null, l.bin, l.serials);
         st.push(...stockStatements(db, ctx, { item: l.item.id, warehouse: wh.id, qty: l.qty, value: cost, date: d, ...ref, note: l.desc, lots: plan, party: party.id }));
         costIn += cost;
       } else if (type === 'INV' && src && src.type === 'DN') {
@@ -299,6 +336,12 @@ export async function createDoc(ctx, body) {
         grniClear += grnValue;
         variance += l.calc.taxable - grnValue;
         cost = l.calc.taxable;
+      } else if (transit) {          // billed, still on the way
+        cost = l.calc.taxable;
+        transitIn += cost;
+      } else if (short) {            // never coming: out of Goods in Transit, claimed back from the supplier
+        cost = l.git;
+        gitOut += cost;
       }
     } else if (l.item && l.item.is_service && T.side === 'purchase' && ['BILL', 'PRET'].includes(type)) {
       serviceCost += l.calc.taxable * (type === 'PRET' ? -1 : 1);
@@ -309,8 +352,10 @@ export async function createDoc(ctx, body) {
                         VALUES ((SELECT id FROM docs WHERE txk = ?), ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
       .bind(txk, l.item ? l.item.id : null, l.desc, l.qty, l.rate, l.disc, l.gst, l.calc.taxable, l.calc.cgst, l.calc.sgst, l.calc.igst, l.calc.total,
         l.srcLine ? l.srcLine.id : null, cost, l.batch.no, l.batch.expiry, l.serials.join(', ')));
-    if (l.srcLine) st.push(db.prepare(`UPDATE doc_lines SET done_qty = ROUND(done_qty + ?, 3) WHERE id = ?`).bind(l.qty, l.srcLine.id));
+    const col = fromBill ? 'recv_qty' : short ? 'short_qty' : 'done_qty';
+    if (l.srcLine) st.push(db.prepare(`UPDATE doc_lines SET ${col} = ROUND(${col} + ?, 3) WHERE id = ?`).bind(l.qty, l.srcLine.id));
   }
+  if (fromBill || short) st.push(db.prepare(TRANSIT_SQL).bind(src.id));
 
   // purchase price variance: GRN valued stock at the PO rate, the bill may differ
   let varianceAccount = sys.inventory;
@@ -337,16 +382,16 @@ export async function createDoc(ctx, body) {
     case 'SRET':
       jl = [D(sys.sales, taxable), D(sys.gst_output, tax), D(sys.round_off, roundOff), C(sys.ar, total, P), D(sys.inventory, costIn), C(sys.cogs, costIn)];
       break;
-    case 'GRN': jl = [D(sys.inventory, costIn), C(sys.grni, costIn)]; break;
+    case 'GRN': jl = [D(sys.inventory, costIn), C(fromBill ? sys.git : sys.grni, costIn)]; break;
     case 'BILL':
-      jl = [D(sys.inventory, costIn), D(sys.grni, grniClear), D(varianceAccount, variance), D(sys.misc_exp || sys.cogs, serviceCost),
+      jl = [D(sys.inventory, costIn), D(sys.git, transitIn), D(sys.grni, grniClear), D(varianceAccount, variance), D(sys.misc_exp || sys.cogs, serviceCost),
         D(sys.gst_input, tax), D(sys.round_off, roundOff), C(sys.ap, total, P)];
       break;
     case 'CNOTE':     // reduce the sale: Dr Sales discounts, Dr GST output / Cr Debtors
       jl = [D(sys.sales_adj || sys.sales, taxable), D(sys.gst_output, tax), D(sys.round_off, roundOff), C(sys.ar, total, P)];
       break;
-    case 'DNOTE':     // reduce the purchase: Dr Creditors / Cr Purchase rate difference, Cr GST input
-      jl = [D(sys.ap, total, P), C(sys.pur_adj || sys.cogs, taxable), C(sys.gst_input, tax), C(sys.round_off, roundOff)];
+    case 'DNOTE':     // reduce the purchase: Dr Creditors / Cr Purchase rate difference (a shortage: Goods in Transit), Cr GST input
+      jl = [D(sys.ap, total, P), C(sys.git, gitOut), C(sys.pur_adj || sys.cogs, taxable - gitOut), C(sys.gst_input, tax), C(sys.round_off, roundOff)];
       break;
     case 'PRET':
       jl = [D(sys.ap, total, P), C(sys.inventory, costOut), C(sys.misc_exp || sys.cogs, -serviceCost), C(sys.gst_input, tax), C(sys.round_off, roundOff)];
@@ -568,7 +613,12 @@ export async function cancelDoc(ctx, id) {
       lines: jls.map((l) => ({ account: l.account_id, party: l.party_id, amount: l.credit - l.debit })) }));
   }
   const { results: lines } = await db.prepare(`SELECT * FROM doc_lines WHERE doc_id = ?`).bind(doc.id).all();
-  for (const l of lines) if (l.src_line_id) st.push(db.prepare(`UPDATE doc_lines SET done_qty = MAX(0, ROUND(done_qty - ?, 3)) WHERE id = ?`).bind(l.qty, l.src_line_id));
+  // a receipt or shortage note against a bill-first bill gives back what it took from "still to come"
+  const parent = doc.ref_id ? await db.prepare(`SELECT id, type, transit FROM docs WHERE id = ?`).bind(doc.ref_id).first() : null;
+  const viaTransit = !!(parent && parent.type === 'BILL' && parent.transit && (doc.type === 'GRN' || doc.short));
+  const col = viaTransit ? (doc.type === 'GRN' ? 'recv_qty' : 'short_qty') : 'done_qty';
+  for (const l of lines) if (l.src_line_id) st.push(db.prepare(`UPDATE doc_lines SET ${col} = MAX(0, ROUND(${col} - ?, 3)) WHERE id = ?`).bind(l.qty, l.src_line_id));
+  if (viaTransit) st.push(db.prepare(TRANSIT_SQL).bind(parent.id));
   if (doc.ref_id) {
     st.push(db.prepare(`UPDATE docs SET status = CASE
         WHEN type IN ('SO','PO','DN','GRN') THEN CASE WHEN (SELECT COALESCE(SUM(done_qty), 0) FROM doc_lines WHERE doc_id = ?) > 0.0005 THEN 'partial' ELSE 'open' END

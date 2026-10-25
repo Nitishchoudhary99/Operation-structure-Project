@@ -98,7 +98,7 @@ export async function endAllSessions(env, userId) {
 }
 
 /* seat = how many older active staff the business has: when a plan lapses only the owner and the oldest staff keep a seat */
-export const USER_SQL = `SELECT u.id, u.org_id, u.email, u.name, u.role, u.active, u.pw_changed_at, u.role_id, r.name AS role_name, r.perms,
+export const USER_SQL = `SELECT u.id, u.org_id, u.email, u.name, u.role, u.active, u.pw_changed_at, u.role_id, u.ui, r.name AS role_name, r.perms,
   (SELECT COUNT(*) FROM users x WHERE x.org_id = u.org_id AND x.active = 1 AND x.role != 'owner' AND x.id < u.id) AS seat
   FROM users u LEFT JOIN roles r ON r.id = u.role_id AND r.org_id = u.org_id WHERE u.id = ?`;
 export const REVOKED_SQL = `SELECT 1 AS x FROM revoked_tokens WHERE jti = ?`;
@@ -120,10 +120,12 @@ const WRITE = {
   stock: ['owner', 'admin', 'store'],
   finance: ['owner', 'admin', 'accountant'],
   khata: ['owner', 'admin', 'accountant', 'sales'],
+  gate: ['owner', 'admin', 'accountant', 'store', 'sales'],
 };
 /* Custom roles (role = 'custom', role_id -> roles): per-area "view" and "edit" switches.
-   Built-in roles keep the table above and can view everything, as before. Only owner/admin manage users and roles. */
-export const AREAS = ['sales', 'purchase', 'items', 'masters', 'finance', 'khata', 'reports', 'settings'];
+   Built-in roles keep the table above and can view everything, as before. Only owner/admin manage users and roles.
+   'gate' is the security gate register alone, for a guard who should see and do nothing else. */
+export const AREAS = ['sales', 'purchase', 'items', 'masters', 'finance', 'khata', 'reports', 'settings', 'gate'];
 const AREA_OF = { stock: 'items' };
 export function permsOf(user) {
   let p = {};
@@ -141,6 +143,17 @@ export const canView = (user, area) => !user || user.role !== 'custom' || permsO
 /* purchase rates, average cost, stock value and profit: hidden from custom roles that see neither reports nor purchase */
 export const seesCosts = (user) => canView(user, 'reports') || canView(user, 'purchase');
 export function requireCan(user, area) { if (!can(user, area)) throw forbidden(); }
+
+/* Each user's own menu (users.ui): a job that picks the screens (the role decides when there is none), or screens the owner
+   ticked one by one, and the screen the app opens on. Only what is shown changes: what a user may do stays with the role. */
+export const JOBS = ['all', 'counter', 'store', 'gate', 'accounts', 'sales'];
+const SCREEN = /^[a-z][a-zA-Z0-9/-]{0,40}$/;
+export function uiOf(raw) {
+  let u = {};
+  try { u = typeof raw === 'string' ? JSON.parse(raw || '{}') || {} : raw || {}; } catch (e) { u = {}; }
+  const screens = Array.isArray(u.screens) ? [...new Set(u.screens.filter((x) => typeof x === 'string' && SCREEN.test(x)))].slice(0, 80) : null;
+  return { job: JOBS.includes(u.job) ? u.job : '', screens: screens && screens.length ? screens : null, home: typeof u.home === 'string' && SCREEN.test(u.home) ? u.home : '' };
+}
 
 /* Expired counters are removed now and then (1 call in 100, 200 rows at most), so the table cannot grow without bound. */
 async function purgeLimits(env, now) {

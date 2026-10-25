@@ -69,6 +69,7 @@ const SCREENS = (a) => {
     ['GET /api/audit', 2, 80],
     ['GET /api/plan', 3, 30],
     ['GET /api/today', 2, 60],
+    ['GET /api/receive', 2, 40],
   ];
 };
 async function reads(a) {

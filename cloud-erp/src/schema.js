@@ -3,7 +3,7 @@
    Every business table carries org_id: one database serves many businesses (multi-tenant).
    migrate() runs on the first request after each deploy, so no manual migration step is needed. */
 
-export const SCHEMA_VERSION = 24;
+export const SCHEMA_VERSION = 25;
 
 // document types whose monthly totals doc_month keeps (sales and purchase money documents)
 const MONTH_TYPES = `('INV','SRET','CNOTE','BILL','PRET','DNOTE')`;
@@ -102,6 +102,7 @@ export const DEFAULT_ACCOUNTS = [
   ['1020', 'UPI / Wallet', 'asset', 'upi', 1],
   ['1100', 'Accounts Receivable (Debtors)', 'asset', 'ar', 0],
   ['1200', 'Inventory (Stock in Hand)', 'asset', 'inventory', 0],
+  ['1210', 'Goods in Transit', 'asset', 'git', 0],
   ['1300', 'GST Input Credit', 'asset', 'gst_input', 0],
   ['1400', 'Staff Advances', 'asset', 'staff_adv', 0],
   ['2000', 'Accounts Payable (Creditors)', 'liability', 'ap', 0],
@@ -462,6 +463,30 @@ export const MIGRATIONS = {
        name TEXT NOT NULL, token TEXT NOT NULL UNIQUE, secret TEXT NOT NULL, warehouse_id INTEGER, active INTEGER NOT NULL DEFAULT 1,
        created_at TEXT NOT NULL, last_at TEXT, last_error TEXT DEFAULT '', orders INTEGER NOT NULL DEFAULT 0)`,
     `CREATE INDEX IF NOT EXISTS ix_hooks_org ON shop_hooks (org_id)`,
+  ],
+  /* bill first, goods later: a purchase bill can be booked while the goods are on the way (docs.transit; the stock sits
+     in Goods in Transit until a GRN made from the bill receives it, doc_lines.recv_qty; short_qty is what will never come,
+     closed by a debit note marked docs.short). docs.party_ref keeps the supplier's own bill number. Gate entries keep the
+     e-invoice IRN and value read from its QR, and the bill they matched. item_codes: more codes per item, learnt while
+     receiving (a supplier's barcode, a carton of 12). users.ui is each user's own menu. */
+  25: [
+    `ALTER TABLE docs ADD COLUMN transit INTEGER NOT NULL DEFAULT 0`,
+    `ALTER TABLE docs ADD COLUMN party_ref TEXT DEFAULT ''`,
+    `ALTER TABLE docs ADD COLUMN short INTEGER NOT NULL DEFAULT 0`,
+    `ALTER TABLE doc_lines ADD COLUMN recv_qty REAL NOT NULL DEFAULT 0`,
+    `ALTER TABLE doc_lines ADD COLUMN short_qty REAL NOT NULL DEFAULT 0`,
+    `ALTER TABLE gate_entries ADD COLUMN irn TEXT DEFAULT ''`,
+    `ALTER TABLE gate_entries ADD COLUMN value INTEGER NOT NULL DEFAULT 0`,
+    `ALTER TABLE gate_entries ADD COLUMN bill_id INTEGER`,
+    `ALTER TABLE users ADD COLUMN ui TEXT`,
+    `CREATE TABLE IF NOT EXISTS item_codes (org_id INTEGER NOT NULL, code TEXT NOT NULL, item_id INTEGER NOT NULL, pack_qty REAL NOT NULL DEFAULT 1,
+       created_at TEXT NOT NULL, PRIMARY KEY (org_id, code))`,
+    `CREATE INDEX IF NOT EXISTS ix_codes_item ON item_codes (item_id)`,
+    `CREATE INDEX IF NOT EXISTS ix_docs_transit ON docs (org_id, transit) WHERE transit = 1`,
+    `INSERT INTO accounts (org_id, code, name, type, sys, is_cash) SELECT o.id, '1210', 'Goods in Transit', 'asset', 'git', 0 FROM orgs o
+       WHERE NOT EXISTS (SELECT 1 FROM accounts a WHERE a.org_id = o.id AND (a.sys = 'git' OR a.code = '1210'))`,
+    `INSERT INTO accounts (org_id, code, name, type, sys, is_cash) SELECT o.id, '1211', 'Goods in Transit', 'asset', 'git', 0 FROM orgs o
+       WHERE NOT EXISTS (SELECT 1 FROM accounts a WHERE a.org_id = o.id AND (a.sys = 'git' OR a.code = '1211'))`,
   ],
 };
 

@@ -287,5 +287,11 @@ file, a Today action list, bills as PDF on WhatsApp in the customer's language, 
 with an outbox, supplier bill scanning on the phone (free OCR, no outside service), automatic WhatsApp reminders, live Shopify / WooCommerce orders,
 guided put-away and wave picking.
 
+**Built since (third round):** bill first and goods later (Goods in Transit, receive in parts, close short with a debit
+note), a Receive Goods screen that works like the POS (scan each piece, teach an unknown code once, carton codes, IMEI
+capture, bins chosen or made on the spot), the e-invoice QR read at the gate and matched to the bill, and each user's
+own menu (store keeper, counter, guard, accountant, salesman) with a gate-only role. Vyapar and myBillBook have no
+receiving step at all; Tally and Zoho receive by typing quantities; WMS products do scan receiving but at enterprise prices.
+
 **Still behind (honest list):** live Amazon / Flipkart API sync (needs developer registration with each marketplace),
 statutory payroll (PF / ESI / TDS), a handheld (HHT) warehouse app with put-away rules per zone, and QC hold at GRN.

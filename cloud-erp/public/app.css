@@ -690,3 +690,32 @@ a.vcard:hover { background: var(--soft); }
 @keyframes slide { 0% { margin-left: -40%; } 100% { margin-left: 100%; } }
 tr.done td { opacity: .5; }
 .modal code, .panel code { word-break: break-all; }
+
+/* receive goods (scan screen), gate QR row, per-user menu picker */
+.ph { margin: 0; padding: 14px 16px 6px; font-size: 16px; }
+.qrrow input { flex: 1 1 220px; }
+.rscanbar .row input#rscan { flex: 1 1 220px; font-size: 16px; padding: 12px; }
+.rscanbar select { flex: 0 1 200px; }
+.rmsg { min-height: 22px; margin-top: 8px; }
+.rmsg.ok { color: var(--ok); } .rmsg.err { color: var(--danger); font-weight: 600; }
+.rprog { margin-top: 6px; display: flex; align-items: center; gap: 10px; }
+.rprog .bar { flex: 1; height: 8px; border-radius: 99px; background: var(--line); overflow: hidden; }
+.rprog .bar i { display: block; height: 100%; background: var(--ok); transition: width .2s; }
+.rlines { display: grid; gap: 10px; margin: 12px 0; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); }
+.rline { border: 1px solid var(--line); background: var(--panel); border-radius: 12px; padding: 12px; display: grid; gap: 8px; }
+.rline.done { border-color: var(--ok); background: var(--ok-soft); }
+.rline.over { border-color: var(--danger); background: var(--danger-soft); }
+.rline.act { box-shadow: 0 0 0 2px var(--brand); }
+.rl-head { display: flex; flex-wrap: wrap; gap: 4px 10px; align-items: baseline; justify-content: space-between; }
+.rl-qty { display: flex; align-items: center; gap: 8px; }
+.rl-qty .btn { min-width: 44px; min-height: 44px; font-size: 20px; padding: 0; }
+.rl-qty input { width: 90px; text-align: center; font-size: 18px; font-weight: 700; }
+.rl-more { display: flex; flex-wrap: wrap; gap: 6px; }
+.rl-more:empty { display: none; }
+.rl-more input { flex: 1 1 100px; min-width: 0; }
+.rl-sn { display: flex; flex-wrap: wrap; gap: 4px; cursor: pointer; }
+.scr-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(190px, 1fr)); gap: 10px; margin-top: 12px; max-height: 44vh; overflow: auto; }
+.scr-grid fieldset { border: 1px solid var(--line); border-radius: 8px; padding: 6px 10px; margin: 0; min-width: 0; }
+.scr-grid legend { font-weight: 600; font-size: 13px; padding: 0 4px; }
+.scr-grid label.check { display: flex; gap: 8px; align-items: center; font-size: 13px; min-height: 32px; }
+.scr-grid label.check:has(input:disabled) { opacity: .75; }
