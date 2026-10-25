@@ -3,7 +3,7 @@
    Every business table carries org_id: one database serves many businesses (multi-tenant).
    migrate() runs on the first request after each deploy, so no manual migration step is needed. */
 
-export const SCHEMA_VERSION = 27;
+export const SCHEMA_VERSION = 28;
 
 // document types whose monthly totals doc_month keeps (sales and purchase money documents)
 const MONTH_TYPES = `('INV','SRET','CNOTE','BILL','PRET','DNOTE')`;
@@ -528,6 +528,32 @@ export const MIGRATIONS = {
        status TEXT NOT NULL DEFAULT 'done' CHECK (status IN ('done','cancelled')), created_by INTEGER, created_at TEXT NOT NULL, txk TEXT UNIQUE)`,
     `CREATE INDEX IF NOT EXISTS ix_claim_entries ON claim_entries (org_id, write_off_id)`,
     `CREATE INDEX IF NOT EXISTS ix_wo_claims ON write_offs (org_id, mode, status)`,
+  ],
+  /* WhatsApp bot (src/wabot.js): customers write to SmartTrader's WhatsApp number and get their hisab, bills and pay link.
+     parties.phone10 (last 10 digits, kept by triggers) finds a customer by mobile; wa_optout stops automatic reminders;
+     orgs.wa_bot / bot_code (the code in the shop's QR link); wa_contacts: per mobile, the shop it is talking to and
+     when it last wrote (replies are free for 24 hours); wa_messages: what was said either way, for the shop's inbox. */
+  28: [
+    `ALTER TABLE parties ADD COLUMN phone10 TEXT DEFAULT ''`,
+    `ALTER TABLE parties ADD COLUMN wa_optout INTEGER NOT NULL DEFAULT 0`,
+    `UPDATE parties SET phone10 = substr(replace(replace(replace(replace(replace(replace(COALESCE(phone, ''), ' ', ''), '-', ''), '+', ''), '(', ''), ')', ''), '.', ''), -10)
+       WHERE COALESCE(phone, '') != ''`,
+    `CREATE INDEX IF NOT EXISTS ix_parties_phone10 ON parties (phone10) WHERE phone10 != ''`,
+    `CREATE TRIGGER IF NOT EXISTS tr_parties_phone10_i AFTER INSERT ON parties BEGIN
+       UPDATE parties SET phone10 = substr(replace(replace(replace(replace(replace(replace(COALESCE(NEW.phone, ''), ' ', ''), '-', ''), '+', ''), '(', ''), ')', ''), '.', ''), -10) WHERE id = NEW.id;
+     END`,
+    `CREATE TRIGGER IF NOT EXISTS tr_parties_phone10_u AFTER UPDATE OF phone ON parties BEGIN
+       UPDATE parties SET phone10 = substr(replace(replace(replace(replace(replace(replace(COALESCE(NEW.phone, ''), ' ', ''), '-', ''), '+', ''), '(', ''), ')', ''), '.', ''), -10) WHERE id = NEW.id;
+     END`,
+    `ALTER TABLE orgs ADD COLUMN wa_bot INTEGER NOT NULL DEFAULT 0`,
+    `ALTER TABLE orgs ADD COLUMN bot_code TEXT`,
+    `CREATE UNIQUE INDEX IF NOT EXISTS ux_orgs_bot_code ON orgs (bot_code) WHERE bot_code IS NOT NULL`,
+    `CREATE TABLE IF NOT EXISTS wa_contacts (phone TEXT PRIMARY KEY, org_id INTEGER, party_id INTEGER, choices TEXT, last_in TEXT, last_out TEXT, updated_at TEXT NOT NULL)`,
+    `CREATE TABLE IF NOT EXISTS wa_messages (id INTEGER PRIMARY KEY, org_id INTEGER, party_id INTEGER, phone TEXT NOT NULL, dir TEXT NOT NULL CHECK (dir IN ('in','out')),
+       body TEXT NOT NULL DEFAULT '', kind TEXT NOT NULL DEFAULT '', wamid TEXT, handled INTEGER NOT NULL DEFAULT 0, by_user INTEGER, at TEXT NOT NULL)`,
+    `CREATE UNIQUE INDEX IF NOT EXISTS ux_wa_wamid ON wa_messages (wamid) WHERE wamid IS NOT NULL`,
+    `CREATE INDEX IF NOT EXISTS ix_wa_org ON wa_messages (org_id, phone, id)`,
+    `CREATE INDEX IF NOT EXISTS ix_wa_at ON wa_messages (at)`,
   ],
 };
 

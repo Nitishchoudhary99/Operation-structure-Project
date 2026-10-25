@@ -2101,5 +2101,172 @@ else {
   check('the restored books match, claim money included', tbR.balanced && JSON.stringify(tbO.rows.map((r) => [r.code, r.debit, r.credit])) === JSON.stringify(tbR.rows.map((r) => [r.code, r.debit, r.credit])));
 }
 
+/* the WhatsApp bot on the official Cloud API: Meta's address check, signed messages, which shop a message is for, the
+   commands, STOP / START for automatic reminders (and a reminder that goes free inside the customer's 24 hours), the
+   shop's inbox and free replies; with the stand-in WhatsApp server (ERP_AI_MOCK) and the worker started with
+   WHATSAPP_APP_SECRET=test-app-secret, WHATSAPP_VERIFY_TOKEN=test-verify, WHATSAPP_NUMBER=919000000000 */
+if (process.env.ERP_AI_MOCK) {
+  const ip = '203.0.113.200';
+  const http = await import('node:http'), crypto = await import('node:crypto');
+  const sent = [];
+  const srv = http.createServer((req, res) => {
+    let b = ''; req.on('data', (d) => { b += d; }); req.on('end', () => {
+      const wa = req.url.startsWith('/wa/') ? JSON.parse(b) : null;
+      res.writeHead(wa ? 200 : 404, { 'Content-Type': 'application/json' });
+      if (!wa) return res.end('{}');
+      sent.push({ auth: req.headers.authorization, body: wa });
+      res.end(JSON.stringify({ messages: [{ id: 'wamid.out.' + sent.length }] }));
+    });
+  });
+  await new Promise((ok) => srv.listen(+process.env.ERP_AI_MOCK, '127.0.0.1', ok));
+  // fresh mobiles each run: a contact is one per WhatsApp number across all shops
+  const stamp = String(Date.now() % 1e8).padStart(8, '0'), mob = (k) => `9${stamp}${k}`, wa = (k) => '91' + mob(k);
+  let n = 0;
+  const post = async (raw, sig) => {
+    const res = await fetch(BASE + '/api/wa/webhook', { method: 'POST', body: raw, headers: { 'Content-Type': 'application/json', 'CF-Connecting-IP': '203.0.113.209', ...(sig ? { 'X-Hub-Signature-256': sig } : {}) } });
+    return { status: res.status, data: await res.json().catch(() => ({})) };
+  };
+  const sign = (raw) => 'sha256=' + crypto.createHmac('sha256', 'test-app-secret').update(raw).digest('hex');
+  const payload = (value) => JSON.stringify({ object: 'whatsapp_business_account', entry: [{ id: 'WABA1', changes: [{ field: 'messages', value: { messaging_product: 'whatsapp', metadata: { phone_number_id: '555' }, ...value } }] }] });
+  const say = async (k, text, id) => {
+    const from = wa(k), raw = payload({ contacts: [{ wa_id: from, profile: { name: 'C' } }],
+      messages: [{ from, id: id || `wamid.in.${stamp}.${++n}`, timestamp: String(Math.floor(Date.now() / 1000)), type: 'text', text: { body: text } }] });
+    const before = sent.length, r = await post(raw, sign(raw));
+    const mine = sent.slice(before).filter((x) => x.body.to === from), last = mine[mine.length - 1];
+    return { ...r, reply: last ? last.body : null, text: last && last.body.text ? last.body.text.body : '' };
+  };
+
+  // Meta checks the address once with the verify token from its dashboard
+  const vOk = await fetch(BASE + '/api/wa/webhook?hub.mode=subscribe&hub.verify_token=test-verify&hub.challenge=8237461');
+  check('webhook address check: the right verify token gets the challenge back', vOk.status === 200 && await vOk.text() === '8237461');
+  check('webhook address check: a wrong or missing token is refused', (await fetch(BASE + '/api/wa/webhook?hub.mode=subscribe&hub.verify_token=nope&hub.challenge=1')).status === 403
+    && (await fetch(BASE + '/api/wa/webhook')).status === 403);
+  const forged = payload({ messages: [{ from: wa(1), id: 'wamid.forged', type: 'text', text: { body: 'hisab' } }] });
+  check('a message without Meta\'s signature, or signed with another secret, is refused', (await post(forged)).status === 401
+    && (await post(forged, 'sha256=' + crypto.createHmac('sha256', 'other').update(forged).digest('hex'))).status === 401
+    && (await post(forged, sign(forged + ' '))).status === 401);
+  const before0 = sent.length;
+  check('a number no shop knows gets a polite answer: ask the shop for its WhatsApp link', /kisi dukaan ki list mein nahi/.test((await say(9, 'hello')).text) && sent.length === before0 + 1);
+
+  const su = await rq('POST', '/api/auth/signup', { business: 'Gupta Kirana', name: 'G', email: `wabot${Date.now()}@test.in`, password: 'Wabot-pass-1234', state: 'Rajasthan' }, { ip });
+  const V = async (m, p, b) => { const r = await rq(m, p, b, { cookie: su.cookie, ip }); if (r.status >= 400) throw new Error(`${m} ${p} -> ${r.status} ${r.data.error}`); return r.data; };
+  const E = (m, p, b) => rq(m, p, b, { cookie: su.cookie, ip });
+  let me = await V('GET', '/api/me');
+  check('the app knows the WhatsApp bot can be turned on (off until the shop does)', me.wa_bot === true && !me.org.wa_bot && me.wa_bot_link === '', JSON.stringify([me.wa_bot, me.org.wa_bot, me.wa_bot_link]));
+  const atta = await V('POST', '/api/items', { name: 'Atta 10kg', unit: 'bag', sale_price: 100, purchase_price: 80, gst_rate: 0, is_service: true });
+  const ramesh = await V('POST', '/api/parties', { name: 'Ramesh Kumar', kind: 'customer', state: 'Rajasthan', phone: '+91 ' + mob(1).slice(0, 5) + ' ' + mob(1).slice(5) });
+  const suresh = await V('POST', '/api/parties', { name: 'Suresh Jain', kind: 'customer', state: 'Rajasthan', phone: '0' + mob(2) });
+  const inv1 = await V('POST', '/api/docs', { type: 'INV', party_id: ramesh.id, date: '2026-09-01', due_date: '2026-09-10', lines: [{ item_id: atta.id, qty: 2, rate: 100 }] });
+  const inv2 = await V('POST', '/api/docs', { type: 'INV', party_id: ramesh.id, date: '2026-09-05', due_date: '2026-09-15', lines: [{ item_id: atta.id, qty: 3, rate: 100 }] });
+  await V('POST', '/api/docs', { type: 'INV', party_id: suresh.id, date: '2026-09-01', due_date: '2026-09-10', lines: [{ item_id: atta.id, qty: 1, rate: 100 }] });
+  check('a customer of a shop that has not turned the bot on is not answered for it', /kisi dukaan ki list mein nahi/.test((await say(1, 'hisab')).text));
+
+  const on = await V('PUT', '/api/settings/wa-bot', { on: true });
+  check('turning the bot on gives the shop its code and WhatsApp link (for the QR)', on.on && /^[0-9A-F]{6}$/.test(on.code) && on.link === `https://wa.me/919000000000?text=${encodeURIComponent('HISAB #' + on.code)}`, JSON.stringify(on));
+  me = await V('GET', '/api/me');
+  check('the link is in the app for Settings and the poster', me.wa_bot_link === on.link && me.org.wa_bot === 1);
+
+  // a customer on the shop's list, found by mobile (saved as "+91 98765 43210" or "098765..."), any language
+  let r = await say(1, 'Namaste');
+  check('hello: the menu, in the shop\'s name, by the customer\'s first name', r.status === 200 && r.data.answered === 1 && r.reply.type === 'text' && /^\*Gupta Kirana\*/.test(r.text)
+    && /Ramesh ji/.test(r.text) && /1 - Hisab/.test(r.text), JSON.stringify(r));
+  check('sent from the shop\'s WhatsApp number with the server\'s token', sent[sent.length - 1].auth === 'Bearer test-wa');
+  r = await say(1, 'Hisab bhejo');
+  const links = r.text.match(/\/i\/[0-9a-f]{24}/g) || [];
+  check('hisab: every open bill with its own link (bill + UPI), and the total due', /Bills: ₹500 baaki \(2\)/.test(r.text) && links.length === 2 && r.text.includes(inv1.number) && r.text.includes(inv2.number)
+    && /\*Kul baaki: ₹500\*/.test(r.text), r.text);
+  const page = await fetch(BASE + links[0]);
+  check('the link opens the customer\'s bill', page.status === 200 && (await page.text()).includes(inv1.number));
+  r = await say(1, '2');
+  check('2: the last bills, with what is still due on each', r.text.includes(inv1.number) && r.text.includes(inv2.number) && /Aapke pichhle bills/.test(r.text), r.text);
+  r = await say(1, '3');
+  check('3: the amount and the link to pay by UPI', /₹500 baaki hain\. Is link par UPI se payment karein: http:\/\/localhost:8787\/i\/[0-9a-f]{24}/.test(r.text), r.text);
+  r = await say(1, 'vaada');
+  check('4 / vaada: where to pick a pay date', /Kab tak denge/.test(r.text) && /\/i\/[0-9a-f]{24}/.test(r.text), r.text);
+  const dupId = `wamid.dup.${stamp}`, d1 = await say(1, 'hisab', dupId), d2 = await say(1, 'hisab', dupId);
+  check('a message Meta delivers twice is answered once', d1.data.answered === 1 && d2.status === 200 && d2.data.answered === 0 && !d2.reply, JSON.stringify([d1.data, d2.data]));
+  const st = payload({ statuses: [{ id: 'wamid.out.1', status: 'read', recipient_id: wa(1) }] });
+  check('delivery and read receipts are taken quietly', (await post(st, sign(st))).data.answered === 0);
+  const fx = '1' + mob(1), fxRaw = payload({ messages: [{ from: fx, id: `wamid.fx.${stamp}`, type: 'text', text: { body: 'hisab' } }] }), fxAt = sent.length;
+  await post(fxRaw, sign(fxRaw));
+  const fxOut = sent.slice(fxAt).filter((x) => x.body.to === fx);
+  check('a foreign number that ends in the same 10 digits is not taken for the customer', fxOut.length === 1 && !/₹500/.test(fxOut[0].body.text.body)
+    && /kisi dukaan ki list mein nahi/.test(fxOut[0].body.text.body), JSON.stringify(fxOut));
+
+  // STOP: no automatic reminders for this customer; START turns them on again; a reminder inside the 24 hours is free text
+  r = await say(1, 'STOP');
+  check('STOP: automatic reminders from this shop are stopped', /automatic reminder band/.test(r.text), r.text);
+  await V('PUT', '/api/settings/auto-wa', { on: true });
+  let b4 = sent.length, run = await V('POST', '/api/settings/auto-wa/run');
+  let out = sent.slice(b4);
+  check('a customer who sent STOP gets no reminder; the others still do (approved template)', !out.some((x) => x.body.to === wa(1)) && out.some((x) => x.body.to === wa(2) && x.body.type === 'template')
+    && run.skipped >= 1, JSON.stringify([run, out.map((x) => [x.body.to, x.body.type])]));
+  r = await say(1, 'start');
+  check('START: reminders are on again', /reminder phir chalu/.test(r.text), r.text);
+  b4 = sent.length; run = await V('POST', '/api/settings/auto-wa/run'); out = sent.slice(b4);
+  const fr = out.find((x) => x.body.to === wa(1));
+  check('a reminder to a customer who wrote in the last 24 hours goes as free text, with the bill link', fr && fr.body.type === 'text' && /Namaste Ramesh Kumar ji, aapke ₹500 baaki hain/.test(fr.body.text.body)
+    && /\/i\/[0-9a-f]{24}/.test(fr.body.text.body) && run.free === 1 && /1 free/.test((await V('GET', '/api/me')).org.auto_wa_note), JSON.stringify([run, fr && fr.body]));
+
+  // what the bot cannot answer goes to the shop
+  r = await say(1, 'Bhaiya 200 kal de dunga, baaki agle hafte');
+  check('anything else is passed to the shop, and the customer is told so', /Aapka message Gupta Kirana ko bhej diya hai/.test(r.text), r.text);
+  r = await say(1, '5');
+  check('5: talk to the shop', /Woh yahin jawab denge/.test(r.text), r.text);
+  let ib = await V('GET', '/api/wa/inbox');
+  const row = ib.rows.find((x) => x.phone === wa(1));
+  check('the inbox shows the customer by name, waiting for an answer, reply free', ib.waiting === 1 && row && row.name === 'Ramesh Kumar' && row.waiting === 2 && row.window_open && row.last.dir === 'out', JSON.stringify(ib));
+  check('Today shows who is waiting on WhatsApp', (await V('GET', '/api/today')).rows.some((x) => x.key === 'wa_asks' && x.n === 1));
+  let th = await V('GET', '/api/wa/inbox/' + wa(1));
+  check('the chat: what the customer wrote, what the bot and reminders said, oldest first', th.party.id === ramesh.id && th.window_open && th.messages[0].dir === 'in' && th.messages.some((x) => x.kind === 'reminder')
+    && th.messages.some((x) => x.kind === 'bot') && th.messages.filter((x) => x.dir === 'in' && x.kind === 'ask' && !x.handled).length === 2, JSON.stringify(th.messages.map((x) => [x.dir, x.kind, x.handled])));
+  b4 = sent.length;
+  th = await V('POST', `/api/wa/inbox/${wa(1)}/reply`, { text: 'Theek hai Ramesh ji, dhanyavaad' });
+  out = sent.slice(b4);
+  check('the shop answers from the inbox: free text under the shop\'s name; nothing waits any more', out.length === 1 && out[0].body.type === 'text' && out[0].body.to === wa(1)
+    && out[0].body.text.body === '*Gupta Kirana*\nTheek hai Ramesh ji, dhanyavaad' && th.messages[th.messages.length - 1].kind === 'reply' && (await V('GET', '/api/wa/inbox')).waiting === 0, JSON.stringify(out));
+  check('an empty reply is refused', (await E('POST', `/api/wa/inbox/${wa(1)}/reply`, { text: '  ' })).status === 400);
+  th = await V('GET', '/api/wa/inbox/' + wa(2));
+  const late = await E('POST', `/api/wa/inbox/${wa(2)}/reply`, { text: 'hello' });
+  check('a customer who never wrote cannot be sent free text (only the approved reminder)', !th.window_open && th.messages.length === 1 && th.messages[0].kind === 'reminder' && late.status === 404, JSON.stringify([th, late.data]));
+
+  // someone not on the list who scanned the shop's QR: goes to that shop's inbox
+  r = await say(3, 'HISAB #' + on.code.toLowerCase());
+  check('the shop\'s code finds the shop for a number not on its list; the message waits in the inbox', /^\*Gupta Kirana\*\nAapka number dukaan ki list mein nahi/.test(r.text)
+    && (await V('GET', '/api/wa/inbox')).rows.some((x) => x.phone === wa(3) && x.waiting === 1 && !x.name), r.text);
+  check('marked answered (after a call): nothing waits', (await V('POST', `/api/wa/inbox/${wa(3)}/done`)).ok && (await V('GET', '/api/wa/inbox')).waiting === 0);
+
+  // a mobile that is a customer of two shops: the customer picks one
+  const ip2 = '203.0.113.201';
+  const su2 = await rq('POST', '/api/auth/signup', { business: 'Agarwal Stores', name: 'A', email: `wabot2${Date.now()}@test.in`, password: 'Wabot-pass-1234', state: 'Rajasthan' }, { ip: ip2 });
+  const E2 = (m, p, b) => rq(m, p, b, { cookie: su2.cookie, ip: ip2 });
+  await E2('PUT', '/api/settings/wa-bot', { on: true });
+  await E2('POST', '/api/parties', { name: 'Mohan Lal', kind: 'customer', state: 'Rajasthan', phone: mob(4) });
+  await V('POST', '/api/parties', { name: 'Mohan Lal', kind: 'customer', state: 'Rajasthan', phone: mob(4) });
+  r = await say(4, 'hisab');
+  check('a customer of two shops is asked which one', /kis dukaan/.test(r.text) && /1\. Agarwal Stores\n2\. Gupta Kirana/.test(r.text), r.text);
+  r = await say(4, '1');
+  check('the number picks the shop', /^\*Agarwal Stores\*/.test(r.text) && /Mohan ji/.test(r.text), r.text);
+  r = await say(4, 'hisab');
+  check('then that shop answers', /^\*Agarwal Stores\*/.test(r.text) && /kuch baaki nahi/.test(r.text), r.text);
+  const ib2 = (await E2('GET', '/api/wa/inbox')).data;
+  check('each shop sees only its own chats', !ib2.rows.some((x) => x.phone === wa(1)) && ib2.rows.some((x) => x.phone === wa(4))
+    && (await E2('GET', '/api/wa/inbox/' + wa(1))).status === 404 && (await E2('POST', `/api/wa/inbox/${wa(1)}/reply`, { text: 'x' })).status === 404);
+  await E2('PUT', '/api/settings/wa-bot', { on: false });
+  r = await say(4, 'hisab');
+  check('a shop that turned the bot off no longer answers: the customer\'s other shop does', /^\*Gupta Kirana\*/.test(r.text), r.text);
+
+  // who may do what
+  const semail = `wastore${Date.now()}@test.in`;
+  await V('POST', '/api/users', { email: semail, name: 'Store', role: 'store', password: 'Store-pass-12345' });
+  const sc = (await rq('POST', '/api/auth/login', { email: semail, password: 'Store-pass-12345' }, { ip })).cookie;
+  const S = (m, p, b) => rq(m, p, b, { cookie: sc, ip });
+  check('only someone who works on sales, khata or money answers customers; only settings turns the bot on or off',
+    (await S('POST', `/api/wa/inbox/${wa(1)}/reply`, { text: 'x' })).status === 403 && (await S('POST', `/api/wa/inbox/${wa(1)}/done`, {})).status === 403
+    && (await S('PUT', '/api/settings/wa-bot', { on: false })).status === 403);
+  check('the inbox needs sign-in', (await rq('GET', '/api/wa/inbox')).status === 401);
+  srv.close();
+}
+
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

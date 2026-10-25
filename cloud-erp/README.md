@@ -62,7 +62,8 @@ Market research and pricing advice: see [docs/COMPETITORS.md](docs/COMPETITORS.m
 - **Staff & Salary** (`#/staff`, `src/payroll.js`, finance roles only): staff on a monthly salary or a daily wage. Today's attendance is one tap per person (P, A, ½, L, O), or a month calendar per person. Monthly staff earn salary × payable days ÷ days in the month (a day nobody marked counts as present, so most shops mark only absences); daily staff earn the wage for days marked present. Overtime hours at a rate per hour. **Advances** (Dr Staff Advances / Cr cash) are cut from a salary in part or in full; **Pay salary** posts Dr Salaries & Wages / Cr Staff Advances / Cr cash, once per person per month, and opens a **payslip** to print or send on WhatsApp. Cancelling reverses the books. The Today card says when today's attendance or last month's salaries are not done.
 - **Works without internet**: the business, customers, items, godowns and accounts are kept on the device the last time it was online (IndexedDB). With no internet, new invoices, POS bills, purchase bills, receipts and expenses are saved in an **Outbox** (`#/outbox`, a badge in the top bar) and sent by themselves when the device is back online. Every such write carries an `Idempotency-Key`; the server keeps the first answer for a week (`idem_keys`), so a bill sent twice (a lost answer, a second sync) is saved once. A bill gets its number, and its stock is checked, when it reaches the server. Signing out clears the device copy.
 - **Scan a supplier's bill** (purchase bill / GRN / PO editor → *Scan supplier bill*, `public/billocr.js`): read **on the phone itself**, free and private (the picture never leaves the device, no API key). A PDF with text (most e-invoices) is read exactly with pdf.js; a photo or a scanned PDF page is straightened, evened out (shadows), cleared of table rules and read with Tesseract OCR (both self-hosted in `public/vendor/`; about 7 MB on first use, then cached for offline use). Rules for Indian GST bills then find the supplier's GSTIN (OCR slips corrected and the GSTIN check digit verified), bill number, date, the item rows (quantity × rate = amount), GST rates and the total. The supplier is matched by GSTIN or name and each row to an item (name, SKU, HSN, and letter-pair likeness for OCR-mangled names); a review sheet shows the guesses and offers **+ New item / + New supplier**; **Fill the bill** opens the purchase bill filled in, with a warning when the rows do not add up to the bill's total. Nothing is saved until the user saves.
-- **Automatic WhatsApp reminders** (Settings, Growth and Business plans, `src/autowa.js`): every day between 10 am and 1 pm the customers that the Vasooli schedule says are due get the approved reminder template from SmartTrader's WhatsApp Business number, with their name, the business, the amount due and their bill link with UPI. Logged in `reminder_log` (via `auto`), so nobody gets two a day and the schedule moves on. **Send today's now** runs it at once. Needs the WhatsApp secrets (below).
+- **Automatic WhatsApp reminders** (Settings, Growth and Business plans, `src/autowa.js`): every day between 10 am and 1 pm the customers that the Vasooli schedule says are due get the approved reminder template from SmartTrader's WhatsApp Business number, with their name, the business, the amount due and their bill link with UPI. Logged in `reminder_log` (via `auto`), so nobody gets two a day and the schedule moves on. **Send today's now** runs it at once. Needs the WhatsApp secrets (below). A customer who wrote to the number in the last 24 hours gets the reminder as plain text, which costs nothing; one who answered **STOP** gets none.
+- **WhatsApp bot** (Settings → *WhatsApp bot*, `src/wabot.js`, on WhatsApp's official Cloud API): customers write to SmartTrader's WhatsApp number and are answered at once, in Hinglish, Hindi or English: **1 / hisab** (each open bill with its own bill + UPI link, the khata, the total), **2 / bill** (the last bills), **3 / pay** (the UPI link), **4 / vaada** (pick a pay date), **5 / shop** (the message goes to the shop), **STOP / START** (automatic reminders off / on). The shop is found by the code in its link or QR (*HISAB #A1B2C3*, printable poster at `#/wa-poster`), else the shop this number was last talking to, else the shop that has this mobile on a customer (two shops: the customer picks). Only Indian (+91) WhatsApp numbers are matched to customers, so a foreign number with the same last 10 digits sees nothing. What the bot cannot answer waits in the **WhatsApp Inbox** (`#/wa-inbox`, a Today card) and the shop replies there under its own name; WhatsApp allows free text only within 24 hours of the customer's last message, so the reply box shows only then. Meta's webhook is checked with the app secret (`X-Hub-Signature-256`), a message Meta sends twice is answered once, and a number that floods gets no answers for the hour. Chats are kept 6 months.
 - **Live web store orders** (Online orders → *Connect a store*, `src/hooks.js`): Shopify (paste the signing key from Settings → Notifications → Webhooks, event *Order payment*), WooCommerce (a secret is made here, topic *Order updated*), or any website (HMAC-SHA256 header `X-Signature`). Each store has a private address; a paid order is checked against the secret and becomes a GST invoice at once (party per store and buyer state, items by SKU, never twice). An order that cannot be billed (unknown SKU) is answered 200 and the reason shows on the connection.
 - **Guided put-away** (`#/putaway`): each item waiting in no bin with the bin it should go to (its default bin, a bin that already holds it, else an empty bin that is nobody's default); scan the bin label and the row is done. **Wave pick list** (`#/wave`, advanced mode): choose many open sales orders / delivery notes of one godown and get one list walked bin by bin, FEFO batches, and how much goes to each order.
 
@@ -218,6 +219,7 @@ cloud-erp/
   src/hooks.js         live orders from web stores (Shopify, WooCommerce, any site) by signed webhook
   src/payroll.js       staff, attendance, advances, salary and payslips
   src/autowa.js        automatic payment reminders on the WhatsApp Cloud API (daily, opt-in)
+  src/wabot.js         WhatsApp bot: Meta's webhook, which shop, the answers, the shop's inbox and replies
   src/receive.js       receiving: what is expected (bills in transit, orders, gate), codes learnt while scanning, bins chosen or made
   src/claims.js        transit claims on transporters / insurers: details, money received, the rest closed as a loss
   tools/gen-og.mjs     makes the link-preview posters (public/og-*.png) in the three languages
@@ -269,9 +271,10 @@ ERP_MAIL_SINK=8798 node test/run.mjs http://localhost:8799
 npx wrangler dev --port 8799 --persist-to /tmp/erp-test --var GDRIVE_CLIENT_ID:test-client --var GDRIVE_CLIENT_SECRET:test-secret \
   --var GDRIVE_TOKEN_URL:http://127.0.0.1:8797/token --var GDRIVE_REVOKE_URL:http://127.0.0.1:8797/revoke --var GDRIVE_API:http://127.0.0.1:8797
 ERP_GDRIVE_MOCK=8797 node test/run.mjs http://localhost:8799
-# automatic WhatsApp against a stand-in WhatsApp Cloud API (port 8796 here)
+# automatic WhatsApp and the WhatsApp bot against a stand-in WhatsApp Cloud API (port 8796 here)
 npx wrangler dev --port 8799 --persist-to /tmp/erp-test \
-  --var WHATSAPP_TOKEN:test-wa --var WHATSAPP_PHONE_ID:555 --var WHATSAPP_API:http://127.0.0.1:8796/wa --var APP_URL:http://localhost:8799
+  --var WHATSAPP_TOKEN:test-wa --var WHATSAPP_PHONE_ID:555 --var WHATSAPP_API:http://127.0.0.1:8796/wa --var APP_URL:http://localhost:8799 \
+  --var WHATSAPP_APP_SECRET:test-app-secret --var WHATSAPP_VERIFY_TOKEN:test-verify --var WHATSAPP_NUMBER:919000000000
 ERP_AI_MOCK=8796 node test/run.mjs http://localhost:8799
 ```
 
@@ -287,6 +290,23 @@ ERP_AI_MOCK=8796 node test/run.mjs http://localhost:8799
    Optional: `WHATSAPP_TEMPLATE` (another template name), `WHATSAPP_LANG_EN` / `WHATSAPP_LANG_HI` / `WHATSAPP_LANG_HL`
    (template language codes; Hinglish customers get the English template unless `WHATSAPP_LANG_HL` is set).
    `APP_URL` (in wrangler.toml) is the address used in the links. Meta bills each message to the operator's account.
+
+### WhatsApp bot (one-time setup by the SmartTrader operator, after the reminders above)
+
+Uses the same WhatsApp number and token as the reminders. Answers to a customer who wrote first are free on the
+Cloud API (the 24-hour customer service window), so the bot itself costs nothing per message.
+
+1. Make a long random **verify token** yourself (any text, e.g. 32 letters and digits). Do not paste it in a chat.
+2. Cloudflare → the ERP worker → Variables and Secrets, type **Secret**: **WHATSAPP_VERIFY_TOKEN** (that token) and
+   **WHATSAPP_APP_SECRET** (Meta app → App settings → Basic → *App secret*). As a plain variable: **WHATSAPP_NUMBER**,
+   the WhatsApp number customers write to, with country code and no + (e.g. `919876543210`). Deploy.
+3. Meta app → WhatsApp → Configuration → Webhook → *Edit*: Callback URL `https://erp.docbrisk.com/api/wa/webhook`,
+   Verify token = the same token → *Verify and save*. Then under Webhook fields subscribe to **messages**.
+4. Each shop turns it on in Settings → *WhatsApp bot* and prints its QR poster. Customers already on the shop's list
+   with their mobile number can simply write "hisab" to the number.
+
+Never put these values in `wrangler.toml` or in code; the bot stays off (Settings does not show it) until
+`WHATSAPP_TOKEN`, `WHATSAPP_PHONE_ID` and `WHATSAPP_APP_SECRET` are all set.
 
 ### Google Drive auto-backup (one-time setup by the SmartTrader operator)
 
@@ -307,9 +327,8 @@ every business has to connect Drive again.
 
 ## Not built yet (next steps)
 
-- Sending reminders by themselves (no tap) needs the WhatsApp Business (Cloud) API: a verified business, a number
-  and approved templates, paid per message. Today every message goes from the shop's own WhatsApp with one tap.
-
+- Each shop's own WhatsApp number for the bot and reminders (Meta's Embedded Signup as a Tech Provider); today they
+  come from SmartTrader's one number under the shop's name.
 - Direct IRN / e-way bill generation through an API. This needs a GSP account; today the JSON files
   are uploaded on the government portals.
 - Live sync with the Amazon / Flipkart seller APIs (today: their order reports, a stock file, and live orders from
