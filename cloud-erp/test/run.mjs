@@ -2021,5 +2021,85 @@ else {
   check('the restored books match, transit losses and claims included', tbR.balanced && JSON.stringify(tbO.rows.map((r) => [r.code, r.debit, r.credit])) === JSON.stringify(tbR.rows.map((r) => [r.code, r.debit, r.credit])));
 }
 
+/* transit claims followed up to the end: whom and their reference, follow-up date, money received in parts, the rest
+   closed as a loss, entries cancelled, who may do what, and backup / restore */
+{
+  const ip = '203.0.113.190';
+  const email = `cl${Date.now()}@test.in`;
+  const su = await rq('POST', '/api/auth/signup', { business: 'Jain Glass House', name: 'J', email, password: 'Jain-pass-12345', state: 'Rajasthan' }, { ip });
+  const V = async (m, p, b) => { const r = await rq(m, p, b, { cookie: su.cookie, ip }); if (r.status >= 400) throw new Error(`${m} ${p} -> ${r.status} ${r.data.error}`); return r.data; };
+  const E = (m, p, b) => rq(m, p, b, { cookie: su.cookie, ip });
+  const sup = await V('POST', '/api/parties', { name: 'Firozabad Glass Works', kind: 'supplier', state: 'Rajasthan', gstin: '08AAACF1234F1Z5' });
+  const vase = await V('POST', '/api/items', { name: 'Glass vase', unit: 'pc', sale_price: 1500, purchase_price: 1000, gst_rate: 18 });
+  const accts = (await V('GET', '/api/accounts')).rows, cash = accts.find((a) => a.sys === 'cash');
+  const bal = async (sys) => {
+    const tb = await V('GET', '/api/reports/trial-balance'), a = accts.find((x) => x.sys === sys), r = a && tb.rows.find((x) => x.code === a.code);
+    return r ? Math.round(((r.debit || 0) - (r.credit || 0)) * 100) / 100 : 0;
+  };
+  const bill = await V('POST', '/api/docs', { type: 'BILL', party_id: sup.id, transit: true, party_ref: 'FGW/12', lines: [{ item_id: vase.id, qty: 5, rate: 1000 }] });
+  const line = bill.lines[0].id;
+  const wo = await V('POST', `/api/docs/${bill.id}/write-off`, { mode: 'claim', against: 'VRL Logistics', claim_ref: 'LR 7788', reason: 'Two vases broken', lines: [{ line_id: line, qty: 2 }] });
+  let list = await V('GET', '/api/claims');
+  check('a claim written off on the bill shows on Transit Claims with whom and their reference', list.rows.length === 1 && list.rows[0].against === 'VRL Logistics' && list.rows[0].claim_ref === 'LR 7788'
+    && list.rows[0].total === 2360 && list.rows[0].due === 2360 && list.rows[0].state === 'open' && list.totals.open === 1 && list.totals.due === 2360, JSON.stringify(list));
+  let td = (await V('GET', '/api/today')).rows;
+  check('the Today card lists the open claim with what is due', td.some((r) => r.key === 'claims' && r.n === 1 && r.value === 2360), JSON.stringify(td));
+  const tomorrow = new Date(Date.now() + 5.5 * 3600e3 + 86400e3).toISOString().slice(0, 10);
+  await V('PUT', `/api/claims/${wo.id}`, { against: 'VRL Logistics Ltd', claim_ref: 'LR 7788', follow_up: tomorrow, claim_note: 'Spoke to Mr Rao' });
+  td = (await V('GET', '/api/today')).rows;
+  check('with a follow-up date ahead it leaves the Today card until then', !td.some((r) => r.key === 'claims'), JSON.stringify(td));
+
+  // money in parts, then the rest closed as a loss
+  const cashBefore = await bal('cash');
+  let d = await V('POST', `/api/claims/${wo.id}/receive`, { amount: 1500, account_id: cash.id, note: 'NEFT 4455' });
+  check('money received lowers what is due and comes into the cash book', d.state === 'partial' && d.received === 1500 && d.due === 860 && eq(await bal('claims'), 860)
+    && eq(await bal('cash') - cashBefore, 1500) && d.entries.length === 1 && d.against === 'VRL Logistics Ltd' && d.follow_up === tomorrow, JSON.stringify(d));
+  const over = await E('POST', `/api/claims/${wo.id}/receive`, { amount: 900, account_id: cash.id });
+  check('more than is due cannot be received', over.status === 400 && /860/.test(over.data.error), JSON.stringify(over.data));
+  const lossBefore = await bal('transit_loss');
+  d = await V('POST', `/api/claims/${wo.id}/close`, { note: 'Transporter paid only part' });
+  check('the rest closed as a loss: nothing due, the claim is settled and the loss is booked', d.due === 0 && d.closed === 860 && d.state === 'settled' && eq(await bal('claims'), 0)
+    && eq(await bal('transit_loss') - lossBefore, 860), JSON.stringify(d));
+  check('a settled claim leaves the open list', (await V('GET', '/api/claims')).rows.length === 0 && (await V('GET', '/api/claims?status=closed')).rows.length === 1);
+  check('nothing more can be closed or received', (await E('POST', `/api/claims/${wo.id}/close`, {})).status === 400
+    && (await E('POST', `/api/claims/${wo.id}/receive`, { amount: 1, account_id: cash.id })).status === 400);
+  check('a write-off with money received on it cannot be cancelled', (await E('POST', `/api/write-offs/${wo.id}/cancel`)).status === 400);
+
+  // entries cancelled, newest first, put the amount back on the claim
+  const closing = d.entries.find((e) => e.kind === 'loss'), receipt = d.entries.find((e) => e.kind === 'receipt');
+  d = await V('POST', `/api/claim-entries/${closing.id}/cancel`);
+  check('a cancelled closing makes the rest due again and takes the loss back', d.due === 860 && d.state === 'partial' && eq(await bal('transit_loss'), lossBefore), JSON.stringify(d));
+  d = await V('POST', `/api/claim-entries/${receipt.id}/cancel`);
+  check('a cancelled receipt takes the money out of the cash book again', d.due === 2360 && d.state === 'open' && eq(await bal('cash'), cashBefore) && eq(await bal('claims'), 2360), JSON.stringify(d));
+  check('an entry cannot be cancelled twice', (await E('POST', `/api/claim-entries/${receipt.id}/cancel`)).status === 400);
+  await V('POST', `/api/claims/${wo.id}/receive`, { amount: 2360, account_id: cash.id });
+  check('paid in full in one go: settled', (await V('GET', `/api/claims/${wo.id}`)).state === 'settled');
+
+  // who may do what
+  await V('POST', '/api/users', { email: 'store' + email, name: 'Store', role: 'store', password: 'Store-pass-12345' });
+  const sc = (await rq('POST', '/api/auth/login', { email: 'store' + email, password: 'Store-pass-12345' }, { ip })).cookie;
+  const S = (m, p, b) => rq(m, p, b, { cookie: sc, ip });
+  const wo2 = await V('POST', `/api/docs/${bill.id}/write-off`, { mode: 'claim', against: 'United India Insurance', lines: [{ line_id: line, qty: 1 }] });
+  check('the godown sees claims and keeps their details, but money needs the finance right', (await S('GET', '/api/claims')).status === 200
+    && (await S('PUT', `/api/claims/${wo2.id}`, { against: 'United India Insurance', claim_ref: 'POL-1' })).status === 200
+    && (await S('POST', `/api/claims/${wo2.id}/receive`, { amount: 10, account_id: cash.id })).status === 403
+    && (await S('POST', `/api/claims/${wo2.id}/close`, {})).status === 403);
+  check('a loss write-off is not a claim', (await E('GET', `/api/claims/${(await V('POST', `/api/docs/${bill.id}/write-off`, { lines: [{ line_id: line, qty: 1 }] })).id}`)).status === 404);
+  check('the books balance', (await V('GET', '/api/reports/trial-balance')).balanced === true);
+
+  // backup and restore keep the claims and their history
+  await V('POST', `/api/claims/${wo2.id}/receive`, { amount: 500, account_id: cash.id });
+  const j = await (await fetch(BASE + '/api/export/backup', { headers: { Cookie: su.cookie, 'CF-Connecting-IP': ip } })).json();
+  const nu = await rq('POST', '/api/auth/signup', { business: 'Jain Restore', name: 'R', email: 'r' + email, password: 'Jain-pass-12345', state: 'Rajasthan' }, { ip: '203.0.113.191' });
+  const R2 = (m, p, b) => rq(m, p, b, { cookie: nu.cookie, ip: '203.0.113.191' });
+  const rr = await R2('POST', '/api/restore', j);
+  const rl = (await R2('GET', '/api/claims?status=all')).data;
+  const rc = rl.rows.find((x) => x.claim_ref === 'POL-1'), rcd = rc && (await R2('GET', `/api/claims/${rc.id}`)).data;
+  check('restored: the claims with whom, what came and their history', rr.status === 200 && rl.rows.length === 2 && rcd && rcd.received === 500 && rcd.entries.length === 1
+    && rcd.entries[0].account === cash.name, JSON.stringify([rr.status, rl.rows.length, rcd]));
+  const tbO = await V('GET', '/api/reports/trial-balance'), tbR = (await R2('GET', '/api/reports/trial-balance')).data;
+  check('the restored books match, claim money included', tbR.balanced && JSON.stringify(tbO.rows.map((r) => [r.code, r.debit, r.credit])) === JSON.stringify(tbR.rows.map((r) => [r.code, r.debit, r.credit])));
+}
+
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);
