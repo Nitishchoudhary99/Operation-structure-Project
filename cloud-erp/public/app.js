@@ -265,7 +265,7 @@ const NAV = [
   ['Sales', [['pos', 'Quick Bill (POS)'], ['sales/INV', 'Invoices'], ['recurring', 'Recurring Bills'], ['sales/SO', 'Sales Orders'], ['sales/DN', 'Delivery Notes'], ['sales/QUOTE', 'Quotations'], ['sales/SRET', 'Sales Returns'], ['sales/CNOTE', 'Credit Notes (rate diff)'], ['receipts', 'Receipts']]],
   ['Purchase', [['purchase/PO', 'Purchase Orders'], ['gate/in', 'Gate Entry (inward)'], ['purchase/GRN', 'Goods Receipts (GRN)'], ['purchase/BILL', 'Purchase Bills'], ['purchase/PRET', 'Purchase Returns'], ['purchase/DNOTE', 'Debit Notes (rate diff)'], ['payments', 'Payments']]],
   ['Inventory', [['items', 'Items'], ['stock', 'Stock & Godowns'], ['stockcount', 'Stock Count'], ['gate/out', 'Gate Pass (outward)'], ['pending', 'Pending Orders']]],
-  ['Contacts', [['parties', 'Customers & Suppliers'], ['khata', 'Khata Book'], ['reminders', 'Payment Reminders'], ['vaade', 'Vaade (Promises)']]],
+  ['Contacts', [['parties', 'Customers & Suppliers'], ['khata', 'Khata Book'], ['reminders', 'Vasooli (Collections)'], ['vaade', 'Vaade (Promises)']]],
   ['Accounts', [['expenses', 'Expenses'], ['accounts', 'Chart of Accounts'], ['journal', 'Journal Voucher'], ['daybook', 'Day Book']]],
   ['Reports', [['reports/pnl', 'Profit & Loss'], ['reports/balance-sheet', 'Balance Sheet'], ['reports/trial-balance', 'Trial Balance'], ['reports/gst', 'GST Summary'], ['reports/ageing', 'Outstanding (Ageing)'], ['reports/register', 'Registers'], ['cash', 'Kal ka Cash'], ['tally', 'Tally Export']]],
   ['Settings', [['settings', 'Settings'], ['plan', 'Plan & Billing']]],
@@ -716,6 +716,7 @@ route(/^doc\/(\d+)$/, async (el, m) => {
     if (['INV', 'BILL'].includes(d.type)) more.push('<button class="btn" id="recur">Make it every month / week…</button>');
     more.push(`<button class="btn danger" id="cancel">Cancel ${esc((T && T.label) || 'document')}</button>`);
   }
+  if (d.status !== 'cancelled' && ['INV', 'SRET', 'CNOTE', 'QUOTE', 'SO', 'DN'].includes(d.type)) more.unshift('<button class="btn" id="pdfdl">Download PDF file</button>');
   main.push(`<button class="btn primary" data-act="print">Print / PDF</button>`);
   const actions = [...main, more.length ? `<details class="more-menu"><summary class="btn" aria-label="More actions">More &#9662;</summary><div class="menu">${more.join('')}</div></details>` : ''];
   el.innerHTML = head(`${esc(d.number)} ${badge(d.status)}`, actions.join('')) + `
@@ -758,12 +759,13 @@ route(/^doc\/(\d+)$/, async (el, m) => {
     try { await POST(`/api/docs/${d.id}/cancel`); dirty('items', 'accounts', 'parties'); toast('Cancelled'); render(); } catch (e) { toast(e.message, 'err'); }
   };
   if ($('#pay')) $('#pay').onclick = () => paymentForm(d.type === 'INV' ? 'receipt' : 'payment', { party_id: d.party_id, amount: d.balance, doc: d });
-  if ($('#wa')) $('#wa').onclick = async () => {
-    const w = window.open('', '_blank');                 // open now, inside the tap; filled in once the link is ready
-    try { const r = await GET(`/api/docs/${d.id}/share`); if (w) w.location = r.whatsapp_url; else location.href = r.whatsapp_url; }
-    catch (e) { if (w) w.close(); toast(e.message, 'err'); }
+  const send = () => sendDialog({ title: `Send ${d.number}`, lang: p.lang, load: (l) => GET(`/api/docs/${d.id}/share?lang=${l}`), pdf: () => docPdf(d) });
+  if ($('#wa')) $('#wa').onclick = send;
+  if ($('#sms')) $('#sms').onclick = send;
+  if ($('#pdfdl')) $('#pdfdl').onclick = async (e) => {
+    const b = e.currentTarget, t = b.textContent; b.disabled = true; b.textContent = 'Making PDF…';
+    try { saveFile(await docPdf(d)); } catch (err) { toast(err.message, 'err'); } finally { b.disabled = false; b.textContent = t; }
   };
-  if ($('#sms')) $('#sms').onclick = async () => { const r = await GET(`/api/docs/${d.id}/share`); location.href = r.sms_url; };
   if ($('#unshare')) $('#unshare').onclick = async () => {
     if (!confirm('Stop sharing this document? The link already sent to the customer will stop working. You can share it again later with a new link.')) return;
     try { await POST(`/api/docs/${d.id}/share/revoke`); toast('Link turned off'); } catch (e) { toast(e.message, 'err'); }
@@ -789,19 +791,26 @@ async function paymentForm(kind, { party_id = '', amount = '', doc } = {}) {
     const body = { ...v, kind, party_id: +v.party_id, account_id: +v.account_id };
     if (doc) body.allocations = [{ doc_id: doc.id, amount: Math.min(+v.amount, doc.balance) }];
     const r = await POST('/api/payments', body);
-    dirty('accounts', 'parties'); toast(`${r.number} saved`); render();
+    dirty('accounts', 'parties'); toast(`${r.number} saved`);
+    if (kind === 'receipt') setTimeout(() => sendReceipt(r, (parties.find((x) => x.id === +v.party_id) || {}).lang), 0);
+    else render();
   }, { intro: `<p class="muted">${doc ? `Against ${esc(doc.number)}.` : 'Applied to the oldest open ' + (kind === 'receipt' ? 'invoices' : 'bills') + ' first; any extra is kept as an advance.'}</p>` });
 }
+/* the customer's receipt on WhatsApp at once, naming who collected it: cash taken by staff cannot quietly go missing */
+const sendReceipt = (r, lang) => sendDialog({ title: `Send receipt ${r.number}`, lang, later: 'Not now', closed: () => render(),
+  intro: '<p class="muted">The customer gets the receipt on WhatsApp: amount, date, who collected it and the balance left.</p>',
+  load: (l) => GET(`/api/payments/${r.id}/message?lang=${l}`) });
 const payList = (kind) => async (el, m, q) => {
   const { rows } = await GET('/api/payments?kind=' + kind);
   el.innerHTML = head(kind === 'receipt' ? 'Receipts' : 'Payments', `<button class="btn primary" id="new">+ ${kind === 'receipt' ? 'Receive payment' : 'Pay supplier'}</button>`) +
     `<div class="panel flush">${table([{ h: 'Number', k: 'number' }, { h: 'Date', f: (r) => fdate(r.date) }, { h: 'Party', k: 'party' }, { h: 'Account', k: 'account' },
       { h: 'Reference', k: 'reference', cls: 'hide-sm' }, { h: 'Amount', num: 1, f: (r) => inr(r.amount) },
-      { h: '', f: (r) => r.void ? badge('cancelled') : `<button class="btn sm danger" data-void="${r.id}">Void</button>` }], rows,
+      { h: '', f: (r) => r.void ? badge('cancelled') : `${kind === 'receipt' ? `<button class="btn sm got" data-rcpt="${r.id}">WhatsApp</button> ` : ''}${ME.can.finance ? `<button class="btn sm danger" data-void="${r.id}">Void</button>` : ''}` }], rows,
     { empty: emptyCta(kind === 'receipt' ? 'Money you get from customers shows here. Record it to clear their bills.' : 'Money you pay to suppliers shows here.',
       `<button class="btn primary" data-np>${kind === 'receipt' ? '+ Receive payment' : '+ Pay supplier'}</button>`) })}</div>`;
   $('#new').onclick = () => paymentForm(kind);
   if ($('[data-np]', el)) $('[data-np]', el).onclick = () => paymentForm(kind);
+  $$('[data-rcpt]', el).forEach((b) => b.onclick = () => sendReceipt(rows.find((r) => r.id === +b.dataset.rcpt)));
   $$('[data-void]', el).forEach((b) => b.onclick = async () => {
     if (!confirm('Void this entry? Its accounting will be reversed and the invoices/bills re-opened.')) return;
     try { await POST(`/api/payments/${b.dataset.void}/void`); dirty('accounts', 'parties'); toast('Entry voided'); render(); } catch (e) { toast(e.message, 'err'); }
@@ -823,6 +832,9 @@ function partyForm(p = {}, after) {
     { k: 'city', label: 'City', value: p.city, more: true }, { k: 'pincode', label: 'PIN code', value: p.pincode, more: true, help: 'Needed for e-invoice / e-way bill.' },
     { k: 'credit_days', label: 'Payment due in (days)', type: 'number', value: p.credit_days ?? 0, more: true, help: 'Sets the due date on their bills.' },
     { k: 'credit_limit', label: 'Credit limit (₹)', type: 'number', value: p.credit_limit ?? 0, more: true, help: '0 = no limit. You get a warning above it.' },
+    { k: 'lang', label: 'Message language', type: 'select', value: p.lang || '', more: true, help: 'Bills, reminders and receipts go to them in this language.',
+      options: [{ v: '', t: `Business default (${(LANGS.find((x) => x[0] === (ME.org.msg_lang || 'hl')) || LANGS[2])[1]})` }, ...LANGS.map(([v, t]) => ({ v, t }))] },
+    { k: 'vip', label: 'VIP buyer: only gentle reminders, never the firm 30-day or final wording', type: 'checkbox', value: !!p.vip, more: true },
     { k: 'address', label: 'Address', type: 'textarea', value: p.address, wide: true, more: true }, ...cfModal('party', p.extra),
   ], async (v) => {
     v = splitCf(v);
@@ -973,24 +985,166 @@ ${ME.org.upi_id ? '' : '<div class="panel warnbox">Add your <b>UPI ID</b> in <a 
 
 /* Shows the message for an entry and sends it. The entry counts only once it has been sent. */
 /* WhatsApp-style preview: *bold*, _italic_, links */
+/* ======================================================================= sending to the customer
+   Every message (bill, reminder, khata entry, receipt, balance statement) goes from the shop's own WhatsApp with one
+   tap, so nothing here needs a paid WhatsApp API. Before it goes, the shop picks the customer's language (English,
+   हिंदी or Hinglish; remembered per customer), and a bill goes as a real PDF file through the phone's share sheet. */
+const LANGS = [['en', 'English'], ['hi', 'हिंदी'], ['hl', 'Hinglish']];
+const langChips = (cur) => `<div class="chips langs" role="radiogroup" aria-label="Message language">${LANGS.map(([k, t]) =>
+  `<button type="button" class="chip${k === cur ? ' on' : ''}" role="radio" aria-checked="${k === cur}" data-lang="${k}">${t}</button>`).join('')}</div>`;
+const canShareFiles = () => { try { return !!(navigator.canShare && navigator.canShare({ files: [new File(['%PDF'], 'x.pdf', { type: 'application/pdf' })] })); } catch (e) { return false; } };
+function saveFile(file) {
+  const a = document.createElement('a'); a.href = URL.createObjectURL(file); a.download = file.name;
+  document.body.appendChild(a); a.click(); a.remove(); setTimeout(() => URL.revokeObjectURL(a.href), 60000);
+}
 const waFormat = (t) => esc(t).replace(/\*([^*\n]+)\*/g, '<b>$1</b>').replace(/(^|\s)_([^_\n]+)_(?=\s|$)/g, '$1<i>$2</i>')
   .replace(/(https?:\/\/\S+)/g, '<span class="wa-link">$1</span>').replace(/\n/g, '<br>');
+
+/* o: { title, intro, lang, load(lang) -> { text, sms_text, whatsapp_url, sms_url, file_name? }, pdf() -> Promise<File> (a bill),
+   sent(via, msg, lang) after the tap, later (close button label), closed() } */
+function sendDialog(o) {
+  const root = $('#modal-root'), files = !!o.pdf && canShareFiles();
+  // '' = not chosen here: the server uses the customer's saved language (or the business default) and says which
+  let lang = o.lang || '', msg = null, file = null, seq = 0, shut = false;
+  root.innerHTML = `<div class="modal-bg"><div class="modal send-modal" role="dialog" aria-modal="true"><h2>${esc(o.title)}</h2>${o.intro || ''}
+    <div class="sd-lang"><span class="muted small">Customer's language</span>${langChips(lang || ME.org.msg_lang || 'hl')}</div>
+    <div class="wa-prev"><div class="wa-bubble" id="sd-msg"><span class="muted">Loading…</span></div></div>
+    <p class="muted small" id="sd-nophone" hidden>No mobile number saved for this contact. WhatsApp will ask you to pick the chat.</p>
+    <details class="muted"><summary>SMS text</summary><pre class="msg" id="sd-smst"></pre></details>
+    <div class="send-btns">${o.pdf ? '<button class="btn got big" id="sd-pdf" disabled>Preparing PDF…</button><button class="btn" id="sd-wa" disabled>Send link only</button>'
+    : '<button class="btn got big" id="sd-wa" disabled>Send on WhatsApp</button>'}<button class="btn" id="sd-sms" disabled>SMS</button></div>
+    ${o.pdf ? `<p class="muted small">${files ? 'Tap, choose <b>WhatsApp</b>, then the customer. The PDF goes with the message. The message is also copied: paste it if WhatsApp leaves it out.'
+    : 'The PDF is saved on this device first, then WhatsApp opens with the message: attach the PDF there (📎 → Document).'}</p>` : ''}
+    <div class="actions"><button class="btn" id="sd-close">${esc(o.later || 'Close')}</button></div></div></div>`;
+  const close = () => { if (shut) return; shut = true; root.innerHTML = ''; document.removeEventListener('keydown', keys); if (o.closed) o.closed(); };
+  const keys = (e) => { if (e.key === 'Escape') close(); };
+  document.addEventListener('keydown', keys);
+  $('#sd-close').onclick = close;
+  const ready = () => {
+    if (shut) return;
+    $('#sd-wa').disabled = !msg; $('#sd-sms').disabled = !(msg && msg.sms_url);
+    if (o.pdf) { const b = $('#sd-pdf'); b.disabled = !(msg && file); if (file) b.textContent = '📄 Send PDF on WhatsApp'; }
+  };
+  const load = async () => {
+    const my = ++seq; msg = null; ready();
+    try {
+      const m = await o.load(lang);
+      if (my !== seq || shut) return;
+      msg = m; $('#sd-msg').innerHTML = waFormat(m.text); $('#sd-smst').textContent = m.sms_text || m.text;
+      if (m.lang && m.lang !== lang) { lang = m.lang; $$('[data-lang]', root).forEach((x) => { x.classList.toggle('on', x.dataset.lang === lang); x.setAttribute('aria-checked', String(x.dataset.lang === lang)); }); }
+      $('#sd-nophone').hidden = /[?&]phone=/.test(m.whatsapp_url);
+    } catch (e) { if (my === seq && !shut) $('#sd-msg').innerHTML = `<span class="err">${esc(e.message)}</span>`; }
+    ready();
+  };
+  $$('[data-lang]', root).forEach((b) => b.onclick = () => {
+    if (b.dataset.lang === (lang || ME.org.msg_lang || 'hl')) return;
+    lang = b.dataset.lang;
+    $$('[data-lang]', root).forEach((x) => { x.classList.toggle('on', x === b); x.setAttribute('aria-checked', String(x === b)); });
+    load();
+  });
+  const done = async (via) => {        // the dialog goes at once; what follows the send (saving the entry, logging the reminder) runs, then the page refreshes
+    const m = msg; shut = true; root.innerHTML = ''; document.removeEventListener('keydown', keys);
+    try { if (o.sent) await o.sent(via, m, lang); } catch (e) { toast(e.message, 'err'); }
+    if (o.closed) o.closed();
+  };
+  $('#sd-wa').onclick = () => { window.open(msg.whatsapp_url, '_blank'); done('whatsapp'); };     // open first: browsers allow it only inside the tap
+  $('#sd-sms').onclick = () => { location.href = msg.sms_url; done('sms'); };
+  if (o.pdf) {
+    o.pdf().then((f) => { file = f; ready(); }).catch(() => { if (!shut) $('#sd-pdf').textContent = 'PDF could not be made here'; });
+    $('#sd-pdf').onclick = () => {
+      const f = new File([file], msg.file_name || file.name, { type: 'application/pdf' });
+      if (!files) { saveFile(f); window.open(msg.whatsapp_url, '_blank'); done('whatsapp'); return; }
+      try { navigator.clipboard.writeText(msg.text).catch(() => {}); } catch (e) { /* no clipboard here */ }
+      navigator.share({ files: [f], text: msg.text }).then(() => done('whatsapp'))
+        .catch((e) => { if (!(e && e.name === 'AbortError')) { saveFile(f); toast('PDF saved. Attach it in WhatsApp.'); } });
+    };
+  }
+  load();
+}
+
+/* A bill as a real A4 PDF, drawn from the same paper the screen shows. It is laid out in a hidden 794px-wide frame
+   (so a phone gets the desktop layout, as in print), turned into an image by vendor/html-to-image.js, cut into A4
+   pages between table rows, and wrapped in a small PDF (one JPEG per page). */
+async function docPdf(d) {
+  const fr = document.createElement('iframe');
+  fr.setAttribute('aria-hidden', 'true'); fr.tabIndex = -1;
+  fr.style.cssText = 'position:fixed;left:-10000px;top:0;width:794px;height:1123px;border:0';
+  document.body.appendChild(fr);
+  try {
+    const css = ($('link[rel=stylesheet][href*="app.css"]') || {}).href || '/app.css';
+    const doc = fr.contentDocument;
+    doc.open();
+    doc.write(`<!doctype html><html><head><meta charset="utf-8"><link rel="stylesheet" href="${esc(css)}"><script src="/vendor/html-to-image.js"><\/script>
+      <style>html,body{margin:0;background:#fff}#p{padding:0}.doc-paper{border:0;border-radius:0;box-shadow:none}.no-print{display:none!important}</style></head>
+      <body><div id="p">${docPaper(d)}</div></body></html>`);
+    doc.close();
+    const w = fr.contentWindow, t0 = Date.now();
+    while (!(w.htmlToImage && [...doc.styleSheets].some((s) => (s.href || '').includes('app.css')))) {
+      if (Date.now() - t0 > 15000) throw new Error('PDF could not be made. Check the internet and try again.');
+      await new Promise((ok) => setTimeout(ok, 50));
+    }
+    const o = d.org || ME.org, q = doc.getElementById('upiqr');
+    if (q && d.type === 'INV' && o.upi_id && d.balance > 0 && (!o.print || o.print.show_upi !== false)) await upiQr(q, o, d.balance, d.number, 'Scan to pay with any UPI app');
+    await Promise.all([...doc.images].map((i) => (i.decode ? i.decode().catch(() => {}) : null)));
+    const node = doc.getElementById('p'), top = node.getBoundingClientRect().top, W = node.offsetWidth, H = node.offsetHeight;
+    // places where a page may end: under a table row or under a block of the paper
+    const cuts = [...new Set([...node.querySelectorAll('tr, .doc-paper > *')].map((e) => Math.round(e.getBoundingClientRect().bottom - top)))]
+      .filter((y) => y > 0 && y < H).sort((a, b) => a - b);
+    const canvas = await w.htmlToImage.toCanvas(node, { pixelRatio: 1.75, backgroundColor: '#ffffff', skipFonts: true, width: W, height: H });
+    const k = canvas.width / W, pageH = Math.floor((W * (PDF_H - 2 * PDF_M)) / (PDF_W - 2 * PDF_M)), pages = [];
+    for (let y = 0; y < H - 2;) {
+      let end = Math.min(H, y + pageH);
+      if (end < H) { const c = cuts.filter((x) => x > y + pageH * 0.5 && x <= end).pop(); if (c) end = c; }
+      const pc = document.createElement('canvas');
+      pc.width = canvas.width; pc.height = Math.max(1, Math.round((end - y) * k));
+      const g = pc.getContext('2d');
+      g.fillStyle = '#fff'; g.fillRect(0, 0, pc.width, pc.height);
+      g.drawImage(canvas, 0, Math.round(y * k), pc.width, pc.height, 0, 0, pc.width, pc.height);
+      const blob = await new Promise((ok) => pc.toBlob(ok, 'image/jpeg', 0.85));
+      pages.push({ bytes: new Uint8Array(await blob.arrayBuffer()), w: pc.width, h: pc.height });
+      y = end;
+    }
+    return new File([jpegPdf(pages)], `${String(d.number).replace(/[^\w.-]+/g, '-')}.pdf`, { type: 'application/pdf' });
+  } finally { fr.remove(); }
+}
+/* pages: [{ bytes (JPEG), w, h }] -> PDF bytes, one A4 page each, the image across the width inside the margins */
+const PDF_W = 595.28, PDF_H = 841.89, PDF_M = 24;
+function jpegPdf(pages) {
+  const enc = new TextEncoder(), parts = [], offs = [];
+  let len = 0;
+  const put = (x) => { const b = typeof x === 'string' ? enc.encode(x) : x; parts.push(b); len += b.length; };
+  const A4W = PDF_W, A4H = PDF_H, M = PDF_M, n = pages.length;
+  put('%PDF-1.4\n');
+  const obj = (id, body, stream) => {
+    offs[id] = len;
+    put(`${id} 0 obj\n${body}\n`);
+    if (stream) { put('stream\n'); put(stream); put('\nendstream\n'); }
+    put('endobj\n');
+  };
+  obj(1, '<< /Type /Catalog /Pages 2 0 R >>');
+  obj(2, `<< /Type /Pages /Count ${n} /Kids [${pages.map((p, i) => `${3 + i * 3} 0 R`).join(' ')}] >>`);
+  pages.forEach((p, i) => {
+    const iw = A4W - 2 * M, ih = Math.min(A4H - 2 * M, (iw * p.h) / p.w);
+    const id = 3 + i * 3, draw = enc.encode(`q ${iw.toFixed(2)} 0 0 ${ih.toFixed(2)} ${M} ${(A4H - M - ih).toFixed(2)} cm /Im0 Do Q`);
+    obj(id, `<< /Type /Page /Parent 2 0 R /MediaBox [0 0 ${A4W} ${A4H}] /Resources << /XObject << /Im0 ${id + 2} 0 R >> >> /Contents ${id + 1} 0 R >>`);
+    obj(id + 1, `<< /Length ${draw.length} >>`, draw);
+    obj(id + 2, `<< /Type /XObject /Subtype /Image /Width ${p.w} /Height ${p.h} /ColorSpace /DeviceRGB /BitsPerComponent 8 /Filter /DCTDecode /Length ${p.bytes.length} >>`, p.bytes);
+  });
+  const xref = len, count = 3 + n * 3;
+  put(`xref\n0 ${count}\n0000000000 65535 f \n${offs.slice(1, count).map((o) => `${String(o).padStart(10, '0')} 00000 n \n`).join('')}`);
+  put(`trailer\n<< /Size ${count} /Root 1 0 R >>\nstartxref\n${xref}\n%%EOF\n`);
+  const out = new Uint8Array(len);
+  let at = 0; for (const b of parts) { out.set(b, at); at += b.length; }
+  return out;
+}
+
 function sendEntry(r, after) {
-  const root = $('#modal-root');
-  root.innerHTML = `<div class="modal-bg"><div class="modal"><h2>Send to customer to save this entry</h2>
-    <p class="muted">The entry is added to the khata only after it is sent, so the customer always knows. They get a link to see and confirm it.</p>
-    <div class="wa-prev"><div class="wa-bubble">${waFormat(r.text)}</div></div>
-    <details class="muted"><summary>SMS text</summary><pre class="msg">${esc(r.sms_text || r.text)}</pre></details>
-    ${r.phone ? '' : '<p class="err">No mobile number saved for this contact. WhatsApp will ask you to pick the chat; SMS needs a number.</p>'}
-    <div class="khata-btns"><button class="btn got" data-via="whatsapp">Send on WhatsApp</button><button class="btn" data-via="sms" ${r.sms_url ? '' : 'disabled'}>Send SMS</button></div>
-    <div class="actions"><button class="btn" id="later">Later (keep as not sent)</button></div></div></div>`;
-  const close = () => { root.innerHTML = ''; if (after) after(); else render(); };
-  $('#later').onclick = close;
-  $$('[data-via]', root).forEach((b) => b.onclick = async () => {
-    const via = b.dataset.via;
-    window.open(via === 'whatsapp' ? r.whatsapp_url : r.sms_url, '_blank');     // open first: browsers allow it only inside the tap
-    try { await POST(`/api/khata/entries/${r.entry_id}/send`, { via }); toast('Entry sent and saved'); } catch (e) { toast(e.message, 'err'); }
-    close();
+  sendDialog({
+    title: 'Send to customer to save this entry', lang: r.lang,
+    intro: '<p class="muted">The entry is added to the khata only after it is sent, so the customer always knows. They get a link to see and confirm it.</p>',
+    load: async (l) => (!l || l === r.lang ? r : GET(`/api/khata/entries/${r.entry_id}/message?lang=${l}`)),
+    sent: async (via) => { await POST(`/api/khata/entries/${r.entry_id}/send`, { via }); toast('Entry sent and saved'); },
+    later: 'Later (keep as not sent)', closed: () => { if (after) after(); else render(); },
   });
 }
 
@@ -1024,8 +1178,8 @@ route(/^khata\/(\d+)$/, async (el, m, q) => {
   $$('[data-rev]', el).forEach((b) => b.onclick = () => modal('Reverse this entry', [{ k: 'reason', label: 'Reason (sent to the customer)', wide: true }],
     async (v) => { const r = await POST(`/api/khata/entries/${b.dataset.rev}/reverse`, v); setTimeout(() => sendEntry(r), 0); },
     { submit: 'Next: send correction', intro: '<p class="muted">Sent entries stay on record. A correction entry with the opposite amount is added and sent to the customer.</p>' }));
-  const rem = async (which) => { const r = await GET(`/api/khata/${k.party.id}/reminder`); if (which === 'sms' && !r.sms_url) return alert('Save a mobile number for this contact first.'); open(which === 'sms' ? r.sms_url : r.whatsapp_url, '_blank'); };
-  $('#wa').onclick = () => rem('wa'); $('#sms').onclick = () => rem('sms');
+  const rem = () => sendDialog({ title: `Reminder to ${k.party.name}`, lang: k.party.lang, load: (l) => GET(`/api/khata/${k.party.id}/reminder?lang=${l}`) });
+  $('#wa').onclick = rem; $('#sms').onclick = rem;
   $('#share').onclick = async () => { try { await navigator.clipboard.writeText(k.statement_url); toast('Link copied'); } catch (e) { prompt('Copy this link:', k.statement_url); } };
   if ($('#unshare')) $('#unshare').onclick = async () => {
     if (!confirm('Stop sharing this khata? The link already sent to the customer will stop working. Copying the link again makes a new one.')) return;
@@ -1033,73 +1187,201 @@ route(/^khata\/(\d+)$/, async (el, m, q) => {
   };
 });
 
+/* ======================================================================= the customer's pages: their language
+   The shop picks it when sending; the link carries it (?l=en / ?l=hi, no mark = Hinglish). */
+const PT = {
+  en: { pay: (a) => `Pay ${a} by UPI`, dl: 'Download PDF', making: 'Making PDF…', balDue: (a, by) => `Balance due <b>${a}</b>${by ? ` by ${by}` : ''}.`,
+    sharedBy: (n) => `Shared by ${esc(n)} using SmartTrader ERP.`, badLink: 'Link not valid', offline: 'You are offline', offDoc: 'Connect to the internet to see this document.',
+    howPay: 'How to pay', cashOrUpi: (n) => `Pay ${esc(n)} in cash or ask for their UPI ID.`, opens: 'Opens Google Pay, PhonePe, Paytm or any UPI app.', copy: 'Copy', copied: 'UPI ID copied',
+    callShop: 'Call shop', waShop: 'WhatsApp shop', waShopText: (n, a) => `Hello, I want to pay ${a} to ${n}.`, scanOther: 'Paying from another phone? Scan this',
+    khFrom: 'Khata statement from', khNone: 'Khata not found', offKh: 'Connect to the internet to see your khata.', youPay: 'you have to pay', yourAdv: 'your advance', khIs: 'your khata is',
+    settled: 'Settled ✓', youOk: '✓ you confirmed', youNo: 'you said this is wrong', isOk: 'Is this correct?', yes: 'Yes', no: 'No', udhaar: 'Credit ', paidK: 'Paid ', bal: 'Bal',
+    noEntries: 'No entries yet.', khFoot: 'Entries cannot be deleted by the shop. Any correction appears here as a new entry. Powered by SmartTrader.',
+    whatWrong: 'What is wrong with this entry? (the shop will see this)', notSaved: 'Could not save',
+    cfFrom: 'Balance confirmation from', cfDue: (p, d) => `${esc(p)}, your balance due as on ${d}`, cfCols: ['Bill', 'Date', 'Due by', 'Amount due'], cfAsk: 'Is this balance correct?',
+    cfYes: '✓ Yes, correct', cfNo: '✗ Something is wrong', cfWhich: 'Which bill?', cfAll: 'All / not sure', cfWhat: 'What is wrong?', cfPh: 'e.g. 2 boxes short in the last bill',
+    cfSend: (o) => `Send to ${esc(o)}`, back: 'Back', cfOk: (d) => `✓ You confirmed this balance on ${d}. Thank you!`,
+    cfBad: (o, d, n) => `You told ${esc(o)} on ${d} that something is wrong: “${esc(n)}”. They will check and get back to you.`,
+    cfNote: 'Your answer is saved with the date and time. Only the shop sees it.', cfWrite: 'Please write what is wrong.', cfGone: 'This link is not valid any more.',
+    vAsk: 'When will you pay?', vAskP: 'Pick a date and the shop will know. No interest.', vPriv: (n) => `Only ${esc(n)} sees your promise.`, vDateB: '📅 I will pick a date', vPlanB: '🧾 I will pay in instalments',
+    vYours: 'Your promise', vSum: (a, d, link) => `<b>${a}</b> · by ${d} · ${link ? 'from your link' : 'noted by the shop'}`, vPaid: 'Paid so far', vChange: 'Change the date (only once)',
+    vCall: (t) => `Need to change the date? ${t ? `Call ${t}.` : 'Talk to the shop.'}`, kKept: '✓ Paid on time', kBroken: '✗ Missed', kDue: 'Last day today', kOpen: (d) => `Due · ${d}`,
+    vWhen: 'By which date will you pay?', vDays: ['Today', 'Tomorrow', 'Day after'], vMore: 'Other date…', vHow: 'How much will you pay?', vFull: (a) => `All ${a}`, vPart: 'Part of it',
+    vMin: (a) => `At least ${a}`, vName: 'Your name (optional)', vConsent: (n, b) => `When you tap '${b}', the date, amount and name are saved with ${esc(n)}.`, vGo: 'Confirm promise', vBack: 'Back',
+    vPick: 'Pick a date.', vMinErr: (a) => `Promise at least ${a}.`, vHowMany: 'In how many instalments?', vPlanLine: (a, n, f, l) => `${a} × ${n} · first ${f}, last ${l}`,
+    vLastK: (a) => `Last instalment ${a} (the remainder is added to it)`, vPlanGo: 'Confirm instalments', vTooMany: 'Too many tries today. Please try again tomorrow.', vFail: 'Not saved. Please try again.',
+    vDone: '✅ <b>Promise confirmed!</b>', vByAmt: (d, a) => `<b>${a}</b> by ${d}`, vTell: 'Tell the shop on WhatsApp', vAuto: 'When you pay, this promise is marked done by itself.', vOk: 'OK',
+    plans: { '2f': '2 instalments · every 15 days', '4w': '4 instalments · every week', '3m': '3 instalments · every month', '6w': '6 instalments · every week', '6m': '6 instalments · every month' } },
+  hi: { pay: (a) => `${a} UPI से भुगतान करें`, dl: 'PDF डाउनलोड करें', making: 'PDF बन रही है…', balDue: (a, by) => `बकाया <b>${a}</b>${by ? `, ${by} तक` : ''}।`,
+    sharedBy: (n) => `${esc(n)} ने SmartTrader ERP से भेजा।`, badLink: 'लिंक मान्य नहीं है', offline: 'आप ऑफ़लाइन हैं', offDoc: 'यह दस्तावेज़ देखने के लिए इंटरनेट चालू करें।',
+    howPay: 'भुगतान कैसे करें', cashOrUpi: (n) => `${esc(n)} को नकद दें या उनका UPI ID माँगें।`, opens: 'Google Pay, PhonePe, Paytm या कोई भी UPI ऐप खुलेगा।', copy: 'कॉपी', copied: 'UPI ID कॉपी हो गया',
+    callShop: 'दुकान को कॉल करें', waShop: 'दुकान को WhatsApp करें', waShopText: (n, a) => `नमस्ते, मुझे ${n} को ${a} का भुगतान करना है।`, scanOther: 'दूसरे फ़ोन से भुगतान? इसे स्कैन करें',
+    khFrom: 'खाता विवरण', khNone: 'खाता नहीं मिला', offKh: 'अपना खाता देखने के लिए इंटरनेट चालू करें।', youPay: 'आपको देना है', yourAdv: 'आपका एडवांस', khIs: 'आपका खाता',
+    settled: 'साफ़ ✓', youOk: '✓ आपने पुष्टि की', youNo: 'आपने इसे गलत बताया', isOk: 'क्या यह सही है?', yes: 'हाँ', no: 'नहीं', udhaar: 'उधार ', paidK: 'भुगतान ', bal: 'बकाया',
+    noEntries: 'अभी कोई एंट्री नहीं।', khFoot: 'दुकानदार एंट्री मिटा नहीं सकता। हर सुधार यहाँ नई एंट्री के रूप में दिखेगा। SmartTrader द्वारा।',
+    whatWrong: 'इस एंट्री में क्या गलत है? (दुकानदार इसे देखेगा)', notSaved: 'सेव नहीं हुआ',
+    cfFrom: 'बकाया पुष्टि', cfDue: (p, d) => `${esc(p)}, ${d} तक आपका बकाया`, cfCols: ['बिल', 'तारीख', 'देय तिथि', 'बकाया राशि'], cfAsk: 'क्या यह बकाया सही है?',
+    cfYes: '✓ हाँ, सही है', cfNo: '✗ कुछ गलत है', cfWhich: 'कौन सा बिल?', cfAll: 'सभी / पता नहीं', cfWhat: 'क्या गलत है?', cfPh: 'जैसे पिछले बिल में 2 डिब्बे कम आए',
+    cfSend: (o) => `${esc(o)} को भेजें`, back: 'वापस', cfOk: (d) => `✓ आपने ${d} को इस बकाया की पुष्टि की। धन्यवाद!`,
+    cfBad: (o, d, n) => `आपने ${d} को ${esc(o)} को बताया कि कुछ गलत है: “${esc(n)}”। वे जाँच कर आपसे संपर्क करेंगे।`,
+    cfNote: 'आपका जवाब तारीख और समय के साथ सेव होता है। इसे सिर्फ़ दुकानदार देखता है।', cfWrite: 'कृपया लिखें कि क्या गलत है।', cfGone: 'यह लिंक अब मान्य नहीं है।',
+    vAsk: 'कब तक देंगे?', vAskP: 'तारीख चुनें, दुकानदार को पता चल जाएगा। कोई ब्याज नहीं।', vPriv: (n) => `आपका वादा सिर्फ़ ${esc(n)} को दिखेगा।`, vDateB: '📅 मैं तारीख चुनता हूँ', vPlanB: '🧾 किस्तों में दूँगा',
+    vYours: 'आपका वादा', vSum: (a, d, link) => `<b>${a}</b> · ${d} तक · ${link ? 'लिंक से' : 'दुकान ने लिखा'}`, vPaid: 'अब तक मिला', vChange: 'तारीख बदलें (सिर्फ़ एक बार)',
+    vCall: (t) => `तारीख बदलनी है? ${t ? `${t} पर बात करें।` : 'दुकान से बात करें।'}`, kKept: '✓ समय पर मिला', kBroken: '✗ छूट गया', kDue: 'आज आखिरी दिन', kOpen: (d) => `बाकी · ${d}`,
+    vWhen: 'किस तारीख तक देंगे?', vDays: ['आज', 'कल', 'परसों'], vMore: 'दूसरी तारीख…', vHow: 'कितना देंगे?', vFull: (a) => `पूरा ${a}`, vPart: 'कुछ हिस्सा',
+    vMin: (a) => `कम से कम ${a}`, vName: 'आपका नाम (ज़रूरी नहीं)', vConsent: (n, b) => `'${b}' दबाने पर तारीख, रकम और नाम ${esc(n)} के पास सेव होंगे।`, vGo: 'वादा पक्का करें', vBack: 'वापस',
+    vPick: 'तारीख चुनें।', vMinErr: (a) => `कम से कम ${a} का वादा करें।`, vHowMany: 'कितनी किस्तों में?', vPlanLine: (a, n, f, l) => `${a} × ${n} · पहली ${f}, आखिरी ${l}`,
+    vLastK: (a) => `आखिरी किस्त ${a} (बची रकम उसमें जुड़ती है)`, vPlanGo: 'किस्तें पक्की करें', vTooMany: 'आज बहुत बार कोशिश हुई। कल फिर कोशिश करें।', vFail: 'सेव नहीं हुआ। फिर कोशिश करें।',
+    vDone: '✅ <b>वादा पक्का!</b>', vByAmt: (d, a) => `${d} तक <b>${a}</b>`, vTell: 'दुकान को WhatsApp पर बताएँ', vAuto: 'भुगतान करते ही यह वादा अपने आप पूरा हो जाएगा।', vOk: 'ठीक है',
+    plans: { '2f': '2 किस्त · हर 15 दिन', '4w': '4 किस्त · हर हफ़्ते', '3m': '3 किस्त · हर महीने', '6w': '6 किस्त · हर हफ़्ते', '6m': '6 किस्त · हर महीने' } },
+  hl: { pay: (a) => `${a} UPI se pay karein`, dl: 'PDF download karein', making: 'PDF ban rahi hai…', balDue: (a, by) => `Baaki <b>${a}</b>${by ? `, ${by} tak` : ''}.`,
+    sharedBy: (n) => `${esc(n)} ne SmartTrader ERP se bheja.`, badLink: 'Link valid nahi hai', offline: 'Aap offline hain', offDoc: 'Ye document dekhne ke liye internet chalu karein.',
+    howPay: 'Pay kaise karein', cashOrUpi: (n) => `${esc(n)} ko cash dein ya unka UPI ID maangein.`, opens: 'Google Pay, PhonePe, Paytm ya koi bhi UPI app khulega.', copy: 'Copy', copied: 'UPI ID copy ho gaya',
+    callShop: 'Shop ko call karein', waShop: 'Shop ko WhatsApp karein', waShopText: (n, a) => `Namaste, maine ${n} ka ${a} ka payment karna hai.`, scanOther: 'Doosre phone se pay? Ise scan karein',
+    khFrom: 'Khata statement', khNone: 'Khata nahi mila', offKh: 'Khata dekhne ke liye internet chalu karein.', youPay: 'aapko dena hai', yourAdv: 'aapka advance', khIs: 'aapka khata',
+    settled: 'Clear ✓', youOk: '✓ aapne confirm kiya', youNo: 'aapne galat bataya', isOk: 'Kya ye sahi hai?', yes: 'Haan', no: 'Nahi', udhaar: 'Udhaar ', paidK: 'Paid ', bal: 'Bal',
+    noEntries: 'Abhi koi entry nahi.', khFoot: 'Shop entries delete nahi kar sakta. Har sudhaar yahan nayi entry ki tarah dikhega. Powered by SmartTrader.',
+    whatWrong: 'Is entry mein kya galat hai? (shop ise dekhega)', notSaved: 'Save nahi hua',
+    cfFrom: 'Balance confirmation', cfDue: (p, d) => `${esc(p)}, ${d} tak aapka baaki`, cfCols: ['Bill', 'Date', 'Due date', 'Baaki'], cfAsk: 'Kya ye baaki sahi hai?',
+    cfYes: '✓ Haan, sahi hai', cfNo: '✗ Kuch galat hai', cfWhich: 'Kaunsa bill?', cfAll: 'Sabhi / pata nahi', cfWhat: 'Kya galat hai?', cfPh: 'jaise pichhle bill mein 2 box kam aaye',
+    cfSend: (o) => `${esc(o)} ko bhejein`, back: 'Wapas', cfOk: (d) => `✓ Aapne ${d} ko ye baaki confirm kiya. Dhanyavaad!`,
+    cfBad: (o, d, n) => `Aapne ${d} ko ${esc(o)} ko bataya ki kuch galat hai: “${esc(n)}”. Woh check karke aapse baat karenge.`,
+    cfNote: 'Aapka jawaab date aur time ke saath save hota hai. Ise sirf shop dekhta hai.', cfWrite: 'Kripya likhein kya galat hai.', cfGone: 'Ye link ab valid nahi hai.',
+    vAsk: 'Kab tak denge?', vAskP: 'Tareekh chunein, shop ko pata chal jayega. Koi byaaj nahi.', vPriv: (n) => `Aapka vaada sirf ${esc(n)} ko dikhega.`, vDateB: '📅 Main tareekh chunta hoon', vPlanB: '🧾 Kisht mein dunga',
+    vYours: 'Aapka vaada', vSum: (a, d, link) => `<b>${a}</b> · ${d} tak · ${link ? 'link se' : 'shop ne likha'}`, vPaid: 'Ab tak mila', vChange: 'Tareekh badlein (sirf ek baar)',
+    vCall: (t) => `Tareekh badalni hai? ${t ? `${t} par baat karein.` : 'Shop se baat karein.'}`, kKept: '✓ Samay par mila', kBroken: '✗ Chhoot gaya', kDue: 'Aaj aakhri din', kOpen: (d) => `Baaki · ${d}`,
+    vWhen: 'Kis tareekh tak denge?', vDays: ['Aaj', 'Kal', 'Parson'], vMore: 'Aur tareekh…', vHow: 'Kitna denge?', vFull: (a) => `Poora ${a}`, vPart: 'Kuch hissa',
+    vMin: (a) => `Kam se kam ${a}`, vName: 'Aapka naam (zaroori nahi)', vConsent: (n, b) => `'${b}' dabane par tareekh, rakam aur naam ${esc(n)} ke paas save honge.`, vGo: 'Vaada pakka karein', vBack: 'Wapas',
+    vPick: 'Tareekh chunein.', vMinErr: (a) => `Kam se kam ${a} ka vaada karein.`, vHowMany: 'Kitni kisht mein?', vPlanLine: (a, n, f, l) => `${a} × ${n} · pehli ${f}, aakhri ${l}`,
+    vLastK: (a) => `Aakhri kisht ${a} (bachi rakam usme judti hai)`, vPlanGo: 'Kisht pakki karein', vTooMany: 'Aaj bahut baar koshish hui. Kal dobara try karein.', vFail: 'Save nahi hua. Dobara try karein.',
+    vDone: '✅ <b>Vaada pakka!</b>', vByAmt: (d, a) => `${d} tak <b>${a}</b>`, vTell: 'Shop ko WhatsApp par batayein', vAuto: 'Paisa dene par ye vaada apne aap poora ho jayega.', vOk: 'Theek hai',
+    plans: null },
+};
+let PUBL = 'hl';
+const PT_DOC_HI = { INV: 'बिल', SRET: 'बिक्री वापसी', CNOTE: 'क्रेडिट नोट', QUOTE: 'कोटेशन', SO: 'सेल्स ऑर्डर', DN: 'डिलीवरी चालान' };
+const pubLang = () => { const l = new URLSearchParams(location.search).get('l'); PUBL = PT[l] ? l : 'hl'; document.documentElement.lang = PUBL === 'hi' ? 'hi' : 'en'; return PUBL; };
+const pt = (k, ...a) => { const v = PT[PUBL][k] ?? PT.en[k]; return typeof v === 'function' ? v(...a) : v; };
+
 /* The customer's view of an invoice / quotation (/i/<token>): print or save as PDF, pay by UPI. */
 async function publicDoc(token) {
   const app = $('#app');
+  pubLang();
   try {
     const res = await fetch('/api/public/doc/' + token);
     const d = await res.json();
-    if (!res.ok) { app.innerHTML = `<div class="boot"><h2>Link not valid</h2><p class="muted">${esc(d.error || '')}</p></div>`; return; }
+    if (!res.ok) { app.innerHTML = `<div class="boot"><h2>${pt('badLink')}</h2><p class="muted">${esc(d.error || '')}</p></div>`; return; }
     const due = d.type === 'INV' && d.balance > 0;
-    app.innerHTML = `<main class="page pub pubdoc"><div class="page-head no-print"><h1>${esc(d.label)} ${esc(d.number)}</h1>${d.type === 'INV' ? badge(d.status) : ''}<span class="spacer"></span>
-        ${due && d.org.upi_id ? `<a class="btn got" href="${esc(upiLink(d.org.upi_id, d.org.name, d.balance, d.number))}">Pay ${inr(d.balance)} by UPI</a>` : ''}
-        <button class="btn primary" data-act="print">Download PDF</button></div>
-      ${due ? `<div class="panel no-print">Balance due <b>${inr(d.balance)}</b>${d.due_date ? ` by ${fdate(d.due_date)}` : ''}.${payBox(d.org, d.balance, d.number)}</div>` : ''}
+    app.innerHTML = `<main class="page pub pubdoc"><div class="page-head no-print"><h1>${esc((PUBL === 'hi' && PT_DOC_HI[d.type]) || d.label)} ${esc(d.number)}</h1>${d.type === 'INV' ? badge(d.status) : ''}<span class="spacer"></span>
+        ${due && d.org.upi_id ? `<a class="btn got" href="${esc(upiLink(d.org.upi_id, d.org.name, d.balance, d.number))}">${pt('pay', inr(d.balance))}</a>` : ''}
+        <button class="btn primary" id="pdfdl">${pt('dl')}</button></div>
+      ${due ? `<div class="panel no-print">${pt('balDue', inr(d.balance), d.due_date ? fdate(d.due_date) : '')}${payBox(d.org, d.balance, d.number)}</div>` : ''}
       ${vaadaPub(d.vaada, d.org)}
-      ${docPaper(d)}<p class="muted no-print">Shared by ${esc(d.org.name)} using SmartTrader ERP. Tap “Download PDF” and choose “Save as PDF”.</p></main>`;
+      ${docPaper(d)}<p class="muted no-print">${pt('sharedBy', d.org.name)}</p></main>`;
+    // a real PDF file; if this browser cannot make one, its own print dialog ("Save as PDF") still works
+    $('#pdfdl').onclick = async (e) => {
+      const b = e.currentTarget, t = b.textContent; b.disabled = true; b.textContent = pt('making');
+      try { saveFile(await docPdf(d)); } catch (err) { print(); } finally { b.disabled = false; b.textContent = t; }
+    };
     if (due) { if (!d.org.print || d.org.print.show_upi !== false) upiQr($('#upiqr'), d.org, d.balance, d.number, 'Scan to pay with any UPI app'); wirePayBox(app, d.org, d.balance, d.number); }
     wireVaadaPub(app, d.vaada, d.org, { path: `/api/public/doc/${token}/vaada`, who: (d.party || {}).name || '', reload: () => publicDoc(token) });
-  } catch (e) { app.innerHTML = '<div class="boot"><h2>You are offline</h2><p class="muted">Connect to the internet to see this document.</p></div>'; }
+  } catch (e) { app.innerHTML = `<div class="boot"><h2>${pt('offline')}</h2><p class="muted">${pt('offDoc')}</p></div>`; }
 }
 
 /* How the customer pays: a UPI button (opens GPay/PhonePe/Paytm on the phone), a QR for paying from another
    phone, and the UPI ID to copy. Without a UPI ID on the shop, call / WhatsApp the shop instead. */
 function payBox(shop, amount, note) {
   const phone = String(shop.phone || '').replace(/\D/g, ''), wa = phone.length === 10 ? '91' + phone : phone;
-  const contact = phone ? `<div class="row" style="margin-top:10px"><a class="btn" href="tel:${esc(phone)}">Call shop</a>
-      <a class="btn" href="https://api.whatsapp.com/send?phone=${esc(wa)}&text=${encodeURIComponent(`Namaste, maine ${shop.name} ka ${inr(amount)} ka payment karna hai.`)}">WhatsApp shop</a></div>` : '';
-  if (!shop.upi_id) return `<div class="paybox"><b>How to pay</b><p class="muted" style="margin:4px 0 0">Pay ${esc(shop.name)} in cash or ask for their UPI ID.</p>${contact}</div>`;
-  return `<div class="paybox"><a class="btn got big" href="${esc(upiLink(shop.upi_id, shop.name, amount, note))}">Pay ${inr(amount)} by UPI</a>
-    <div class="muted" style="margin:6px 0">Opens Google Pay, PhonePe, Paytm or any UPI app.</div>
-    <div class="row"><span>UPI ID: <b>${esc(shop.upi_id)}</b></span><button class="btn sm" type="button" data-copyupi="${esc(shop.upi_id)}">Copy</button></div>
+  const contact = phone ? `<div class="row" style="margin-top:10px"><a class="btn" href="tel:${esc(phone)}">${pt('callShop')}</a>
+      <a class="btn" href="https://api.whatsapp.com/send?phone=${esc(wa)}&text=${encodeURIComponent(pt('waShopText', shop.name, inr(amount)))}">${pt('waShop')}</a></div>` : '';
+  if (!shop.upi_id) return `<div class="paybox"><b>${pt('howPay')}</b><p class="muted" style="margin:4px 0 0">${pt('cashOrUpi', shop.name)}</p>${contact}</div>`;
+  return `<div class="paybox"><a class="btn got big" href="${esc(upiLink(shop.upi_id, shop.name, amount, note))}">${pt('pay', inr(amount))}</a>
+    <div class="muted" style="margin:6px 0">${pt('opens')}</div>
+    <div class="row"><span>UPI ID: <b>${esc(shop.upi_id)}</b></span><button class="btn sm" type="button" data-copyupi="${esc(shop.upi_id)}">${pt('copy')}</button></div>
     <div data-payqr style="margin-top:10px"></div>${contact}</div>`;
 }
 function wirePayBox(root, shop, amount, note) {
-  $$('[data-copyupi]', root).forEach((b) => b.onclick = async () => { try { await navigator.clipboard.writeText(b.dataset.copyupi); toast('UPI ID copied'); } catch (e) { prompt('UPI ID:', b.dataset.copyupi); } });
+  $$('[data-copyupi]', root).forEach((b) => b.onclick = async () => { try { await navigator.clipboard.writeText(b.dataset.copyupi); toast(pt('copied')); } catch (e) { prompt('UPI ID:', b.dataset.copyupi); } });
   const q = $('[data-payqr]', root);
-  if (q && shop.upi_id) upiQr(q, shop, amount, note, 'Paying from another phone? Scan this');
+  if (q && shop.upi_id) upiQr(q, shop, amount, note, pt('scanOther'));
 }
 
 /* The customer's private statement page (#/k/<token>): no login, read-only, confirm or dispute entries. */
 async function publicKhata(token) {
   const app = $('#app');
+  pubLang();
   const load = async () => {
     const res = await fetch('/api/public/khata/' + token);
     const d = await res.json();
-    if (!res.ok) { app.innerHTML = `<div class="boot"><h2>Khata not found</h2><p class="muted">${esc(d.error || '')}</p></div>`; return; }
-    app.innerHTML = `<main class="page pub"><div class="panel"><div class="muted">Khata statement from</div><h1>${esc(d.shop.name)}</h1>
+    if (!res.ok) { app.innerHTML = `<div class="boot"><h2>${pt('khNone')}</h2><p class="muted">${esc(d.error || '')}</p></div>`; return; }
+    app.innerHTML = `<main class="page pub"><div class="panel"><div class="muted">${pt('khFrom')}</div><h1>${esc(d.shop.name)}</h1>
         <div class="muted">${[d.shop.address, d.shop.phone].filter(Boolean).map(esc).join(' &middot; ')}</div></div>
-      <div class="kpi" style="margin-bottom:14px"><div class="l">${esc(d.customer)}, ${d.balance > 0 ? 'you have to pay' : d.balance < 0 ? 'your advance' : 'your khata is'}</div>
-        <div class="v ${d.balance > 0 ? 'neg' : 'pos'}">${d.balance === 0 ? 'Settled ✓' : inr(Math.abs(d.balance))}</div>
+      <div class="kpi" style="margin-bottom:14px"><div class="l">${esc(d.customer)}, ${pt(d.balance > 0 ? 'youPay' : d.balance < 0 ? 'yourAdv' : 'khIs')}</div>
+        <div class="v ${d.balance > 0 ? 'neg' : 'pos'}">${d.balance === 0 ? pt('settled') : inr(Math.abs(d.balance))}</div>
         ${d.balance > 0 ? payBox(d.shop, d.balance, 'Khata') : ''}</div>
       ${vaadaPub(d.vaada, d.shop)}
       <div class="panel flush kl">${d.rows.length ? d.rows.map((r) => `<div class="ke">
         <div class="kl-l"><b>${fdate(r.date)}</b>${r.note ? `<div class="muted">${esc(r.note)}</div>` : ''}
-          <div class="ks">${r.ack === 'confirmed' ? '<span class="badge b-paid">✓ you confirmed</span>' : r.ack === 'disputed' ? '<span class="badge b-unpaid">you said this is wrong</span>'
-            : `<span class="muted">Is this correct?</span> <button class="btn sm got" data-ok="${r.id}">Yes</button> <button class="btn sm danger" data-no="${r.id}">No</button>`}</div></div>
-        <div class="kl-r"><div class="${r.kind === 'gave' ? 'neg' : 'pos'} ka">${r.kind === 'gave' ? 'Udhaar ' : 'Paid '}${inr(r.amount)}</div><div class="muted">Bal ${inr(r.balance)}</div></div></div>`).join('')
-        : '<div class="empty">No entries yet.</div>'}</div>
-      <p class="muted">Entries cannot be deleted by the shop. Any correction appears here as a new entry. Powered by SmartTrader.</p></main>`;
+          <div class="ks">${r.ack === 'confirmed' ? `<span class="badge b-paid">${pt('youOk')}</span>` : r.ack === 'disputed' ? `<span class="badge b-unpaid">${pt('youNo')}</span>`
+            : `<span class="muted">${pt('isOk')}</span> <button class="btn sm got" data-ok="${r.id}">${pt('yes')}</button> <button class="btn sm danger" data-no="${r.id}">${pt('no')}</button>`}</div></div>
+        <div class="kl-r"><div class="${r.kind === 'gave' ? 'neg' : 'pos'} ka">${pt(r.kind === 'gave' ? 'udhaar' : 'paidK')}${inr(r.amount)}</div><div class="muted">${pt('bal')} ${inr(r.balance)}</div></div></div>`).join('')
+        : `<div class="empty">${pt('noEntries')}</div>`}</div>
+      <p class="muted">${pt('khFoot')}</p></main>`;
     const ack = async (id, a, note = '') => {
       const r = await fetch(`/api/public/khata/${token}/ack`, { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Requested-With': 'SmartTrader' }, body: JSON.stringify({ entry_id: +id, ack: a, note }) });
-      if (!r.ok) alert((await r.json().catch(() => ({}))).error || 'Could not save'); else load();
+      if (!r.ok) alert((await r.json().catch(() => ({}))).error || pt('notSaved')); else load();
     };
     if (d.balance > 0) wirePayBox(app, d.shop, d.balance, 'Khata');
     wireVaadaPub(app, d.vaada, d.shop, { path: `/api/public/khata/${token}/vaada`, who: d.customer, reload: load });
     $$('[data-ok]').forEach((b) => b.onclick = () => ack(b.dataset.ok, 'confirmed'));
-    $$('[data-no]').forEach((b) => b.onclick = () => { const n = prompt('What is wrong with this entry? (the shop will see this)'); if (n !== null) ack(b.dataset.no, 'disputed', n); });
+    $$('[data-no]').forEach((b) => b.onclick = () => { const n = prompt(pt('whatWrong')); if (n !== null) ack(b.dataset.no, 'disputed', n); });
   };
-  try { await load(); } catch (e) { app.innerHTML = `<div class="boot"><h2>You are offline</h2><p class="muted">Connect to the internet to see your khata.</p></div>`; }
+  try { await load(); } catch (e) { app.innerHTML = `<div class="boot"><h2>${pt('offline')}</h2><p class="muted">${pt('offKh')}</p></div>`; }
+}
+
+/* The customer's monthly balance statement (/c/<token>): every open bill, and one answer: correct, or what is wrong.
+   The answer is kept with its time as evidence for both sides. */
+async function publicConfirm(token) {
+  const app = $('#app');
+  pubLang();
+  const post = (body) => fetch(`/api/public/confirm/${token}`, { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Requested-With': 'SmartTrader' }, body: JSON.stringify(body) });
+  const load = async () => {
+    const res = await fetch('/api/public/confirm/' + token);
+    const d = await res.json();
+    if (!res.ok) { app.innerHTML = `<div class="boot"><h2>${pt('badLink')}</h2><p class="muted">${esc(d.error || pt('cfGone'))}</p></div>`; return; }
+    const C = pt('cfCols'), when = fdate((d.answered_at || '').slice(0, 10));
+    const answer = d.status === 'agreed' ? `<div class="panel cf-done ok">${pt('cfOk', when)}</div>`
+      : d.status === 'disputed' ? `<div class="panel cf-done bad">${pt('cfBad', d.org.name, when, d.note)}</div>`
+      : `<div class="panel cf-ask" id="cfask"><h3>${pt('cfAsk')}</h3><div class="khata-btns"><button class="btn got big" id="cfyes">${pt('cfYes')}</button><button class="btn big" id="cfno">${pt('cfNo')}</button></div>
+          <form id="cfform" hidden><label class="f">${pt('cfWhich')}<select name="bill"><option value="">${pt('cfAll')}</option>${d.bills.map((b) => `<option>${esc(b.number)}</option>`).join('')}</select></label>
+            <label class="f">${pt('cfWhat')}<textarea name="note" rows="3" maxlength="300" placeholder="${esc(pt('cfPh'))}"></textarea></label><p class="err" hidden></p>
+            <div class="actions"><button type="button" class="btn" id="cfback">${pt('back')}</button><button class="btn primary">${pt('cfSend', d.org.name)}</button></div></form>
+          <p class="muted small">${pt('cfNote')}</p></div>`;
+    app.innerHTML = `<main class="page pub"><div class="panel"><div class="muted">${pt('cfFrom')}</div><h1>${esc(d.org.name)}</h1>${d.org.phone ? `<div class="muted">${esc(d.org.phone)}</div>` : ''}</div>
+      <div class="kpi" style="margin-bottom:14px"><div class="l">${pt('cfDue', d.party, fdate(d.as_of))}</div><div class="v neg">${inr(d.balance)}</div></div>
+      <div class="panel flush">${table([{ h: C[0], k: 'number' }, { h: C[1], f: (b) => fdate(b.date) }, { h: C[2], f: (b) => fdate(b.due_date || b.date) }, { h: C[3], num: 1, f: (b) => inr(b.bal) }], d.bills)}</div>
+      ${answer}${d.balance > 0 ? `<div class="panel">${payBox(d.org, d.balance, 'Balance ' + d.as_of)}</div>` : ''}
+      <p class="muted small">Powered by SmartTrader.</p></main>`;
+    if (d.balance > 0) wirePayBox(app, d.org, d.balance, 'Balance ' + d.as_of);
+    if (d.status !== 'sent') return;
+    const send = async (body, btn) => {
+      btn.disabled = true;
+      try {
+        const r = await post(body);
+        if (!r.ok) throw new Error((await r.json().catch(() => ({}))).error || pt('notSaved'));
+        await load();
+      } catch (e) { const b = $('#cfform .err'); if (b && !$('#cfform').hidden) { b.hidden = false; b.textContent = e.message; } else alert(e.message); btn.disabled = false; }
+    };
+    $('#cfyes').onclick = (e) => send({ answer: 'agree' }, e.currentTarget);
+    $('#cfno').onclick = () => { $('#cfform').hidden = false; $('#cfyes').parentElement.hidden = true; $('#cfform textarea').focus(); };
+    $('#cfback').onclick = () => { $('#cfform').hidden = true; $('#cfyes').parentElement.hidden = false; };
+    $('#cfform').onsubmit = (e) => {
+      e.preventDefault();
+      const f = e.target, note = f.note.value.trim();
+      if (!note) { const b = $('.err', f); b.hidden = false; b.textContent = pt('cfWrite'); return; }
+      send({ answer: 'dispute', bill: f.bill.value, note }, $('button.primary', f));
+    };
+  };
+  try { await load(); } catch (e) { app.innerHTML = `<div class="boot"><h2>${pt('offline')}</h2><p class="muted">${pt('offDoc')}</p></div>`; }
 }
 
 /* ======================================================================= Vaada Pakka (payment promises) + Kal ka Cash
@@ -1112,7 +1394,10 @@ const dmy = (d) => (d ? `${d.slice(8, 10)}-${d.slice(5, 7)}-${d.slice(0, 4)}` : 
 const dm = (d) => (d ? `${d.slice(8, 10)}-${d.slice(5, 7)}` : '');
 const hiDay = (d) => { const x = new Date(d + 'T00:00:00Z'); return `${HI_DAYS[x.getUTCDay()]} ${x.getUTCDate()} ${HI_MON[x.getUTCMonth()]}`; };
 const KSTATE = { kept: ['b-paid', '✓ Samay par mila'], broken: ['b-unpaid', '✗ Chhoot gaya'], due: ['b-partial', 'Aaj aakhri din'] };
-const kBadge = (k) => (KSTATE[k.state] ? `<span class="badge ${KSTATE[k.state][0]}">${KSTATE[k.state][1]}</span>` : `<span class="badge">Baaki · ${dmy(k.due)}</span>`);
+const kBadge = (k, pub) => (KSTATE[k.state] ? `<span class="badge ${KSTATE[k.state][0]}">${pub ? pt({ kept: 'kKept', broken: 'kBroken', due: 'kDue' }[k.state]) : KSTATE[k.state][1]}</span>`
+  : `<span class="badge">${pub ? pt('kOpen', dmy(k.due)) : `Baaki · ${dmy(k.due)}`}</span>`);
+/* a date chip's name on the customer's page: "Ravi 27 Okt" in Hinglish, the browser's own words in English / Hindi */
+const pubDay = (d) => (PUBL === 'hl' ? hiDay(d) : new Date(d + 'T00:00:00Z').toLocaleDateString(PUBL === 'hi' ? 'hi-IN' : 'en-IN', { weekday: 'short', day: 'numeric', month: 'short', timeZone: 'UTC' }));
 
 /* Bottom sheet on phones (the modal pattern), centred dialog on wide screens */
 function sheet(html, onClose) {
@@ -1131,22 +1416,22 @@ const sheetErr = (S, msg) => { const b = $('.err', S.el); b.hidden = false; b.te
 /* the promise card: the customer's "Aapka vaada" (A5) and the shop's open promise (D) */
 function vaadaOpenCard(o, { pub = false, shopPhone = '' } = {}) {
   const last = o.kisht[o.kisht.length - 1], tel = String(shopPhone || '').replace(/[^\d+]/g, '');
-  return `<h3>${pub ? 'Aapka vaada' : 'Khula vaada'}${pub ? '' : ` <span class="badge">${o.book === 'inv' ? 'Bill' : 'Khata'}</span>`}</h3>
-    <div class="vsum"><b>${inr(o.amount)}</b> · ${dmy(last.due)} tak · ${o.made_by === 'customer' ? 'link se' : 'shop ne likha'}</div>
-    <div class="klist">${o.kisht.map((k) => `<div class="krow"><span>${o.kisht.length > 1 ? `${k.n}. ` : ''}${dmy(k.due)}</span><b class="num">${inr(k.amount)}</b>${kBadge(k)}</div>`).join('')}</div>
-    <div class="vpaid">Ab tak mila: <b>${inr(o.paid_since)}</b></div>
-    ${!pub ? '' : o.can_change ? '<button class="linkbtn" type="button" data-vchange>Tareekh badlein (sirf ek baar)</button>'
-    : `<p class="muted small">Tareekh badalni hai? ${tel ? `<a href="tel:${esc(tel)}">${esc(shopPhone)}</a> par baat karein.` : 'Shop se baat karein.'}</p>`}`;
+  return `<h3>${pub ? pt('vYours') : 'Khula vaada'}${pub ? '' : ` <span class="badge">${o.book === 'inv' ? 'Bill' : 'Khata'}</span>`}</h3>
+    <div class="vsum">${pub ? pt('vSum', inr(o.amount), dmy(last.due), o.made_by === 'customer') : `<b>${inr(o.amount)}</b> · ${dmy(last.due)} tak · ${o.made_by === 'customer' ? 'link se' : 'shop ne likha'}`}</div>
+    <div class="klist">${o.kisht.map((k) => `<div class="krow"><span>${o.kisht.length > 1 ? `${k.n}. ` : ''}${dmy(k.due)}</span><b class="num">${inr(k.amount)}</b>${kBadge(k, pub)}</div>`).join('')}</div>
+    <div class="vpaid">${pub ? pt('vPaid') : 'Ab tak mila'}: <b>${inr(o.paid_since)}</b></div>
+    ${!pub ? '' : o.can_change ? `<button class="linkbtn" type="button" data-vchange>${pt('vChange')}</button>`
+    : `<p class="muted small">${pt('vCall', tel ? `<a href="tel:${esc(tel)}">${esc(shopPhone)}</a>` : '')}</p>`}`;
 }
-const vaadaAskBtns = (v) => `<div class="vstack"><button class="btn big" type="button" data-vdate>📅 Main tareekh chunta hoon</button>
-  ${v.options.plans.length ? '<button class="btn big" type="button" data-vplan>🧾 Kisht mein dunga</button>' : ''}</div>`;
+const vaadaAskBtns = (v) => `<div class="vstack"><button class="btn big" type="button" data-vdate>${pt('vDateB')}</button>
+  ${v.options.plans.length ? `<button class="btn big" type="button" data-vplan>${pt('vPlanB')}</button>` : ''}</div>`;
 
 /* Screen A: "Kab tak denge?" on the customer's khata / invoice link */
 function vaadaPub(v, shop) {
   if (!v || !v.enabled || !(v.due > 0 || v.open)) return '';
   const inner = v.open ? vaadaOpenCard(v.open, { pub: true, shopPhone: shop.phone })
-    : `<h3>Kab tak denge?</h3><p class="muted">Tareekh chunein, shop ko pata chal jayega. Koi byaaj nahi.</p>${vaadaAskBtns(v)}
-       <p class="muted small">Aapka vaada sirf ${esc(shop.name)} ko dikhega.</p>`;
+    : `<h3>${pt('vAsk')}</h3><p class="muted">${pt('vAskP')}</p>${vaadaAskBtns(v)}
+       <p class="muted small">${pt('vPriv', shop.name)}</p>`;
   return `<div class="panel vpub no-print" id="vpub">${inner}</div>`;
 }
 function wireVaadaPub(root, v, shop, ctx) {
@@ -1158,22 +1443,22 @@ function wireVaadaPub(root, v, shop, ctx) {
     else if (e.target.closest('[data-vchange]')) e.target.closest('[data-vchange]').outerHTML = v.due > 0 ? vaadaAskBtns(v) : '';
   });
 }
-const vConsent = (shop, btn) => `<p class="muted small vconsent">'${btn}' dabane par tareekh, rakam aur naam ${esc(shop.name)} ke paas save honge.</p>`;
-const vNameInput = '<label class="f">Aapka naam (zaroori nahi)<input id="vname" maxlength="60" autocomplete="name" enterkeyhint="done"></label>';
+const vConsent = (shop, btn) => `<p class="muted small vconsent">${pt('vConsent', shop.name, btn)}</p>`;
+const vNameInput = () => `<label class="f">${pt('vName')}<input id="vname" maxlength="60" autocomplete="name" enterkeyhint="done"></label>`;
 function vDateSheet(v, shop, ctx) {
   const t = v.today, max = v.options.max_date, o = v.options, chips = [];
-  for (let i = 0; i <= 7; i++) { const d = addD(t, i); if (d > max) break; chips.push([d, ['Aaj', 'Kal', 'Parson'][i] || hiDay(d)]); }
+  for (let i = 0; i <= 7; i++) { const d = addD(t, i); if (d > max) break; chips.push([d, pt('vDays')[i] || pubDay(d)]); }
   const partOk = o.part && o.min_amount < v.due;
   let picked = '', done = false;
-  const S = sheet(`<h2>Kis tareekh tak denge?</h2>
-    <div class="chips" id="vchips">${chips.map(([d, l]) => `<button type="button" class="chip" data-d="${d}">${l}</button>`).join('')}<button type="button" class="chip" data-more>Aur tareekh…</button></div>
-    <input type="date" id="vdate" min="${t}" max="${max}" hidden aria-label="Tareekh">
-    <div class="vq"><b>Kitna denge?</b>
-      <label class="radio"><input type="radio" name="vamt" value="full" checked> Poora ${inr(v.due)}</label>
-      ${partOk ? `<label class="radio"><input type="radio" name="vamt" value="part"> Kuch hissa</label>
-        <input type="number" id="vpart" inputmode="decimal" step="any" min="${o.min_amount}" max="${v.due}" placeholder="Kam se kam ${inr0(o.min_amount)}" hidden>` : ''}</div>
-    ${vNameInput}${vConsent(shop, 'Vaada pakka karein')}<div class="err" hidden></div>
-    <div class="actions"><button type="button" class="btn" data-x>Wapas</button><button type="button" class="btn primary" id="vgo">Vaada pakka karein</button></div>`, () => { if (done) ctx.reload(); });
+  const S = sheet(`<h2>${pt('vWhen')}</h2>
+    <div class="chips" id="vchips">${chips.map(([d, l]) => `<button type="button" class="chip" data-d="${d}">${l}</button>`).join('')}<button type="button" class="chip" data-more>${pt('vMore')}</button></div>
+    <input type="date" id="vdate" min="${t}" max="${max}" hidden aria-label="${pt('vWhen')}">
+    <div class="vq"><b>${pt('vHow')}</b>
+      <label class="radio"><input type="radio" name="vamt" value="full" checked> ${pt('vFull', inr(v.due))}</label>
+      ${partOk ? `<label class="radio"><input type="radio" name="vamt" value="part"> ${pt('vPart')}</label>
+        <input type="number" id="vpart" inputmode="decimal" step="any" min="${o.min_amount}" max="${v.due}" placeholder="${pt('vMin', inr0(o.min_amount))}" hidden>` : ''}</div>
+    ${vNameInput()}${vConsent(shop, pt('vGo'))}<div class="err" hidden></div>
+    <div class="actions"><button type="button" class="btn" data-x>${pt('vBack')}</button><button type="button" class="btn primary" id="vgo">${pt('vGo')}</button></div>`, () => { if (done) ctx.reload(); });
   const el = S.el, di = $('#vdate', el);
   $('#vchips', el).onclick = (e) => {
     const b = e.target.closest('.chip'); if (!b) return;
@@ -1184,11 +1469,11 @@ function vDateSheet(v, shop, ctx) {
   di.onchange = () => { picked = di.value; };
   $$('[name=vamt]', el).forEach((r) => r.onchange = () => { const p = $('#vpart', el); if (p) { p.hidden = $('[name=vamt]:checked', el).value !== 'part'; if (!p.hidden) p.focus(); } });
   $('#vgo', el).onclick = () => {
-    if (!picked) return sheetErr(S, 'Tareekh chunein.');
+    if (!picked) return sheetErr(S, pt('vPick'));
     const body = { kind: 'date', date: picked, name: $('#vname', el).value };
     if (($('[name=vamt]:checked', el) || {}).value === 'part') {
       const a = +$('#vpart', el).value;
-      if (!(a > 0)) return sheetErr(S, `Kam se kam ${inr0(o.min_amount)} ka vaada karein.`);
+      if (!(a > 0)) return sheetErr(S, pt('vMinErr', inr0(o.min_amount)));
       body.amount = a;
     }
     vSubmit(S, body, ctx, () => { done = true; });
@@ -1196,27 +1481,27 @@ function vDateSheet(v, shop, ctx) {
 }
 function vPlanSheet(v, shop, ctx) {
   let done = false;
-  const S = sheet(`<h2>Kitni kisht mein?</h2>
+  const S = sheet(`<h2>${pt('vHowMany')}</h2>
     <div class="vplans">${v.options.plans.map((p, i) => { const n = p.amounts.length, last = p.amounts[n - 1]; return `<label class="vplan"><input type="radio" name="vplan" value="${esc(p.key)}" ${i ? '' : 'checked'}>
-      <span><b>${esc(p.label)}</b><br>${inr0(p.amounts[0])} × ${n} · pehli ${dmy(p.first)}, aakhri ${dmy(p.last)}${last !== p.amounts[0] ? `<br><small class="muted">Aakhri kisht ${inr(last)} (bachi rakam usme judti hai)</small>` : ''}</span></label>`; }).join('')}</div>
-    ${vNameInput}${vConsent(shop, 'Kisht pakki karein')}<div class="err" hidden></div>
-    <div class="actions"><button type="button" class="btn" data-x>Wapas</button><button type="button" class="btn primary" id="vgo">Kisht pakki karein</button></div>`, () => { if (done) ctx.reload(); });
+      <span><b>${esc((PT[PUBL].plans || {})[p.key] || p.label)}</b><br>${pt('vPlanLine', inr0(p.amounts[0]), n, dmy(p.first), dmy(p.last))}${last !== p.amounts[0] ? `<br><small class="muted">${pt('vLastK', inr(last))}</small>` : ''}</span></label>`; }).join('')}</div>
+    ${vNameInput()}${vConsent(shop, pt('vPlanGo'))}<div class="err" hidden></div>
+    <div class="actions"><button type="button" class="btn" data-x>${pt('vBack')}</button><button type="button" class="btn primary" id="vgo">${pt('vPlanGo')}</button></div>`, () => { if (done) ctx.reload(); });
   $('#vgo', S.el).onclick = () => vSubmit(S, { kind: 'plan', plan: $('[name=vplan]:checked', S.el).value, name: $('#vname', S.el).value }, ctx, () => { done = true; });
 }
 async function vSubmit(S, body, ctx, ok) {
   const btn = $('#vgo', S.el); $('.err', S.el).hidden = true; btn.disabled = true;
   try {
-    const r = await fetch(ctx.path, { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Requested-With': 'SmartTrader' }, body: JSON.stringify(body) });
+    const r = await fetch(ctx.path, { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Requested-With': 'SmartTrader' }, body: JSON.stringify({ ...body, lang: PUBL }) });
     const d = await r.json().catch(() => ({}));
-    if (!r.ok) throw new Error(r.status === 429 ? 'Aaj bahut baar koshish hui. Kal dobara try karein.' : d.error || 'Save nahi hua. Dobara try karein.');
+    if (!r.ok) throw new Error(r.status === 429 ? pt('vTooMany') : d.error || pt('vFail'));
     ok();
     const o = d.vaada, last = o.kisht[o.kisht.length - 1];
-    S.el.innerHTML = `<div class="vok"><div class="vok-h">✅ <b>Vaada pakka!</b></div>
+    S.el.innerHTML = `<div class="vok"><div class="vok-h">${pt('vDone')}</div>
       ${o.kisht.length > 1 ? `<div class="klist">${o.kisht.map((k) => `<div class="krow"><span>${k.n}. ${dmy(k.due)}</span><b class="num">${inr(k.amount)}</b></div>`).join('')}</div>`
-    : `<p class="vok-a">${dmy(last.due)} tak <b>${inr(o.amount)}</b></p>`}
-      ${d.shop_whatsapp_url ? `<a class="btn got big" href="${esc(d.shop_whatsapp_url)}" target="_blank" rel="noopener">Shop ko WhatsApp par batayein</a>` : ''}
-      <p class="muted small">Paisa dene par ye vaada apne aap poora ho jayega.</p></div>
-      <div class="actions"><button type="button" class="btn primary" data-x>Theek hai</button></div>`;
+    : `<p class="vok-a">${pt('vByAmt', dmy(last.due), inr(o.amount))}</p>`}
+      ${d.shop_whatsapp_url ? `<a class="btn got big" href="${esc(d.shop_whatsapp_url)}" target="_blank" rel="noopener">${pt('vTell')}</a>` : ''}
+      <p class="muted small">${pt('vAuto')}</p></div>
+      <div class="actions"><button type="button" class="btn primary" data-x>${pt('vOk')}</button></div>`;
   } catch (e) { sheetErr(S, e.message); btn.disabled = false; }
 }
 
@@ -1752,6 +2037,9 @@ route(/^settings$/, async (el, m, q) => {
       <label class="f">Business email<input name="email" type="email" value="${esc(o.email || '')}"></label><label class="f">Phone<input name="phone" value="${esc(o.phone)}"></label>
       <label class="f">UPI ID<input name="upi_id" value="${esc(o.upi_id)}" placeholder="shop@okhdfcbank"><small class="help">Customers pay you here. Shown as a QR on bills.</small></label>
       <label class="f">Financial year starts (MM-DD)<input name="fy_start" value="${esc(o.fy_start)}"></label>
+      <label class="f">Customer message language<select name="msg_lang">${LANGS.map(([v, t]) => `<option value="${v}" ${(o.msg_lang || 'hl') === v ? 'selected' : ''}>${t}</option>`).join('')}</select>
+        <small class="help">The default for bills, reminders and receipts. Set it per customer too, or change it before each send.</small></label>
+      <label class="f">Udyam registration no.<input name="udyam" value="${esc(o.udyam || '')}" maxlength="19" placeholder="UDYAM-RJ-17-0012345"><small class="help">For interest on late payments under the MSMED Act (Vasooli → Recovery file).</small></label>
       <label class="f wide">Address (printed on invoices)<textarea name="address" rows="2">${esc(o.address)}</textarea></label></div>
       <div class="row" style="margin-top:12px"><span class="spacer"></span><button class="btn primary" ${ME.can.settings ? '' : 'disabled'}>Save profile</button></div></form>
     ${vaadaSettings()}
@@ -1759,7 +2047,7 @@ route(/^settings$/, async (el, m, q) => {
       ${table([{ h: 'Name', k: 'name' }, { h: 'Email', k: 'email', cls: 'hide-sm' }, { h: 'Role', f: (u) => u.role_key === 'owner' ? 'owner' : `<select data-role="${u.id}" aria-label="Role">${roleOpts.map((o) => `<option value="${esc(o.v)}" ${o.v === u.role_key ? 'selected' : ''}>${esc(o.t)}</option>`).join('')}</select>` },
         { h: 'Status', f: (u) => u.paused ? `${badge('partial')}<div class="muted">over plan limit</div>` : u.active ? badge('ok') : badge('cancelled') },
         { h: '', f: (u) => u.role === 'owner' ? '' : `<button class="btn sm" data-pw="${u.id}" data-email="${esc(u.email)}">Set password</button> <button class="btn sm" data-u="${u.id}" data-a="${u.active}">${u.active ? 'Disable' : 'Enable'}</button>` }], users.rows)}
-      <div class="muted" style="padding:10px 16px">Need your own role? <a href="#/settings/roles">Make one in Roles</a>. Built-in: <b>admin</b> everything · <b>accountant</b> money, bills, reports · <b>store</b> stock, items, purchase · <b>sales</b> quotes, orders, invoices, khata.</div></div>` : ''}
+      <div class="muted" style="padding:10px 16px">Need your own role? <a href="#/settings/roles">Make one in Roles</a>. Built-in: <b>admin</b> everything · <b>accountant</b> money, bills, reports · <b>store</b> stock, items, purchase · <b>sales</b> quotes, orders, invoices, khata, customer receipts.</div></div>` : ''}
     <form class="panel" id="pw"><h2>Change your password</h2><div class="err" hidden></div><div class="form"><label class="f">Current password<input type="password" name="current" autocomplete="current-password"></label>
       <label class="f">New password<input type="password" name="password" autocomplete="new-password" minlength="8"></label></div><div class="row" style="margin-top:12px"><button type="button" class="btn" id="logoutall">Sign out everywhere</button><span class="spacer"></span><button class="btn">Change password</button></div>
       <p class="muted">Changing your password signs you out on every other device. "Sign out everywhere" does that without changing it.</p></form>
@@ -1983,7 +2271,6 @@ route(/^pending$/, async (el) => {
     ${sec('Open quotations', docCols('Make order', 'SO'), p.open_quotes, 'No open quotations.')}`;
 });
 
-/* ======================================================================= payment reminders (bulk) */
 /* ======================================================================= recurring invoices and bills */
 route(/^recurring$/, async (el) => {
   const { rows } = await GET('/api/recurring');
@@ -2010,33 +2297,127 @@ route(/^recurring$/, async (el) => {
   };
 });
 
+/* ======================================================================= vasooli (collections): src/vasooli.js
+   One screen for getting paid: who to remind today (on a schedule: 3 days before the due date, on it, then 7 / 15 / 30 /
+   45 days late), the monthly balance statements customers confirm with one tap, who collected what, and the week. */
+const STEP_NAME = { '-3': 'before due date', 0: 'due today', 7: '7 days late', 15: '15 days late', 30: '30 days late', 45: '45+ days: final' };
+const lateText = (r) => (r.days_late < 0 ? `due in ${-r.days_late} day${r.days_late === -1 ? '' : 's'}` : r.days_late === 0 ? 'due today' : `${r.days_late} days late`);
 route(/^reminders$/, async (el) => {
-  const [ag, kh] = await Promise.all([GET('/api/reports/ageing?kind=receivable'), GET('/api/khata')]);
-  let sent = {};
-  try { sent = JSON.parse(sessionStorage.getItem('st-sent') || '{}'); } catch (e) { /* storage blocked */ }
-  const mark = (k) => { sent[k] = 1; try { sessionStorage.setItem('st-sent', JSON.stringify(sent)); } catch (e) { /* ignore */ } };
-  const khRows = kh.rows.filter((r) => r.balance > 0);
-  const btns = (k) => `${sent[k] ? '<span class="badge b-paid">sent</span> ' : ''}<button class="btn sm got" data-wa="${k}">WhatsApp</button> <button class="btn sm" data-sms="${k}">SMS</button>`;
-  el.innerHTML = head('Payment Reminders', '<a class="btn" href="#/vaade">Vaade (promises)</a>') + `${ME.org.upi_id ? '' : '<div class="panel warnbox">Add your <b>UPI ID</b> in <a href="#/settings">Business &amp; Users</a> so customers get a <b>Pay by UPI</b> button and QR in every message.</div>'}<p class="muted">Everyone who owes you money, oldest dues first. Tap WhatsApp to send a ready reminder with the bills, total and your UPI. Sent ones are marked for today.</p>
-    <div class="panel flush"><div class="row" style="padding:14px 16px 0"><h3>Invoice dues</h3><span class="badge">${ag.rows.length}</span></div>${table([
-      { h: 'Customer', f: (r) => `<a href="#/party/${r.party_id}">${esc(r.party)}</a><div class="muted">${esc(r.phone || 'no mobile')}</div>` },
-      { h: 'Overdue', num: 1, cls: 'hide-sm', f: (r) => inr(r.total - r.current) }, { h: 'Total due', num: 1, f: (r) => `<b>${inr(r.total)}</b>` }, { h: '', f: (r) => btns('p' + r.party_id) }],
-    ag.rows.slice().sort((a, b) => (b.total - b.current) - (a.total - a.current)), { empty: 'No unpaid invoices.' })}</div>
+  const [v, kh] = await Promise.all([GET('/api/vasooli'), GET('/api/khata')]);
+  const s = v.summary, conf = new Map(v.confirmations.map((f) => [f.party_id, f]));
+  const due = v.queue.filter((r) => r.status === 'due'), rest = v.queue.filter((r) => r.status !== 'due');
+  const khRows = kh.rows.filter((r) => r.balance > 0), money = ME.can.finance;
+  const who = (r) => `<a href="#/party/${r.party_id}">${esc(r.name)}</a>${r.vip ? ' <span class="badge">VIP</span>' : ''}<div class="muted">${esc(r.phone || 'no mobile')}</div>`;
+  const toneBadge = (r) => r.tone === 'final' ? '<span class="badge b-unpaid">final reminder</span>' : r.tone === 'late30' ? '<span class="badge b-partial">30+ days</span>' : '';
+  const cfCell = (r) => {
+    const f = conf.get(r.party_id);
+    if (!f) return '<span class="muted">never sent</span>';
+    const when = fdate(f.status === 'sent' ? f.created_at.slice(0, 10) : (f.answered_at || '').slice(0, 10));
+    return f.status === 'agreed' ? `<span class="badge b-paid">✓ confirmed ${inr(f.balance)}</span><div class="muted">${when}</div>`
+      : f.status === 'disputed' ? `<span class="badge b-unpaid">disputed</span><div class="neg">“${esc(f.note)}”${f.disputed_bill ? ` (${esc(f.disputed_bill)})` : ''}</div><div class="muted">${when}</div>`
+      : `<span class="muted">sent ${when}, no answer yet</span>`;
+  };
+  el.innerHTML = head('Vasooli <span class="muted h-sub">(collections)</span>', `${s ? '<button class="btn" id="week">Share week report</button>' : ''}<a class="btn" href="#/vaade">Vaade (promises)</a>`)
+    + `${ME.org.upi_id ? '' : '<div class="panel warnbox">Add your <b>UPI ID</b> in <a href="#/settings">Business &amp; Users</a> so customers get a Pay by UPI button and QR in every message.</div>'}
+    ${s ? `<div class="kpis">
+      <div class="kpi"><div class="l">Received, last 7 days</div><div class="v pos">${inr(s.received)}</div><div class="s">from ${s.payers} customer${s.payers === 1 ? '' : 's'}${s.top_payer ? ` · top: ${esc(s.top_payer.name)}` : ''}</div></div>
+      <div class="kpi"><div class="l">Promised this week</div><div class="v">${inr(s.promised)}</div><div class="s">${s.promised_n} promise${s.promised_n === 1 ? '' : 's'}</div></div>
+      <div class="kpi"><div class="l">45+ days late</div><div class="v ${s.late45 > 0 ? 'neg' : ''}">${inr(s.late45)}</div><div class="s">${s.late45_n} customer${s.late45_n === 1 ? '' : 's'} · total due ${inr(s.outstanding)}</div></div>
+      <div class="kpi"><div class="l">Days to get paid</div><div class="v">${s.avg_days === null ? '–' : s.avg_days}</div><div class="s">${s.avg_days_before !== null && s.avg_days !== null ? `was ${s.avg_days_before} in the 90 days before` : 'bills cleared in the last 90 days'}</div></div>
+    </div>` : ''}
+    <div class="panel flush"><div class="row" style="padding:14px 16px 0"><h3>Send today</h3><span class="badge">${due.length}</span></div>
+      <p class="muted" style="padding:0 16px">Reminders go on a schedule: 3 days before the due date, on it, then 7, 15, 30 and 45 days late. A customer's own promise date pauses them; VIP customers only get gentle ones.${v.msme ? '' : ' Add your Udyam number in Settings to mention MSMED interest in 30+ day reminders.'}</p>
+      ${table([{ h: 'Customer', f: who }, { h: 'Late', f: (r) => `${lateText(r)} ${toneBadge(r)}`, cls: 'hide-sm' }, { h: 'Due', num: 1, f: (r) => `<b>${inr(r.due)}</b><div class="muted">${r.bills} bill${r.bills === 1 ? '' : 's'}</div>` },
+        { h: '', f: (r) => `<button class="btn sm got" data-rem="${r.party_id}">Send reminder</button>${r.days_late >= 30 && money ? ` <a class="btn sm" href="#/recovery/${r.party_id}">Recovery file</a>` : ''}` }],
+      due, { empty: 'Nothing to send today. 🎉' })}
+      ${rest.length ? `<details class="vq-later"><summary>Scheduled and paused (${rest.length})</summary>${table([{ h: 'Customer', f: who },
+        { h: 'Status', f: (r) => r.status === 'promised' ? `<span class="badge b-paid">promised ${inr(r.promise.amount)} by ${fdate(r.promise.on)}</span>`
+          : r.status === 'sent' ? `sent ${fdate(r.last_sent.at.slice(0, 10))} (${esc(STEP_NAME[r.last_sent.step] || '')})${r.next_on ? `<div class="muted">next on ${fdate(r.next_on)}</div>` : ''}`
+          : `<span class="muted">first reminder on ${fdate(r.next_on)}</span>` },
+        { h: 'Due', num: 1, f: (r) => inr(r.due) }, { h: '', f: (r) => `<button class="btn sm" data-rem="${r.party_id}">Send now</button>` }], rest)}</details>` : ''}</div>
+    <div class="panel flush"><div class="row" style="padding:14px 16px 0"><h3>Balance confirmation</h3></div>
+      <p class="muted" style="padding:0 16px">Once a month, send each customer their balance. They tap <b>Correct</b> or <b>Something is wrong</b> on their phone. A wrong bill comes up now, not months later, and every answer is kept with its date as proof.</p>
+      ${table([{ h: 'Customer', f: who }, { h: 'Due now', num: 1, cls: 'hide-sm', f: (r) => inr(r.due) }, { h: 'Last statement', f: (r) => cfCell(r) },
+        { h: '', f: (r) => `<button class="btn sm" data-cf="${r.party_id}">Send statement</button>` }], v.queue, { empty: 'No customer owes you on bills.' })}</div>
+    ${s && s.staff.length ? `<div class="panel flush"><div class="row" style="padding:14px 16px 0"><h3>Who collected what</h3></div>
+      <p class="muted" style="padding:0 16px">Every receipt can go to the customer on WhatsApp with the collector's name, so cash taken by staff cannot quietly go missing.</p>
+      ${table([{ h: 'Collected by', k: 'name' }, { h: 'Last 7 days', num: 1, f: (r) => `${inr(r.week)}<div class="muted">${r.n_week} receipt${r.n_week === 1 ? '' : 's'}</div>` },
+        { h: 'Cash, 7 days', num: 1, cls: 'hide-sm', f: (r) => inr(r.cash_week) }, { h: 'This month', num: 1, f: (r) => inr(r.month) }], s.staff)}</div>` : ''}
     <div class="panel flush"><div class="row" style="padding:14px 16px 0"><h3>Khata dues</h3><span class="badge">${khRows.length}</span></div>${table([
       { h: 'Contact', f: (r) => `<a href="#/khata/${r.id}">${esc(r.name)}</a><div class="muted">${esc(r.phone || 'no mobile')}</div>` }, { h: 'Baaki', num: 1, f: (r) => `<b>${inr(r.balance)}</b>` },
-      { h: '', f: (r) => btns('k' + r.id) }], khRows, { empty: 'No khata dues.' })}</div>`;
-  const go2 = async (k, via, b) => {
-    const w = via === 'wa' ? window.open('', '_blank') : null;
-    try {
-      const r = await GET(k[0] === 'p' ? `/api/parties/${k.slice(1)}/reminder` : `/api/khata/${k.slice(1)}/reminder`);
-      const url = via === 'wa' ? r.whatsapp_url : r.sms_url;
-      if (!url) { if (w) w.close(); return alert('Save a mobile number for this contact first.'); }
-      if (w) w.location = url; else location.href = url;
-      mark(k); b.closest('td').insertAdjacentHTML('afterbegin', '<span class="badge b-paid">sent</span> ');
-    } catch (e) { if (w) w.close(); toast(e.message, 'err'); }
+      { h: '', f: (r) => `<button class="btn sm got" data-kh="${r.id}">Send reminder</button>` }], khRows, { empty: 'No khata dues.' })}</div>`;
+  const row = (id) => v.queue.find((r) => r.party_id === +id);
+  $$('[data-rem]', el).forEach((b) => b.onclick = () => { const r = row(b.dataset.rem); sendDialog({ title: `Reminder to ${r.name}`, lang: r.lang,
+    intro: `<p class="muted">${esc(lateText(r))}${r.vip ? ' · VIP: gentle wording' : ''}. The message gets firmer as bills get older.</p>`,
+    load: (l) => GET(`/api/parties/${r.party_id}/reminder?lang=${l}`),
+    sent: (via, m, l) => POST(`/api/vasooli/${r.party_id}/sent`, { step: r.step ?? -3, via, lang: l }).then(() => toast('Reminder saved')), closed: () => render() }); });
+  $$('[data-cf]', el).forEach((b) => b.onclick = () => { const r = row(b.dataset.cf); sendDialog({ title: `Balance statement to ${r.name}`, lang: r.lang,
+    intro: '<p class="muted">They get a private link with every open bill and two buttons: Correct, or Something is wrong.</p>',
+    load: (l) => POST(`/api/parties/${r.party_id}/confirm?lang=${l}`, {}),
+    sent: (via, m) => POST(`/api/vasooli/confirm/${m.id}/sent`, { via }), closed: () => render() }); });
+  $$('[data-kh]', el).forEach((b) => b.onclick = () => { const r = khRows.find((x) => x.id === +b.dataset.kh);
+    sendDialog({ title: `Reminder to ${r.name}`, lang: r.lang, load: (l) => GET(`/api/khata/${r.id}/reminder?lang=${l}`) }); });
+  if ($('#week')) $('#week').onclick = () => sendDialog({ title: 'Your week in collections', lang: ME.org.msg_lang,
+    intro: '<p class="muted">Send it to yourself or a partner. It opens WhatsApp with your own number when it is saved in Settings.</p>',
+    load: (l) => GET(`/api/vasooli/report?lang=${l}`) });
+});
+
+/* ======================================================================= recovery file (one customer)
+   MSMED Act interest (3 × RBI bank rate, monthly compounding, from the 46th day or the earlier agreed due date), the
+   evidence the shop already has (balance confirmations, promises, reminders, receipts) and a demand-notice draft. */
+route(/^recovery\/(\d+)$/, async (el, m) => {
+  let rate = lsGet('st_bank_rate') || '';
+  const draw = async () => {
+    const f = await GET(`/api/parties/${m[1]}/recovery${rate ? '?rate=' + encodeURIComponent(rate) : ''}`);
+    const P = f.party, O = f.org, withInt = f.msme && f.bank_rate, claim = f.totals.bal + (withInt ? f.totals.interest : 0);
+    const addr = (x) => [x.address, x.city, x.state, x.pincode].filter(Boolean).map(esc).join(', ');
+    const agreed = f.confirmations.filter((c) => c.status === 'agreed'), broken = f.promises.filter((k) => k.outcome === 'broken');
+    const kind = (s) => ({ '-3': 'before due', 0: 'due day', 7: '7 days late', 15: '15 days late', 30: '30 days late', 45: '45+ days' })[s] || '';
+    el.innerHTML = head(`Recovery file: ${esc(P.name)}`, `<a class="btn" href="#/reminders">Vasooli</a><button class="btn primary" data-act="print">Print / PDF</button>`) + `
+      <div class="panel no-print"><div class="row">
+        <label class="f inline-f">RBI Bank Rate (%)<input id="rate" type="number" step="0.01" min="0" max="30" value="${esc(rate)}" style="width:100px"></label>
+        <button class="btn" id="apply">Work out interest</button><span class="muted small">Check today's Bank Rate on <a href="https://www.rbi.org.in" target="_blank" rel="noopener">rbi.org.in</a>. MSMED interest is 3 × that, compounded monthly.</span></div>
+        ${f.msme ? '' : '<p class="warnbox" style="margin-top:10px">MSMED Act interest is for micro and small enterprises with Udyam registration. Add your Udyam number in <a href="#/settings">Settings → Business profile</a> to claim it. This file still has the statement, the evidence and a plain demand notice.</p>'}</div>
+      <div class="doc-paper recovery">
+        <div class="hdr"><div><div class="oname"><b>${esc(O.name)}</b></div><div>${addr(O)}</div>${O.gstin ? `<div>GSTIN: ${esc(O.gstin)}</div>` : ''}${f.udyam ? `<div>Udyam: ${esc(f.udyam)}</div>` : ''}</div>
+          <div class="meta"><div class="title">STATEMENT OF DUES</div><div>As on ${fdate(f.today)}</div></div></div>
+        <p><b>To:</b> ${esc(P.name)}${P.gstin ? ` (GSTIN ${esc(P.gstin)})` : ''}<br>${addr(P)}${P.phone ? `<br>Phone: ${esc(P.phone)}` : ''}</p>
+        <div class="tbl-wrap"><table class="dl"><thead><tr><th>Bill</th><th>Date</th><th>Due by</th>${f.msme ? '<th>Interest from</th>' : ''}<th class="num">Bill amount</th><th class="num">Paid</th><th class="num">Balance</th><th class="num">Days late</th>${withInt ? '<th class="num">Interest</th>' : ''}</tr></thead>
+          <tbody>${f.bills.map((b) => `<tr><td>${esc(b.number)}</td><td>${fdate(b.date)}</td><td>${fdate(b.due_date || b.date)}</td>${f.msme ? `<td>${fdate(b.appointed)}</td>` : ''}<td class="num">${inr(b.total)}</td><td class="num">${inr(b.paid)}</td>
+            <td class="num"><b>${inr(b.bal)}</b></td><td class="num">${b.days_late}</td>${withInt ? `<td class="num">${inr(b.interest)}</td>` : ''}</tr>`).join('') || `<tr><td colspan="9">No unpaid bills.</td></tr>`}</tbody>
+          <tfoot><tr><th colspan="${f.msme ? 6 : 5}">Total</th><th class="num">${inr(f.totals.bal)}</th><th></th>${withInt ? `<th class="num">${inr(f.totals.interest)}</th>` : ''}</tr></tfoot></table></div>
+        <p class="claim">Amount claimed: <b>${inr(f.totals.bal)}</b>${withInt ? ` + interest <b>${inr(f.totals.interest)}</b> (MSMED Act, Section 16, at ${3 * f.bank_rate}% a year, monthly rests) = <b>${inr(claim)}</b>` : ''}</p>
+        <h3>Evidence</h3>
+        <h4>Balance confirmations</h4>${f.confirmations.length ? `<table><tr><th>Sent</th><th class="num">Balance</th><th>Answer</th></tr>${f.confirmations.map((c) => `<tr><td>${fdate(c.as_of)}</td><td class="num">${inr(c.balance)}</td>
+          <td>${c.status === 'agreed' ? `Confirmed on ${fdate((c.answered_at || '').slice(0, 10))}` : c.status === 'disputed' ? `Disputed on ${fdate((c.answered_at || '').slice(0, 10))}: “${esc(c.note)}”` : 'No answer'}</td></tr>`).join('')}</table>` : '<p class="muted">None sent yet. Send one from Vasooli.</p>'}
+        <h4>Payment promises</h4>${f.promises.length ? `<table><tr><th>Made on</th><th>By</th><th>Due</th><th class="num">Amount</th><th>Result</th></tr>${f.promises.map((k) => `<tr><td>${fdate(k.made_on)}</td><td>${k.made_by === 'customer' ? 'customer (on their link)' : 'noted by shop'}</td>
+          <td>${fdate(k.due)}</td><td class="num">${inr(k.kamount)}</td><td>${k.outcome === 'kept' ? 'Paid' : k.outcome === 'broken' ? '<b>Not paid</b>' : 'Open'}</td></tr>`).join('')}</table>` : '<p class="muted">No promises.</p>'}
+        <h4>Reminders sent</h4>${f.reminders.length ? `<table><tr><th>When</th><th>How</th><th>Stage</th><th>By</th></tr>${f.reminders.map((r) => `<tr><td>${new Date(r.sent_at).toLocaleString('en-IN', { day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' })}</td>
+          <td>${r.via === 'sms' ? 'SMS' : 'WhatsApp'}</td><td>${kind(r.step)}</td><td>${esc(r.by_name || '')}</td></tr>`).join('')}</table>` : '<p class="muted">None logged yet.</p>'}
+        <h4>Payments received</h4>${f.payments.length ? `<table><tr><th>Receipt</th><th>Date</th><th>Into</th><th class="num">Amount</th></tr>${f.payments.map((y) => `<tr><td>${esc(y.number)}</td><td>${fdate(y.date)}</td><td>${esc(y.account || '')}</td><td class="num">${inr(y.amount)}</td></tr>`).join('')}</table>` : '<p class="muted">None.</p>'}
+        <h3 class="pb">Demand notice (draft)</h3>
+        <div class="notice">
+          <p>To,<br><b>${esc(P.name)}</b><br>${addr(P) || '[address]'}${P.gstin ? `<br>GSTIN: ${esc(P.gstin)}` : ''}</p>
+          <p>Date: ${fdate(f.today)}</p>
+          <p><b>Subject: Demand for payment of ${inr(withInt ? claim : f.totals.bal)} outstanding${f.msme ? ', under Sections 15 and 16 of the MSMED Act, 2006' : ''}</b></p>
+          <p>Dear Sir / Madam,</p>
+          <p>We, ${esc(O.name)}${f.msme ? `, a micro / small enterprise registered under Udyam No. ${esc(f.udyam)},` : ''} supplied goods / services to you against the bills listed in the attached statement. As on ${fdate(f.today)}, <b>${inr(f.totals.bal)}</b> remains unpaid.</p>
+          ${agreed.length ? `<p>You confirmed the balance due to us on ${agreed.map((c) => fdate((c.answered_at || '').slice(0, 10))).join(', ')}.</p>` : ''}
+          ${broken.length ? `<p>You promised to pay on ${broken.map((k) => fdate(k.due)).join(', ')} and did not.</p>` : ''}
+          ${f.msme ? `<p>Under Section 15 of the MSMED Act, 2006, payment was due within the agreed period, not exceeding 45 days from acceptance. Under Section 16, you are liable to pay compound interest with monthly rests at three times the bank rate notified by the Reserve Bank of India${withInt ? `. As on ${fdate(f.today)}, interest of <b>${inr(f.totals.interest)}</b> has accrued, and it continues to accrue until payment` : ''}.</p>` : ''}
+          <p>We request you to pay <b>${inr(withInt ? claim : f.totals.bal)}</b> within 15 days of receiving this notice${ME.org.upi_id ? `, by UPI to ${esc(ME.org.upi_id)} or` : ''} by bank transfer to our account. If it is not paid, we will be constrained to ${f.msme ? 'file a reference before the Micro and Small Enterprises Facilitation Council (MSME Samadhaan) and ' : ''}take legal action for recovery, at your cost and risk.</p>
+          <p>Yours faithfully,<br>For <b>${esc(O.name)}</b><br><br><br>Authorised Signatory${O.phone ? `<br>${esc(O.phone)}` : ''}${O.email ? ` · ${esc(O.email)}` : ''}</p>
+        </div>
+        ${f.msme ? `<h3>MSME Samadhaan: what you will need</h3><ul>
+          <li>Your Udyam number: <b>${esc(f.udyam)}</b></li><li>Buyer: <b>${esc(P.name)}</b>${P.gstin ? `, GSTIN ${esc(P.gstin)}` : ''}${addr(P) ? `, ${addr(P)}` : ''}</li>
+          <li>Bills: ${f.bills.map((b) => `${esc(b.number)} (${fdate(b.date)}, ${inr(b.bal)})`).join('; ') || 'none'}</li>
+          <li>Principal due: <b>${inr(f.totals.bal)}</b>${withInt ? `; interest to date: <b>${inr(f.totals.interest)}</b>` : ''}</li>
+          <li>This statement, the confirmations and the reminders above as proof. File at <a href="https://samadhaan.msme.gov.in" target="_blank" rel="noopener">samadhaan.msme.gov.in</a>.</li></ul>` : ''}
+        <p class="muted small">Prepared by SmartTrader from your own records. The notice is a draft: have an advocate review and sign it before you send it. Interest is an estimate and depends on the dates of acceptance and the Bank Rate in force.</p>
+      </div>`;
+    $('#apply').onclick = () => { rate = $('#rate').value.trim(); lsSet('st_bank_rate', rate); draw(); };
   };
-  $$('[data-wa]', el).forEach((b) => b.onclick = () => go2(b.dataset.wa, 'wa', b));
-  $$('[data-sms]', el).forEach((b) => b.onclick = () => go2(b.dataset.sms, 'sms', b));
+  await draw();
 });
 
 /* ======================================================================= pick list (by bin location) */
@@ -2582,6 +2963,8 @@ async function boot() {
   if (pk) return publicKhata(pk[1]);
   const pi = location.pathname.match(/^\/i\/([0-9a-f]{24})\/?$/);
   if (pi) return publicDoc(pi[1]);
+  const pc = location.pathname.match(/^\/c\/([0-9a-f]{24})\/?$/);
+  if (pc) return publicConfirm(pc[1]);
   const rt = location.hash.match(/^#\/reset\/([0-9a-f]{64})$/);   // link from the forgot-password e-mail
   if (rt) return renderReset(rt[1]);
   const vt = location.hash.match(/^#\/verify\/([0-9a-f]{64})$/);  // link from the sign-up e-mail

@@ -38,6 +38,14 @@ Market research and pricing advice: see [docs/COMPETITORS.md](docs/COMPETITORS.m
 - **Kal ka Cash** (`#/cash`, Growth and above): a deterministic 4-week cash view and whom to remind today.
 - Privacy: payment promises a customer makes on a shop's link are visible only to that shop. Only the date, the amount and an optional name are stored (no IP or device id). It is never shared across businesses and never called a score.
 
+### Vasooli (collections), without a paid WhatsApp API
+- **Every message in the customer's language.** Before a bill, reminder, khata entry, receipt or balance statement goes, the shop picks English, हिंदी or Hinglish. The choice is remembered per contact (`parties.lang`); the business default is in Settings (`orgs.msg_lang`). The link carries it (`?l=en` / `?l=hi`), so the customer's page and WhatsApp's link preview poster (`public/og-*-{en,hi}.png`, made by `tools/gen-og.mjs`) are in the same language.
+- **Bills go as a real PDF.** The invoice is laid out in a hidden 794 px frame (desktop layout even on a phone), turned into an image by `public/vendor/html-to-image.js`, cut into A4 pages between table rows and wrapped in a small PDF. On a phone the share sheet sends the PDF and the message to WhatsApp together; elsewhere the PDF is saved and WhatsApp opens with the message. The customer's `/i/` page downloads the same PDF.
+- **`#/reminders` (Vasooli):** who to remind today on a schedule (3 days before the due date, on it, then 7 / 15 / 30 / 45 days late, weekly after that). The wording gets firmer with age; **VIP** customers only get gentle wording; a customer's own promise date pauses them. Every reminder sent is logged (`reminder_log`) as evidence.
+- **Monthly balance statement:** the customer gets a private `/c/<token>` link with every open bill and answers **Correct** or **Something is wrong** (which bill, what). The answer is kept with its time (`confirmations`).
+- **Receipts on WhatsApp** at once, naming who collected the money; the built-in *sales* role may record customer receipts. The owner sees **who collected what** (7 days, cash, month) and the **week** (received, promised, 45+ days late, days to get paid), and can share it.
+- **Recovery file** (`#/recovery/<party>`, finance roles): MSMED Act interest (3 × RBI Bank Rate, monthly rests, from the agreed due date or the 46th day) for a business with a Udyam number, the evidence (statements, promises, reminders, receipts), a demand-notice draft and what MSME Samadhaan asks for. The notice is a draft for an advocate to check.
+
 ### How each document hits the books
 
 | Document | Stock | Ledger |
@@ -163,6 +171,9 @@ cloud-erp/
   src/gst.js           state codes, units, e-invoice and e-way bill JSON
   src/tally.js         Tally XML export
   src/saas.js          plans, limits, activation codes
+  src/vasooli.js       collections: reminder schedule, balance statements, receipts, weekly summary, recovery file
+  src/msg.js           every customer message and link preview in English, Hindi and Hinglish
+  tools/gen-og.mjs     makes the link-preview posters (public/og-*.png) in the three languages
   public/              the web app (plain HTML/CSS/JS, no build step), PWA manifest + service worker, csv.js (export), _headers
   test/run.mjs         end-to-end test against a running worker
   test/perf.mjs        speed budgets per screen, next to a second, busy business
@@ -230,6 +241,9 @@ Keep `SESSION_SECRET` fixed: the stored Google tokens are encrypted with a key m
 every business has to connect Drive again.
 
 ## Not built yet (next steps)
+
+- Sending reminders by themselves (no tap) needs the WhatsApp Business (Cloud) API: a verified business, a number
+  and approved templates, paid per message. Today every message goes from the shop's own WhatsApp with one tap.
 
 - Direct IRN / e-way bill generation through an API. This needs a GSP account; today the JSON files
   are uploaded on the government portals.

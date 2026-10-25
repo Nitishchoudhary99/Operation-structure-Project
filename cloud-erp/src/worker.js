@@ -21,6 +21,9 @@ import { createRecurring, listRecurring, stopRecurring, resumeRecurring, runDue 
 import { buildBackup, driveRoutes, runDriveBackups, listDriveBackups, readDriveBackup } from './gdrive.js';
 import { excelBackup } from './export.js';
 import { restoreBackup, isEmptyOrg } from './restore.js';
+import { LANGS, cleanLang, phrases, PREVIEW, withLang, BRAND, sendLinks, inrW, rs, fd } from './msg.js';
+import { queue as vasooliQueue, logReminder, summary as vasooliSummary, summaryText, receiptMessage, makeConfirmation, listConfirmations, publicConfirmation,
+  answerConfirmation, recoveryFile, stepFor, toneFor } from './vasooli.js';
 import { cleanVaada, splitPlan, planOptions, minPart, risk, riskStatements, riskInput, setStatements, evalSet, writeBackStatements, promiseOut, pctOf,
   forecast, inr0, FREE_OPEN_MAX } from './vaada.js';
 import { STATES, einvoiceJson, ewaybillJson } from './gst.js';
@@ -246,10 +249,11 @@ const publicUser = (u) => ({ id: u.id, email: u.email, name: u.name, role: u.rol
 router.add('PUT', '/api/org', async (c) => {
   requireCan(c.user, 'settings');
   const b = c.body;
-  await c.db.prepare(`UPDATE orgs SET name = ?, gstin = ?, state = ?, address = ?, phone = ?, upi_id = ?, fy_start = ?, city = ?, pincode = ?, email = ? WHERE id = ?`)
+  await c.db.prepare(`UPDATE orgs SET name = ?, gstin = ?, state = ?, address = ?, phone = ?, upi_id = ?, fy_start = ?, city = ?, pincode = ?, email = ?,
+      msg_lang = ?, udyam = ? WHERE id = ?`)
     .bind(reqStr(b.name, 'Business name', 120), str(b.gstin, 15).toUpperCase(), str(b.state, 60), str(b.address, 300), str(b.phone, 20),
       str(b.upi_id, 60), /^\d{2}-\d{2}$/.test(b.fy_start || '') ? b.fy_start : c.org.fy_start, str(b.city, 60), str(b.pincode, 6).replace(/\D/g, ''),
-      str(b.email, 120), c.org.id).run();
+      str(b.email, 120), cleanLang(b.msg_lang, cleanLang(c.org.msg_lang)), b.udyam === undefined ? c.org.udyam || '' : str(b.udyam, 19).toUpperCase(), c.org.id).run();
   return json({ ok: true });
 });
 
@@ -474,6 +478,7 @@ const partyFields = (b, c) => ({
   phone: str(b.phone, 20), email: str(b.email, 120), gstin: str(b.gstin, 15).toUpperCase(), state: str(b.state, 60), address: str(b.address, 300),
   credit_limit: toPaise(num(b.credit_limit, 'Credit limit', { min: 0, def: 0 })), credit_days: int(b.credit_days, 'Credit days', { min: 0, max: 365, def: 0 }),
   city: str(b.city, 60), pincode: str(b.pincode, 6).replace(/\D/g, ''),
+  lang: b.lang === undefined ? null : LANGS.includes(b.lang) ? b.lang : '', vip: b.vip === undefined ? null : b.vip === true || b.vip === 1 || b.vip === '1' || b.vip === 'on' ? 1 : 0,
 });
 router.add('GET', '/api/parties', async (c) => {
   const q = c.url.searchParams;
@@ -495,9 +500,9 @@ router.add('POST', '/api/parties', async (c) => {
   requireCan(c.user, 'masters');
   const f = partyFields(c.body, c);
   if (await c.db.prepare(`SELECT 1 FROM parties WHERE org_id = ? AND name = ?`).bind(c.org.id, f.name).first()) throw bad(`A party called ${f.name} already exists.`);
-  const r = await c.db.prepare(`INSERT INTO parties (org_id, name, kind, phone, email, gstin, state, address, credit_limit, credit_days, city, pincode, extra, created_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING *`).bind(c.org.id, f.name, f.kind, f.phone, f.email, f.gstin, f.state, f.address, f.credit_limit, f.credit_days, f.city, f.pincode,
-    f.extra ?? cleanExtra(fieldsOf(c.org), 'party', {}), nowIso()).first();
+  const r = await c.db.prepare(`INSERT INTO parties (org_id, name, kind, phone, email, gstin, state, address, credit_limit, credit_days, city, pincode, extra, lang, vip, created_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING *`).bind(c.org.id, f.name, f.kind, f.phone, f.email, f.gstin, f.state, f.address, f.credit_limit, f.credit_days, f.city, f.pincode,
+    f.extra ?? cleanExtra(fieldsOf(c.org), 'party', {}), f.lang ?? '', f.vip ?? 0, nowIso()).first();
   return json({ ...r, extra: extraOf(r.extra), credit_limit: R(r.credit_limit) });
 });
 router.add('PUT', '/api/parties/:id', async (c) => {
@@ -506,7 +511,8 @@ router.add('PUT', '/api/parties/:id', async (c) => {
   const dup = await c.db.prepare(`SELECT id FROM parties WHERE org_id = ? AND name = ? AND id != ?`).bind(c.org.id, f.name, +c.params.id).first();
   if (dup) throw bad(`A party called ${f.name} already exists.`);
   const r = await c.db.prepare(`UPDATE parties SET name = ?, kind = ?, phone = ?, email = ?, gstin = ?, state = ?, address = ?, credit_limit = ?, credit_days = ?, city = ?, pincode = ?,
-      extra = COALESCE(?, extra) WHERE id = ? AND org_id = ?`).bind(f.name, f.kind, f.phone, f.email, f.gstin, f.state, f.address, f.credit_limit, f.credit_days, f.city, f.pincode, f.extra, +c.params.id, c.org.id).run();
+      extra = COALESCE(?, extra), lang = COALESCE(?, lang), vip = COALESCE(?, vip) WHERE id = ? AND org_id = ?`)
+    .bind(f.name, f.kind, f.phone, f.email, f.gstin, f.state, f.address, f.credit_limit, f.credit_days, f.city, f.pincode, f.extra, f.lang, f.vip, +c.params.id, c.org.id).run();
   if (!r.meta.changes) throw notFound('Party not found.');
   return json({ ok: true });
 });
@@ -762,18 +768,27 @@ async function shareToken(c, docId) {
   await c.db.prepare(`UPDATE docs SET share_token = ? WHERE id = ? AND org_id = ? AND share_token IS NULL`).bind(randomHex(12), docId, c.org.id).run();
   return (await c.db.prepare(`SELECT share_token FROM docs WHERE id = ? AND org_id = ?`).bind(docId, c.org.id).first()).share_token;
 }
+/* The customer's language: ?lang= (then remembered on the contact), else the contact's, else the business default */
+async function langFor(c, p) {
+  const want = c.url.searchParams.get('lang');
+  if (LANGS.includes(want)) {
+    if (p && p.id && p.lang !== want && (can(c.user, 'sales') || can(c.user, 'khata'))) await c.db.prepare(`UPDATE parties SET lang = ? WHERE id = ? AND org_id = ?`).bind(want, p.id, c.org.id).run();
+    return want;
+  }
+  return cleanLang(p && p.lang, cleanLang(c.org.msg_lang));
+}
 router.add('GET', '/api/docs/:id/share', async (c) => {
   requireCan(c.user, 'sales');
   const d = await docDetail(c, +c.params.id);
-  const url = `${c.url.origin}/i/${await shareToken(c, d.id)}`;
   const p = d.party || {}, paise = (x) => Math.round(x * 100);
-  const money = ['INV', 'SRET', 'CNOTE'].includes(d.type);
-  const status = d.type === 'INV' ? (d.balance <= 0 ? 'Paid ✅' : `Balance due: *${inrW(paise(d.balance))}*`) : '';
-  const wa = [`*${c.org.name}*`, `${d.label} *${d.number}* · ${fd(d.date)}`, '', `Namaste ${p.name || ''} ji,`, `Amount: *${inrW(paise(d.total))}*`,
-    ...(status ? [status] : []), ...(d.type === 'INV' && d.balance > 0 && c.org.upi_id ? [`UPI: ${c.org.upi_id}`] : []),
-    '', money ? `Invoice dekhein aur download karein${d.type === 'INV' && d.balance > 0 && c.org.upi_id ? ', UPI se pay karein' : ''} ⬇` : 'Document dekhein aur download karein ⬇', url, '', `_Sent via ${BRAND}_`].join('\n');
-  const sms = `${c.org.name}: ${d.label} ${d.number} dt ${fd(d.date)}, amount ${rs(paise(d.total))}${d.type === 'INV' && d.balance > 0 ? `, due ${rs(paise(d.balance))}` : ''}. View/download: ${url} -${BRAND}`;
-  return json({ url, ...sendLinks(p.phone, wa, sms) });
+  const lang = await langFor(c, p), L = phrases(lang);
+  const url = withLang(`${c.url.origin}/i/${await shareToken(c, d.id)}`, lang);
+  const owes = d.type === 'INV' && d.balance > 0, upi = owes && c.org.upi_id, label = L.docLabel(d.type, d.label);
+  const status = d.type === 'INV' ? (d.balance <= 0 ? L.paid : `${L.due}: *${inrW(paise(d.balance))}*`) : '';
+  const wa = [`*${c.org.name}*`, `${label} *${d.number}* · ${fd(d.date)}`, '', L.hello(p.name || ''), `${L.amount}: *${inrW(paise(d.total))}*`,
+    ...(status ? [status] : []), ...(upi ? [`UPI: ${c.org.upi_id}`] : []), '', upi ? L.viewDocPay : L.viewDoc, url, '', L.sentVia(BRAND)].join('\n');
+  const sms = `${L.smsDoc(c.org.name, label, d.number, fd(d.date), rs(paise(d.total)), owes ? rs(paise(d.balance)) : '', url)} -${BRAND}`;
+  return json({ url, lang, file_name: `${d.number.replace(/[^\w.-]+/g, '-')}.pdf`, ...sendLinks(p.phone, wa, sms) });
 });
 /* Stop sharing one document: its link stops working at once, and sharing it again makes a new link. */
 router.add('POST', '/api/docs/:id/share/revoke', async (c) => {
@@ -1001,21 +1016,77 @@ router.add('GET', '/api/reports/pending', async (c) => {
   return json({ to_deliver: so, to_receive: po, to_invoice: dn, to_bill: grn, open_quotes: quotes, at_gate: gate });
 });
 
+/* ======================================================================= vasooli (collections): see src/vasooli.js */
+router.add('GET', '/api/vasooli', async (c) => {
+  requireCan(c.user, 'sales');
+  const money = can(c.user, 'finance');          // the week and who collected what: owner, admin, accountant
+  const [rows, sum, conf] = await Promise.all([vasooliQueue(c), money ? vasooliSummary(c) : null, listConfirmations(c)]);
+  return json({ today: today(), queue: rows, summary: sum, confirmations: conf, msme: !!c.org.udyam, lang: cleanLang(c.org.msg_lang) });
+});
+router.add('POST', '/api/vasooli/:party/sent', async (c) => json(await logReminder(c, +c.params.party, c.body)));
+router.add('GET', '/api/vasooli/report', async (c) => {
+  requireCan(c.user, 'finance');
+  const lang = cleanLang(c.url.searchParams.get('lang'), cleanLang(c.org.msg_lang)), s = await vasooliSummary(c);
+  return json({ lang, ...sendLinks(c.org.phone, summaryText(c.org, s, lang)), summary: s });
+});
+/* monthly balance confirmation: the buyer answers on /c/<token> */
+router.add('POST', '/api/parties/:id/confirm', async (c) => {
+  requireCan(c.user, 'sales');
+  const lang = c.url.searchParams.get('lang') || c.body.lang;
+  if (LANGS.includes(lang)) await c.db.prepare(`UPDATE parties SET lang = ? WHERE id = ? AND org_id = ?`).bind(lang, +c.params.id, c.org.id).run();
+  return json(await makeConfirmation(c, +c.params.id, LANGS.includes(lang) ? lang : ''));
+});
+router.add('POST', '/api/vasooli/confirm/:id/sent', async (c) => {
+  requireCan(c.user, 'sales');
+  const r = await c.db.prepare(`UPDATE confirmations SET sent_via = ?, sent_at = ? WHERE id = ? AND org_id = ?`).bind(c.body.via === 'sms' ? 'sms' : 'whatsapp', nowIso(), +c.params.id, c.org.id).run();
+  if (!r.meta.changes) throw notFound('Not found.');
+  return json({ ok: true });
+});
+router.add('GET', '/api/public/confirm/:token', async (c) => {
+  await rateLimit(c.env, 'cview:' + clientIp(c), 120, 600);
+  if (!/^[0-9a-f]{24}$/.test(c.params.token)) throw notFound('This link is not valid any more.');
+  return json(await publicConfirmation(c, c.params.token));
+}, { public: true });
+router.add('POST', '/api/public/confirm/:token', async (c) => {
+  await rateLimit(c.env, 'cans:' + clientIp(c), 20, 600);
+  if (!/^[0-9a-f]{24}$/.test(c.params.token)) throw notFound('This link is not valid any more.');
+  return json(await answerConfirmation(c, c.params.token, c.body));
+}, { public: true });
+/* the customer's receipt on WhatsApp, right after the payment is saved (by the owner or a salesperson) */
+router.add('GET', '/api/payments/:id/message', async (c) => {
+  if (!can(c.user, 'sales') && !can(c.user, 'finance')) throw forbidden();
+  const lang = c.url.searchParams.get('lang');
+  if (LANGS.includes(lang)) await c.db.prepare(`UPDATE parties SET lang = ? WHERE org_id = ? AND id = (SELECT party_id FROM payments WHERE id = ? AND org_id = ?)`)
+    .bind(lang, c.org.id, +c.params.id, c.org.id).run();
+  return json(await receiptMessage(c, +c.params.id, LANGS.includes(lang) ? lang : ''));
+});
+/* MSMED interest, notice draft and the evidence for one buyer */
+router.add('GET', '/api/parties/:id/recovery', async (c) => {
+  requireCan(c.user, 'finance');
+  const rate = Number(c.url.searchParams.get('rate'));
+  return json(await recoveryFile(c, +c.params.id, Number.isFinite(rate) && rate > 0 && rate < 30 ? rate : 0));
+});
+
 /* Payment reminder for invoice dues (the khata has its own): overdue invoices, total and UPI, for WhatsApp/SMS. */
 router.add('GET', '/api/parties/:id/reminder', async (c) => {
-  const p = await c.db.prepare(`SELECT id, name, phone FROM parties WHERE id = ? AND org_id = ?`).bind(+c.params.id, c.org.id).first();
+  const p = await c.db.prepare(`SELECT id, name, phone, lang, vip FROM parties WHERE id = ? AND org_id = ?`).bind(+c.params.id, c.org.id).first();
   if (!p) throw notFound('Party not found.');
-  const { results } = await c.db.prepare(`SELECT id, number, date, due_date, total - paid AS bal FROM docs WHERE org_id = ? AND party_id = ? AND type = 'INV'
+  const { results } = await c.db.prepare(`SELECT id, number, date, COALESCE(due_date, date) AS due_date, total - paid AS bal FROM docs WHERE org_id = ? AND party_id = ? AND type = 'INV'
       AND status IN ('unpaid','partial') ORDER BY due_date, id`).bind(c.org.id, p.id).all();
   const due = results.reduce((t, r) => t + r.bal, 0);
   if (!due) throw bad(`${p.name} has no unpaid invoices.`);
-  const link = `${c.url.origin}/i/${await shareToken(c, results[0].id)}`;
-  const v = await vaadaReminder(c, p.id, 'inv');
-  const listW = results.slice(0, 8).map((r) => `• ${r.number} (${fd(r.date)}): ${inrW(r.bal)}`).join('\n') + (results.length > 8 ? `\n• …and ${results.length - 8} more` : '');
-  const wa = [`*${c.org.name}*`, '⏰ Payment reminder', '', `Namaste ${p.name} ji,`, 'Ye bills baaki hain:', listW, '', `Total baaki: *${inrW(due)}*`,
-    ...(c.org.upi_id ? [`UPI: ${c.org.upi_id}`] : []), '', ...(v ? [...v.wa, ''] : []), c.org.upi_id ? 'Bill dekhein aur UPI se pay karein ⬇' : 'Bill yahan dekhein ⬇', link, '', `_Sent via ${BRAND}_`].join('\n');
-  const sms = `${c.org.name}: Namaste ${p.name}, ${results.length} bill(s) baaki, total ${rs(due)}. ${v && v.sms ? v.sms + ' ' : ''}Kripya bhugtan karein: ${link} -${BRAND}`;
-  return json({ party: p.name, due: R(due), invoices: results.length, ...sendLinks(p.phone, wa, sms) });
+  const lang = await langFor(c, p), L = phrases(lang);
+  // how firm: from the oldest bill's lateness (the reminder schedule's step), softer for a VIP buyer
+  const late = Math.round((Date.parse(today()) - Date.parse(results[0].due_date)) / 864e5), step = stepFor(late), tone = toneFor(step, p.vip);
+  const link = withLang(`${c.url.origin}/i/${await shareToken(c, results[0].id)}`, lang);
+  const v = await vaadaReminder(c, p.id, 'inv', L);
+  const listW = results.slice(0, 8).map((r) => `• ${r.number} (${fd(r.date)}): ${inrW(r.bal)}`).join('\n') + (results.length > 8 ? `\n${L.more(results.length - 8)}` : '');
+  const firm = tone === 'late30' || tone === 'final';
+  const wa = [`*${c.org.name}*`, L.remTitle, '', L.hello(p.name), L.tone[tone], listW, '', `${L.totalDue}: *${inrW(due)}*`,
+    ...(c.org.upi_id ? [`UPI: ${c.org.upi_id}`] : []), '', ...(firm && c.org.udyam ? [L.msme(c.org.udyam), ''] : []), ...(tone === 'final' ? [L.finalAsk, ''] : []),
+    ...(v ? [...v.wa, ''] : []), c.org.upi_id ? L.viewBillPay : L.viewBill, link, '', L.sentVia(BRAND)].join('\n');
+  const sms = `${L.smsRem(c.org.name, p.name, results.length, rs(due), link)}${v && v.sms ? ' ' + v.sms : ''} -${BRAND}`;
+  return json({ party: p.name, due: R(due), invoices: results.length, lang, step, tone, vip: !!p.vip, ...sendLinks(p.phone, wa, sms) });
 });
 
 /* ======================================================================= payments, expenses, journals */
@@ -1046,8 +1117,6 @@ router.add('POST', '/api/stock/transfer', async (c) => json(await stockTransfer(
    Every message carries a private link where the customer sees their full khata and can confirm or dispute
    each entry, so neither side can quietly change the record. */
 const KHATA_BAL = `COALESCE(SUM(CASE WHEN k.status = 'sent' THEN (CASE WHEN k.kind = 'gave' THEN k.amount ELSE -k.amount END) ELSE 0 END), 0)`;
-const rs = (p) => 'Rs ' + (p / 100).toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
-const fd = (d) => `${d.slice(8, 10)}-${d.slice(5, 7)}-${d.slice(0, 4)}`;
 
 async function khataToken(c, partyId, create = true) {
   const p = await c.db.prepare(`SELECT khata_token FROM parties WHERE id = ? AND org_id = ?`).bind(partyId, c.org.id).first();
@@ -1062,41 +1131,34 @@ async function khataToken(c, partyId, create = true) {
 async function khataBalance(c, partyId) {
   return (await c.db.prepare(`SELECT ${KHATA_BAL} AS b FROM khata k WHERE k.party_id = ?`).bind(partyId).first()).b;
 }
-/* WhatsApp gets a formatted message (bold, sections, the link on its own line so WhatsApp shows the banner card);
-   SMS gets one short plain line. Both are signed with the ERP's name. */
-const BRAND = 'SmartTrader ERP';
-function sendLinks(phoneRaw, wa, sms = wa) {
-  const phone = String(phoneRaw || '').replace(/\D/g, '');
-  const to = phone.length === 10 ? '91' + phone : phone;
-  return { text: wa, sms_text: sms, whatsapp_url: `https://api.whatsapp.com/send?${to ? `phone=${to}&` : ''}text=${encodeURIComponent(wa)}`, sms_url: phone ? `sms:${phone}?body=${encodeURIComponent(sms)}` : '' };
-}
-const inrW = (p) => '₹' + (p / 100).toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 const khataLink = async (c, partyId, create = true) => { const t = await khataToken(c, partyId, create); return t ? `${c.url.origin}/k/${t}` : ''; };
 /* The messages for one entry, with the balance it makes once sent. */
+const entrySend = (p, [wa, sms, lang]) => ({ lang, ...sendLinks(p.phone, wa, sms) });
 async function entryMessage(c, e, p) {
   const after = (await khataBalance(c, p.id)) + (e.status === 'sent' ? 0 : (e.kind === 'gave' ? e.amount : -e.amount));
-  const link = await khataLink(c, p.id);
-  const balW = after > 0 ? `Total baaki: *${inrW(after)}*` : after < 0 ? `Aapka advance: *${inrW(-after)}*` : 'Khata clear hai ✅';
+  const lang = await langFor(c, p), L = phrases(lang);
+  const link = withLang(await khataLink(c, p.id), lang);
+  const balW = after > 0 ? `${L.totalDue}: *${inrW(after)}*` : after < 0 ? `${L.advance}: *${inrW(-after)}*` : L.clear;
   const wa = [
     `*${c.org.name}*`,
-    `✍ Khata entry · ${fd(e.date)}`,
+    `${L.khEntry} · ${fd(e.date)}`,
     '',
-    e.kind === 'gave' ? `Udhaar likha gaya: *${inrW(e.amount)}*` : `Payment mila: *${inrW(e.amount)}* ✅`,
-    ...(e.note ? [`Note: ${e.note}`] : []),
+    e.kind === 'gave' ? `${L.gave}: *${inrW(e.amount)}*` : `${L.got}: *${inrW(e.amount)}* ✅`,
+    ...(e.note ? [`${L.note}: ${e.note}`] : []),
     balW,
     '',
-    'Apna khata dekhein aur confirm karein ⬇',
+    L.khSee,
     link,
     '',
-    `_Sent via ${BRAND}_`,
+    L.sentVia(BRAND),
   ].join('\n');
-  const balS = after > 0 ? `Total baaki ${rs(after)}` : after < 0 ? `Advance ${rs(-after)}` : 'Khata clear';
-  const sms = `${c.org.name}: ${e.kind === 'gave' ? `${rs(e.amount)} udhaar likha gaya` : `${rs(e.amount)} payment mila`}${e.note ? ` (${e.note})` : ''} ${fd(e.date)}. ${balS}. Khata dekhein/confirm karein: ${link} -${BRAND}`;
-  return [wa, sms];
+  const balS = after > 0 ? `${L.totalDue} ${rs(after)}` : after < 0 ? `${L.advance} ${rs(-after)}` : L.clear.replace(' ✅', '');
+  const sms = `${L.smsKhEntry(c.org.name, e.kind === 'gave' ? L.gave : L.got, rs(e.amount), e.note, fd(e.date), balS, link)} -${BRAND}`;
+  return [wa, sms, lang];
 }
 
 router.add('GET', '/api/khata', async (c) => {
-  const { results } = await c.db.prepare(`SELECT p.id, p.name, p.phone, p.kind, ${KHATA_BAL} AS balance,
+  const { results } = await c.db.prepare(`SELECT p.id, p.name, p.phone, p.kind, p.lang, ${KHATA_BAL} AS balance,
         MAX(CASE WHEN k.status = 'sent' THEN k.date END) AS last_date, SUM(k.status = 'sent') AS entries, SUM(k.status = 'pending') AS pending,
         SUM(k.ack = 'disputed') AS disputed
       FROM parties p LEFT JOIN khata k ON k.party_id = p.id WHERE p.org_id = ? GROUP BY p.id
@@ -1117,19 +1179,19 @@ router.add('POST', '/api/khata', async (c) => {
       .bind(c.org.id, name, str(b.phone, 20), nowIso()).first()).id;
     if (ex && b.phone) await c.db.prepare(`UPDATE parties SET phone = ? WHERE id = ? AND phone = ''`).bind(str(b.phone, 20), ex.id).run();
   }
-  const p = await c.db.prepare(`SELECT id, name, phone FROM parties WHERE id = ? AND org_id = ?`).bind(partyId, c.org.id).first();
+  const p = await c.db.prepare(`SELECT id, name, phone, lang FROM parties WHERE id = ? AND org_id = ?`).bind(partyId, c.org.id).first();
   if (!p) throw bad('Unknown contact.');
   const kind = oneOf(b.kind, ['gave', 'got'], 'Entry type');
   const amount = toPaise(num(b.amount, 'Amount', { min: 0.01 }));
   const e = await c.db.prepare(`INSERT INTO khata (org_id, party_id, date, kind, amount, note, created_by, created_at, status) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending') RETURNING *`)
     .bind(c.org.id, partyId, date(b.date), kind, amount, str(b.note, 200), c.user.id, nowIso()).first();
-  return json({ ok: true, party_id: partyId, entry_id: e.id, phone: p.phone, ...sendLinks(p.phone, ...(await entryMessage(c, e, p))) });
+  return json({ ok: true, party_id: partyId, entry_id: e.id, phone: p.phone, ...entrySend(p, await entryMessage(c, e, p)) });
 });
 router.add('GET', '/api/khata/entries/:id/message', async (c) => {
   const e = await c.db.prepare(`SELECT * FROM khata WHERE id = ? AND org_id = ?`).bind(+c.params.id, c.org.id).first();
   if (!e) throw notFound('Entry not found.');
-  const p = await c.db.prepare(`SELECT id, name, phone FROM parties WHERE id = ?`).bind(e.party_id).first();
-  return json({ entry_id: e.id, status: e.status, phone: p.phone, ...sendLinks(p.phone, ...(await entryMessage(c, e, p))) });
+  const p = await c.db.prepare(`SELECT id, name, phone, lang FROM parties WHERE id = ? AND org_id = ?`).bind(e.party_id, c.org.id).first();
+  return json({ entry_id: e.id, status: e.status, phone: p.phone, ...entrySend(p, await entryMessage(c, e, p)) });
 });
 /* Called when the user taps Send on WhatsApp / SMS: from now on the entry is part of the khata. */
 router.add('POST', '/api/khata/entries/:id/send', async (c) => {
@@ -1144,7 +1206,7 @@ router.add('POST', '/api/khata/entries/:id/send', async (c) => {
   return json({ ok: true });
 });
 router.add('GET', '/api/khata/:party', async (c) => {
-  const p = await c.db.prepare(`SELECT id, name, phone FROM parties WHERE id = ? AND org_id = ?`).bind(+c.params.party, c.org.id).first();
+  const p = await c.db.prepare(`SELECT id, name, phone, lang FROM parties WHERE id = ? AND org_id = ?`).bind(+c.params.party, c.org.id).first();
   if (!p) throw notFound('Contact not found.');
   const { results } = await c.db.prepare(`SELECT id, date, kind, amount, note, status, sent_at, sent_via, ack, ack_at, ack_note, reverses
       FROM khata WHERE org_id = ? AND party_id = ? ORDER BY date, id`).bind(c.org.id, p.id).all();
@@ -1167,27 +1229,27 @@ router.add('POST', '/api/khata/entries/:id/reverse', async (c) => {
   if (!e) throw notFound('Entry not found.');
   if (e.status !== 'sent') throw bad('Only sent entries can be reversed. A pending entry can simply be discarded.');
   if (await c.db.prepare(`SELECT 1 FROM khata WHERE reverses = ?`).bind(e.id).first()) throw bad('This entry has already been reversed.');
-  const p = await c.db.prepare(`SELECT id, name, phone FROM parties WHERE id = ?`).bind(e.party_id).first();
+  const p = await c.db.prepare(`SELECT id, name, phone, lang FROM parties WHERE id = ? AND org_id = ?`).bind(e.party_id, c.org.id).first();
   const r = await c.db.prepare(`INSERT INTO khata (org_id, party_id, date, kind, amount, note, created_by, created_at, status, reverses)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?) RETURNING *`)
     .bind(c.org.id, e.party_id, today(), e.kind === 'gave' ? 'got' : 'gave', e.amount, `Correction of entry dated ${fd(e.date)}${c.body.reason ? ': ' + str(c.body.reason, 120) : ''}`,
       c.user.id, nowIso(), e.id).first();
-  return json({ ok: true, entry_id: r.id, phone: p.phone, ...sendLinks(p.phone, ...(await entryMessage(c, r, p))) });
+  return json({ ok: true, entry_id: r.id, phone: p.phone, ...entrySend(p, await entryMessage(c, r, p)) });
 });
 router.add('GET', '/api/khata/:party/reminder', async (c) => {
-  const p = await c.db.prepare(`SELECT id, name, phone FROM parties WHERE id = ? AND org_id = ?`).bind(+c.params.party, c.org.id).first();
+  const p = await c.db.prepare(`SELECT id, name, phone, lang FROM parties WHERE id = ? AND org_id = ?`).bind(+c.params.party, c.org.id).first();
   if (!p) throw notFound('Contact not found.');
   const bal = await khataBalance(c, p.id), amt = R(bal);
-  const link = await khataLink(c, p.id);
+  const lang = await langFor(c, p), L = phrases(lang);
+  const link = withLang(await khataLink(c, p.id), lang);
   const upi = c.org.upi_id && amt > 0 ? `upi://pay?pa=${encodeURIComponent(c.org.upi_id).replace(/%40/g, '@')}&pn=${encodeURIComponent(c.org.name)}&am=${amt.toFixed(2)}&cu=INR` : '';
-  const v = bal > 0 ? await vaadaReminder(c, p.id, 'khata') : null;
+  const v = bal > 0 ? await vaadaReminder(c, p.id, 'khata', L) : null;
   const wa = bal > 0
-    ? [`*${c.org.name}*`, '⏰ Payment reminder', '', `Namaste ${p.name} ji,`, `Aapka baaki: *${inrW(bal)}*`, 'Kripya jaldi bhugtan karein.', ...(c.org.upi_id ? [`UPI: ${c.org.upi_id}`] : []),
-      '', ...(v ? [...v.wa, ''] : []), c.org.upi_id ? 'Khata dekhein aur UPI se pay karein ⬇' : 'Poora khata yahan dekhein ⬇', link, '', `_Sent via ${BRAND}_`].join('\n')
-    : [`*${c.org.name}*`, '', `Namaste ${p.name} ji, aapka khata clear hai ✅`, 'Dhanyavaad!', '', link, '', `_Sent via ${BRAND}_`].join('\n');
-  const sms = bal > 0 ? `${c.org.name}: Namaste ${p.name}, aapka baaki ${rs(bal)} hai. ${v && v.sms ? v.sms + ' ' : ''}Kripya jaldi bhugtan karein. Khata/pay: ${link} -${BRAND}`
-    : `${c.org.name}: Namaste ${p.name}, aapka khata clear hai. Dhanyavaad! ${link} -${BRAND}`;
-  return json({ ...sendLinks(p.phone, wa, sms), upi_url: upi });
+    ? [`*${c.org.name}*`, L.remTitle, '', L.hello(p.name), `${L.yourDue}: *${inrW(bal)}*`, L.payPlease, ...(c.org.upi_id ? [`UPI: ${c.org.upi_id}`] : []),
+      '', ...(v ? [...v.wa, ''] : []), c.org.upi_id ? L.khSeePay : L.khSeeAll, link, '', L.sentVia(BRAND)].join('\n')
+    : [`*${c.org.name}*`, '', L.clearHello(p.name), L.thanks, '', link, '', L.sentVia(BRAND)].join('\n');
+  const sms = `${bal > 0 ? L.smsKhRem(c.org.name, p.name, rs(bal), link) : L.smsKhClear(c.org.name, p.name, link)}${v && v.sms ? ' ' + v.sms : ''} -${BRAND}`;
+  return json({ lang, ...sendLinks(p.phone, wa, sms), upi_url: upi });
 });
 
 /* ---------- the customer's side: a private, read-only statement link (no login) ---------- */
@@ -1334,10 +1396,13 @@ async function makePromise(c, { org, partyId, partyName, book, docId, by, body }
   return { vaada: promiseOut(p), kisht, amount, last, due };
 }
 /* the customer's "tell the shop" WhatsApp link */
-function shopWhatsapp(org, r, who) {
+function shopWhatsapp(org, r, who, lang = 'hl') {
   const phone = String(org.phone || '').replace(/\D/g, '');
   if (!phone) return '';
-  const text = `Namaste, maine ${org.name} ko ${fd(r.last)} tak ${inrW(r.amount)} dene ka vaada kiya hai. – ${who}`;
+  const a = inrW(r.amount), d = fd(r.last), text = {
+    en: `Hello, I have promised to pay ${a} to ${org.name} by ${d}. – ${who}`,
+    hi: `नमस्ते, मैंने ${org.name} को ${d} तक ${a} देने का वादा किया है। – ${who}`,
+  }[lang] || `Namaste, maine ${org.name} ko ${d} tak ${a} dene ka vaada kiya hai. – ${who}`;
   return `https://wa.me/${phone.length === 10 ? '91' + phone : phone}?text=${encodeURIComponent(text)}`;
 }
 router.add('POST', '/api/public/khata/:token/vaada', async (c) => {
@@ -1345,7 +1410,7 @@ router.add('POST', '/api/public/khata/:token/vaada', async (c) => {
   const p = await khataByToken(c);
   const org = khataOrg(p);
   const r = await makePromise(c, { org, partyId: p.id, partyName: p.name, book: 'khata', docId: null, by: 'customer', body: c.body });
-  return json({ ok: true, vaada: r.vaada, shop_whatsapp_url: shopWhatsapp(org, r, str(c.body.name, 60) || p.name) });
+  return json({ ok: true, vaada: r.vaada, shop_whatsapp_url: shopWhatsapp(org, r, str(c.body.name, 60) || p.name, cleanLang(c.body.lang)) });
 }, { public: true });
 router.add('POST', '/api/public/doc/:token/vaada', async (c) => {
   await limitHi(c, 'vpost:' + clientIp(c), 10, 600);
@@ -1356,11 +1421,11 @@ router.add('POST', '/api/public/doc/:token/vaada', async (c) => {
   if (!row || row.type !== 'INV' || row.status === 'cancelled') throw notFound('Ye link sahi nahi hai.');
   const org = khataOrg(row);
   const r = await makePromise(c, { org, partyId: row.party_id, partyName: row.party, book: 'inv', docId: row.doc_id, by: 'customer', body: c.body });
-  return json({ ok: true, vaada: r.vaada, shop_whatsapp_url: shopWhatsapp(org, r, str(c.body.name, 60) || row.party) });
+  return json({ ok: true, vaada: r.vaada, shop_whatsapp_url: shopWhatsapp(org, r, str(c.body.name, 60) || row.party, cleanLang(c.body.lang)) });
 }, { public: true });
 
 /* Reminder lines (§5.4): the tone follows the party's open promise in that book. Read-only. */
-async function vaadaReminder(c, partyId, book) {
+async function vaadaReminder(c, partyId, book, L = phrases(c.org.msg_lang)) {
   const s = cleanVaada(c.org.vaada);
   if (!s.on) return null;
   try {
@@ -1369,15 +1434,15 @@ async function vaadaReminder(c, partyId, book) {
       c.db.prepare(`SELECT COUNT(*) AS n FROM vaada_kisht WHERE org_id = ? AND party_id = ? AND outcome = 'broken' AND due >= ?`).bind(c.org.id, partyId, addDays(t, -90))]);
     const ev = evalSet(res.slice(0, 6), t, s.grace);
     const p = ev.list.find((x) => x.status === 'open');
-    if (!p) return { wa: ['Kab tak denge? Link par khud tareekh chunein ⬇'], sms: '' };
+    if (!p) return { wa: [L.vPick], sms: '' };
     const b90 = res[6].results[0].n + ev.diffs.filter((d) => d.due >= addDays(t, -90)).reduce((n, d) => n + (d.o === 'broken') - (d.from === 'broken'), 0);
     const br = p.kisht.find((k) => k.state === 'broken'), now = p.kisht.find((k) => k.state === 'due'), up = p.kisht.find((k) => k.state === 'upcoming');
     if (br) {
-      const firm = `Aapne *${fd(br.due)}* tak *${inrW(br.amount)}* dene ka vaada kiya tha. Kripya aaj bhugtan karein.`;
-      return { wa: b90 >= s.broken_max ? [firm, 'Agla udhaar tabhi milega jab purana baaki clear ho.'] : [firm], sms: `Vaada toota (${fd(br.due)}).` };
+      const firm = L.vFirm(fd(br.due), inrW(br.amount));
+      return { wa: b90 >= s.broken_max ? [firm, L.vStop] : [firm], sms: L.vSmsBroken(fd(br.due)) };
     }
-    if (now) return { wa: [`Aaj aapke vaade ka din hai: *${inrW(now.amount)}*`], sms: `Vaada: ${fd(now.due)} ${rs(now.amount)}.` };
-    if (up) return { wa: [`Aapka vaada: *${fd(up.due)}* tak *${inrW(up.amount)}* 🙏`], sms: `Vaada: ${fd(up.due)} ${rs(up.amount)}.` };
+    if (now) return { wa: [L.vToday(inrW(now.amount))], sms: L.vSms(fd(now.due), rs(now.amount)) };
+    if (up) return { wa: [L.vUp(fd(up.due), inrW(up.amount))], sms: L.vSms(fd(up.due), rs(up.amount)) };
     return null;
   } catch (e) { console.error(e && e.stack || e); return null; }
 }
@@ -1443,7 +1508,7 @@ router.add('GET', '/api/vaade/party/:id', async (c) => {
 router.add('POST', '/api/vaade', async (c) => {
   requireCan(c.user, 'khata');
   const b = c.body, book = b.book === 'inv' ? 'inv' : 'khata';
-  const p = await c.db.prepare(`SELECT id, name, phone FROM parties WHERE id = ? AND org_id = ?`).bind(+b.party_id || 0, c.org.id).first();
+  const p = await c.db.prepare(`SELECT id, name, phone, lang FROM parties WHERE id = ? AND org_id = ?`).bind(+b.party_id || 0, c.org.id).first();
   if (!p) throw notFound('Contact not found.');
   let docId = null;
   if (book === 'inv') {
@@ -1452,10 +1517,11 @@ router.add('POST', '/api/vaade', async (c) => {
     docId = d.id;
   }
   const r = await makePromise(c, { org: c.org, partyId: p.id, partyName: p.name, book, docId, by: 'shop', body: b });
-  const link = book === 'inv' ? `${c.url.origin}/i/${await shareToken(c, docId)}` : await khataLink(c, p.id);
+  const lang = await langFor(c, p), L = phrases(lang);
+  const link = withLang(book === 'inv' ? `${c.url.origin}/i/${await shareToken(c, docId)}` : await khataLink(c, p.id), lang);
   const planLines = r.kisht.length > 1 ? '\n' + r.kisht.map((k) => `• ${fd(k.d)}: ${inrW(k.a)}`).join('\n') : '';
-  const wa = `*${c.org.name}*\n✍ Aapka vaada likh liya\n\nNamaste ${p.name} ji,\n*${fd(r.last)}* tak *${inrW(r.amount)}*${planLines}\n\nApna ${book === 'inv' ? 'bill' : 'khata'} dekhein ⬇\n${link}\n\n_Sent via ${BRAND}_`;
-  const sms = `${c.org.name}: Namaste ${p.name}, aapka vaada likh liya: ${fd(r.last)} tak ${rs(r.amount)}. ${link} -${BRAND}`;
+  const wa = `*${c.org.name}*\n${L.vNoted}\n\n${L.hello(p.name)}\n${L.vBy(fd(r.last), inrW(r.amount))}${planLines}\n\n${L.vSee(book)}\n${link}\n\n${L.sentVia(BRAND)}`;
+  const sms = `${L.smsVNoted(c.org.name, p.name, fd(r.last), rs(r.amount), link)} -${BRAND}`;
   return json({ ok: true, vaada: r.vaada, phone: p.phone, ...sendLinks(p.phone, wa, sms) });
 });
 router.add('POST', '/api/vaade/:id/cancel', async (c) => {
@@ -1701,20 +1767,25 @@ const attr = (v) => String(v ?? '').replace(/[&<>"]/g, (ch) => ({ '&': '&amp;', 
 async function sharePage(request, env, kind, token) {
   if (!migrated) { await migrate(env.DB); migrated = true; }
   const url = new URL(request.url);
-  let title = 'SmartTrader ERP', desc = 'Billing, stock, GST, accounts and khata for Indian businesses.', image = '/og-invoice.png';
+  // the link carries the language the shop picked (?l=en / ?l=hi); no mark = Hinglish, as links always were
+  const lang = cleanLang(url.searchParams.get('l')), T = PREVIEW[lang], sfx = lang === 'hl' ? '' : '-' + lang;
+  let title = 'SmartTrader ERP', desc = 'Billing, stock, GST, accounts and khata for Indian businesses.', image = `/og-invoice${sfx}.png`;
   if (kind === 'k') {
     const p = await env.DB.prepare(`SELECT p.id, p.name, o.name AS org, o.upi_id FROM parties p JOIN orgs o ON o.id = p.org_id WHERE p.khata_token = ?`).bind(token).first();
     if (p) {
       const b = (await env.DB.prepare(`SELECT COALESCE(SUM(CASE WHEN status = 'sent' THEN (CASE WHEN kind = 'gave' THEN amount ELSE -amount END) ELSE 0 END), 0) AS b FROM khata WHERE party_id = ?`).bind(p.id).first()).b;
-      title = `${p.name} ka khata · ${p.org}`;
-      desc = b > 0 ? `Baaki: ${inrW(b)}. Entries dekhein, confirm karein${p.upi_id ? ' aur UPI se pay karein' : ''}.` : b < 0 ? `Advance: ${inrW(-b)}. Poora khata dekhein.` : 'Khata clear hai. Poora hisaab dekhein.';
-      image = '/og-khata.png';
+      title = T.kh(p.name, p.org);
+      desc = b > 0 ? T.khDue(inrW(b), !!p.upi_id) : b < 0 ? T.khAdv(inrW(-b)) : T.khClear;
+      image = `/og-khata${sfx}.png`;
     }
+  } else if (kind === 'c') {
+    const f = await env.DB.prepare(`SELECT f.balance, o.name AS org FROM confirmations f JOIN orgs o ON o.id = f.org_id WHERE f.token = ?`).bind(token).first();
+    if (f) { title = T.cf(f.org); desc = T.cfDesc(inrW(f.balance)); image = `/og-confirm${sfx}.png`; }
   } else {
     const d = await env.DB.prepare(`SELECT d.type, d.number, d.date, d.total, d.paid, o.name AS org FROM docs d JOIN orgs o ON o.id = d.org_id WHERE d.share_token = ? AND d.status != 'cancelled'`).bind(token).first();
     if (d && Object.hasOwn(DOC_TYPES, d.type)) {
-      title = `${DOC_TYPES[d.type].label} ${d.number} · ${d.org}`;
-      desc = `Amount ${inrW(d.total)}${d.type === 'INV' ? (d.total - d.paid > 0 ? ` · Due ${inrW(d.total - d.paid)}` : ' · Paid') : ''}. Dekhein, download karein${d.type === 'INV' ? ' aur pay karein' : ''}.`;
+      title = T.doc(phrases(lang).docLabel(d.type, DOC_TYPES[d.type].label), d.number, d.org);
+      desc = T.docDesc(inrW(d.total), d.type === 'INV' ? (d.total - d.paid > 0 ? inrW(d.total - d.paid) : '') : null);
     }
   }
   const page = await env.ASSETS.fetch(new Request(url.origin + '/', request));
@@ -1723,7 +1794,7 @@ async function sharePage(request, env, kind, token) {
 <meta name="description" content="${attr(desc)}">
 <meta property="og:type" content="website"><meta property="og:site_name" content="SmartTrader ERP">
 <meta property="og:title" content="${attr(title)}"><meta property="og:description" content="${attr(desc)}">
-<meta property="og:url" content="${attr(url.origin + url.pathname)}">
+<meta property="og:url" content="${attr(url.origin + url.pathname + (lang === 'hl' ? '' : '?l=' + lang))}">
 <meta property="og:image" content="${attr(url.origin + image)}"><meta property="og:image:width" content="1200"><meta property="og:image:height" content="630">
 <meta name="twitter:card" content="summary_large_image"><meta name="robots" content="noindex">`;
   html = html.replace(/<title>[\s\S]*?<\/title>/, '').replace(/<meta (name|property)="(description|robots|og:[^"]*|twitter:[^"]*)"[^>]*>/g, '')
@@ -1733,7 +1804,7 @@ async function sharePage(request, env, kind, token) {
 
 /* the static files come from the ASSETS binding; headers are added to everything the Worker sends */
 async function respond(request, env, url) {
-  const share = url.pathname.match(/^\/(k|i)\/([0-9a-f]{24})\/?$/);
+  const share = url.pathname.match(/^\/(k|i|c)\/([0-9a-f]{24})\/?$/);
   if (share && env.ASSETS) return sharePage(request, env, share[1], share[2]).catch(() => env.ASSETS.fetch(new Request(url.origin + '/', request)));
   if (!url.pathname.startsWith('/api/')) {
     return env.ASSETS ? env.ASSETS.fetch(request) : new Response('Not found', { status: 404 });
