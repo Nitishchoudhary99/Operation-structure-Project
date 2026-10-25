@@ -4,7 +4,7 @@
    value of the business does not change and no journal is needed (inventory to inventory). Cancelling a run puts
    every component back and takes the finished goods out again, as long as they have not been used. */
 import { bad, notFound, str, num, roundQty, nowIso, today, date, uid, loadByIds, counterStatements, counterValueSql } from './lib.js';
-import { requireCan, seesCosts } from './auth.js';
+import { requireCan, requireCancel, seesCosts } from './auth.js';
 import { stockStatements, warehouseOf, auditStatement, reverseStock } from './engine.js';
 import { lotState, takeOut, putIn, cleanBatch, cleanSerials } from './lots.js';
 
@@ -137,6 +137,7 @@ export async function createProduction(c, body) {
 
 export async function cancelProduction(c, id) {
   requireCan(c.user, 'stock');
+  requireCancel(c.user);
   const p = await c.db.prepare(`SELECT * FROM productions WHERE id = ? AND org_id = ?`).bind(id, c.org.id).first();
   if (!p) throw notFound('Production not found.');
   if (p.status === 'cancelled') throw bad('Already cancelled.');

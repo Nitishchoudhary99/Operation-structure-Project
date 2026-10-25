@@ -368,16 +368,29 @@ const JOBS = {
 const ROLE_JOB = { owner: 'all', admin: 'all', accountant: 'accounts', store: 'store', sales: 'sales' };
 /* screens that follow a document flow the business may have switched off (Simple mode) */
 const FLOW = new Set(['sales/SO', 'sales/DN', 'sales/QUOTE', 'purchase/PO', 'wave', 'pending']);
-const jobOf = (ui = ME.ui || {}) => (JOBS[ui.job] ? ui.job : ROLE_JOB[ME.user.role_key] || 'all');
+/* the menu in force: the user's own (Settings → Users → Menu), else the role's (Settings → Roles), else the role's usual job */
+const myUi = () => {
+  const u = ME.ui || {}, r = ME.role_ui || {}, own = !!(u.job || u.screens);
+  return { job: own ? u.job : r.job, screens: own ? u.screens : r.screens, home: u.home || r.home || '' };
+};
+const jobOf = (ui = myUi()) => (JOBS[ui.job] ? ui.job : ROLE_JOB[ME.user.role_key] || 'all');
 /* is this menu entry on the user's menu? (whether the role may open it is seen()) */
 function onMenu(h) {
-  const ui = ME.ui || {};
+  const ui = myUi();
   if (ui.screens) return ui.screens.includes(h);
-  const job = JOBS[jobOf()];
+  const job = JOBS[jobOf(ui)];
   if (!job.screens) return !simple() || !ADVANCED.has(h);
   return job.screens.includes(h) && (!simple() || !FLOW.has(h));
 }
-const myHome = () => { const ui = ME.ui || {}; const h = ui.home || JOBS[jobOf()].home; return h === 'dashboard' || seen(h) ? h : 'dashboard'; };
+const myHome = () => { const ui = myUi(); const h = ui.home || JOBS[jobOf(ui)].home; return h === 'dashboard' || seen(h) ? h : 'dashboard'; };
+const limits = () => (ME && ME.rules) || {};
+/* the oldest date the role may put on a bill or payment ('' = any) */
+const minDate = () => {
+  const n = limits().backdate_days;
+  if (n === null || n === undefined) return '';
+  const t = new Date(ME.today + 'T00:00:00Z'); t.setUTCDate(t.getUTCDate() - n);
+  return t.toISOString().slice(0, 10);
+};
 const NAV = [
   ['', [['dashboard', 'Dashboard']]],
   ['Sales', [['pos', 'Quick Bill (POS)'], ['sales/INV', 'Invoices'], ['channels', 'Online Orders (Amazon…)'], ['recurring', 'Recurring Bills'], ['sales/SO', 'Sales Orders'], ['sales/DN', 'Delivery Notes'], ['sales/QUOTE', 'Quotations'], ['sales/SRET', 'Sales Returns'], ['sales/CNOTE', 'Credit Notes (rate diff)'], ['receipts', 'Receipts']]],
@@ -724,7 +737,7 @@ route(/^new\/([A-Z]+)$/, async (el, m, q) => {
         ${fromDoc ? `<input value="${esc((parties.find((p) => p.id === draft.party_id) || {}).name || '')}" disabled><input type="hidden" name="party_id" value="${draft.party_id}">`
           : `<select name="party_id" required><option value="">Choose…</option>${plist.map((p) => `<option value="${p.id}" ${p.id === +draft.party_id ? 'selected' : ''}>${esc(p.name)}</option>`).join('')}</select>`}</label>
       ${fromDoc ? '' : `<label class="f">&nbsp;<button type="button" class="btn" id="newparty">+ New ${side}</button></label>`}
-      <label class="f">Date<input type="date" name="date" value="${esc(draft.date)}"></label>
+      <label class="f">Date<input type="date" name="date" value="${esc(draft.date)}"${minDate() ? ` min="${minDate()}"` : ''}></label>
       ${refField ? `<label class="f">${type === 'GRN' ? 'Supplier challan / bill no.' : 'Supplier bill no.'}<input name="party_ref" maxlength="40" value="${esc(draft.party_ref || '')}" autocomplete="off"></label>` : ''}
       ${billFirst ? `<label class="f check wide"><input type="checkbox" name="transit"> <span>Goods not received yet (on the way)<small class="help">Stock comes in when the goods arrive: Purchase → Receive Goods.</small></span></label>` : ''}
       ${money || type === 'PO' || type === 'SO' || type === 'QUOTE' ? `<label class="f">${money ? 'Due date' : type === 'QUOTE' ? 'Valid until' : 'Expected by'}<input type="date" name="due_date" placeholder="auto"></label>` : ''}
@@ -941,6 +954,24 @@ function docPaper(d) {
     </div>`;
 }
 
+/* goods of a bill booked before they came, damaged or lost on the way: our loss, or a claim on the transporter / insurer.
+   The supplier is still owed the bill (to have the supplier credit it, use Close short instead). */
+function writeOffForm(d) {
+  const open = d.lines.filter((l) => l.to_receive > 0.0005);
+  const f = modal(`Write off on ${d.number}`, [
+    { k: 'mode', label: 'Who bears it?', type: 'select', options: [{ v: 'loss', t: 'Our loss (damaged, lost, stolen)' }, { v: 'claim', t: 'Transporter / insurance will pay' }] },
+    { k: 'date', label: 'Date', type: 'date', value: ME.today }, { k: 'reason', label: 'What happened (LR no., damage report…)', wide: true }],
+  async (v, fm) => {
+    const lines = $$('[data-wo]', fm).map((i) => ({ line_id: +i.dataset.wo, qty: +i.value || 0 })).filter((l) => l.qty > 0);
+    if (!lines.length) throw new Error('Type how many pieces were damaged or lost.');
+    const w = await POST(`/api/docs/${d.id}/write-off`, { ...v, lines });
+    toast(`${w.number}: ${inr(w.value)} written off, GST ${inr(w.gst)} reversed`); render();
+  }, { submit: 'Write off', intro: `<p class="muted">The supplier is still owed the full bill. These pieces leave “Goods in Transit” as a loss (or a claim on the transporter / insurer), and the GST paid on them is reversed, as GST law wants for goods lost or destroyed. If the supplier will credit them instead, use <b>Close short</b>.</p>
+    <div class="tbl-wrap"><table class="t lines"><thead><tr><th>Item</th><th class="num">Still to come</th><th>Damaged / lost</th></tr></thead><tbody>${open.map((l) => `<tr><td>${esc(l.item || l.description)}</td>
+      <td class="num">${qtyf(l.to_receive)} ${esc(l.unit || '')}</td><td class="c-n"><input type="number" step="any" min="0" max="${l.to_receive}" data-wo="${l.id}" inputmode="decimal" aria-label="Damaged or lost: ${esc(l.item || '')}"></td></tr>`).join('')}</tbody></table></div>` });
+  return f;
+}
+
 route(/^doc\/(\d+)$/, async (el, m) => {
   const d = await GET('/api/docs/' + m[1]);
   const T = ME.doc_types[d.type], o = d.org, p = d.party || {};
@@ -952,7 +983,10 @@ route(/^doc\/(\d+)$/, async (el, m) => {
   const waiting = d.status === 'pending';      // a big purchase order waiting for the owner or an admin
   if (waiting && ME.can.settings) main.push('<button class="btn primary" id="approve">Approve</button>');
   if (d.status !== 'cancelled') {
-    if (toCome > 0.0005 && ME.can.purchase) { main.push(`<a class="btn primary" href="#/receive?bill=${d.id}">Receive goods</a>`); more.push(`<a class="btn" href="#/new/DNOTE?from=${d.id}&short=1">Close short (goods never came)</a>`); }
+    if (toCome > 0.0005 && ME.can.purchase) {
+      main.push(`<a class="btn primary" href="#/receive?bill=${d.id}">Receive goods</a>`);
+      more.push(`<a class="btn" href="#/new/DNOTE?from=${d.id}&short=1">Close short: supplier credits it</a>`, '<button class="btn" id="woff">Write off: damaged / lost on the way</button>');
+    }
     if (['INV', 'BILL'].includes(d.type) && d.balance > 0) main.push(`<button class="btn" id="pay">${d.type === 'INV' ? 'Receive payment' : 'Record payment'}</button>`);
     if (['INV', 'SRET', 'CNOTE', 'QUOTE', 'SO'].includes(d.type)) { main.push(`<button class="btn got" id="wa">WhatsApp</button>`); more.push(...(p.phone ? ['<button class="btn" id="sms">Send SMS</button>'] : []), `<button class="btn" id="link">Copy customer link</button>`, ...(ME.can.sales ? ['<button class="btn" id="unshare">Stop sharing link</button>'] : [])); }
     for (const [k, v] of next) if (!waiting && (hasOpen || v.note)) more.push(`<a class="btn" href="#/new/${k}?from=${d.id}">${['SRET', 'PRET'].includes(k) ? 'Return goods' : v.note ? (k === 'CNOTE' ? 'Credit note' : 'Debit note') : 'Make ' + esc(v.label)}</a>`);
@@ -962,7 +996,7 @@ route(/^doc\/(\d+)$/, async (el, m) => {
     if (!simple() && ['INV', 'SRET', 'DN'].includes(d.type)) more.push(`<button class="btn" id="refs">${d.irn || d.ewb_no ? 'Edit' : 'Add'} IRN / EWB no.</button>`);
     if (['INV', 'BILL', 'QUOTE', 'SO', 'PO'].includes(d.type)) more.push(`<a class="btn" href="#/new/${d.type}?copy=${d.id}">Repeat (new copy, today)</a>`);
     if (['INV', 'BILL'].includes(d.type)) more.push('<button class="btn" id="recur">Make it every month / week…</button>');
-    more.push(`<button class="btn danger" id="cancel">Cancel ${esc((T && T.label) || 'document')}</button>`);
+    if (!limits().no_cancel) more.push(`<button class="btn danger" id="cancel">Cancel ${esc((T && T.label) || 'document')}</button>`);
   }
   if (d.status !== 'cancelled' && ['INV', 'SRET', 'CNOTE', 'QUOTE', 'SO', 'DN'].includes(d.type)) more.unshift('<button class="btn" id="pdfdl">Download PDF file</button>');
   main.push(`<button class="btn primary" data-act="print">Print / PDF</button>`);
@@ -970,6 +1004,11 @@ route(/^doc\/(\d+)$/, async (el, m) => {
   el.innerHTML = head(`${esc(d.number)} ${badge(d.status)}`, actions.join('')) + `
     ${toCome > 0.0005 ? `<div class="panel warnbox no-print">Goods on the way: <b>${qtyf(toCome)}</b> of ${qtyf(d.lines.filter((l) => l.item_id && !l.is_service).reduce((s, l) => s + l.qty, 0))} still to come${d.lines.some((l) => l.to_receive > 0.0005 && l.to_receive < l.qty) ? ' (part received)' : ''}. Stock goes up as they are received.</div>` : ''}
     ${d.short ? `<div class="panel muted no-print">Shortage: goods billed on ${d.parent ? esc(d.parent.number) : 'the bill'} that never came.</div>` : ''}
+    ${(d.write_offs || []).length ? `<div class="panel flush no-print"><h2 class="ph">Damaged / lost on the way</h2>${table([
+      { h: 'No.', f: (w) => `<b>${esc(w.number)}</b><div class="muted">${fdate(w.date)}</div>` },
+      { h: 'Written off as', f: (w) => (w.mode === 'claim' ? 'Claim on transporter / insurer' : 'Our loss') + (w.reason ? `<div class="muted">${esc(w.reason)}</div>` : '') },
+      { h: 'Value + GST reversed', num: 1, f: (w) => `${inr(w.value)} + ${inr(w.gst)}` },
+      { h: '', f: (w) => (w.status === 'cancelled' ? badge('cancelled') : ME.can.purchase && !limits().no_cancel ? `<button class="btn sm danger" data-wox="${w.id}">Cancel</button>` : '') }], d.write_offs)}</div>` : ''}
     ${waiting ? `<div class="panel warnbox no-print">This purchase order is above the approval limit of ${inr0(ME.org.approvals.po_above)}. ${ME.can.settings ? 'Check it and tap <b>Approve</b>; to refuse it, cancel it.' : 'The owner or an admin has to approve it before goods can be received against it.'}</div>` : ''}
     <div class="panel no-print"><div class="row">
       ${d.parent ? `<span>From <a href="#/doc/${d.parent.id}">${esc(d.parent.number)}</a></span>` : ''}
@@ -983,6 +1022,11 @@ route(/^doc\/(\d+)$/, async (el, m) => {
     try { await api('PUT', `/api/docs/${d.id}/design`, { design: e.target.value }); toast('Design changed'); render(); } catch (err) { toast(err.message, 'err'); }
   };
   if ($('#einv')) $('#einv').onclick = (e) => { e.preventDefault(); fileDownload(`/api/docs/${d.id}/einvoice`); };
+  if ($('#woff')) $('#woff').onclick = () => writeOffForm(d);
+  $$('[data-wox]', el).forEach((b) => b.onclick = async () => {
+    if (!confirm('Cancel this write-off? The goods are counted as still to come again, and the loss and GST reversal are taken back.')) return;
+    try { await POST(`/api/write-offs/${b.dataset.wox}/cancel`, {}); toast('Write-off cancelled'); render(); } catch (e) { toast(e.message, 'err'); }
+  });
   if ($('#ewb')) $('#ewb').onclick = () => modal('E-way bill (bulk upload JSON)', [
     { k: 'distance', label: 'Distance (km)', type: 'number', required: true }, { k: 'vehicle_no', label: 'Vehicle number', placeholder: 'RJ14AB1234' },
     { k: 'mode', label: 'Mode', type: 'select', options: [{ v: '1', t: 'Road' }, { v: '2', t: 'Rail' }, { v: '3', t: 'Air' }, { v: '4', t: 'Ship' }] },
@@ -1060,7 +1104,7 @@ const payList = (kind) => async (el, m, q) => {
   el.innerHTML = head(kind === 'receipt' ? 'Receipts' : 'Payments', `<button class="btn primary" id="new">+ ${kind === 'receipt' ? 'Receive payment' : 'Pay supplier'}</button>`) +
     `<div class="panel flush">${table([{ h: 'Number', k: 'number' }, { h: 'Date', f: (r) => fdate(r.date) }, { h: 'Party', k: 'party' }, { h: 'Account', k: 'account' },
       { h: 'Reference', k: 'reference', cls: 'hide-sm' }, { h: 'Amount', num: 1, f: (r) => inr(r.amount) },
-      { h: '', f: (r) => r.void ? badge('cancelled') : `${kind === 'receipt' ? `<button class="btn sm got" data-rcpt="${r.id}">WhatsApp</button> ` : ''}${ME.can.finance ? `<button class="btn sm danger" data-void="${r.id}">Void</button>` : ''}` }], rows,
+      { h: '', f: (r) => r.void ? badge('cancelled') : `${kind === 'receipt' ? `<button class="btn sm got" data-rcpt="${r.id}">WhatsApp</button> ` : ''}${ME.can.finance && !limits().no_cancel ? `<button class="btn sm danger" data-void="${r.id}">Void</button>` : ''}` }], rows,
     { empty: emptyCta(kind === 'receipt' ? 'Money you get from customers shows here. Record it to clear their bills.' : 'Money you pay to suppliers shows here.',
       `<button class="btn primary" data-np>${kind === 'receipt' ? '+ Receive payment' : '+ Pay supplier'}</button>`) })}</div>`;
   $('#new').onclick = () => paymentForm(kind);
@@ -1948,7 +1992,7 @@ route(/^khata\/(\d+)$/, async (el, m, q) => {
         <div class="kl-r"><div class="${r.kind === 'gave' ? 'neg' : 'pos'} ka">${r.kind === 'gave' ? 'You gave ' : 'You got '}${inr(r.amount)}</div>
           ${r.status === 'sent' ? `<div class="muted">Bal ${inr(r.balance)}</div>` : ''}
           <div class="kact">${r.status === 'pending' ? `<button class="btn sm primary" data-send="${r.id}">Send</button><button class="btn sm danger" data-del="${r.id}">Discard</button>`
-            : (reversed.has(r.id) || r.reverses ? '' : `<button class="btn sm" data-rev="${r.id}">Reverse</button>`)}</div></div></div>`).join('') : '<div class="empty">No entries yet.</div>'}</div>`;
+            : (reversed.has(r.id) || r.reverses || limits().no_cancel ? '' : `<button class="btn sm" data-rev="${r.id}">Reverse</button>`)}</div></div></div>`).join('') : '<div class="empty">No entries yet.</div>'}</div>`;
   const entry = (kind, amount = '') => modal(kind === 'gave' ? 'You gave' : 'You got', [{ k: 'amount', label: 'Amount (₹)', type: 'number', required: true, value: amount },
     { k: 'date', label: 'Date', type: 'date', value: ME.today }, { k: 'note', label: 'Note (items, reason)', wide: true }],
   async (v) => { const r = await POST('/api/khata', { ...v, party_id: k.party.id, kind }); setTimeout(() => sendEntry(r), 0); }, { submit: 'Next: send to customer' });
@@ -2588,8 +2632,11 @@ route(/^reports\/([a-z-]+)$/, async (el, m, q) => {
       <div class="kpi"><div class="l">Net GST payable</div><div class="v ${d.net_payable > 0 ? 'neg' : 'pos'}">${inr0(d.net_payable)}</div></div></div>
       <div class="panel flush"><div style="padding:14px 16px 0"><h3>Outward supplies (GSTR-1 / 3B)</h3></div>${table(cols, d.outward.rows.concat(d.outward.rows.length ? [{ ...d.outward.total, rate: '', kind: 'Total' }] : []), { empty: 'No sales in this period.' })}</div>
       <div class="panel flush"><div style="padding:14px 16px 0"><h3>Inward supplies (input tax credit)</h3></div>${table(cols, d.inward.rows.concat(d.inward.rows.length ? [{ ...d.inward.total, rate: '', kind: 'Total' }] : []), { empty: 'No purchases in this period.' })}</div>
+      ${d.itc_reversed && d.itc_reversed.n ? `<div class="panel"><h3>Input credit reversed: goods lost or damaged on the way (GSTR-3B 4(B)(2))</h3>
+        <p>${d.itc_reversed.n} write-off(s), goods worth ${inr(d.itc_reversed.value)}: CGST ${inr(d.itc_reversed.cgst)} · SGST ${inr(d.itc_reversed.sgst)} · IGST ${inr(d.itc_reversed.igst)} = <b>${inr(d.itc_reversed.tax)}</b> added to the GST payable.</p></div>` : ''}
       <p class="muted">Returns and credit notes are netted. Tally these with your GSTR-2B before filing.</p>`;
-    csv = [['Section', 'Rate', 'Type', 'Taxable', 'CGST', 'SGST', 'IGST'], ...d.outward.rows.map((r) => ['Outward', r.rate, r.kind, r.taxable, r.cgst, r.sgst, r.igst]), ...d.inward.rows.map((r) => ['Inward', r.rate, r.kind, r.taxable, r.cgst, r.sgst, r.igst])];
+    csv = [['Section', 'Rate', 'Type', 'Taxable', 'CGST', 'SGST', 'IGST'], ...d.outward.rows.map((r) => ['Outward', r.rate, r.kind, r.taxable, r.cgst, r.sgst, r.igst]), ...d.inward.rows.map((r) => ['Inward', r.rate, r.kind, r.taxable, r.cgst, r.sgst, r.igst]),
+      ...(d.itc_reversed && d.itc_reversed.n ? [['ITC reversed (goods lost)', '', '', d.itc_reversed.value, d.itc_reversed.cgst, d.itc_reversed.sgst, d.itc_reversed.igst]] : [])];
   } else if (name === 'ageing') {
     const k = d.kind;
     html = `<div class="tabs">${['receivable', 'payable'].map((x) => `<a href="#/reports/ageing?kind=${x}" class="${k === x ? 'on' : ''}">${x === 'receivable' ? 'Receivables (customers)' : 'Payables (suppliers)'}</a>`).join('')}</div>
@@ -2773,26 +2820,98 @@ route(/^settings\/fields$/, async (el) => {
 
 const AREA_LABEL = { sales: 'Sales & POS', purchase: 'Purchase', items: 'Items & stock', masters: 'Customers & suppliers', finance: 'Money (receipts, payments, expenses)',
   khata: 'Khata book', reports: 'Reports, profit & costs', settings: 'Settings', gate: 'Gate register (vehicles in / out)' };
+/* Settings → Roles: every role made to measure. What it may see and change, limits it works under, and the menu its
+   users get (a user's own menu, set in Settings → Users, still wins). The server enforces the rights and limits. */
+const LIMIT_TEXT = [['no_cancel', 'Cannot cancel bills, payments or entries'], ['no_credit', 'No udhaar: every sale is paid in full'],
+  ['hide_costs', 'Cannot see purchase rates, cost or profit']];
+const limitSummary = (r) => [r.no_cancel && 'no cancelling', r.no_credit && 'no udhaar', r.hide_costs && 'no costs',
+  r.max_discount !== null && r.max_discount !== undefined && `max ${r.max_discount}% off`,
+  r.backdate_days === 0 ? 'today\'s date only' : r.backdate_days ? `${r.backdate_days} days back at most` : ''].filter(Boolean).join(' · ') || '—';
+const uiSummary = (ui) => (ui.screens ? `${ui.screens.length} screens` : ui.job ? JOBS[ui.job].t.split(':')[0] : '—') + (ui.home ? ` → opens on ${(NAV.flatMap(([, x]) => x).find(([h]) => h === ui.home) || ['', ui.home])[1]}` : '');
+/* ready-made starting points for a new role */
+const ROLE_STARTS = {
+  guard: { t: 'Gate guard', perms: { view: ['gate'], edit: ['gate'] }, rules: { no_cancel: true, hide_costs: true }, ui: { job: 'gate' } },
+  counter: { t: 'Billing counter', perms: { view: ['sales', 'items', 'masters', 'khata'], edit: ['sales', 'masters', 'khata'] },
+    rules: { no_cancel: true, hide_costs: true, max_discount: 5, backdate_days: 0 }, ui: { job: 'counter' } },
+  godown: { t: 'Godown / receiving', perms: { view: ['purchase', 'items', 'masters', 'gate'], edit: ['purchase', 'items', 'gate'] }, rules: { no_cancel: true }, ui: { job: 'store' } },
+  field: { t: 'Field salesman', perms: { view: ['sales', 'items', 'masters', 'khata'], edit: ['sales', 'masters', 'khata'] },
+    rules: { no_cancel: true, hide_costs: true, max_discount: 10, backdate_days: 1 }, ui: { job: 'sales' } },
+};
 route(/^settings\/roles$/, async (el) => {
-  const { rows, areas } = await GET('/api/roles');
-  const grid = (p = { view: [], edit: [] }) => `<div class="tbl-wrap"><table class="t perm"><thead><tr><th>Area</th><th>See</th><th>Add &amp; edit</th></tr></thead><tbody>${areas.map((a) => `<tr><td>${esc(AREA_LABEL[a] || a)}</td>
-      <td><input type="checkbox" data-v="${a}" ${p.view.includes(a) ? 'checked' : ''} aria-label="See ${esc(a)}"></td><td><input type="checkbox" data-e="${a}" ${p.edit.includes(a) ? 'checked' : ''} aria-label="Edit ${esc(a)}"></td></tr>`).join('')}</tbody></table></div>`;
-  const form = (r = {}) => {
-    const f = modal(r.id ? 'Edit role' : 'New role', [{ k: 'name', label: 'Role name', value: r.name, placeholder: 'e.g. Counter staff', wide: true }], async (v, fm) => {
+  const { rows, builtin, areas } = await GET('/api/roles');
+  const allScreens = NAV.flatMap(([, x]) => x);
+  const same = (a, b) => [...a].sort().join() === [...b].sort().join();
+  const editor = (r, kind) => {
+    const isNew = kind === 'custom' && !r.id;
+    const fields = kind === 'custom' ? [{ k: 'name', label: 'Role name', value: r.name, placeholder: 'e.g. Counter staff', wide: true }] : [];
+    if (isNew) fields.push({ k: 'start', label: 'Start from', type: 'select', options: [{ v: '', t: 'Blank' }, ...Object.entries(ROLE_STARTS).map(([k, s]) => ({ v: k, t: s.t })),
+      ...builtin.map((b) => ({ v: 'b:' + b.key, t: `A copy of ${b.name}` }))] });
+    const f = modal(kind === 'builtin' ? `Role: ${r.name}` : isNew ? 'New role' : `Role: ${r.name}`, fields, async (v, fm) => {
       const perms = { view: $$('[data-v]', fm).filter((x) => x.checked).map((x) => x.dataset.v), edit: $$('[data-e]', fm).filter((x) => x.checked).map((x) => x.dataset.e) };
-      if (r.id) await api('PUT', '/api/roles/' + r.id, { name: v.name, perms }); else await POST('/api/roles', { name: v.name, perms });
-      toast('Role saved'); render();
-    }, { intro: '' });
-    $('.form', f).insertAdjacentHTML('afterend', `<div style="margin-top:12px">${grid(r.perms)}</div><p class="muted">“Add &amp; edit” also lets them see it. Without “Reports, profit &amp; costs” (or Purchase) they do not see purchase rates or profit.</p>`);
-    $$('[data-e]', f).forEach((x) => x.onchange = () => { if (x.checked) $(`[data-v="${x.dataset.e}"]`, f).checked = true; });
+      const num = (k) => (fm.elements[k].value === '' ? null : +fm.elements[k].value);
+      const rules = { ...Object.fromEntries(LIMIT_TEXT.map(([k]) => [k, fm.elements[k].checked])), max_discount: num('max_discount'), backdate_days: num('backdate_days') };
+      const pick = fm.elements.rjob.value === 'pick', screens = $$('[data-scr]', fm).filter((x) => x.checked).map((x) => x.dataset.scr);
+      if (pick && !screens.length) throw new Error('Tick at least one screen, or choose a job.');
+      const ui = pick ? { screens, home: fm.elements.rhome.value } : { job: fm.elements.rjob.value, home: fm.elements.rhome.value };
+      if (kind === 'builtin') await api('PUT', '/api/roles/builtin/' + r.key, { perms: same(perms.edit, r.standard.edit) && same(perms.view, r.standard.view) ? null : perms, rules, ui });
+      else if (r.id) await api('PUT', '/api/roles/' + r.id, { name: v.name, perms, rules, ui });
+      else await POST('/api/roles', { name: v.name, perms, rules, ui });
+      toast('Role saved. Its users see the change the next time they open the app.'); render();
+    }, { intro: kind === 'builtin' ? `<p class="muted">${r.users} user${r.users === 1 ? '' : 's'} have this role. Tick what it needs; <b>Back to standard</b> undoes everything.</p>` : '' });
+    const ru = r.rules || {}, ui = r.ui || {};
+    $('.form', f).insertAdjacentHTML('afterend', `
+      <h3 class="rh">What they can see and change</h3>
+      <div class="tbl-wrap"><table class="t perm"><thead><tr><th>Area</th><th>See</th><th>Add &amp; edit</th></tr></thead><tbody>${areas.map((a) => `<tr><td>${esc(AREA_LABEL[a] || a)}</td>
+        <td><input type="checkbox" data-v="${a}" aria-label="See ${esc(a)}"></td><td><input type="checkbox" data-e="${a}" aria-label="Edit ${esc(a)}"></td></tr>`).join('')}</tbody></table></div>
+      <p class="muted small">“Add &amp; edit” also lets them see it.</p>
+      <h3 class="rh">Limits</h3>
+      <div class="limits">${LIMIT_TEXT.map(([k, t]) => `<label class="check"><input type="checkbox" name="${k}"> ${esc(t)}</label>`).join('')}
+        <label class="f">Biggest discount they may give (%)<input type="number" name="max_discount" min="0" max="100" step="any" placeholder="no limit" inputmode="decimal"><small class="help">Rate cuts and discounts together, below the item's sale price.</small></label>
+        <label class="f">Bills and payments may be dated back (days)<input type="number" name="backdate_days" min="0" max="3650" step="1" placeholder="any date" inputmode="numeric"><small class="help">0 = today only.</small></label></div>
+      <h3 class="rh">Menu for this role</h3>
+      <div class="form"><label class="f">What do they do?<select name="rjob"><option value="">As usual for the role</option>${Object.entries(JOBS).map(([k, j]) => `<option value="${k}">${esc(j.t)}</option>`).join('')}<option value="pick">Let me tick the screens</option></select></label>
+        <label class="f">App opens on<select name="rhome"><option value="">The job's usual screen</option>${allScreens.map(([h, t]) => `<option value="${h}">${esc(t)}</option>`).join('')}</select></label></div>
+      <div class="scr-grid">${NAV.filter(([g]) => g).map(([g, x]) => `<fieldset><legend>${esc(g)}</legend>${x.map(([h, t]) => `<label class="check"><input type="checkbox" data-scr="${h}"> ${esc(t)}</label>`).join('')}</fieldset>`).join('')}</div>
+      ${kind === 'builtin' && (r.changed || r.ui.job || r.ui.screens || r.ui.home || limitSummary(r.rules) !== '—') ? '<div class="row" style="margin-top:12px"><button type="button" class="btn danger" id="rstd">Back to standard</button></div>' : ''}`);
+    const fill = (perms, rules, u) => {
+      $$('[data-v]', f).forEach((x) => { x.checked = perms.view.includes(x.dataset.v); });
+      $$('[data-e]', f).forEach((x) => { x.checked = perms.edit.includes(x.dataset.e); });
+      for (const [k] of LIMIT_TEXT) f.elements[k].checked = !!rules[k];
+      f.elements.max_discount.value = rules.max_discount ?? ''; f.elements.backdate_days.value = rules.backdate_days ?? '';
+      f.elements.rjob.value = u.screens ? 'pick' : u.job || ''; f.elements.rhome.value = u.home || '';
+      $$('[data-scr]', f).forEach((x) => { delete x.dataset.touched; x.checked = !!(u.screens && u.screens.includes(x.dataset.scr)); });
+      syncScreens();
+    };
+    const syncScreens = () => {
+      const j = f.elements.rjob.value, pick = j === 'pick', job = JOBS[j] || JOBS[kind === 'builtin' ? ROLE_JOB[r.key] || 'all' : 'all'];
+      $$('[data-scr]', f).forEach((x) => { x.disabled = !pick; if (!pick) x.checked = job.screens ? job.screens.includes(x.dataset.scr) : !simple() || !ADVANCED.has(x.dataset.scr); });
+    };
+    $$('[data-e]', f).forEach((x) => x.addEventListener('change', () => { if (x.checked) $(`[data-v="${x.dataset.e}"]`, f).checked = true; }));
+    f.elements.rjob.onchange = syncScreens;
+    if (f.elements.start) f.elements.start.onchange = (e) => {
+      const s = e.target.value, b = s.startsWith('b:') && builtin.find((x) => x.key === s.slice(2)), t = ROLE_STARTS[s];
+      if (b) fill(b.perms, b.rules, b.ui); else if (t) fill(t.perms, t.rules, t.ui); else fill({ view: [], edit: [] }, {}, {});
+      if (t && !f.elements.name.value) f.elements.name.value = t.t;
+    };
+    fill(r.perms || { view: [], edit: [] }, ru, ui);
+    if ($('#rstd', f)) $('#rstd', f).onclick = async () => {
+      if (!confirm(`Put ${r.name} back to its standard rights, with no limits and the usual menu?`)) return;
+      try { await api('DELETE', '/api/roles/builtin/' + r.key); $('#modal-root').innerHTML = ''; toast('Back to standard'); render(); } catch (e) { toast(e.message, 'err'); }
+    };
   };
   el.innerHTML = head('Roles', `<button class="btn primary" id="newrole">+ New role</button>`) + setTabs('settings/roles') + `
-    <p class="muted">Make your own roles, like Counter staff or Godown manager, and choose what each can see and change. Give a role to a user in <a href="#/settings">Business &amp; users</a>.</p>
-    <div class="panel flush">${table([{ h: 'Role', k: 'name' }, { h: 'Can change', f: (r) => esc(r.perms.edit.map((a) => AREA_LABEL[a] || a).join(', ') || '—') },
-      { h: 'Users', k: 'users', num: 1 }, { h: '', f: (r) => `<button class="btn sm" data-ed="${r.id}">Edit</button> <button class="btn sm danger" data-rm="${r.id}">Delete</button>` }], rows,
-    { empty: 'No custom roles yet. Built-in roles: admin, accountant, store, sales.' })}</div>`;
-  $('#newrole').onclick = () => form();
-  $$('[data-ed]', el).forEach((b) => b.onclick = () => form(rows.find((r) => r.id === +b.dataset.ed)));
+    <p class="muted">Every role can be made to fit your shop: what it can see and change, limits (no cancelling, no udhaar, a discount cap, no old dates) and the menu its people get. Give a role to a user in <a href="#/settings">Business &amp; users</a>.</p>
+    <div class="panel flush"><h2 class="ph">Built-in roles</h2>${table([{ h: 'Role', f: (r) => `<b>${esc(r.name)}</b>${r.changed ? ' <span class="badge b-partial">changed</span>' : ''}` },
+      { h: 'Can change', cls: 'hide-sm', f: (r) => esc(r.perms.edit.map((a) => AREA_LABEL[a] || a).join(', ') || '—') },
+      { h: 'Limits', f: (r) => esc(limitSummary(r.rules)) }, { h: 'Menu', cls: 'hide-sm', f: (r) => esc(uiSummary(r.ui)) }, { h: 'Users', k: 'users', num: 1 },
+      { h: '', f: (r) => (r.locked ? '<span class="muted small">owner only</span>' : `<button class="btn sm" data-bed="${r.key}">Change</button>`) }], builtin)}</div>
+    <div class="panel flush"><h2 class="ph">Your own roles</h2>${table([{ h: 'Role', f: (r) => `<b>${esc(r.name)}</b>` }, { h: 'Can change', cls: 'hide-sm', f: (r) => esc(r.perms.edit.map((a) => AREA_LABEL[a] || a).join(', ') || '—') },
+      { h: 'Limits', f: (r) => esc(limitSummary(r.rules)) }, { h: 'Menu', cls: 'hide-sm', f: (r) => esc(uiSummary(r.ui)) }, { h: 'Users', k: 'users', num: 1 },
+      { h: '', f: (r) => `<button class="btn sm" data-ed="${r.id}">Edit</button> <button class="btn sm danger" data-rm="${r.id}">Delete</button>` }], rows,
+    { empty: 'None yet. + New role starts from a gate guard, billing counter, godown or salesman, or a copy of a built-in role.' })}</div>`;
+  $('#newrole').onclick = () => editor({}, 'custom');
+  $$('[data-bed]', el).forEach((b) => b.onclick = () => editor(builtin.find((r) => r.key === b.dataset.bed), 'builtin'));
+  $$('[data-ed]', el).forEach((b) => b.onclick = () => editor(rows.find((r) => r.id === +b.dataset.ed), 'custom'));
   $$('[data-rm]', el).forEach((b) => b.onclick = async () => {
     if (!confirm('Delete this role?')) return;
     try { await api('DELETE', '/api/roles/' + b.dataset.rm); toast('Role deleted'); render(); } catch (e) { toast(e.message, 'err'); }
@@ -3141,7 +3260,8 @@ async function receiveScreen(el, [kind, id]) {
   const free = kind === 'free', sups = parties.filter((p) => p.kind !== 'customer');
   const what = free ? 'goods without a bill or order' : `${kind === 'bill' ? 'bill' : 'order'} ${draft.ref_number}${draft.party_ref ? ` (their bill ${draft.party_ref})` : ''}`;
   const itemOf = (iid) => items.find((i) => i.id === iid) || {};
-  const lineOf = (it) => ({ item_id: it.id, name: it.name, unit: it.unit, expected: null, got: 0, rate: it.purchase_price || it.avg_cost || 0, discount_pct: 0, gst_rate: it.gst_rate,
+  // bad: pieces of a bill-first bill that arrived broken (written off, or claimed from the supplier, after the receipt)
+  const lineOf = (it) => ({ item_id: it.id, name: it.name, unit: it.unit, expected: null, got: 0, bad: 0, rate: it.purchase_price || it.avg_cost || 0, discount_pct: 0, gst_rate: it.gst_rate,
     batch_no: '', expiry: '', serials: [], track_batch: !!it.track_batch, track_serial: !!it.track_serial, bin: '' });
   const L = free ? [] : draft.lines.map((l) => ({ ...lineOf({ ...itemOf(l.item_id), id: l.item_id, name: l.item || l.description, unit: l.unit, gst_rate: l.gst_rate, track_batch: l.track_batch, track_serial: l.track_serial }),
     expected: l.qty, rate: l.rate, discount_pct: l.discount_pct, src_line_id: l.src_line_id, batch_no: l.batch_no || '', expiry: l.expiry || '', src_serials: l.src_serials || '' }));
@@ -3160,7 +3280,9 @@ async function receiveScreen(el, [kind, id]) {
       <button type="button" class="btn" id="rcam" aria-label="Scan with camera">&#128247;</button>${free ? '<select id="radd" aria-label="Add an item"><option value="">+ Add item…</option>' + items.filter((i) => !i.is_service).map((i) => `<option value="${i.id}">${esc(i.name)}</option>`).join('') + '</select>' : ''}</div>
       <div class="rmsg" id="rmsg" role="status" aria-live="polite"></div><div class="rprog" id="rprog"></div></div>
     <div class="rlines" id="rlines"></div><datalist id="binlist"></datalist>
-    <div class="row savebar"><label class="check"><input type="checkbox" id="rbins"> Put into bins <span class="muted small">(new bins are made when needed)</span></label><span class="spacer"></span>
+    <div class="row savebar"><label class="check"><input type="checkbox" id="rbins"> Put into bins <span class="muted small">(new bins are made when needed)</span></label>
+      ${kind === 'bill' ? `<label class="f inline-f" id="rbadw" hidden>Damaged pieces<select id="rbadmode"><option value="loss">Our loss (write off)</option><option value="claim">Transporter / insurance pays</option>
+        <option value="supplier">Supplier credits them (debit note)</option></select></label>` : ''}<span class="spacer"></span>
       <button class="btn primary" id="rsave">Save receipt</button></div>`;
   const fine = matchMedia('(pointer: fine)').matches, scan = $('#rscan');
   const msg = (t, kind2 = '') => { const b = $('#rmsg'); b.className = 'rmsg ' + kind2; b.innerHTML = t; };
@@ -3178,12 +3300,14 @@ async function receiveScreen(el, [kind, id]) {
   const draw = () => {
     const got = L.reduce((s, l) => s + l.got, 0), exp = L.reduce((s, l) => s + (l.expected || 0), 0);
     $('#rprog').innerHTML = L.length ? `<b>${qtyf(got)}</b>${free ? '' : ` of ${qtyf(exp)}`} received${free ? '' : `<span class="bar"><i style="width:${Math.min(100, exp ? got / exp * 100 : 0)}%"></i></span>`}` : '';
+    if ($('#rbadw')) $('#rbadw').hidden = !L.some((l) => l.bad > 0);
     $('#rlines').innerHTML = L.map((l, i) => {
-      const over = l.expected !== null && l.got > l.expected + 0.0005, done = l.expected !== null && Math.abs(l.got - l.expected) < 0.0005;
+      const over = l.expected !== null && l.got + l.bad > l.expected + 0.0005, done = l.expected !== null && Math.abs(l.got + l.bad - l.expected) < 0.0005;
       return `<div class="rline ${over ? 'over' : done ? 'done' : ''} ${i === active ? 'act' : ''}" data-i="${i}">
         <div class="rl-head"><b>${esc(l.name)}</b>${l.expected !== null ? `<span class="muted">${qtyf(l.expected)} ${esc(l.unit || '')} expected</span>` : ''}</div>
         <div class="rl-qty"><button type="button" class="btn" data-minus aria-label="One less">&minus;</button><input type="number" step="any" min="0" inputmode="decimal" data-got value="${l.got}" aria-label="Received: ${esc(l.name)}">
           <button type="button" class="btn" data-plus aria-label="One more">+</button>${done ? '<span class="pos">&#10003; all</span>' : over ? '<span class="neg">more than billed</span>' : ''}</div>
+        ${kind === 'bill' ? `<label class="rl-bad">Damaged / missing <input type="number" step="any" min="0" inputmode="decimal" data-bad value="${l.bad || ''}" placeholder="0" aria-label="Damaged or missing: ${esc(l.name)}"></label>` : ''}
         <div class="rl-more">${useBins ? `<input data-bin list="binlist" placeholder="Bin" value="${esc(l.bin)}" aria-label="Bin" maxlength="30">` : ''}
           ${l.track_batch ? `<input data-batch placeholder="Batch no." value="${esc(l.batch_no)}" maxlength="40" aria-label="Batch"><input data-exp type="month" value="${esc((l.expiry || '').slice(0, 7))}" aria-label="Expiry">` : ''}</div>
         ${l.track_serial ? `<div class="rl-sn">${l.serials.map((x) => `<span class="snchip on">${esc(x)}</span>`).join('') || `<span class="muted">${i === active ? 'Scan each piece\'s serial / IMEI now' : 'Tap here, then scan serial / IMEI numbers'}</span>`}</div>` : ''}
@@ -3191,7 +3315,7 @@ async function receiveScreen(el, [kind, id]) {
     }).join('') || `<div class="empty">${free ? 'Scan the first item, or add it from the list.' : 'Nothing left to receive.'}</div>`;
   };
   const hit = (it, pack, code) => {
-    let i = L.findIndex((l) => l.item_id === it.id && (l.expected === null || l.got < l.expected - 0.0005));
+    let i = L.findIndex((l) => l.item_id === it.id && (l.expected === null || l.got + l.bad < l.expected - 0.0005));
     if (i < 0) i = L.findIndex((l) => l.item_id === it.id);
     if (i < 0) {
       if (!free) { beep(false); msg(`<b>${esc(it.name)}</b> is not on ${esc(what)}. Keep it aside.`, 'err'); return; }
@@ -3200,7 +3324,7 @@ async function receiveScreen(el, [kind, id]) {
     const l = L[i];
     if (l.track_serial) { active = i; beep(true); msg(`<b>${esc(l.name)}</b>: now scan each piece's serial / IMEI number.`); draw(); return; }
     l.got = r2(l.got + pack);
-    const over = l.expected !== null && l.got > l.expected + 0.0005;
+    const over = l.expected !== null && l.got + l.bad > l.expected + 0.0005;
     beep(!over);
     msg(over ? `<b>${esc(l.name)}</b>: ${qtyf(l.got)} is more than the ${qtyf(l.expected)} billed.` : `<b>${esc(l.name)}</b> +${qtyf(pack)}${pack > 1 ? ' (one pack)' : ''}${l.expected !== null ? ` &rarr; ${qtyf(l.got)} of ${qtyf(l.expected)}` : ''}`, over ? 'err' : 'ok');
     draw();
@@ -3256,17 +3380,18 @@ async function receiveScreen(el, [kind, id]) {
   $('#rlines').addEventListener('change', (e) => {
     const l = lineAt(e.target); if (!l) return;
     if (e.target.matches('[data-got]') && !l.track_serial) { l.got = Math.max(0, +e.target.value || 0); draw(); }
+    if (e.target.matches('[data-bad]')) { l.bad = Math.max(0, r2(+e.target.value || 0)); draw(); }
     if (e.target.matches('[data-bin]')) l.bin = e.target.value.trim().toUpperCase();
     if (e.target.matches('[data-batch]')) l.batch_no = e.target.value.trim();
     if (e.target.matches('[data-exp]')) l.expiry = e.target.value ? e.target.value + '-01' : '';
   });
   $('#rsave').onclick = async () => {
-    const lines = L.filter((l) => l.got > 0), btn = $('#rsave');
+    const lines = L.filter((l) => l.got > 0), bad = L.filter((l) => l.bad > 0), btn = $('#rsave');
     const partyId = free ? +$('#rparty').value : draft.party_id;
     if (!partyId) return msg('Choose the supplier.', 'err');
-    if (!lines.length) return msg('Scan or count at least one piece.', 'err');
-    const over = lines.find((l) => l.expected !== null && l.got > l.expected + 0.0005);
-    if (over) return msg(`<b>${esc(over.name)}</b>: ${qtyf(over.got)} received but only ${qtyf(over.expected)} billed. Keep the extra aside, or ask the supplier for a bill.`, 'err');
+    if (!lines.length && !bad.length) return msg('Scan or count at least one piece.', 'err');
+    const over = L.find((l) => l.expected !== null && l.got + l.bad > l.expected + 0.0005);
+    if (over) return msg(`<b>${esc(over.name)}</b>: ${qtyf(over.got + over.bad)} counted but only ${qtyf(over.expected)} billed. Keep the extra aside, or ask the supplier for a bill.`, 'err');
     const nb = lines.find((l) => l.track_batch && !l.batch_no);
     if (nb && !confirm(`${nb.name} has no batch number. Save without it?`)) return;
     btn.disabled = true;
@@ -3286,10 +3411,21 @@ async function receiveScreen(el, [kind, id]) {
         lines: lines.map((l) => ({ item_id: l.item_id, qty: l.got, rate: l.rate, discount_pct: l.discount_pct, gst_rate: l.gst_rate, src_line_id: l.src_line_id, batch_no: l.batch_no, expiry: l.expiry,
           serials: l.serials.join('\n'), bin: useBins ? l.bin : '' })) };
       if (ge) body.gate_entry_id = ge.id;
-      const d = await POST('/api/docs', body);
-      if (d.queued) { toast('No internet: saved on this device. It is sent by itself when you are back online.', 'info'); go('outbox'); return; }
-      dirty('items');
-      receiveDone(el, d, { kind, draft, lines, left: L.filter((l) => l.expected !== null && l.got < l.expected - 0.0005), useBins });
+      const d = lines.length ? await POST('/api/docs', body) : null;
+      if (d && d.queued) { toast('No internet: saved on this device. It is sent by itself when you are back online.', 'info'); go('outbox'); return; }
+      if (d) dirty('items');
+      // pieces that came broken: written off (our loss / a claim), or claimed from the supplier by a shortage note
+      let damaged = null;
+      if (bad.length) {
+        const how = $('#rbadmode').value, note = `Damaged on arrival${ge ? `, gate entry ${ge.number}` : ''}`;
+        try {
+          damaged = how === 'supplier'
+            ? { how, doc: await POST('/api/docs', { type: 'DNOTE', short: true, party_id: partyId, ref_id: draft.ref_id, date: $('#rdate').value, notes: note,
+              lines: bad.map((l) => ({ item_id: l.item_id, qty: l.bad, src_line_id: l.src_line_id })) }) }
+            : { how, wo: await POST(`/api/docs/${draft.ref_id}/write-off`, { mode: how, date: $('#rdate').value, reason: note, lines: bad.map((l) => ({ line_id: l.src_line_id, qty: l.bad })) }) };
+        } catch (err) { damaged = { how, error: err.message }; }
+      }
+      receiveDone(el, d, { kind, draft, lines, left: L.filter((l) => l.expected !== null && l.got + l.bad < l.expected - 0.0005), useBins, bad, damaged });
     } catch (e) { msg(esc(e.message), 'err'); beep(false); } finally { btn.disabled = false; }
   };
   draw();
@@ -3298,16 +3434,19 @@ async function receiveScreen(el, [kind, id]) {
   if (fine) scan.focus();
 }
 
-function receiveDone(el, d, { kind, draft, lines, left, useBins }) {
-  const pcs = lines.reduce((s, l) => s + l.got, 0);
-  el.innerHTML = head(`Received &#10003; <span class="muted">${esc(d.number)}</span>`, `<a class="btn" href="#/doc/${d.id}">Open ${esc(d.number)}</a><a class="btn primary" href="#/receive">Receive more</a>`) + `
-    <div class="panel okbox"><b>${qtyf(pcs)}</b> piece${pcs === 1 ? '' : 's'} of ${lines.length} item${lines.length === 1 ? '' : 's'} are in stock now${useBins ? ', each in its bin' : ''}.${d.gate_entry_id ? ' The gate entry is closed.' : ''}</div>
-    ${left.length ? `<div class="panel warnbox">Still to come on ${esc(draft.ref_number)}: ${left.map((l) => `${esc(l.name)} ${qtyf(r2(l.expected - l.got))}`).join(', ')}.
-      ${kind === 'bill' ? `Receive them when they come, or if they will not come <a href="#/new/DNOTE?from=${draft.ref_id}&short=1">close them short</a> (a debit note claims them back).` : 'Receive them when they come.'}</div>` : ''}
-    <div class="panel flush">${table([{ h: 'Item', f: (l) => `<b>${esc(l.name)}</b>${l.batch_no ? `<div class="muted">Batch ${esc(l.batch_no)}</div>` : ''}${l.serials.length ? `<div class="muted">S/N ${esc(l.serials.join(', '))}</div>` : ''}` },
+function receiveDone(el, d, { kind, draft, lines, left, useBins, bad = [], damaged = null }) {
+  const pcs = lines.reduce((s, l) => s + l.got, 0), broke = bad.reduce((s, l) => s + l.bad, 0);
+  const dmg = !damaged ? '' : damaged.error ? `<div class="panel err">The ${qtyf(broke)} damaged piece(s) were not recorded: ${esc(damaged.error)} Do it from <a href="#/doc/${draft.ref_id}">${esc(draft.ref_number)}</a> → More.</div>`
+    : damaged.doc ? `<div class="panel warnbox"><b>${qtyf(broke)}</b> damaged piece(s) claimed from the supplier: debit note <a href="#/doc/${damaged.doc.id}">${esc(damaged.doc.number)}</a> (${inr(damaged.doc.total)}).</div>`
+      : `<div class="panel warnbox"><b>${qtyf(broke)}</b> damaged piece(s) written off as ${damaged.how === 'claim' ? 'a claim on the transporter / insurer' : 'our loss'}: ${esc(damaged.wo.number)}, ${inr(damaged.wo.value)} + GST ${inr(damaged.wo.gst)} reversed.</div>`;
+  el.innerHTML = head(d ? `Received &#10003; <span class="muted">${esc(d.number)}</span>` : 'Damaged goods recorded', `${d ? `<a class="btn" href="#/doc/${d.id}">Open ${esc(d.number)}</a>` : ''}<a class="btn primary" href="#/receive">Receive more</a>`) + `
+    ${d ? `<div class="panel okbox"><b>${qtyf(pcs)}</b> piece${pcs === 1 ? '' : 's'} of ${lines.length} item${lines.length === 1 ? '' : 's'} are in stock now${useBins ? ', each in its bin' : ''}.${d.gate_entry_id ? ' The gate entry is closed.' : ''}</div>` : ''}${dmg}
+    ${left.length ? `<div class="panel warnbox">Still to come on ${esc(draft.ref_number)}: ${left.map((l) => `${esc(l.name)} ${qtyf(r2(l.expected - l.got - l.bad))}`).join(', ')}.
+      ${kind === 'bill' ? `Receive them when they come. If they will not come: <a href="#/new/DNOTE?from=${draft.ref_id}&short=1">close them short</a> (the supplier credits them), or write them off from <a href="#/doc/${draft.ref_id}">${esc(draft.ref_number)}</a> → More.` : 'Receive them when they come.'}</div>` : ''}
+    ${d ? `<div class="panel flush">${table([{ h: 'Item', f: (l) => `<b>${esc(l.name)}</b>${l.batch_no ? `<div class="muted">Batch ${esc(l.batch_no)}</div>` : ''}${l.serials.length ? `<div class="muted">S/N ${esc(l.serials.join(', '))}</div>` : ''}` },
       { h: 'Qty', num: 1, f: (l) => `${qtyf(l.got)} ${esc(l.unit || '')}` }, ...(useBins ? [{ h: 'Put in bin', f: (l) => `<b>${esc(l.bin || '-')}</b>` }] : []),
-      { h: '', f: (l) => `<a class="btn sm" href="#/labels/${l.item_id}?n=${Math.min(200, Math.ceil(l.got))}">Labels</a>` }], lines)}</div>
-    ${kind !== 'bill' && ME.can.purchase ? `<div class="row"><span class="muted">When the supplier's bill comes:</span><a class="btn" href="#/new/BILL?from=${d.id}">Make purchase bill from ${esc(d.number)}</a></div>` : ''}`;
+      { h: '', f: (l) => `<a class="btn sm" href="#/labels/${l.item_id}?n=${Math.min(200, Math.ceil(l.got))}">Labels</a>` }], lines)}</div>` : ''}
+    ${d && kind !== 'bill' && ME.can.purchase ? `<div class="row"><span class="muted">When the supplier's bill comes:</span><a class="btn" href="#/new/BILL?from=${d.id}">Make purchase bill from ${esc(d.number)}</a></div>` : ''}`;
   beep(true);
 }
 
@@ -3695,7 +3834,7 @@ route(/^pos$/, async (el) => {
       </div>
       <div class="panel pos-pay">
         <div class="totals" id="ptot" style="width:100%"></div>
-        <div class="seg" id="method">${[['cash', 'Cash'], ['upi', 'UPI'], ['bank', 'Card / Bank'], ['credit', 'Credit (udhaar)']].map(([k, t]) => `<button type="button" data-m="${k}" class="${k === method ? 'on' : ''}">${t}</button>`).join('')}</div>
+        <div class="seg" id="method">${[['cash', 'Cash'], ['upi', 'UPI'], ['bank', 'Card / Bank'], ...(limits().no_credit ? [] : [['credit', 'Credit (udhaar)']])].map(([k, t]) => `<button type="button" data-m="${k}" class="${k === method ? 'on' : ''}">${t}</button>`).join('')}</div>
         <label class="f" id="recvw">Amount received (₹)<input id="recv" type="number" step="any" min="0"></label>
         <div id="change" class="muted"></div><div id="posqr"></div>${cfDefs('doc', 'sales').length ? `<div class="form">${cfInputs('doc', {}, 'sales')}</div>` : ''}
         <div class="warnbox cwarn" id="cwarn" role="status" hidden></div>

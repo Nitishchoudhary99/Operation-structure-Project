@@ -719,3 +719,12 @@ tr.done td { opacity: .5; }
 .scr-grid legend { font-weight: 600; font-size: 13px; padding: 0 4px; }
 .scr-grid label.check { display: flex; gap: 8px; align-items: center; font-size: 13px; min-height: 32px; }
 .scr-grid label.check:has(input:disabled) { opacity: .75; }
+
+/* role editor, damaged count on the Receive screen */
+.rh { margin: 16px 0 8px; font-size: 15px; }
+.limits { display: grid; gap: 6px; }
+.limits label.check { display: flex; gap: 8px; align-items: center; min-height: 36px; }
+.limits .f { max-width: 360px; }
+.rl-bad { display: flex; align-items: center; gap: 8px; font-size: 13px; color: var(--muted); }
+.rl-bad input { width: 80px; }
+.savebar .inline-f select { width: auto; }

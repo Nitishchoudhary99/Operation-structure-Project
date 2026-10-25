@@ -4,10 +4,13 @@
    - Codes: a scanned code the business has never seen is attached to the item it belongs to, once, and works from then
      on (here, in POS, everywhere). A carton code carries how many pieces it holds (item_codes.pack_qty).
    - Bins: each item goes to its default bin, else a bin already holding it, else the first empty bin no item calls home,
-     else (when asked) a new bin next to the last one made. An item without a default bin gets the bin it was given. */
-import { bad, notFound, forbidden, str, nowIso, roundQty, loadByIds } from './lib.js';
-import { can, requireCan } from './auth.js';
-import { auditStatement } from './engine.js';
+     else (when asked) a new bin next to the last one made. An item without a default bin gets the bin it was given.
+   - Write-offs: goods of a bill-first bill damaged or lost on the way (write_offs). Our loss (Transit Loss & Damage) or a
+     claim on the transporter / insurer (Transit & Insurance Claims). GST input cannot be kept on goods lost or destroyed
+     (CGST Act s.17(5)(h)), so it is reversed: Dr loss or claim (value + GST) / Cr Goods in Transit, Cr GST Input. */
+import { bad, notFound, forbidden, str, nowIso, roundQty, loadByIds, date, today, oneOf, uid, counterStatements, counterValueSql } from './lib.js';
+import { can, requireCan, requireCancel, checkBackdate } from './auth.js';
+import { auditStatement, journalStatements, creditedOf, partOf, TRANSIT_SQL } from './engine.js';
 
 const R = (p) => Math.round(p) / 100;
 
@@ -135,4 +138,81 @@ export async function autoBins(c, body) {
     await c.db.batch(st);
   }
   return { warehouse: wh, rows, created };
+}
+
+/* ---------- goods damaged or lost on the way ---------- */
+const D = (account, amount) => ({ account, amount }), C = (account, amount) => ({ account, amount: -amount });
+export const writeOffOut = (w) => ({ ...w, value: R(w.value), cgst: R(w.cgst), sgst: R(w.sgst), igst: R(w.igst), gst: R(w.cgst + w.sgst + w.igst),
+  total: R(w.value + w.cgst + w.sgst + w.igst) });
+
+/* POST /api/docs/:id/write-off { date, mode: 'loss' | 'claim', reason, lines: [{ line_id, qty }] }: pieces of a bill whose
+   goods are on the way that will never be stock. The supplier is still owed the bill; the value leaves Goods in Transit
+   at the bill's price (the last part of a line takes what is left of it), and the GST paid on them is reversed. */
+export async function writeOff(c, billId, body) {
+  requireCan(c.user, 'purchase');
+  const { db } = c, orgId = c.org.id;
+  const mode = oneOf(body.mode || 'loss', ['loss', 'claim'], 'Who bears it');
+  const bill = await db.prepare(`SELECT * FROM docs WHERE id = ? AND org_id = ? AND type = 'BILL'`).bind(billId, orgId).first();
+  if (!bill) throw notFound('Bill not found.');
+  if (bill.status === 'cancelled' || bill.transit !== 1) throw bad(`${bill.number} has no goods on the way to write off.`);
+  const d = date(body.date);
+  checkBackdate(c.user, d, today(), 'a write-off');
+  if (d < bill.date) throw bad(`A write-off cannot be dated before the bill (${bill.date}).`);
+  const want = (Array.isArray(body.lines) ? body.lines : []).filter((l) => l && +l.qty > 0);
+  if (!want.length) throw bad('Type how many pieces were damaged or lost.');
+  if (want.length > 200) throw bad('At most 200 lines.');
+  const [{ results: lines }, credited] = await Promise.all([
+    db.prepare(`SELECT l.*, i.name, i.is_service FROM doc_lines l LEFT JOIN items i ON i.id = l.item_id WHERE l.doc_id = ?`).bind(bill.id).all(),
+    creditedOf(db, orgId, bill.id)]);
+  const byId = new Map(lines.map((l) => [l.id, l]));
+  const out = want.map((w, k) => {
+    const l = byId.get(+w.line_id);
+    if (!l || !l.item_id || l.is_service) throw bad(`Line ${k + 1}: not a goods line of ${bill.number}.`);
+    const qty = roundQty(+w.qty), left = roundQty(l.qty - l.recv_qty - l.short_qty);
+    if (qty > left + 0.0005) throw bad(`${l.name}: only ${left} still to come on ${bill.number}.`);
+    const value = partOf(l, l.taxable, qty, l.recv_qty + l.short_qty, credited.get(l.id) || 0);
+    credited.set(l.id, (credited.get(l.id) || 0) + value);
+    l.short_qty = roundQty(l.short_qty + qty);
+    const part = (x) => Math.round(x * qty / l.qty);
+    return { l, qty, value, cgst: part(l.cgst), sgst: part(l.sgst), igst: part(l.igst) };
+  });
+  const sum = (k) => out.reduce((s, x) => s + x[k], 0);
+  const value = sum('value'), cgst = sum('cgst'), sgst = sum('sgst'), igst = sum('igst'), tax = cgst + sgst + igst;
+  const sys = c.sys, txk = uid(), reason = str(body.reason, 200);
+  if (!sys.git || !sys.gst_input || !sys[mode === 'claim' ? 'claims' : 'transit_loss']) throw bad('An account for write-offs is missing in the chart of accounts.');
+  const st = [counterStatements(db, orgId, 'WO'),
+    db.prepare(`INSERT INTO write_offs (org_id, number, bill_id, date, mode, reason, value, cgst, sgst, igst, created_by, created_at, txk)
+      VALUES (?, ${counterValueSql}, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).bind(orgId, 'WO-%05d', orgId, 'WO', bill.id, d, mode, reason, value, cgst, sgst, igst, c.user.id, nowIso(), txk)];
+  for (const x of out) {
+    st.push(db.prepare(`INSERT INTO write_off_lines (write_off_id, line_id, item_id, qty, value, cgst, sgst, igst) VALUES ((SELECT id FROM write_offs WHERE txk = ?), ?, ?, ?, ?, ?, ?, ?)`)
+      .bind(txk, x.l.id, x.l.item_id, x.qty, x.value, x.cgst, x.sgst, x.igst));
+    st.push(db.prepare(`UPDATE doc_lines SET short_qty = ROUND(short_qty + ?, 3) WHERE id = ?`).bind(x.qty, x.l.id));
+  }
+  st.push(db.prepare(TRANSIT_SQL).bind(bill.id));
+  st.push(...journalStatements(db, c, { date: d, narration: `${mode === 'claim' ? 'Transit claim' : 'Transit loss'} on ${bill.number}${reason ? ': ' + reason : ''}`,
+    refType: 'TLOSS', refTxk: txk, refTable: 'write_offs',
+    lines: [D(mode === 'claim' ? sys.claims : sys.transit_loss, value + tax), C(sys.git, value), C(sys.gst_input, tax)] }));
+  st.push(auditStatement(c, 'write off', `${bill.number}: ${value / 100} + GST ${tax / 100} (${mode})`));
+  await db.batch(st);
+  return writeOffOut(await db.prepare(`SELECT * FROM write_offs WHERE txk = ?`).bind(txk).first());
+}
+
+/* POST /api/write-offs/:id/cancel: the goods are to come again (found, or written off by mistake) */
+export async function cancelWriteOff(c, id) {
+  requireCan(c.user, 'purchase');
+  requireCancel(c.user);
+  const { db } = c;
+  const w = await db.prepare(`SELECT * FROM write_offs WHERE id = ? AND org_id = ?`).bind(id, c.org.id).first();
+  if (!w) throw notFound('Write-off not found.');
+  if (w.status === 'cancelled') throw bad('Already cancelled.');
+  const [lines, jls] = await db.batch([db.prepare(`SELECT * FROM write_off_lines WHERE write_off_id = ?`).bind(w.id),
+    db.prepare(`SELECT jl.* FROM journal_lines jl JOIN journals j ON j.id = jl.journal_id WHERE j.org_id = ? AND j.ref_type = 'TLOSS' AND j.ref_id = ?`).bind(c.org.id, w.id)]);
+  const st = [db.prepare(`UPDATE write_offs SET status = 'cancelled' WHERE id = ? AND status = 'done'`).bind(w.id)];
+  for (const l of lines.results) st.push(db.prepare(`UPDATE doc_lines SET short_qty = MAX(0, ROUND(short_qty - ?, 3)) WHERE id = ?`).bind(l.qty, l.line_id));
+  st.push(db.prepare(TRANSIT_SQL).bind(w.bill_id));
+  st.push(...journalStatements(db, c, { date: w.date, narration: 'Cancelled ' + w.number, refType: 'TLOSS-X', refId: w.id,
+    lines: jls.results.map((l) => ({ account: l.account_id, party: l.party_id, amount: l.credit - l.debit })) }));
+  st.push(auditStatement(c, 'cancel write off', w.number));
+  await db.batch(st);
+  return { ok: true };
 }

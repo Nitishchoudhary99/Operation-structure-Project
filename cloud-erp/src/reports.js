@@ -104,12 +104,16 @@ export async function balanceSheet(db, org, q) {
 
 export async function gstSummary(db, org, q) {
   const { from, to } = period(org, q);
-  const { results } = await db.prepare(`
+  const [{ results }, wo] = await db.batch([db.prepare(`
     SELECT d.type, l.gst_rate, CASE WHEN p.gstin != '' THEN 'B2B' ELSE 'B2C' END AS kind,
            SUM(l.taxable) AS taxable, SUM(l.cgst) AS cgst, SUM(l.sgst) AS sgst, SUM(l.igst) AS igst, COUNT(DISTINCT d.id) AS docs
     FROM docs d JOIN doc_lines l ON l.doc_id = d.id LEFT JOIN parties p ON p.id = d.party_id
     WHERE d.org_id = ? AND d.type IN ('INV','SRET','CNOTE','BILL','PRET','DNOTE') AND d.status != 'cancelled' AND d.date >= ? AND d.date <= ?
-    GROUP BY d.type, l.gst_rate, kind ORDER BY l.gst_rate`).bind(org.id, from, to).all();
+    GROUP BY d.type, l.gst_rate, kind ORDER BY l.gst_rate`).bind(org.id, from, to),
+  // GST input reversed on goods lost or destroyed on the way (GSTR-3B 4(B)(2)), from transit write-offs
+  db.prepare(`SELECT COUNT(*) AS n, COALESCE(SUM(value), 0) AS value, COALESCE(SUM(cgst), 0) AS cgst, COALESCE(SUM(sgst), 0) AS sgst, COALESCE(SUM(igst), 0) AS igst
+    FROM write_offs WHERE org_id = ? AND status = 'done' AND date >= ? AND date <= ?`).bind(org.id, from, to)]);
+  const rev = wo.results[0] || { n: 0, value: 0, cgst: 0, sgst: 0, igst: 0 }, revTax = rev.cgst + rev.sgst + rev.igst;
   const acc = (types) => {
     const by = {};
     for (const r of results.filter((x) => types.includes(x.type))) {
@@ -124,7 +128,8 @@ export async function gstSummary(db, org, q) {
     return { rows: rows.map(f), total: f(tot), _tax: tot.cgst + tot.sgst + tot.igst };
   };
   const out = acc(['INV', 'SRET', 'CNOTE']), inp = acc(['BILL', 'PRET', 'DNOTE']);
-  return { from, to, outward: { rows: out.rows, total: out.total }, inward: { rows: inp.rows, total: inp.total }, net_payable: R(out._tax - inp._tax) };
+  return { from, to, outward: { rows: out.rows, total: out.total }, inward: { rows: inp.rows, total: inp.total },
+    itc_reversed: { n: rev.n, value: R(rev.value), cgst: R(rev.cgst), sgst: R(rev.sgst), igst: R(rev.igst), tax: R(revTax) }, net_payable: R(out._tax - inp._tax + revTax) };
 }
 
 export async function ageing(db, org, q) {
