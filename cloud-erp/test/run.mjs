@@ -1570,8 +1570,8 @@ else {
   check('salaries are hidden from the sales role', (await rq('GET', '/api/staff', undefined, { cookie: sl.cookie, ip })).status === 403);
 }
 
-/* offline replay (Idempotency-Key), web store webhooks, guided put-away and wave picking; with the stand-in Claude and
-   WhatsApp server (ERP_AI_MOCK, see README "Tests"): purchase bill scan and automatic WhatsApp reminders */
+/* offline replay (Idempotency-Key), web store webhooks, guided put-away and wave picking, the on-phone bill reader's
+   rules; with the stand-in WhatsApp server (ERP_AI_MOCK, see README "Tests"): automatic WhatsApp reminders */
 {
   const ip = '203.0.113.160';
   const email = `more${Date.now()}@test.in`;
@@ -1653,29 +1653,35 @@ else {
   check('wave pick list: one line per item for all orders, from the bins, split by order', wave.rows.length === 2 && wb.qty === 55 && wb.orders.length === 2 && wb.from[0].code === pb.suggest.code && wb.from[0].qty === 50 && wb.short_of_bins === 5,
     JSON.stringify(wave.rows));
 
+  // the bill reader that runs on the phone (public/billocr.js): its text rules, without the OCR
+  const ocr = await import(new URL('../public/billocr.js', import.meta.url));
+  check('bill reader: GSTIN found and OCR slips fixed by the check digit (O for 0, an extra character)', ocr.findGstins('GSTIN: 27AAPFUQ0939F12V\nGSTIN/UIN: 27AAPFU0939FlZV').join() === '27AAPFU0939F1ZV',
+    JSON.stringify(ocr.findGstins('GSTIN: 27AAPFUQ0939F12V')));
+  check('bill reader: Indian dates', ocr.isoDate('Date: 20/10/2026') === '2026-10-20' && ocr.isoDate('Dated 5-Mar-26') === '2026-03-05' && ocr.isoDate('dt 05.03.26') === '2026-03-05');
+  const billText = ['SHREE GANESH ELECTRICALS', 'GSTIN: 27AAPFU0939F1ZV', 'TAX INVOICE', 'Invoice No: SGE/2526/0457  Date: 20/10/2026', 'Sr Description HSN Qty Rate Amount',
+    '1  Ceiling fan  8414  10 Pcs  1,450. 00  14,500.00', '2   LEDBub9W  8539  100 Pcs  55.00  5,500.00', '3  Wall switch 6A  8536  50 Nos  20.00  1,000.00',
+    'Taxable value 21,000.00', 'CGST @ 9% 1,890.00', 'SGST @ 9% 1,890.00', 'Grand Total 24,780.00'].join('\n');
+  const rb = ocr.parseBill(billText, { items: [{ id: fan.id, name: 'Ceiling fan', gst_rate: 18 }, { id: bulb.id, name: 'LED bulb 9W', gst_rate: 18 }], parties: [] });
+  const RL = (n) => rb.lines.find((l) => l.name === n) || {};
+  check('bill reader: rows from quantity x rate = amount, matched to items (exact, OCR-mangled name, new)', rb.lines.length === 3 && RL('Ceiling fan').item_id === fan.id && RL('Ceiling fan').qty === 10
+    && RL('Ceiling fan').rate === 1450 && RL('LEDBub9W').item_id === bulb.id && RL('Wall switch 6A').item_id === null && RL('Wall switch 6A').gst_rate === 18, JSON.stringify(rb.lines));
+  check('bill reader: supplier, bill number, date and the total checked', rb.supplier.gstin === '27AAPFU0939F1ZV' && rb.supplier.name === 'SHREE GANESH ELECTRICALS' && rb.bill_no === 'SGE/2526/0457'
+    && rb.bill_date === '2026-10-20' && rb.adds_up && rb.calc_total === 24780, JSON.stringify([rb.supplier, rb.bill_no, rb.bill_date, rb.calc_total]));
+  const retail = ocr.parseBill('MODERN MART\n1 Ceiling fan 2 2360.00 4720.00\nTotal 4,720.00', { items: [{ id: 1, name: 'Ceiling fan', gst_rate: 18 }] });
+  check('bill reader: rates that include GST are taken back to before GST', retail.lines[0].rate === 2000 && retail.adds_up, JSON.stringify(retail.lines));
+
   if (process.env.ERP_AI_MOCK) {
-    /* a stand-in for the Claude API and the WhatsApp Cloud API (the worker started with ANTHROPIC_BASE_URL / WHATSAPP_API pointing here) */
+    /* a stand-in for the WhatsApp Cloud API (the worker started with WHATSAPP_API pointing here) */
     const http = await import('node:http');
-    const seen = { ai: [], wa: [] };
-    const bill = { is_bill: true, supplier: { name: 'Havells Distributor Jaipur', gstin: '08AAACH1234F1Z5', phone: '0141-2345678', state: 'Rajasthan', address: 'MI Road' },
-      bill_no: 'HD/2526/0457', bill_date: '2026-10-20',
-      lines: [{ name: 'Ceiling fan', hsn: '8414', qty: 10, unit: 'pc', rate: 1450, discount_pct: 0, gst_rate: 18, amount: 14500, batch_no: '', expiry: '' },
-        { name: 'LED Bulb 9 W', hsn: '8539', qty: 100, unit: 'pc', rate: 55, discount_pct: 0, gst_rate: 18, amount: 5500, batch_no: '', expiry: '' },
-        { name: 'Wall switch 6A', hsn: '8536', qty: 50, unit: 'pc', rate: 20, discount_pct: 0, gst_rate: 18, amount: 1000, batch_no: '', expiry: '' }],
-      totals: { taxable: 21000, cgst: 1890, sgst: 1890, igst: 0, round_off: 0, total: 24780 }, notes: '' };
+    const seen = { wa: [] };
     const srv = http.createServer((req, res) => {
       let b = ''; req.on('data', (d) => { b += d; }); req.on('end', () => {
         const u = new URL(req.url, 'http://x');
         const wa = u.pathname.startsWith('/wa/') ? JSON.parse(b) : null;
         res.writeHead(wa && wa.to.endsWith('0000') ? 400 : 200, { 'Content-Type': 'application/json' });
-        if (u.pathname === '/v1/messages') {
-          seen.ai.push({ headers: req.headers, body: JSON.parse(b) });
-          return res.end(JSON.stringify({ id: 'msg_1', type: 'message', role: 'assistant', model: 'claude-opus-5-5', stop_reason: 'end_turn', stop_details: null,
-            content: [{ type: 'text', text: JSON.stringify(bill) }], usage: { input_tokens: 1500, output_tokens: 400 } }));
-        }
-        if (u.pathname.startsWith('/wa/')) {
-          const m = JSON.parse(b); seen.wa.push({ path: u.pathname, auth: req.headers.authorization, body: m });
-          if (m.to.endsWith('0000')) return res.end(JSON.stringify({ error: { message: 'Recipient not on WhatsApp' } }));
+        if (wa) {
+          seen.wa.push({ path: u.pathname, auth: req.headers.authorization, body: wa });
+          if (wa.to.endsWith('0000')) return res.end(JSON.stringify({ error: { message: 'Recipient not on WhatsApp' } }));
           return res.end(JSON.stringify({ messages: [{ id: 'wamid.' + seen.wa.length }] }));
         }
         res.statusCode = 404; res.end('{}');
@@ -1683,24 +1689,7 @@ else {
     });
     await new Promise((ok) => srv.listen(+process.env.ERP_AI_MOCK, '127.0.0.1', ok));
     const me = await V('GET', '/api/me');
-    check('the app knows bill scanning and automatic WhatsApp are set up', me.scan === true && me.wa_auto === true, JSON.stringify([me.scan, me.wa_auto]));
-    // a tiny PNG stands in for the photo
-    const png = 'data:image/png;base64,iVBORw0KGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7';
-    const sc = await V('POST', '/api/purchase/scan', { file: png });
-    const req0 = seen.ai[0];
-    check('bill scan asks Claude with the image, a JSON schema and the default fallbacks', req0 && req0.body.model === 'claude-opus-5-5' && req0.body.fallbacks === 'default'
-      && /server-side-fallback-2026-07-01/.test(req0.headers['anthropic-beta'] || '') && req0.body.output_config.format.type === 'json_schema' && req0.body.messages[0].content[0].type === 'image'
-      && (req0.headers['x-api-key'] === 'test-key' || req0.headers.authorization === 'Bearer test-key'), JSON.stringify(req0 && { model: req0.body.model, fb: req0.body.fallbacks, beta: req0.headers['anthropic-beta'], oc: req0.body.output_config && req0.body.output_config.format.type, c0: req0.body.messages[0].content[0].type, key: req0.headers['x-api-key'] || req0.headers.authorization }));
-    const L = (n) => sc.lines.find((l) => l.name === n);
-    check('scanned lines are matched to items: exact name, close name, and new', L('Ceiling fan').item_id === fan.id && L('Ceiling fan').match === 'exact' && L('LED Bulb 9 W').item_id === bulb.id
-      && L('LED Bulb 9 W').match === 'guess' && L('Wall switch 6A').item_id === null && sc.supplier.party_id === null && sc.supplier.gstin === '08AAACH1234F1Z5', JSON.stringify(sc));
-    check('the lines are checked against the bill total', sc.adds_up === true && sc.calc_total === 24780, JSON.stringify([sc.calc_total, sc.adds_up]));
-    const pdf = await V('POST', '/api/purchase/scan', { file: 'data:application/pdf;base64,JVBERi0xLjQK' });
-    check('a PDF bill goes as a document block', seen.ai[1].body.messages[0].content[0].type === 'document' && pdf.bill_no === 'HD/2526/0457', JSON.stringify(seen.ai[1].body.messages[0].content[0].type));
-    check('a file that is not a photo or PDF is refused', (await E('POST', '/api/purchase/scan', { file: 'data:text/plain;base64,aGVsbG8=' })).status === 400);
-    await V('POST', '/api/users', { email: 'sales' + email, name: 'S', role: 'sales', password: 'Sales-pass-1' });
-    const sl = await rq('POST', '/api/auth/login', { email: 'sales' + email, password: 'Sales-pass-1' }, { ip });
-    check('the sales role cannot scan purchase bills', (await rq('POST', '/api/purchase/scan', { file: png }, { cookie: sl.cookie, ip })).status === 403);
+    check('the app knows automatic WhatsApp is set up', me.wa_auto === true, JSON.stringify(me.wa_auto));
 
     // automatic WhatsApp reminders: a Growth-plan business (the trial), two customers overdue, one without WhatsApp
     const late = await V('POST', '/api/parties', { name: 'Late Payer', kind: 'customer', state: 'Rajasthan', phone: '9876500022' });

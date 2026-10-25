@@ -61,10 +61,15 @@ Market research and pricing advice: see [docs/COMPETITORS.md](docs/COMPETITORS.m
 ### Staff, offline, bill scanning, automatic reminders, web store orders, warehouse picking
 - **Staff & Salary** (`#/staff`, `src/payroll.js`, finance roles only): staff on a monthly salary or a daily wage. Today's attendance is one tap per person (P, A, ½, L, O), or a month calendar per person. Monthly staff earn salary × payable days ÷ days in the month (a day nobody marked counts as present, so most shops mark only absences); daily staff earn the wage for days marked present. Overtime hours at a rate per hour. **Advances** (Dr Staff Advances / Cr cash) are cut from a salary in part or in full; **Pay salary** posts Dr Salaries & Wages / Cr Staff Advances / Cr cash, once per person per month, and opens a **payslip** to print or send on WhatsApp. Cancelling reverses the books. The Today card says when today's attendance or last month's salaries are not done.
 - **Works without internet**: the business, customers, items, godowns and accounts are kept on the device the last time it was online (IndexedDB). With no internet, new invoices, POS bills, purchase bills, receipts and expenses are saved in an **Outbox** (`#/outbox`, a badge in the top bar) and sent by themselves when the device is back online. Every such write carries an `Idempotency-Key`; the server keeps the first answer for a week (`idem_keys`), so a bill sent twice (a lost answer, a second sync) is saved once. A bill gets its number, and its stock is checked, when it reaches the server. Signing out clears the device copy.
-- **Scan a supplier's bill** (purchase bill / GRN / PO editor → *Scan supplier bill*, `src/billscan.js`): a photo (made smaller on the phone first) or a PDF goes to Claude (structured JSON output, refusal fallbacks), which reads the supplier, GSTIN, bill number, date and every line. The supplier is matched by GSTIN or name and each line to an item (name, SKU, barcode, HSN); a review sheet shows the guesses and offers **+ New item / + New supplier**; **Fill the bill** opens the purchase bill filled in, with a warning when the lines do not add up to the bill's total. Nothing is saved until the user saves. A daily limit per business by plan. Needs the `ANTHROPIC_API_KEY` secret (below).
+- **Scan a supplier's bill** (purchase bill / GRN / PO editor → *Scan supplier bill*, `public/billocr.js`): read **on the phone itself**, free and private (the picture never leaves the device, no API key). A PDF with text (most e-invoices) is read exactly with pdf.js; a photo or a scanned PDF page is straightened, evened out (shadows), cleared of table rules and read with Tesseract OCR (both self-hosted in `public/vendor/`; about 7 MB on first use, then cached for offline use). Rules for Indian GST bills then find the supplier's GSTIN (OCR slips corrected and the GSTIN check digit verified), bill number, date, the item rows (quantity × rate = amount), GST rates and the total. The supplier is matched by GSTIN or name and each row to an item (name, SKU, HSN, and letter-pair likeness for OCR-mangled names); a review sheet shows the guesses and offers **+ New item / + New supplier**; **Fill the bill** opens the purchase bill filled in, with a warning when the rows do not add up to the bill's total. Nothing is saved until the user saves.
 - **Automatic WhatsApp reminders** (Settings, Growth and Business plans, `src/autowa.js`): every day between 10 am and 1 pm the customers that the Vasooli schedule says are due get the approved reminder template from SmartTrader's WhatsApp Business number, with their name, the business, the amount due and their bill link with UPI. Logged in `reminder_log` (via `auto`), so nobody gets two a day and the schedule moves on. **Send today's now** runs it at once. Needs the WhatsApp secrets (below).
 - **Live web store orders** (Online orders → *Connect a store*, `src/hooks.js`): Shopify (paste the signing key from Settings → Notifications → Webhooks, event *Order payment*), WooCommerce (a secret is made here, topic *Order updated*), or any website (HMAC-SHA256 header `X-Signature`). Each store has a private address; a paid order is checked against the secret and becomes a GST invoice at once (party per store and buyer state, items by SKU, never twice). An order that cannot be billed (unknown SKU) is answered 200 and the reason shows on the connection.
 - **Guided put-away** (`#/putaway`): each item waiting in no bin with the bin it should go to (its default bin, a bin that already holds it, else an empty bin that is nobody's default); scan the bin label and the row is done. **Wave pick list** (`#/wave`, advanced mode): choose many open sales orders / delivery notes of one godown and get one list walked bin by bin, FEFO batches, and how much goes to each order.
+
+### Speed
+- The worker runs with **Smart Placement** (`[placement] mode = "smart"` in wrangler.toml): Cloudflare moves it next to the D1 database, so the several database calls of a screen stay local and only one round trip crosses to the phone.
+- A screen opened again within 20 seconds is drawn from memory at once (`pageCache` in app.js); any save empties it.
+- The phone menu slides on its own GPU layer with a dimmed backdrop (no large shadow repainted while scrolling), does not drag the page behind it, and closes the moment an entry is tapped.
 
 ### How each document hits the books
 
@@ -198,10 +203,10 @@ cloud-erp/
   src/channels.js      marketplace order import (Amazon, Flipkart, Meesho, any CSV) and the stock file
   src/hooks.js         live orders from web stores (Shopify, WooCommerce, any site) by signed webhook
   src/payroll.js       staff, attendance, advances, salary and payslips
-  src/billscan.js      supplier bill photo / PDF read by Claude into a draft purchase bill
   src/autowa.js        automatic payment reminders on the WhatsApp Cloud API (daily, opt-in)
   tools/gen-og.mjs     makes the link-preview posters (public/og-*.png) in the three languages
   public/              the web app (plain HTML/CSS/JS, no build step), PWA manifest + service worker, csv.js (export), _headers
+  public/billocr.js    reads a supplier's bill photo / PDF on the phone (Tesseract OCR and pdf.js in public/vendor/)
   test/run.mjs         end-to-end test against a running worker
   test/perf.mjs        speed budgets per screen, next to a second, busy business
   docs/COMPETITORS.md  market and competitor research
@@ -248,18 +253,11 @@ ERP_MAIL_SINK=8798 node test/run.mjs http://localhost:8799
 npx wrangler dev --port 8799 --persist-to /tmp/erp-test --var GDRIVE_CLIENT_ID:test-client --var GDRIVE_CLIENT_SECRET:test-secret \
   --var GDRIVE_TOKEN_URL:http://127.0.0.1:8797/token --var GDRIVE_REVOKE_URL:http://127.0.0.1:8797/revoke --var GDRIVE_API:http://127.0.0.1:8797
 ERP_GDRIVE_MOCK=8797 node test/run.mjs http://localhost:8799
-# bill scanning and automatic WhatsApp against a stand-in Claude API and WhatsApp Cloud API (port 8796 here)
-npx wrangler dev --port 8799 --persist-to /tmp/erp-test --var ANTHROPIC_API_KEY:test-key --var ANTHROPIC_BASE_URL:http://127.0.0.1:8796 \
+# automatic WhatsApp against a stand-in WhatsApp Cloud API (port 8796 here)
+npx wrangler dev --port 8799 --persist-to /tmp/erp-test \
   --var WHATSAPP_TOKEN:test-wa --var WHATSAPP_PHONE_ID:555 --var WHATSAPP_API:http://127.0.0.1:8796/wa --var APP_URL:http://localhost:8799
 ERP_AI_MOCK=8796 node test/run.mjs http://localhost:8799
 ```
-
-### Bill scanning (one-time setup by the SmartTrader operator)
-
-Create an API key at platform.claude.com (API keys), then Cloudflare → the ERP worker → Settings → Variables and
-Secrets → add **ANTHROPIC_API_KEY** (type Secret). Without it the *Scan supplier bill* button stays hidden. Each scan is
-one Messages API call with the photo or PDF; the daily number of scans per business is set by plan in `src/billscan.js`
-(`DAILY`).
 
 ### Automatic WhatsApp reminders (one-time setup by the SmartTrader operator)
 

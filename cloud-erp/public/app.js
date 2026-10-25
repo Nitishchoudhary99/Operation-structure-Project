@@ -48,7 +48,16 @@ const offOwner = () => (ME ? `${ME.user.id}:${ME.org.id}` : '');
 const newKey = () => (crypto.randomUUID ? crypto.randomUUID() : Date.now().toString(36) + Math.random().toString(36).slice(2, 12));
 const queueAll = async () => ((await idbDo('queue', 'readonly', (s) => s.getAll())) || []).filter((x) => x.owner === offOwner()).sort((a, b) => a.at - b.at);
 const offClear = () => Promise.all([idbDo('get', 'readwrite', (s) => s.clear()), idbDo('queue', 'readwrite', (s) => s.clear())]);
+/* Screens opened again within 20 seconds show at once from memory (what a page reads while it is drawn); any change
+   (a save, a payment, a sync) empties it, so a page never shows its own old data after a write. */
+const pageCache = new Map();
+let rendering = false;
 async function api(method, path, body, opt = {}) {
+  if (method === 'GET' && rendering) {
+    const hit = pageCache.get(path);
+    if (hit && Date.now() - hit.at < 20000) return structuredClone(hit.data);
+  }
+  if (method !== 'GET') pageCache.clear();
   const key = method === 'POST' && OFF_POST.test(path) ? opt.key || newKey() : '';
   let res;
   try {
@@ -73,6 +82,7 @@ async function api(method, path, body, opt = {}) {
   try { data = await res.json(); } catch (e) { /* empty */ }
   if (res.status === 401 && !path.startsWith('/api/auth')) { ME = null; idbDo('get', 'readwrite', (s) => s.clear()); renderAuth(); throw new ApiError('Please sign in.', 401); }
   if (!res.ok) throw new ApiError(data.error || `Request failed (${res.status})`, res.status, data);
+  if (method === 'GET' && rendering && pageCache.size < 60) pageCache.set(path, { at: Date.now(), data: structuredClone(data) });
   if (method === 'GET' && OFF_GET.test(path)) {
     const owner = path === '/api/me' ? `${data.user.id}:${data.org.id}` : offOwner();
     idbDo('get', 'readwrite', (s) => s.put({ owner, data, at: Date.now() }, path));
@@ -371,8 +381,11 @@ function shell() {
           <div class="menu" id="newmenu" hidden>${news.map(([h, t]) => `<a href="#/${h}">${t}</a>`).join('')}</div></div>` : ''}
       </header>
       <main class="page" id="page"></main>
-    </div></div>`;
-  $('#burger').onclick = () => $('#side').classList.toggle('open');
+    </div></div><div class="scrim" id="scrim"></div>`;
+  $('#burger').onclick = () => menu(!$('#side').classList.contains('open'));
+  $('#scrim').onclick = () => menu(false);
+  // a tap on a menu entry closes the menu at once (the slide runs on the GPU while the page loads)
+  $('#side').addEventListener('click', (e) => { if (e.target.closest('a[href^="#/"]')) menu(false); });
   $('#logout').onclick = async () => {
     const waiting = (await queueAll()).length;
     if (waiting && !confirm(`${waiting} entr${waiting === 1 ? 'y was' : 'ies were'} saved without internet and not sent yet. Signing out deletes ${waiting === 1 ? 'it' : 'them'}. Sign out anyway?`)) return;
@@ -437,23 +450,33 @@ async function render() {
   const [path, qs] = hash.split('?');
   const q = new URLSearchParams(qs || '');
   $$('.side a').forEach((a) => a.classList.toggle('on', path === a.dataset.h || (path.startsWith(a.dataset.h + '/') && a.dataset.h !== '')));
-  $('#side').classList.remove('open');
+  menu(false);
   const page = $('#page');
   for (const [re, fn] of ROUTES) {
     const m = path.match(re);
     if (!m) continue;
     page.innerHTML = '<div class="muted">Loading&hellip;</div>';
     page.onclick = page.onkeydown = page.onchange = null;     // a page's own handlers must not outlive it
+    rendering = true;
     try { await fn(page, m, q); const tab = $('.tabs a.on', page); if (tab && tab.parentNode.scrollWidth > tab.parentNode.clientWidth) tab.parentNode.scrollLeft = tab.offsetLeft - tab.parentNode.offsetLeft - 16; } catch (e) {
       if (e.status === 0) offlinePage(page);
       else if (e.status !== 401) page.innerHTML = `<div class="err">${esc(e.message)}</div>`;
-    }
+    } finally { rendering = false; }
     window.scrollTo(0, 0);
     return;
   }
   page.innerHTML = '<div class="empty">Page not found.</div>';
 }
 const go = (h) => { location.hash = '#/' + h; };
+/* open / close the phone menu (and its backdrop); scrolls the current page's entry into view when it opens */
+function menu(open) {
+  const side = $('#side'), scrim = $('#scrim');
+  if (!side) return;
+  side.classList.toggle('open', open);
+  if (scrim) scrim.classList.toggle('on', open);
+  document.body.classList.toggle('menu-open', open);
+  if (open) { const on = $('.side a.on', side); if (on) on.scrollIntoView({ block: 'center' }); }
+}
 /* ?new=1 opens a form once; the flag is removed from the address so saving (which re-renders the page) does not open it again */
 function takeNew(q) {
   if (!q.get('new')) return false;
@@ -650,7 +673,7 @@ route(/^new\/([A-Z]+)$/, async (el, m, q) => {
       <td class="c-n" data-l="GST"><select name="gst_rate" aria-label="GST rate">${gstOpt(l.gst_rate ?? 0)}</select></td>
       <td class="num c-amt" data-amt data-l="Amount"></td>
       <td class="c-del">${fromDoc && !isNote && ['SRET', 'PRET'].includes(type) ? '' : '<button type="button" class="btn sm danger" data-del aria-label="Remove line">&times;</button>'}</td></tr>`;
-  const canScan = ME.scan && T.side === 'purchase' && !fromDoc && !isNoteType(type);
+  const canScan = T.side === 'purchase' && !fromDoc && !isNoteType(type);
   el.innerHTML = head(`New ${esc(T.label)}${fromDoc ? ` <span class="muted">from ${esc(draft.ref_number)}</span>` : ''}`,
     canScan ? '<button type="button" class="btn primary" id="scanbill">&#128247; Scan supplier bill</button><input type="file" id="scanfile" accept="image/*,application/pdf" hidden>' : '') + `
     ${q.get('scan') && draft.scan_note ? `<div class="panel ${draft.scan_ok ? '' : 'warnbox'}">${draft.scan_note}</div>` : ''}
@@ -1555,25 +1578,18 @@ route(/^outbox$/, async (el) => {
 
 /* ======================================================================= purchase bill scan */
 const isNoteType = (t) => ['SRET', 'PRET', 'CNOTE', 'DNOTE'].includes(t);
-/* a photo is made smaller (long side 2000 px, JPEG) before it goes up: quicker on a phone network, same reading */
-async function billFileData(file) {
-  if (file.type === 'application/pdf') {
-    if (file.size > 5e6) throw new Error('This PDF is over 5 MB. Scan the bill a page at a time.');
-    return new Promise((ok, no) => { const r = new FileReader(); r.onload = () => ok(r.result); r.onerror = () => no(r.error); r.readAsDataURL(file); });
-  }
-  if (!/^image\//.test(file.type)) throw new Error('Choose a photo or a PDF of the bill.');
-  const img = await createImageBitmap(file);
-  const k = Math.min(1, 2000 / Math.max(img.width, img.height)), cv = document.createElement('canvas');
-  cv.width = Math.round(img.width * k); cv.height = Math.round(img.height * k);
-  cv.getContext('2d').drawImage(img, 0, 0, cv.width, cv.height);
-  return cv.toDataURL('image/jpeg', 0.85);
-}
+/* the bill is read on this phone (public/billocr.js: pdf.js for PDFs with text, Tesseract OCR for photos): free, and the
+   picture never leaves the device */
 async function scanBillFlow(file, type) {
   const root = $('#modal-root');
-  root.innerHTML = `<div class="modal-bg"><div class="modal" role="status"><h2>Reading the bill…</h2><p class="muted">Usually 10 to 30 seconds. Keep this screen open.</p><div class="prog"><i class="spin"></i></div></div></div>`;
-  let r;
-  try { r = await POST('/api/purchase/scan', { file: await billFileData(file) }); } catch (e) { root.innerHTML = ''; return toast(e.message, 'err'); }
+  root.innerHTML = `<div class="modal-bg"><div class="modal" role="status"><h2>Reading the bill on this phone…</h2>
+    <p class="muted" id="scanmsg">The first time the reader downloads (about 7 MB), then it works offline too. A photo takes 10 to 40 seconds.</p><div class="prog"><i id="scanbar" class="spin"></i></div></div></div>`;
   const [parties, items] = await Promise.all([master('parties'), master('items')]);
+  let r;
+  try {
+    const { readBill } = await import('/billocr.js');
+    r = await readBill(file, { items, parties, orgGstin: ME.org.gstin, onProgress: (p) => { const b = $('#scanbar'); if (b) { b.classList.remove('spin'); b.style.width = Math.round(p * 100) + '%'; } } });
+  } catch (e) { root.innerHTML = ''; return toast(e.message || 'The bill could not be read.', 'err'); }
   const sups = parties.filter((p) => p.kind !== 'customer');
   const itemOpts = (l) => `<option value="new" ${l.item_id ? '' : 'selected'}>+ New item: ${esc(l.name || '(no name)')}</option>`
     + items.filter((i) => !i.is_service).map((i) => `<option value="${i.id}" ${i.id === l.item_id ? 'selected' : ''}>${esc(i.name)}</option>`).join('');
@@ -1613,7 +1629,8 @@ async function scanBillFlow(file, type) {
         <td class="num">${qtyf(l.qty)} ${esc(l.unit)}</td><td class="num">${inr(l.rate)}</td><td class="num">${l.gst_rate}%</td>
         <td><select name="it${i}" aria-label="Item for ${esc(l.name)}">${itemOpts(l)}<option value="skip">Leave out</option></select>${l.match === 'guess' ? '<div class="muted small">best guess: check</div>' : ''}</td></tr>`).join('')}
     </tbody></table></div>
-    <p class="muted small">Reading a photo can make mistakes. Nothing is saved until you save the bill.</p>` });
+    ${r.notes ? `<p class="warnbox panel small">${esc(r.notes)}</p>` : ''}
+    <p class="muted small">Read on this phone; a photo can be misread, so check each line. Nothing is saved until you save the bill.</p>` });
   const sn = form.elements.sup_name.closest('label');
   const syncSup = () => { sn.hidden = form.elements.sup.value !== 'new'; };
   form.elements.sup.onchange = syncSup; syncSup();
