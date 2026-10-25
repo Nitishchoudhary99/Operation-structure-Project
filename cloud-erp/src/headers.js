@@ -5,7 +5,7 @@
 const RZP = 'https://*.razorpay.com';
 export const CSP_APP = [
   "default-src 'self'",
-  `script-src 'self' ${RZP}`,
+  `script-src 'self' 'wasm-unsafe-eval' ${RZP}`,     // WebAssembly (not JS eval): the on-phone bill reader
   `style-src 'self' 'unsafe-inline' ${RZP}`,
   `img-src 'self' data: blob: ${RZP}`,
   `font-src 'self' data: ${RZP}`,

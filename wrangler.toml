@@ -27,6 +27,11 @@ service = "docbrisk-api"
 [triggers]
 crons = ["30 0 * * *", "45 * * * *"]
 
+# Run the worker next to the D1 database instead of next to the user: a screen makes several database calls, and each one
+# then stays local, so only one round trip crosses the distance to the phone (Cloudflare Smart Placement).
+[placement]
+mode = "smart"
+
 [observability]
 enabled = true
 

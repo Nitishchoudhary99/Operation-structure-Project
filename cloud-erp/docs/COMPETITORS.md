@@ -242,7 +242,7 @@ Y = native, P = partial / higher plan / add-on, N = absent. "Yes"/"No" for Smart
 | POS with barcode / camera scan | P | N | Y | P | P | Yes |
 | Barcode label printing | Y | N | Y | Y | P | Yes |
 | Staff attendance / payroll | N | P (Pagarkhata app) | P (myBillBook Platinum+) | N | Y (payroll) | Yes (attendance, advances, salary, payslip; no PF/ESI) |
-| AI features (OCR bill scan, assistants) | P (~, agentic R&D) | N | P (myBillBook OCR) | P (Zia) | N | Yes (supplier bill photo / PDF → purchase bill) |
+| AI features (OCR bill scan, assistants) | P (~, agentic R&D) | N | P (myBillBook OCR) | P (Zia) | N | Yes (supplier bill photo / PDF → purchase bill, read on the phone, free) |
 | Offline data entry | N | Y (app) | Y (Vyapar) | N | Y (desktop) | Yes (bills, POS, receipts, expenses; sync later) |
 | Mobile app / PWA install | Y (Android HHT) | Y | Y | Y | P | Yes (PWA) |
 | Roles + audit trail | Y | N | P | Y | Y (edit log) | Yes |
@@ -284,7 +284,7 @@ file, a Today action list, bills as PDF on WhatsApp in the customer's language, 
 | Vinculum / Unicommerce | Built for brands and 3PLs: quote-based price, implementation projects, no SME books | The parts an SME trader needs (bins, FEFO, serials, order import, stock file) at a small yearly price, set up in minutes |
 
 **Built since (25 Oct 2026, second round):** staff attendance and salary with advances and payslips, offline billing
-with an outbox, supplier bill scanning with Claude, automatic WhatsApp reminders, live Shopify / WooCommerce orders,
+with an outbox, supplier bill scanning on the phone (free OCR, no outside service), automatic WhatsApp reminders, live Shopify / WooCommerce orders,
 guided put-away and wave picking.
 
 **Still behind (honest list):** live Amazon / Flipkart API sync (needs developer registration with each marketplace),

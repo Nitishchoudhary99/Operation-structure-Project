@@ -45,6 +45,7 @@ h3 { font-size: 14px; margin: 0 0 8px; color: var(--muted); font-weight: 600; te
 .top { display: flex; align-items: center; gap: 12px; padding: 12px 22px; background: var(--panel); border-bottom: 1px solid var(--line); position: sticky; top: 0; z-index: 5; }
 .top .who { color: var(--muted); font-size: 13px; }
 .burger { display: none; }
+.scrim { display: none; }
 .page { padding: 20px 22px 60px; max-width: 1280px; }
 .page-head { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-bottom: 16px; }
 .page-head .spacer { flex: 1; }
@@ -223,8 +224,14 @@ input[type=checkbox] { width: auto; }
 
 @media (max-width: 860px) {
   .shell { grid-template-columns: 1fr; }
-  .side { position: fixed; left: 0; top: 0; bottom: 0; width: 250px; z-index: 40; transform: translateX(-100%); transition: transform .2s; }
-  .side.open { transform: none; box-shadow: 0 0 40px rgba(0,0,0,.4); }
+  /* the menu on a phone: its own GPU layer that slides (no repaint of the page), no big shadow to repaint while it
+     scrolls, and its scroll never drags the page behind it; the dimmed backdrop is a cheap opacity fade */
+  .side { position: fixed; left: 0; top: 0; bottom: 0; width: 260px; max-width: 82vw; z-index: 40; transform: translate3d(-100%, 0, 0); transition: transform .18s ease-out;
+    will-change: transform; contain: layout paint style; overscroll-behavior: contain; -webkit-overflow-scrolling: touch; touch-action: pan-y; backface-visibility: hidden; }
+  .side.open { transform: translate3d(0, 0, 0); }
+  .scrim { display: block; position: fixed; inset: 0; z-index: 39; background: rgba(0,0,0,.45); opacity: 0; pointer-events: none; transition: opacity .18s ease-out; will-change: opacity; }
+  .scrim.on { opacity: 1; pointer-events: auto; }
+  body.menu-open { overflow: hidden; }
   .burger { display: inline-flex; }
   .top { padding: 10px 16px; }
   .page { padding: 16px 16px 60px; }

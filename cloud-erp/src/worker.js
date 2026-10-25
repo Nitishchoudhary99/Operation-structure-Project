@@ -16,7 +16,6 @@ import {
 } from './engine.js';
 import { getBom, saveBom, listProductions, createProduction, cancelProduction } from './mfg.js';
 import { importOrders, stockFile } from './channels.js';
-import { scanBill, scanConfigured } from './billscan.js';
 import { waConfigured, runAutoReminders, remindOrg } from './autowa.js';
 import { listHooks, addHook, deleteHook, receiveHook } from './hooks.js';
 import { listStaff, saveStaff, markAttendance, staffDetail, giveAdvance, paySalary, cancelStaffTxn, payslip, todayStaffQueries } from './payroll.js';
@@ -233,7 +232,7 @@ router.add('POST', '/api/me/logout-all', async (c) => {
 router.add('GET', '/api/me', async (c) => json({
   user: publicUser(c.user), org: orgOut(c.org),
   can: Object.fromEntries(['settings', 'users', 'items', 'purchase', 'sales', 'stock', 'finance', 'khata', 'masters'].map((a) => [a, can(c.user, a)])),
-  view: Object.fromEntries(AREAS.map((a) => [a, canView(c.user, a)])), costs: seesCosts(c.user), scan: scanConfigured(c.env), wa_auto: waConfigured(c.env),
+  view: Object.fromEntries(AREAS.map((a) => [a, canView(c.user, a)])), costs: seesCosts(c.user), wa_auto: waConfigured(c.env),
   doc_types: Object.fromEntries(Object.entries(DOC_TYPES).map(([k, v]) => [k, { label: v.label, side: v.side, from: v.from, prefix: v.prefix, note: !!v.note, stock: v.stock || '' }])),
   gst_rates: GST_RATES, today: today(), states: STATES.map(([, n]) => n), plan: planOut(c.org),
 }));
@@ -606,9 +605,6 @@ router.add('POST', '/api/hooks/:token', async (c) => {
   await rateLimit(c.env, 'hook:' + String(c.params.token).slice(0, 64), 600, 3600);
   return json(await receiveHook(c, c.params.token));
 }, { public: true, webhook: true, rawOk: true });
-
-/* ======================================================================= purchase bill scan: src/billscan.js */
-router.add('POST', '/api/purchase/scan', async (c) => json(await scanBill(c, c.body)), { bodyMax: 8e6 });
 
 /* ======================================================================= today: what needs doing, one tap each */
 router.add('GET', '/api/today', async (c) => {
