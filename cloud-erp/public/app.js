@@ -343,7 +343,7 @@ const ADV_DOCS = ['QUOTE', 'SO', 'DN', 'PO', 'GRN'];
 const simple = () => !ME || (ME.org.mode || 'simple') !== 'advanced';
 /* which permission area a menu entry needs (custom roles may not see every area); the gate register also opens with 'gate' */
 const navArea = (h) => /^(receipts|payments|expenses|accounts|journal|staff)$/.test(h) ? 'finance' : /^(sales\/|pos$|recurring$|channels$)/.test(h) ? 'sales' : /^(purchase\/|receive$)/.test(h) ? 'purchase'
-  : /^gate\/in$/.test(h) ? ['purchase', 'gate'] : /^gate\/out$/.test(h) ? ['items', 'gate']
+  : /^gate\/in$/.test(h) ? ['purchase', 'gate'] : /^gate\/out$/.test(h) ? ['items', 'gate'] : h === 'claims' ? ['purchase', 'finance']
   : /^(items|stock|stockcount|pending|bins|expiry|stock-ageing|serials|production|wave|putaway)$/.test(h) ? 'items' : /^(parties|reminders)$/.test(h) ? 'masters' : /^(khata|vaade)$/.test(h) ? 'khata'
   : /^(reports\/|tally$|daybook$)/.test(h) ? 'reports' : h === 'plan' ? 'settings' : '';
 const seen = (h) => {
@@ -357,11 +357,11 @@ const JOBS = {
   all: { t: 'Owner / manager: everything', home: 'dashboard' },
   counter: { t: 'Billing counter', home: 'pos', screens: ['pos', 'sales/INV', 'sales/SRET', 'receipts', 'khata', 'parties', 'items', 'stock', 'serials'] },
   store: { t: 'Godown / store keeper', home: 'receive', screens: ['receive', 'gate/in', 'purchase/GRN', 'purchase/PO', 'purchase/PRET', 'putaway', 'bins', 'items', 'stock', 'expiry', 'serials',
-    'production', 'stockcount', 'wave', 'pending', 'gate/out', 'stock-ageing'] },
+    'production', 'stockcount', 'wave', 'pending', 'gate/out', 'stock-ageing', 'claims'] },
   gate: { t: 'Gate / security guard', home: 'gate/in', screens: ['gate/in', 'gate/out'] },
   accounts: { t: 'Accountant', home: 'dashboard', screens: ['dashboard', 'sales/INV', 'sales/SRET', 'sales/CNOTE', 'receipts', 'purchase/BILL', 'purchase/PRET', 'purchase/DNOTE', 'payments',
     'parties', 'khata', 'reminders', 'vaade', 'staff', 'expenses', 'accounts', 'journal', 'daybook', 'reports/pnl', 'reports/balance-sheet', 'reports/trial-balance', 'reports/gst', 'reports/ageing',
-    'reports/register', 'cash', 'tally'] },
+    'reports/register', 'cash', 'tally', 'claims'] },
   sales: { t: 'Salesman', home: 'sales/INV', screens: ['dashboard', 'pos', 'sales/INV', 'sales/QUOTE', 'sales/SO', 'sales/DN', 'sales/SRET', 'receipts', 'channels', 'recurring', 'parties', 'khata',
     'reminders', 'vaade', 'items', 'stock'] },
 };
@@ -394,7 +394,7 @@ const minDate = () => {
 const NAV = [
   ['', [['dashboard', 'Dashboard']]],
   ['Sales', [['pos', 'Quick Bill (POS)'], ['sales/INV', 'Invoices'], ['channels', 'Online Orders (Amazon…)'], ['recurring', 'Recurring Bills'], ['sales/SO', 'Sales Orders'], ['sales/DN', 'Delivery Notes'], ['sales/QUOTE', 'Quotations'], ['sales/SRET', 'Sales Returns'], ['sales/CNOTE', 'Credit Notes (rate diff)'], ['receipts', 'Receipts']]],
-  ['Purchase', [['receive', 'Receive Goods (scan)'], ['purchase/PO', 'Purchase Orders'], ['gate/in', 'Gate Entry (inward)'], ['purchase/GRN', 'Goods Receipts (GRN)'], ['purchase/BILL', 'Purchase Bills'], ['purchase/PRET', 'Purchase Returns'], ['purchase/DNOTE', 'Debit Notes (rate diff)'], ['payments', 'Payments']]],
+  ['Purchase', [['receive', 'Receive Goods (scan)'], ['purchase/PO', 'Purchase Orders'], ['gate/in', 'Gate Entry (inward)'], ['purchase/GRN', 'Goods Receipts (GRN)'], ['purchase/BILL', 'Purchase Bills'], ['purchase/PRET', 'Purchase Returns'], ['purchase/DNOTE', 'Debit Notes (rate diff)'], ['claims', 'Transit Claims'], ['payments', 'Payments']]],
   ['Inventory', [['items', 'Items'], ['stock', 'Stock & Godowns'], ['stock-ageing', 'Stock Ageing'], ['bins', 'Bins & Racks'], ['expiry', 'Batch & Expiry'], ['serials', 'Serial / IMEI'], ['production', 'Production (BOM)'], ['wave', 'Wave Pick List'], ['stockcount', 'Stock Count'], ['gate/out', 'Gate Pass (outward)'], ['pending', 'Pending Orders']]],
   ['Contacts', [['parties', 'Customers & Suppliers'], ['khata', 'Khata Book'], ['reminders', 'Vasooli (Collections)'], ['vaade', 'Vaade (Promises)']]],
   ['Accounts', [['staff', 'Staff & Salary'], ['expenses', 'Expenses'], ['accounts', 'Chart of Accounts'], ['journal', 'Journal Voucher'], ['daybook', 'Day Book']]],
@@ -586,6 +586,7 @@ const TODAY = {
   to_receive: ['blue', (n) => `${n} purchase order${n > 1 ? 's' : ''} to receive`, '#/pending', 'Open'],
   at_gate: ['amber', (n) => `${n} vehicle${n > 1 ? 's' : ''} at the gate, goods not received`, '#/receive', 'Receive'],
   in_transit: ['blue', (n) => `${n} bill${n > 1 ? 's' : ''} booked, goods still on the way`, '#/receive', 'Receive'],
+  claims: ['amber', (n) => `${n} transit claim${n > 1 ? 's' : ''} to follow up, not paid yet`, '#/claims', 'Follow up'],
   put_away: ['blue', (n) => `${n} item${n > 1 ? 's' : ''} not put away in bins`, '#/bins', 'Put away'],
   attendance: ['blue', (n) => `Mark today's attendance (${n} staff)`, '#/staff', 'Mark'],
   salary_due: ['amber', (n) => `Last month's salary not paid for ${n} staff`, '#/staff?month=last', 'Pay'],
@@ -960,7 +961,8 @@ function writeOffForm(d) {
   const open = d.lines.filter((l) => l.to_receive > 0.0005);
   const f = modal(`Write off on ${d.number}`, [
     { k: 'mode', label: 'Who bears it?', type: 'select', options: [{ v: 'loss', t: 'Our loss (damaged, lost, stolen)' }, { v: 'claim', t: 'Transporter / insurance will pay' }] },
-    { k: 'date', label: 'Date', type: 'date', value: ME.today }, { k: 'reason', label: 'What happened (LR no., damage report…)', wide: true }],
+    { k: 'date', label: 'Date', type: 'date', value: ME.today }, { k: 'reason', label: 'What happened (damage report…)', wide: true },
+    { k: 'against', label: 'Claim against (transporter / insurer)', help: 'For a claim: followed up in Purchase → Transit Claims.' }, { k: 'claim_ref', label: 'LR / claim no.' }],
   async (v, fm) => {
     const lines = $$('[data-wo]', fm).map((i) => ({ line_id: +i.dataset.wo, qty: +i.value || 0 })).filter((l) => l.qty > 0);
     if (!lines.length) throw new Error('Type how many pieces were damaged or lost.');
@@ -1006,7 +1008,8 @@ route(/^doc\/(\d+)$/, async (el, m) => {
     ${d.short ? `<div class="panel muted no-print">Shortage: goods billed on ${d.parent ? esc(d.parent.number) : 'the bill'} that never came.</div>` : ''}
     ${(d.write_offs || []).length ? `<div class="panel flush no-print"><h2 class="ph">Damaged / lost on the way</h2>${table([
       { h: 'No.', f: (w) => `<b>${esc(w.number)}</b><div class="muted">${fdate(w.date)}</div>` },
-      { h: 'Written off as', f: (w) => (w.mode === 'claim' ? 'Claim on transporter / insurer' : 'Our loss') + (w.reason ? `<div class="muted">${esc(w.reason)}</div>` : '') },
+      { h: 'Written off as', f: (w) => (w.mode === 'claim' ? `<a href="#/claim/${w.id}">Claim${w.against ? ' on ' + esc(w.against) : ' on transporter / insurer'}</a>${w.status === 'done' ? `<div class="muted">${w.due > 0 ? `${inr(w.due)} still due` : 'settled'}</div>` : ''}` : 'Our loss')
+        + (w.reason ? `<div class="muted">${esc(w.reason)}</div>` : '') },
       { h: 'Value + GST reversed', num: 1, f: (w) => `${inr(w.value)} + ${inr(w.gst)}` },
       { h: '', f: (w) => (w.status === 'cancelled' ? badge('cancelled') : ME.can.purchase && !limits().no_cancel ? `<button class="btn sm danger" data-wox="${w.id}">Cancel</button>` : '') }], d.write_offs)}</div>` : ''}
     ${waiting ? `<div class="panel warnbox no-print">This purchase order is above the approval limit of ${inr0(ME.org.approvals.po_above)}. ${ME.can.settings ? 'Check it and tap <b>Approve</b>; to refuse it, cancel it.' : 'The owner or an admin has to approve it before goods can be received against it.'}</div>` : ''}
@@ -3449,6 +3452,78 @@ function receiveDone(el, d, { kind, draft, lines, left, useBins, bad = [], damag
     ${d && kind !== 'bill' && ME.can.purchase ? `<div class="row"><span class="muted">When the supplier's bill comes:</span><a class="btn" href="#/new/BILL?from=${d.id}">Make purchase bill from ${esc(d.number)}</a></div>` : ''}`;
   beep(true);
 }
+
+/* ======================================================================= transit claims
+   Goods damaged or lost on the way that the transporter or insurer is to pay (write-offs made "Transporter / insurance
+   will pay"), followed up to the end: whom, their reference, the next follow-up, money received, the rest closed as a loss. */
+const CLAIM_TONE = { open: 'open', partial: 'partial', settled: 'paid', rejected: 'cancelled' };
+const claimBadge = (c) => `<span class="badge b-${CLAIM_TONE[c.state]}">${esc(c.state_text)}</span>`;
+route(/^claims$/, async (el, m, q) => {
+  const status = q.get('status') || 'open';
+  const { rows, totals } = await GET('/api/claims?status=' + status);
+  el.innerHTML = head('Transit Claims') + `
+    <p class="muted">Goods broken or lost on the way that the transporter or insurance company is to pay. Write one off as “Transporter / insurance will pay” on the bill (More → Write off) or on the Receive screen; follow it up here until the money comes.</p>
+    <div class="kpis"><div class="kpi"><div class="l">Claims open</div><div class="v">${totals.open}</div></div>
+      <div class="kpi"><div class="l">Still to get</div><div class="v ${totals.due > 0 ? 'neg' : ''}">${inr0(totals.due)}</div></div>
+      <div class="kpi"><div class="l">Received so far</div><div class="v pos">${inr0(totals.received)}</div></div>
+      <div class="kpi"><div class="l">Closed as loss</div><div class="v">${inr0(totals.closed)}</div></div></div>
+    <div class="tabs">${[['open', `Open${totals.open ? ` (${totals.open})` : ''}`], ['closed', 'Settled / closed'], ['all', 'All']].map(([k, t]) => `<a href="#/claims?status=${k}" class="${status === k ? 'on' : ''}">${t}</a>`).join('')}</div>
+    <div class="panel flush">${table([
+      { h: 'Claim', f: (c) => `<a href="#/claim/${c.id}"><b>${esc(c.number)}</b></a><div class="muted">${fdate(c.date)} · ${c.age} day${c.age === 1 ? '' : 's'}</div>` },
+      { h: 'Against', f: (c) => `${esc(c.against || '—')}${c.claim_ref ? `<div class="muted">${esc(c.claim_ref)}</div>` : ''}` },
+      { h: 'Bill', cls: 'hide-sm', f: (c) => `<a href="#/doc/${c.bill_id}">${esc(c.bill_number)}</a><div class="muted">${esc(c.supplier || '')}</div>` },
+      { h: 'Claimed', num: 1, cls: 'hide-sm', f: (c) => inr(c.total) },
+      { h: 'Still due', num: 1, f: (c) => (c.due > 0 ? `<b>${inr(c.due)}</b>` : '—') + (c.received ? `<div class="muted">got ${inr(c.received)}</div>` : '') },
+      { h: 'Follow up', f: (c) => (c.due > 0 ? (c.follow_up ? `<span class="${c.late ? 'neg' : ''}">${fdate(c.follow_up)}${c.late ? ' · due' : ''}</span>` : '<span class="muted">not set</span>') : '') },
+      { h: '', f: (c) => claimBadge(c) }], rows,
+    { empty: status === 'open' ? 'No claim is waiting. Sab theek hai ✓' : 'No claims here.', onRow: true })}</div>`;
+  bindRows(el, rows, (x) => go('claim/' + x.id));
+});
+
+route(/^claim\/(\d+)$/, async (el, m) => {
+  const c = await GET('/api/claims/' + m[1]);
+  const fin = ME.can.finance, edit = fin || ME.can.purchase;
+  el.innerHTML = head(`${esc(c.number)} ${claimBadge(c)}`, `<a class="btn" href="#/claims">All claims</a>`) + `
+    <div class="kpis"><div class="kpi"><div class="l">Claimed (goods + GST)</div><div class="v">${inr(c.total)}</div></div>
+      <div class="kpi"><div class="l">Received</div><div class="v pos">${inr(c.received)}</div></div>
+      <div class="kpi"><div class="l">Closed as loss</div><div class="v">${inr(c.closed)}</div></div>
+      <div class="kpi"><div class="l">Still due</div><div class="v ${c.due > 0 ? 'neg' : ''}">${inr(c.due)}</div></div></div>
+    ${c.cancelled ? '<div class="panel err">This write-off was cancelled.</div>' : ''}
+    ${c.due > 0 && !c.cancelled && fin ? `<div class="row" style="margin-bottom:12px"><button class="btn primary" id="cgot">Money received</button>
+      <button class="btn danger" id="cclose">Close the rest as loss</button></div>` : ''}
+    <div class="grid g2">
+      <form class="panel" id="cform"><h2>Claim details</h2><div class="form">
+        <label class="f">Against (transporter / insurer)<input name="against" maxlength="80" value="${esc(c.against)}" ${edit ? '' : 'disabled'}></label>
+        <label class="f">LR / claim no.<input name="claim_ref" maxlength="40" value="${esc(c.claim_ref)}" ${edit ? '' : 'disabled'}></label>
+        <label class="f">Next follow-up<input name="follow_up" type="date" value="${esc(c.follow_up)}" ${edit ? '' : 'disabled'}></label>
+        <label class="f wide">Note (whom you spoke to, what they said)<textarea name="claim_note" rows="2" maxlength="300" ${edit ? '' : 'disabled'}>${esc(c.claim_note)}</textarea></label></div>
+        ${edit ? '<div class="row" style="margin-top:10px"><span class="spacer"></span><button class="btn">Save details</button></div>' : ''}</form>
+      <div class="panel"><h2>What was lost</h2>
+        <p>On bill <a href="#/doc/${c.bill_id}">${esc(c.bill_number)}</a> of ${esc(c.supplier || '')}, ${fdate(c.date)}${c.reason ? `: ${esc(c.reason)}` : ''}.</p>
+        ${table([{ h: 'Item', f: (l) => esc(l.item || '') }, { h: 'Qty', num: 1, f: (l) => `${qtyf(l.qty)} ${esc(l.unit || '')}` }, { h: 'Value + GST', num: 1, f: (l) => `${inr(l.value)} + ${inr(l.gst)}` }], c.lines)}</div>
+    </div>
+    <div class="panel flush"><h2 class="ph">History</h2>${table([
+      { h: 'Date', f: (e) => fdate(e.date) },
+      { h: 'What', f: (e) => (e.kind === 'receipt' ? `Money received${e.account ? ` into ${esc(e.account)}` : ''}` : 'Closed as loss') + (e.note ? `<div class="muted">${esc(e.note)}</div>` : '') },
+      { h: 'Amount', num: 1, f: (e) => inr(e.amount) },
+      { h: '', f: (e) => (e.status === 'cancelled' ? badge('cancelled') : fin && !limits().no_cancel ? `<button class="btn sm danger" data-cx="${e.id}">Cancel</button>` : '') }], c.entries,
+    { empty: 'Nothing received yet.' })}</div>`;
+  const back = (d) => { toast('Saved'); render(); return d; };
+  $('#cform').onsubmit = async (e) => {
+    e.preventDefault();
+    try { back(await api('PUT', '/api/claims/' + c.id, Object.fromEntries(new FormData(e.target)))); } catch (err) { toast(err.message, 'err'); }
+  };
+  if ($('#cgot')) $('#cgot').onclick = async () => modal(`Money received on ${c.number}`, [
+    { k: 'amount', label: 'Amount (₹)', type: 'number', value: c.due }, { k: 'date', label: 'Date', type: 'date', value: ME.today },
+    { k: 'account_id', label: 'Money went into', type: 'select', options: await cashOpts() }, { k: 'note', label: 'Cheque / UTR / note', wide: true }],
+  async (v) => back(await POST(`/api/claims/${c.id}/receive`, v)), { submit: 'Save', intro: `<p class="muted">${inr(c.due)} is still due${c.against ? ` from ${esc(c.against)}` : ''}. If they pay less and will not pay the rest, save what came, then <b>Close the rest as loss</b>.</p>` });
+  if ($('#cclose')) $('#cclose').onclick = () => modal(`Close ${c.number}`, [{ k: 'date', label: 'Date', type: 'date', value: ME.today }, { k: 'note', label: 'Why (claim rejected, settled for less…)', wide: true }],
+    async (v) => back(await POST(`/api/claims/${c.id}/close`, v)), { submit: `Close ${inr(c.due)} as loss`, intro: `<p class="muted">${inr(c.due)} will not be paid. It moves from Claims to Transit Loss &amp; Damage. You can undo this from the history.</p>` });
+  $$('[data-cx]', el).forEach((b) => b.onclick = async () => {
+    if (!confirm('Cancel this entry? Its money and books are taken back, and the amount is due again.')) return;
+    try { back(await POST(`/api/claim-entries/${b.dataset.cx}/cancel`, {})); } catch (e) { toast(e.message, 'err'); }
+  });
+});
 
 /* ======================================================================= stock count (cycle count) */
 route(/^stockcount$/, async (el, m, q) => {

@@ -143,7 +143,8 @@ export async function autoBins(c, body) {
 /* ---------- goods damaged or lost on the way ---------- */
 const D = (account, amount) => ({ account, amount }), C = (account, amount) => ({ account, amount: -amount });
 export const writeOffOut = (w) => ({ ...w, value: R(w.value), cgst: R(w.cgst), sgst: R(w.sgst), igst: R(w.igst), gst: R(w.cgst + w.sgst + w.igst),
-  total: R(w.value + w.cgst + w.sgst + w.igst) });
+  total: R(w.value + w.cgst + w.sgst + w.igst), received: R(w.received || 0), closed: R(w.closed || 0),
+  due: w.mode === 'claim' ? R(Math.max(0, w.value + w.cgst + w.sgst + w.igst - (w.received || 0) - (w.closed || 0))) : 0 });
 
 /* POST /api/docs/:id/write-off { date, mode: 'loss' | 'claim', reason, lines: [{ line_id, qty }] }: pieces of a bill whose
    goods are on the way that will never be stock. The supplier is still owed the bill; the value leaves Goods in Transit
@@ -181,8 +182,10 @@ export async function writeOff(c, billId, body) {
   const sys = c.sys, txk = uid(), reason = str(body.reason, 200);
   if (!sys.git || !sys.gst_input || !sys[mode === 'claim' ? 'claims' : 'transit_loss']) throw bad('An account for write-offs is missing in the chart of accounts.');
   const st = [counterStatements(db, orgId, 'WO'),
-    db.prepare(`INSERT INTO write_offs (org_id, number, bill_id, date, mode, reason, value, cgst, sgst, igst, created_by, created_at, txk)
-      VALUES (?, ${counterValueSql}, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).bind(orgId, 'WO-%05d', orgId, 'WO', bill.id, d, mode, reason, value, cgst, sgst, igst, c.user.id, nowIso(), txk)];
+    // a claim: on whom (transporter / insurer) and their reference, followed up in Transit Claims (src/claims.js)
+    db.prepare(`INSERT INTO write_offs (org_id, number, bill_id, date, mode, reason, value, cgst, sgst, igst, created_by, created_at, txk, against, claim_ref)
+      VALUES (?, ${counterValueSql}, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).bind(orgId, 'WO-%05d', orgId, 'WO', bill.id, d, mode, reason, value, cgst, sgst, igst, c.user.id, nowIso(), txk,
+      mode === 'claim' ? str(body.against, 80) : '', mode === 'claim' ? str(body.claim_ref, 40) : '')];
   for (const x of out) {
     st.push(db.prepare(`INSERT INTO write_off_lines (write_off_id, line_id, item_id, qty, value, cgst, sgst, igst) VALUES ((SELECT id FROM write_offs WHERE txk = ?), ?, ?, ?, ?, ?, ?, ?)`)
       .bind(txk, x.l.id, x.l.item_id, x.qty, x.value, x.cgst, x.sgst, x.igst));
@@ -205,6 +208,7 @@ export async function cancelWriteOff(c, id) {
   const w = await db.prepare(`SELECT * FROM write_offs WHERE id = ? AND org_id = ?`).bind(id, c.org.id).first();
   if (!w) throw notFound('Write-off not found.');
   if (w.status === 'cancelled') throw bad('Already cancelled.');
+  if (w.received || w.closed) throw bad(`Money was received or closed on claim ${w.number}: cancel those entries first (Transit Claims).`);
   const [lines, jls] = await db.batch([db.prepare(`SELECT * FROM write_off_lines WHERE write_off_id = ?`).bind(w.id),
     db.prepare(`SELECT jl.* FROM journal_lines jl JOIN journals j ON j.id = jl.journal_id WHERE j.org_id = ? AND j.ref_type = 'TLOSS' AND j.ref_id = ?`).bind(c.org.id, w.id)]);
   const st = [db.prepare(`UPDATE write_offs SET status = 'cancelled' WHERE id = ? AND status = 'done'`).bind(w.id)];

@@ -3,7 +3,7 @@
    Every business table carries org_id: one database serves many businesses (multi-tenant).
    migrate() runs on the first request after each deploy, so no manual migration step is needed. */
 
-export const SCHEMA_VERSION = 26;
+export const SCHEMA_VERSION = 27;
 
 // document types whose monthly totals doc_month keeps (sales and purchase money documents)
 const MONTH_TYPES = `('INV','SRET','CNOTE','BILL','PRET','DNOTE')`;
@@ -513,6 +513,21 @@ export const MIGRATIONS = {
        WHERE NOT EXISTS (SELECT 1 FROM accounts a WHERE a.org_id = o.id AND (a.sys = 'transit_loss' OR a.code = '5110'))`,
     `INSERT INTO accounts (org_id, code, name, type, sys, is_cash) SELECT o.id, '5111', 'Transit Loss & Damage', 'expense', 'transit_loss', 0 FROM orgs o
        WHERE NOT EXISTS (SELECT 1 FROM accounts a WHERE a.org_id = o.id AND (a.sys = 'transit_loss' OR a.code = '5111'))`,
+  ],
+  /* claims on a transporter or insurer followed up to the end (src/claims.js): whom it is against, their reference, the
+     next follow-up date; money received and the rest closed as a loss (claim_entries, totals kept on the write-off). */
+  27: [
+    `ALTER TABLE write_offs ADD COLUMN against TEXT DEFAULT ''`,
+    `ALTER TABLE write_offs ADD COLUMN claim_ref TEXT DEFAULT ''`,
+    `ALTER TABLE write_offs ADD COLUMN follow_up TEXT DEFAULT ''`,
+    `ALTER TABLE write_offs ADD COLUMN claim_note TEXT DEFAULT ''`,
+    `ALTER TABLE write_offs ADD COLUMN received INTEGER NOT NULL DEFAULT 0`,
+    `ALTER TABLE write_offs ADD COLUMN closed INTEGER NOT NULL DEFAULT 0`,
+    `CREATE TABLE IF NOT EXISTS claim_entries (id INTEGER PRIMARY KEY, org_id INTEGER NOT NULL, write_off_id INTEGER NOT NULL,
+       kind TEXT NOT NULL CHECK (kind IN ('receipt','loss')), date TEXT NOT NULL, amount INTEGER NOT NULL, account_id INTEGER, note TEXT DEFAULT '',
+       status TEXT NOT NULL DEFAULT 'done' CHECK (status IN ('done','cancelled')), created_by INTEGER, created_at TEXT NOT NULL, txk TEXT UNIQUE)`,
+    `CREATE INDEX IF NOT EXISTS ix_claim_entries ON claim_entries (org_id, write_off_id)`,
+    `CREATE INDEX IF NOT EXISTS ix_wo_claims ON write_offs (org_id, mode, status)`,
   ],
 };
 

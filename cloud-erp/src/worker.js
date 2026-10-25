@@ -20,6 +20,7 @@ import { importOrders, stockFile } from './channels.js';
 import { waConfigured, runAutoReminders, remindOrg } from './autowa.js';
 import { listHooks, addHook, deleteHook, receiveHook } from './hooks.js';
 import { receivePending, matchBill, learnCode, autoBins, writeOff, cancelWriteOff, writeOffOut } from './receive.js';
+import { listClaims, claimDetail, saveClaim, claimReceipt, closeClaim, cancelClaimEntry } from './claims.js';
 import { listStaff, saveStaff, markAttendance, staffDetail, giveAdvance, paySalary, cancelStaffTxn, payslip, todayStaffQueries } from './payroll.js';
 import * as rep from './reports.js';
 import { PLANS, planOut, planOf, usage, checkCount, countError, seatBlocked, seatError, requireFeature, extendPlan, adminKey, trialUntil, hasFeature } from './saas.js';
@@ -683,6 +684,8 @@ router.add('GET', '/api/today', async (c) => {
   add('to_receive', 'purchase', `SELECT COUNT(*) AS n, 0 AS v FROM docs WHERE org_id = ? AND type = 'PO' AND status IN ('open','partial')`, o);
   add('at_gate', 'purchase', `SELECT COUNT(*) AS n, 0 AS v FROM gate_entries WHERE org_id = ? AND kind = 'in' AND status = 'open'`, o);
   add('in_transit', 'purchase', `SELECT COUNT(*) AS n, COALESCE(SUM(total), 0) AS v FROM docs WHERE org_id = ? AND type = 'BILL' AND transit = 1 AND status != 'cancelled'`, o);
+  add('claims', 'finance', `SELECT COUNT(*) AS n, COALESCE(SUM(value + cgst + sgst + igst - received - closed), 0) AS v FROM write_offs
+    WHERE org_id = ? AND mode = 'claim' AND status = 'done' AND value + cgst + sgst + igst > received + closed AND (follow_up = '' OR follow_up <= ?)`, o, t);
   add('low_stock', 'items', `SELECT COUNT(*) AS n, 0 AS v FROM items WHERE org_id = ? AND is_service = 0 AND reorder_level > 0 AND qty_on_hand <= reorder_level`, o);
   add('expired', 'items', `SELECT COUNT(*) AS n, COALESCE(SUM(b.qty * i.avg_cost), 0) AS v FROM batches b JOIN items i ON i.id = b.item_id
     WHERE b.org_id = ? AND b.qty > 0.0005 AND b.expiry != '' AND b.expiry < ?`, o, t);
@@ -699,7 +702,7 @@ router.add('GET', '/api/today', async (c) => {
   want.forEach(([key], i) => {
     const r = rs[i].results[0] || { n: 0, v: 0 };
     if (!r.n) return;
-    const money = ['overdue', 'promises', 'bills_due', 'approve'].includes(key) || costs;
+    const money = ['overdue', 'promises', 'bills_due', 'approve', 'claims'].includes(key) || costs;
     rows.push({ key, n: r.n, value: money ? R(r.v) : null });
   });
   return json({ date: t, rows });
@@ -886,6 +889,13 @@ router.add('POST', '/api/docs/:id/cancel', async (c) => { await cancelDoc(c, +c.
 router.add('POST', '/api/docs/:id/approve', async (c) => { await approveDoc(c, +c.params.id); return json(await docDetail(c, +c.params.id)); });
 router.add('POST', '/api/docs/:id/write-off', async (c) => json(await writeOff(c, +c.params.id, c.body)));
 router.add('POST', '/api/write-offs/:id/cancel', async (c) => json(await cancelWriteOff(c, +c.params.id)));
+/* transit claims followed up: src/claims.js */
+router.add('GET', '/api/claims', async (c) => json(await listClaims(c, c.url.searchParams.get('status') || 'open')));
+router.add('GET', '/api/claims/:id', async (c) => json(await claimDetail(c, +c.params.id)));
+router.add('PUT', '/api/claims/:id', async (c) => json(await saveClaim(c, +c.params.id, c.body)));
+router.add('POST', '/api/claims/:id/receive', async (c) => json(await claimReceipt(c, +c.params.id, c.body)));
+router.add('POST', '/api/claims/:id/close', async (c) => json(await closeClaim(c, +c.params.id, c.body)));
+router.add('POST', '/api/claim-entries/:id/cancel', async (c) => json(await cancelClaimEntry(c, +c.params.id)));
 
 /* A ready-to-post draft of the next document in the chain, with the quantities still open. */
 router.add('GET', '/api/docs/:id/convert', async (c) => {
@@ -1957,6 +1967,7 @@ const READ_AREAS = [
   [/^\/api\/vaade(\/|$)/, 'khata'],         // coarse gate; rows are filtered per book in the handler
   [/^\/api\/gate(\/|$)/, ['purchase', 'gate']],
   [/^\/api\/receive\/?$/, 'purchase'],
+  [/^\/api\/claims(\/\d+)?\/?$/, ['purchase', 'finance']],
   [/^\/api\/(audit|users|roles|billing\/status|settings\/series)\/?$/, 'settings'],
 ];
 function readArea(url) {
