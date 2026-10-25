@@ -16,6 +16,10 @@ import {
 } from './engine.js';
 import { getBom, saveBom, listProductions, createProduction, cancelProduction } from './mfg.js';
 import { importOrders, stockFile } from './channels.js';
+import { scanBill, scanConfigured } from './billscan.js';
+import { waConfigured, runAutoReminders, remindOrg } from './autowa.js';
+import { listHooks, addHook, deleteHook, receiveHook } from './hooks.js';
+import { listStaff, saveStaff, markAttendance, staffDetail, giveAdvance, paySalary, cancelStaffTxn, payslip, todayStaffQueries } from './payroll.js';
 import * as rep from './reports.js';
 import { PLANS, planOut, planOf, usage, checkCount, countError, seatBlocked, seatError, requireFeature, extendPlan, adminKey, trialUntil, hasFeature } from './saas.js';
 import { secure } from './headers.js';
@@ -29,7 +33,7 @@ import { queue as vasooliQueue, logReminder, summary as vasooliSummary, summaryT
 import { cleanVaada, splitPlan, planOptions, minPart, risk, riskStatements, riskInput, setStatements, evalSet, writeBackStatements, promiseOut, pctOf,
   forecast, inr0, FREE_OPEN_MAX } from './vaada.js';
 import { STATES, einvoiceJson, ewaybillJson } from './gst.js';
-import { listBins, addBins, deleteBin, binContents, moveInBins, itemLots, expiryReport, serialLookup } from './lots.js';
+import { listBins, addBins, deleteBin, binContents, moveInBins, itemLots, expiryReport, serialLookup, putawayPlan, wavePick } from './lots.js';
 import { tallyXml } from './tally.js';
 import { printOf, cleanPrint, imageFromDataUrl, shortHash, imageResponse, FILE_KINDS, seriesOf, numberSpec, formatNumber, cleanSeries, fyParts,
   fieldsOf, extraOf, cleanField, cleanExtra, extraFilter, printExtra, LAYOUTS } from './custom.js';
@@ -229,7 +233,7 @@ router.add('POST', '/api/me/logout-all', async (c) => {
 router.add('GET', '/api/me', async (c) => json({
   user: publicUser(c.user), org: orgOut(c.org),
   can: Object.fromEntries(['settings', 'users', 'items', 'purchase', 'sales', 'stock', 'finance', 'khata', 'masters'].map((a) => [a, can(c.user, a)])),
-  view: Object.fromEntries(AREAS.map((a) => [a, canView(c.user, a)])), costs: seesCosts(c.user),
+  view: Object.fromEntries(AREAS.map((a) => [a, canView(c.user, a)])), costs: seesCosts(c.user), scan: scanConfigured(c.env), wa_auto: waConfigured(c.env),
   doc_types: Object.fromEntries(Object.entries(DOC_TYPES).map(([k, v]) => [k, { label: v.label, side: v.side, from: v.from, prefix: v.prefix, note: !!v.note, stock: v.stock || '' }])),
   gst_rates: GST_RATES, today: today(), states: STATES.map(([, n]) => n), plan: planOut(c.org),
 }));
@@ -542,6 +546,8 @@ router.add('GET', '/api/parties/:id/ledger', async (c) => json(await rep.partyLe
 
 /* ======================================================================= bins (racks / shelves) and batches: src/lots.js */
 router.add('GET', '/api/bins', async (c) => json(await listBins(c, +c.url.searchParams.get('warehouse_id') || 0)));
+router.add('GET', '/api/bins/putaway', async (c) => json(await putawayPlan(c, +c.url.searchParams.get('warehouse_id') || 0)));
+router.add('GET', '/api/picklist', async (c) => json(await wavePick(c, String(c.url.searchParams.get('ids') || '').split(','))));
 router.add('POST', '/api/bins', async (c) => json(await addBins(c, c.body)));
 router.add('POST', '/api/bins/move', async (c) => json(await moveInBins(c, c.body)));
 router.add('GET', '/api/bins/:id', async (c) => json(await binContents(c, +c.params.id)));
@@ -559,6 +565,50 @@ router.add('POST', '/api/productions/:id/cancel', async (c) => json(await cancel
 /* ======================================================================= marketplace orders and stock file: src/channels.js */
 router.add('POST', '/api/channels/import', async (c) => json(await importOrders(c, c.body)), { bodyMax: 3000000 });
 router.add('GET', '/api/channels/stock', async (c) => download(`stock-${today()}.csv`, await stockFile(c, +c.url.searchParams.get('warehouse_id') || 0), 'text/csv'));
+
+/* ======================================================================= staff, attendance and salary: src/payroll.js */
+router.add('GET', '/api/staff', async (c) => json(await listStaff(c, c.url.searchParams.get('month'))));
+router.add('POST', '/api/staff', async (c) => json(await saveStaff(c, 0, c.body)));
+router.add('PUT', '/api/staff/:id', async (c) => json(await saveStaff(c, +c.params.id, c.body)));
+router.add('POST', '/api/staff/attendance', async (c) => json(await markAttendance(c, c.body)));
+router.add('GET', '/api/staff/:id', async (c) => json(await staffDetail(c, +c.params.id, c.url.searchParams.get('month'))));
+router.add('POST', '/api/staff/:id/advance', async (c) => json(await giveAdvance(c, +c.params.id, c.body)));
+router.add('POST', '/api/staff/:id/salary', async (c) => json(await paySalary(c, +c.params.id, c.body)));
+router.add('POST', '/api/staff/txns/:id/cancel', async (c) => json(await cancelStaffTxn(c, +c.params.id)));
+router.add('GET', '/api/staff/payslip/:id', async (c) => json(await payslip(c, +c.params.id)));
+
+/* ======================================================================= automatic WhatsApp reminders: src/autowa.js */
+router.add('PUT', '/api/settings/auto-wa', async (c) => {
+  requireCan(c.user, 'settings');
+  const on = !!c.body.on;
+  if (on) {
+    if (!waConfigured(c.env)) throw new HttpError(501, 'Automatic WhatsApp is not set up on this server yet.');
+    requireFeature(c.org, 'autowa');
+  }
+  await c.db.batch([c.db.prepare(`UPDATE orgs SET auto_wa = ? WHERE id = ?`).bind(on ? 1 : 0, c.org.id), auditStatement(c, 'auto WhatsApp reminders', on ? 'on' : 'off')]);
+  return json({ ok: true, on });
+});
+/* send today's due reminders now (owner / admin), instead of waiting for the morning run */
+router.add('POST', '/api/settings/auto-wa/run', async (c) => {
+  requireCan(c.user, 'settings');
+  if (!c.org.auto_wa) throw bad('Turn on automatic reminders first.');
+  requireFeature(c.org, 'autowa');
+  await rateLimit(c.env, 'autowa-run:' + c.org.id, 5, 86400);
+  const r = await remindOrg(c.env, c.org);
+  return json({ sent: r.sent, failed: r.failed, skipped: r.skipped, errors: r.errors });
+});
+
+/* ======================================================================= live orders from web stores: src/hooks.js */
+router.add('GET', '/api/hooks', async (c) => json(await listHooks(c)));
+router.add('POST', '/api/hooks', async (c) => json(await addHook(c, c.body)));
+router.add('DELETE', '/api/hooks/:id', async (c) => json(await deleteHook(c, +c.params.id)));
+router.add('POST', '/api/hooks/:token', async (c) => {
+  await rateLimit(c.env, 'hook:' + String(c.params.token).slice(0, 64), 600, 3600);
+  return json(await receiveHook(c, c.params.token));
+}, { public: true, webhook: true, rawOk: true });
+
+/* ======================================================================= purchase bill scan: src/billscan.js */
+router.add('POST', '/api/purchase/scan', async (c) => json(await scanBill(c, c.body)), { bodyMax: 8e6 });
 
 /* ======================================================================= today: what needs doing, one tap each */
 router.add('GET', '/api/today', async (c) => {
@@ -582,6 +632,7 @@ router.add('GET', '/api/today', async (c) => {
     AND s.qty - COALESCE((SELECT SUM(qty) FROM bin_stock b WHERE b.item_id = s.item_id AND b.warehouse_id = s.warehouse_id), 0) > 0.0005)`, o, o);
   add('disputed', 'finance', `SELECT COUNT(*) AS n, 0 AS v FROM confirmations WHERE org_id = ? AND status = 'disputed' AND answered_at >= ?`, o, addDays(t, -30));
   add('recurring', 'sales', `SELECT COUNT(*) AS n, 0 AS v FROM recurring WHERE org_id = ? AND active = 1 AND COALESCE(last_error, '') != ''`, o);
+  if (sees('finance')) want.push(...todayStaffQueries(db, o));
   const rs = want.length ? await db.batch(want.map(([, q]) => q)) : [];
   const costs = seesCosts(u), rows = [];
   want.forEach(([key], i) => {
@@ -1785,8 +1836,11 @@ const READ_AREAS = [
   [/^\/api\/reports\/(stock|stock-ageing|expiry)\/?$/, 'items'],
   [/^\/api\/items\/\d+\/lots\/?$/, ['items', 'sales', 'purchase']],
   [/^\/api\/bins(\/|$)/, 'items'],
+  [/^\/api\/picklist\/?$/, 'items'],
   [/^\/api\/serials\/?$/, ['items', 'sales']],
   [/^\/api\/today\/?$/, OPEN],
+  [/^\/api\/staff(\/|$)/, 'finance'],
+  [/^\/api\/hooks\/?$/, 'settings'],
   [/^\/api\/items\/\d+\/bom\/?$/, 'items'],
   [/^\/api\/productions\/?$/, 'items'],
   [/^\/api\/channels\/stock\/?$/, 'items'],
@@ -1828,7 +1882,7 @@ async function handleApi(request, env, counter) {
   if (m.route.opts.webhook) {       // a server calling us (DocBrisk Pay hub, Razorpay): signed raw body, no cookie, no custom header
     c.raw = await request.text();
     if (c.raw.length > 200000) throw new HttpError(413, 'Request too large.');
-    try { c.body = JSON.parse(c.raw || '{}'); } catch (e) { throw bad('Bad body.'); }
+    try { c.body = JSON.parse(c.raw || '{}'); } catch (e) { if (!m.route.opts.rawOk) throw bad('Bad body.'); c.body = {}; }
   } else if (request.method !== 'GET') c.body = await readJson(request, m.route.opts.bodyMax);
   if (!m.route.opts.public) {
     const p = await sessionFromRequest(env, request);
@@ -1849,7 +1903,32 @@ async function handleApi(request, env, counter) {
       if (area !== OPEN && !(Array.isArray(area) ? area : [area]).some((a) => canView(c.user, a))) throw forbidden('Your role cannot see this. Ask the owner.');
     }
   }
+  const key = request.method === 'POST' && c.user ? request.headers.get('Idempotency-Key') : null;
+  if (key) return idempotent(c, key, () => m.route.handler(c));
   return m.route.handler(c);
+}
+
+/* A write sent again with the same Idempotency-Key (the app saved it while offline, or the answer was lost on the way)
+   gets the first answer back instead of running twice. Only successes are kept: a refused request can be sent again. */
+async function idempotent(c, key, run) {
+  if (!/^[A-Za-z0-9-]{8,64}$/.test(key)) throw bad('Bad Idempotency-Key.');
+  const db = c.db, org = c.org.id;
+  const take = () => db.prepare(`INSERT INTO idem_keys (org_id, key, user_id, status, created_at) VALUES (?, ?, ?, 0, ?) ON CONFLICT DO NOTHING`).bind(org, key, c.user.id, nowIso()).run();
+  if (!(await take()).meta.changes) {
+    const row = await db.prepare(`SELECT status, body, user_id, created_at FROM idem_keys WHERE org_id = ? AND key = ?`).bind(org, key).first();
+    if (row && row.user_id !== c.user.id) throw bad('Bad Idempotency-Key.');
+    if (row && row.status) return new Response(row.body, { status: row.status, headers: { 'Content-Type': 'application/json; charset=utf-8', 'Idempotent-Replay': 'true' } });
+    // a first attempt that died half-way (nothing was saved: every write is one atomic batch) is cleared after two minutes
+    if (!row || Date.now() - Date.parse(row.created_at) < 120000 || !(await db.prepare(`DELETE FROM idem_keys WHERE org_id = ? AND key = ? AND status = 0`).bind(org, key).run()).meta.changes
+      || !(await take()).meta.changes) throw new HttpError(409, 'This entry is still being saved. Try again in a moment.');
+  }
+  const drop = () => db.prepare(`DELETE FROM idem_keys WHERE org_id = ? AND key = ? AND status = 0`).bind(org, key).run();
+  let res;
+  try { res = await run(); } catch (e) { await drop(); throw e; }
+  if (res.status >= 400) { await drop(); return res; }
+  const text = await res.clone().text();
+  await db.prepare(`UPDATE idem_keys SET status = ?, body = ? WHERE org_id = ? AND key = ?`).bind(res.status, text.length <= 200000 ? text : '{"ok":true}', org, key).run();
+  return res;
 }
 
 /* /k/<token> (khata) and /i/<token> (invoice): the web app, with Open Graph tags so WhatsApp shows a banner card
@@ -1921,6 +2000,9 @@ export default {
       if (r.due) console.log('recurring', JSON.stringify(r));
       const g = await runDriveBackups(env);
       if (g.due) console.log('drive backups', JSON.stringify(g));
+      await env.DB.prepare(`DELETE FROM idem_keys WHERE created_at < ?`).bind(new Date(Date.now() - 7 * 864e5).toISOString()).run();   // replay window: a week
+      const w = await runAutoReminders(env);
+      if (w.due) console.log('auto whatsapp', JSON.stringify(w));
     })());
   },
   async fetch(request, env) {

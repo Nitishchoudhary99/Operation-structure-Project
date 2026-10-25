@@ -653,3 +653,33 @@ a.vcard:hover { background: var(--soft); }
 .steps li::before { content: counter(s); display: inline-grid; place-items: center; width: 20px; height: 20px; border-radius: 50%; background: var(--brand-soft); color: var(--brand); font-weight: 700; margin-right: 6px; font-size: 12px; }
 .prog { height: 8px; background: var(--soft); border-radius: 99px; overflow: hidden; margin: 10px 0; }
 .prog i { display: block; height: 100%; background: var(--brand); width: 0; transition: width .2s; }
+
+/* ---------- staff: attendance ---------- */
+.att { display: grid; gap: 6px; margin-top: 10px; }
+.att-row { display: flex; align-items: center; gap: 10px; justify-content: space-between; padding: 6px 0; border-bottom: 1px solid var(--line); flex-wrap: wrap; }
+.att-row:last-child { border-bottom: 0; }
+.marks { display: inline-flex; gap: 4px; }
+.mk { font: inherit; font-weight: 700; width: 40px; height: 40px; border-radius: 8px; border: 1px solid var(--line); background: var(--panel); color: var(--muted); cursor: pointer; }
+.mk.on.mk-P, .cal-d.mk-P { background: var(--ok-soft); color: var(--ok); border-color: var(--ok); }
+.mk.on.mk-A, .cal-d.mk-A { background: var(--danger-soft); color: var(--danger); border-color: var(--danger); }
+.mk.on.mk-H, .cal-d.mk-H { background: var(--warn-soft); color: var(--warn); border-color: var(--warn); }
+.mk.on.mk-L, .cal-d.mk-L { background: var(--brand-soft); color: var(--brand); border-color: var(--brand); }
+.mk.on.mk-O, .cal-d.mk-O { background: var(--soft); color: var(--ink); border-color: var(--muted); }
+.cal { display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); gap: 4px; margin-top: 12px; }
+.cal-h { font-size: 11px; color: var(--muted); text-align: center; font-weight: 600; }
+.cal-d { font: inherit; min-height: 52px; border: 1px solid var(--line); border-radius: 8px; background: var(--panel); color: var(--ink); cursor: pointer; display: flex; flex-direction: column; align-items: center; justify-content: center; padding: 2px; }
+.cal-d small { font-size: 11px; color: var(--muted); }
+.cal-d b { font-size: 15px; min-height: 18px; }
+.cal-d i { font-style: normal; font-size: 10px; }
+.cal-d.off { opacity: .4; cursor: default; }
+.slip { max-width: 720px; }
+.slip tr.grand td { border-top: 2px solid var(--ink); }
+@media print { .slip { box-shadow: none; border: 0; } }
+
+/* ---------- offline outbox ---------- */
+.outbox { background: var(--warn-soft); color: var(--warn); border-color: var(--warn); }
+.outbox b { color: var(--danger); }
+.prog i.spin { width: 40%; animation: slide 1.2s ease-in-out infinite; }
+@keyframes slide { 0% { margin-left: -40%; } 100% { margin-left: 100%; } }
+tr.done td { opacity: .5; }
+.modal code, .panel code { word-break: break-all; }

@@ -1509,5 +1509,222 @@ else {
     ['serials', 'serial_moves', 'boms', 'bom_lines', 'productions', 'channel_orders'].map((t) => `${t} ${(bk.tables[t] || []).length}`).join(' '));
 }
 
+/* staff: attendance, advance, salary with the advance cut, payslip, cancel, and the books */
+{
+  const ip = '203.0.113.150';
+  const email = `staff${Date.now()}@test.in`;
+  const su = await rq('POST', '/api/auth/signup', { business: 'Gupta Traders', name: 'G', email, password: 'Staff-pass-1234', state: 'Rajasthan' }, { ip });
+  const V = async (m, p, b) => { const r = await rq(m, p, b, { cookie: su.cookie, ip }); if (r.status >= 400) throw new Error(`${m} ${p} -> ${r.status} ${r.data.error}`); return r.data; };
+  const E = (m, p, b) => rq(m, p, b, { cookie: su.cookie, ip });
+  const accts = (await V('GET', '/api/accounts')).rows;
+  const cash = accts.find((a) => a.sys === 'cash');
+  check('new businesses get Staff Advances and a salary account', accts.some((a) => a.sys === 'staff_adv') && accts.some((a) => a.sys === 'salary'), accts.map((a) => a.sys).join());
+  // last month, so the whole month counts; joined before it
+  const t = new Date(Date.now() + 5.5 * 3600e3); t.setUTCDate(1); t.setUTCMonth(t.getUTCMonth() - 1);
+  const month = t.toISOString().slice(0, 7), days = new Date(Date.UTC(t.getUTCFullYear(), t.getUTCMonth() + 1, 0)).getUTCDate();
+  const ram = await V('POST', '/api/staff', { name: 'Ram', phone: '9876500011', pay_type: 'month', rate: 15000, ot_rate: 100, join_date: `${month.slice(0, 4)}-01-01` < `${month}-01` ? `${month.slice(0, 4)}-01-01` : `${month}-01` });
+  const shyam = await V('POST', '/api/staff', { name: 'Shyam', pay_type: 'day', rate: 500, join_date: `${month}-01` });
+  check('staff added with monthly salary and daily wage', ram.rate === 15000 && shyam.pay_type === 'day', JSON.stringify([ram, shyam]));
+  // Ram: 2 absent, 1 half day, 3 h overtime; Shyam: worked 10 days, 1 half day
+  await V('POST', '/api/staff/attendance', { marks: [
+    { staff_id: ram.id, date: `${month}-03`, status: 'A' }, { staff_id: ram.id, date: `${month}-04`, status: 'A' }, { staff_id: ram.id, date: `${month}-05`, status: 'H' },
+    { staff_id: ram.id, date: `${month}-06`, status: 'P', ot_hours: 3 },
+    ...Array.from({ length: 10 }, (_, i) => ({ staff_id: shyam.id, date: `${month}-${String(i + 10).padStart(2, '0')}`, status: 'P' })),
+    { staff_id: shyam.id, date: `${month}-20`, status: 'H' }] });
+  const future = await E('POST', '/api/staff/attendance', { marks: [{ staff_id: ram.id, date: '2099-01-01', status: 'P' }] });
+  check('attendance cannot be marked for a future date', future.status === 400, JSON.stringify(future.data));
+  const ls = await V('GET', `/api/staff?month=${month}`);
+  const R = ls.rows.find((s) => s.id === ram.id), S = ls.rows.find((s) => s.id === shyam.id);
+  const ramDays = days - 2 - 0.5, ramPay = Math.round(15000 * ramDays / days) + 300;
+  check('monthly salary: unmarked days count, absences and half days do not, overtime added', R.pay.payable === ramDays && R.pay.earned === ramPay && R.pay.ot_hours === 3, JSON.stringify(R.pay) + ' want ' + ramPay);
+  check('daily wage: only the days marked present (half day = half)', S.pay.payable === 10.5 && S.pay.earned === 5250, JSON.stringify(S.pay));
+  // advance 2,000 then salary with 1,500 cut
+  await V('POST', `/api/staff/${ram.id}/advance`, { amount: 2000, paid_from: cash.id });
+  const over = await E('POST', `/api/staff/${ram.id}/salary`, { month, advance_cut: 2500, paid_from: cash.id });
+  check('cannot cut more advance than is due', over.status === 400 && /2000/.test(over.data.error), JSON.stringify(over.data));
+  const paid = await V('POST', `/api/staff/${ram.id}/salary`, { month, advance_cut: 1500, bonus: 500, paid_from: cash.id });
+  check('salary paid: earned + bonus − advance cut', paid.net === ramPay + 500 - 1500, JSON.stringify(paid));
+  const twice = await E('POST', `/api/staff/${ram.id}/salary`, { month, paid_from: cash.id });
+  check('a month cannot be paid twice', twice.status === 400 && /already paid/.test(twice.data.error), JSON.stringify(twice.data));
+  const slip = await V('GET', `/api/staff/payslip/${paid.id}`);
+  check('payslip has the days, the cut and what is still due', slip.net === paid.net && slip.advance_cut === 1500 && slip.detail.advance_left === 500 && slip.detail.payable === ramDays, JSON.stringify(slip));
+  const tb = await V('GET', '/api/reports/trial-balance');
+  const bal = (sys) => { const a = accts.find((x) => x.sys === sys); const r = tb.rows.find((x) => x.code === a.code); return r ? Math.round(((r.debit || 0) - (r.credit || 0)) * 100) / 100 : 0; };
+  check('books: salary expense, advance left 500, cash paid out', bal('salary') === ramPay + 500 && bal('staff_adv') === 500 && bal('cash') === -(2000 + paid.net) && tb.balanced,
+    JSON.stringify({ salary: bal('salary'), adv: bal('staff_adv'), cash: bal('cash'), balanced: tb.balanced }));
+  const det = await V('GET', `/api/staff/${ram.id}?month=${month}`);
+  check('staff page: marks, payments, advance due', det.marks.length === 4 && det.txns.length === 2 && det.advance_due === 500 && det.paid.id === paid.id, JSON.stringify(det).slice(0, 400));
+  const advTxn = det.txns.find((x) => x.kind === 'advance');
+  const cantAdv = await E('POST', `/api/staff/txns/${advTxn.id}/cancel`);
+  check('an advance partly cut from a salary cannot be cancelled', cantAdv.status === 400, JSON.stringify(cantAdv.data));
+  await V('POST', `/api/staff/txns/${paid.id}/cancel`);
+  await V('POST', `/api/staff/txns/${advTxn.id}/cancel`);
+  const tb2 = await V('GET', '/api/reports/trial-balance');
+  const bal2 = (sys) => { const a = accts.find((x) => x.sys === sys); const r = tb2.rows.find((x) => x.code === a.code); return r ? Math.round(((r.debit || 0) - (r.credit || 0)) * 100) / 100 : 0; };
+  check('cancelling the salary and the advance reverses the books', bal2('salary') === 0 && bal2('staff_adv') === 0 && bal2('cash') === 0, JSON.stringify({ s: bal2('salary'), a: bal2('staff_adv'), c: bal2('cash') }));
+  const again = await V('POST', `/api/staff/${ram.id}/salary`, { month, paid_from: cash.id });
+  check('after cancelling, the month can be paid again', again.net === ramPay, JSON.stringify(again));
+  // a sales user cannot see salaries
+  await V('POST', '/api/users', { email: 'sales' + email, name: 'Sales', role: 'sales', password: 'Sales-pass-1' });
+  const sl = await rq('POST', '/api/auth/login', { email: 'sales' + email, password: 'Sales-pass-1' }, { ip });
+  check('salaries are hidden from the sales role', (await rq('GET', '/api/staff', undefined, { cookie: sl.cookie, ip })).status === 403);
+}
+
+/* offline replay (Idempotency-Key), web store webhooks, guided put-away and wave picking; with the stand-in Claude and
+   WhatsApp server (ERP_AI_MOCK, see README "Tests"): purchase bill scan and automatic WhatsApp reminders */
+{
+  const ip = '203.0.113.160';
+  const email = `more${Date.now()}@test.in`;
+  const su = await rq('POST', '/api/auth/signup', { business: 'Verma Electronics', name: 'V', email, password: 'More-pass-1234', state: 'Rajasthan' }, { ip });
+  const V = async (m, p, b, h) => { const r = await rq(m, p, b, { cookie: su.cookie, ip, headers: h }); if (r.status >= 400) throw new Error(`${m} ${p} -> ${r.status} ${r.data.error}`); return r.data; };
+  const E = (m, p, b, h) => rq(m, p, b, { cookie: su.cookie, ip, headers: h });
+  const wh = (await V('GET', '/api/warehouses')).rows[0];
+  const cust = await V('POST', '/api/parties', { name: 'Kiran Stores', kind: 'customer', state: 'Rajasthan', phone: '9876500021' });
+  const fan = await V('POST', '/api/items', { name: 'Ceiling fan', unit: 'pc', sale_price: 2360, purchase_price: 1500, gst_rate: 18, sku: 'FAN-1', location: 'A-01' });
+  const bulb = await V('POST', '/api/items', { name: 'LED bulb 9W', unit: 'pc', sale_price: 118, purchase_price: 60, gst_rate: 18, sku: 'LED-9' });
+  await V('POST', '/api/stock/adjust', { item_id: fan.id, qty: 20, rate: 1500, reason: 'opening' });
+  await V('POST', '/api/stock/adjust', { item_id: bulb.id, qty: 200, rate: 60, reason: 'opening' });
+
+  // the same bill sent twice with one Idempotency-Key (an offline save synced again) is saved once
+  const key = 'k' + Date.now().toString(36) + 'abcdef';
+  const body = { type: 'INV', party_id: cust.id, lines: [{ item_id: bulb.id, qty: 2, rate: 118 }] };
+  const a1 = await E('POST', '/api/docs', body, { 'Idempotency-Key': key });
+  const a2 = await E('POST', '/api/docs', body, { 'Idempotency-Key': key });
+  const invs = await V('GET', '/api/docs?type=INV');
+  check('a bill replayed with the same Idempotency-Key is saved once and answered the same', a1.status === 200 && a2.status === 200 && a2.data.id === a1.data.id && invs.rows.length === 1
+    && a2.headers.get('idempotent-replay') === 'true', JSON.stringify([a1.status, a2.status, a1.data.number, a2.data.number, invs.rows.length]));
+  const bad1 = await E('POST', '/api/docs', { ...body, lines: [{ item_id: bulb.id, qty: 9999, rate: 1 }] }, { 'Idempotency-Key': key + 'x' });
+  const bad2 = await E('POST', '/api/docs', { ...body, lines: [{ item_id: bulb.id, qty: 1, rate: 118 }] }, { 'Idempotency-Key': key + 'x' });
+  check('a refused request is not remembered: fixed and sent again with its key, it is saved', bad1.status === 400 && bad2.status === 200, JSON.stringify([bad1.status, bad2.status]));
+  check('a malformed Idempotency-Key is refused', (await E('POST', '/api/docs', body, { 'Idempotency-Key': 'x y' })).status === 400);
+
+  // web store: Shopify (signed with the shop's key), WooCommerce (secret made here, ping), own site
+  const crypto = await import('node:crypto');
+  const sign = (secret, raw) => crypto.createHmac('sha256', secret).update(raw).digest('base64');
+  const post = (url, raw, headers) => fetch(url.replace(/^https?:\/\/[^/]+/, BASE), { method: 'POST', headers: { 'Content-Type': 'application/json', 'CF-Connecting-IP': ip, ...headers }, body: raw });
+  const shopKey = 'shpss_' + 'a'.repeat(32);
+  const shop = await V('POST', '/api/hooks', { kind: 'shopify', name: 'Verma Shopify', secret: shopKey });
+  check('a Shopify store connection without the signing key is refused', (await E('POST', '/api/hooks', { kind: 'shopify', name: 'x' })).status === 400);
+  const order = { id: 5551, name: '#1001', created_at: '2026-10-24T10:00:00+05:30', financial_status: 'paid', taxes_included: true,
+    shipping_address: { province: 'Maharashtra', province_code: 'MH' }, line_items: [{ sku: 'FAN-1', title: 'Ceiling fan', quantity: 1, price: '2360.00', discount_allocations: [] }] };
+  const raw = JSON.stringify(order);
+  const forged = await post(shop.url, raw, { 'X-Shopify-Hmac-Sha256': sign('wrong-key-wrong-key', raw) });
+  check('an order with a wrong signature is refused', forged.status === 401, String(forged.status));
+  const okS = await (await post(shop.url, raw, { 'X-Shopify-Hmac-Sha256': sign(shopKey, raw) })).json();
+  const again = await (await post(shop.url, raw, { 'X-Shopify-Hmac-Sha256': sign(shopKey, raw) })).json();
+  const sd = (await V('GET', '/api/docs?type=INV')).rows.find((d) => d.number === okS.number);
+  const sdoc = sd && await V('GET', `/api/docs/${sd.id}`);
+  check('a paid Shopify order becomes an invoice at once, IGST to the buyer\'s state, never twice', okS.number && again.skipped === 'already billed' && sdoc && sdoc.igst > 0 && sdoc.total === 2360
+    && sdoc.party.name === 'Verma Shopify (Maharashtra)', JSON.stringify([okS, again, sdoc && [sdoc.total, sdoc.igst, sdoc.party.name]]));
+  const woo = await V('POST', '/api/hooks', { kind: 'woocommerce', name: 'Verma Woo' });
+  check('a WooCommerce connection gets a secret to paste', woo.secret && woo.secret.length >= 32, JSON.stringify(woo));
+  const ping = await post(woo.url, 'webhook_id=12', { 'Content-Type': 'application/x-www-form-urlencoded' });
+  check('WooCommerce\'s unsigned ping on saving the webhook gets 200', ping.status === 200, String(ping.status));
+  const wo = JSON.stringify({ id: 77, number: '77', status: 'processing', date_created: '2026-10-24T11:00:00', shipping: { state: 'RJ' },
+    line_items: [{ sku: 'LED-9', name: 'LED', quantity: 10, total: '1000.00', total_tax: '180.00' }, { sku: 'NOPE', name: 'Unknown', quantity: 1, total: '10', total_tax: '0' }] });
+  const wr = await (await post(woo.url, wo, { 'X-WC-Webhook-Signature': sign(woo.secret, wo) })).json();
+  const hl = await V('GET', '/api/hooks');
+  check('an order with an unknown SKU is answered 200 but not billed, and the reason is kept for the shop', wr.ok && !wr.number && /NOPE/.test(hl.rows.find((h) => h.id === woo.id).last_error), JSON.stringify([wr, hl.rows]));
+  const pend = JSON.stringify({ id: 78, number: '78', status: 'pending', line_items: [{ sku: 'LED-9', quantity: 1, total: '100', total_tax: '18' }] });
+  const pr = await (await post(woo.url, pend, { 'X-WC-Webhook-Signature': sign(woo.secret, pend) })).json();
+  check('an unpaid (pending) order is not billed', pr.skipped === 'not a paid order', JSON.stringify(pr));
+  const own = await V('POST', '/api/hooks', { kind: 'custom', name: 'Website' });
+  const oo = JSON.stringify({ order_id: 'W-1', date: '2026-10-25', state: 'Rajasthan', lines: [{ sku: 'LED-9', qty: 5, amount: 590 }] });
+  const or = await (await post(own.url, oo, { 'X-Signature': sign(own.secret, oo) })).json();
+  const od = (await V('GET', '/api/docs?type=INV')).rows.find((d) => d.number === or.number);
+  check('an order from the shop\'s own site, in state: CGST + SGST', or.number && od && (await V('GET', `/api/docs/${od.id}`)).cgst > 0, JSON.stringify(or));
+  const list = await V('GET', '/api/hooks');
+  check('connections list how many orders came in, without the secrets', list.rows.length === 3 && list.rows.find((h) => h.id === shop.id).orders === 1 && !('secret' in list.rows[0]), JSON.stringify(list.rows));
+
+  // guided put-away and wave picking
+  await V('POST', '/api/bins', { warehouse_id: wh.id, racks: 'A-B', shelves: 2 });
+  const pa = await V('GET', `/api/bins/putaway?warehouse_id=${wh.id}`);
+  const pf = pa.rows.find((r) => r.id === fan.id), pb = pa.rows.find((r) => r.id === bulb.id);
+  check('put-away suggests the default bin, else an empty one', pf.suggest.code === 'A-01' && pf.suggest.why === 'default bin' && pb.suggest && pb.suggest.why === 'empty bin' && pb.suggest.code !== 'A-01',
+    JSON.stringify(pa.rows));
+  await V('POST', '/api/bins/move', { item_id: bulb.id, warehouse_id: wh.id, from_bin_id: 0, to_bin_id: pb.suggest.bin_id, qty: 50 });
+  const pa2 = await V('GET', `/api/bins/putaway?warehouse_id=${wh.id}`);
+  check('...and then the bin that already holds the item', pa2.rows.find((r) => r.id === bulb.id).suggest.code === pb.suggest.code && pa2.rows.find((r) => r.id === bulb.id).suggest.why === 'already holds this item',
+    JSON.stringify(pa2.rows));
+  const so1 = await V('POST', '/api/docs', { type: 'SO', party_id: cust.id, lines: [{ item_id: bulb.id, qty: 30, rate: 118 }, { item_id: fan.id, qty: 2, rate: 2360 }] });
+  const so2 = await V('POST', '/api/docs', { type: 'SO', party_id: cust.id, lines: [{ item_id: bulb.id, qty: 25, rate: 118 }] });
+  const wave = await V('GET', `/api/picklist?ids=${so1.id},${so2.id}`);
+  const wb = wave.rows.find((r) => r.item_id === bulb.id);
+  check('wave pick list: one line per item for all orders, from the bins, split by order', wave.rows.length === 2 && wb.qty === 55 && wb.orders.length === 2 && wb.from[0].code === pb.suggest.code && wb.from[0].qty === 50 && wb.short_of_bins === 5,
+    JSON.stringify(wave.rows));
+
+  if (process.env.ERP_AI_MOCK) {
+    /* a stand-in for the Claude API and the WhatsApp Cloud API (the worker started with ANTHROPIC_BASE_URL / WHATSAPP_API pointing here) */
+    const http = await import('node:http');
+    const seen = { ai: [], wa: [] };
+    const bill = { is_bill: true, supplier: { name: 'Havells Distributor Jaipur', gstin: '08AAACH1234F1Z5', phone: '0141-2345678', state: 'Rajasthan', address: 'MI Road' },
+      bill_no: 'HD/2526/0457', bill_date: '2026-10-20',
+      lines: [{ name: 'Ceiling fan', hsn: '8414', qty: 10, unit: 'pc', rate: 1450, discount_pct: 0, gst_rate: 18, amount: 14500, batch_no: '', expiry: '' },
+        { name: 'LED Bulb 9 W', hsn: '8539', qty: 100, unit: 'pc', rate: 55, discount_pct: 0, gst_rate: 18, amount: 5500, batch_no: '', expiry: '' },
+        { name: 'Wall switch 6A', hsn: '8536', qty: 50, unit: 'pc', rate: 20, discount_pct: 0, gst_rate: 18, amount: 1000, batch_no: '', expiry: '' }],
+      totals: { taxable: 21000, cgst: 1890, sgst: 1890, igst: 0, round_off: 0, total: 24780 }, notes: '' };
+    const srv = http.createServer((req, res) => {
+      let b = ''; req.on('data', (d) => { b += d; }); req.on('end', () => {
+        const u = new URL(req.url, 'http://x');
+        const wa = u.pathname.startsWith('/wa/') ? JSON.parse(b) : null;
+        res.writeHead(wa && wa.to.endsWith('0000') ? 400 : 200, { 'Content-Type': 'application/json' });
+        if (u.pathname === '/v1/messages') {
+          seen.ai.push({ headers: req.headers, body: JSON.parse(b) });
+          return res.end(JSON.stringify({ id: 'msg_1', type: 'message', role: 'assistant', model: 'claude-opus-5-5', stop_reason: 'end_turn', stop_details: null,
+            content: [{ type: 'text', text: JSON.stringify(bill) }], usage: { input_tokens: 1500, output_tokens: 400 } }));
+        }
+        if (u.pathname.startsWith('/wa/')) {
+          const m = JSON.parse(b); seen.wa.push({ path: u.pathname, auth: req.headers.authorization, body: m });
+          if (m.to.endsWith('0000')) return res.end(JSON.stringify({ error: { message: 'Recipient not on WhatsApp' } }));
+          return res.end(JSON.stringify({ messages: [{ id: 'wamid.' + seen.wa.length }] }));
+        }
+        res.statusCode = 404; res.end('{}');
+      });
+    });
+    await new Promise((ok) => srv.listen(+process.env.ERP_AI_MOCK, '127.0.0.1', ok));
+    const me = await V('GET', '/api/me');
+    check('the app knows bill scanning and automatic WhatsApp are set up', me.scan === true && me.wa_auto === true, JSON.stringify([me.scan, me.wa_auto]));
+    // a tiny PNG stands in for the photo
+    const png = 'data:image/png;base64,iVBORw0KGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7';
+    const sc = await V('POST', '/api/purchase/scan', { file: png });
+    const req0 = seen.ai[0];
+    check('bill scan asks Claude with the image, a JSON schema and the default fallbacks', req0 && req0.body.model === 'claude-opus-5-5' && req0.body.fallbacks === 'default'
+      && /server-side-fallback-2026-07-01/.test(req0.headers['anthropic-beta'] || '') && req0.body.output_config.format.type === 'json_schema' && req0.body.messages[0].content[0].type === 'image'
+      && (req0.headers['x-api-key'] === 'test-key' || req0.headers.authorization === 'Bearer test-key'), JSON.stringify(req0 && { model: req0.body.model, fb: req0.body.fallbacks, beta: req0.headers['anthropic-beta'], oc: req0.body.output_config && req0.body.output_config.format.type, c0: req0.body.messages[0].content[0].type, key: req0.headers['x-api-key'] || req0.headers.authorization }));
+    const L = (n) => sc.lines.find((l) => l.name === n);
+    check('scanned lines are matched to items: exact name, close name, and new', L('Ceiling fan').item_id === fan.id && L('Ceiling fan').match === 'exact' && L('LED Bulb 9 W').item_id === bulb.id
+      && L('LED Bulb 9 W').match === 'guess' && L('Wall switch 6A').item_id === null && sc.supplier.party_id === null && sc.supplier.gstin === '08AAACH1234F1Z5', JSON.stringify(sc));
+    check('the lines are checked against the bill total', sc.adds_up === true && sc.calc_total === 24780, JSON.stringify([sc.calc_total, sc.adds_up]));
+    const pdf = await V('POST', '/api/purchase/scan', { file: 'data:application/pdf;base64,JVBERi0xLjQK' });
+    check('a PDF bill goes as a document block', seen.ai[1].body.messages[0].content[0].type === 'document' && pdf.bill_no === 'HD/2526/0457', JSON.stringify(seen.ai[1].body.messages[0].content[0].type));
+    check('a file that is not a photo or PDF is refused', (await E('POST', '/api/purchase/scan', { file: 'data:text/plain;base64,aGVsbG8=' })).status === 400);
+    await V('POST', '/api/users', { email: 'sales' + email, name: 'S', role: 'sales', password: 'Sales-pass-1' });
+    const sl = await rq('POST', '/api/auth/login', { email: 'sales' + email, password: 'Sales-pass-1' }, { ip });
+    check('the sales role cannot scan purchase bills', (await rq('POST', '/api/purchase/scan', { file: png }, { cookie: sl.cookie, ip })).status === 403);
+
+    // automatic WhatsApp reminders: a Growth-plan business (the trial), two customers overdue, one without WhatsApp
+    const late = await V('POST', '/api/parties', { name: 'Late Payer', kind: 'customer', state: 'Rajasthan', phone: '9876500022' });
+    const nowa = await V('POST', '/api/parties', { name: 'No WhatsApp', kind: 'customer', state: 'Rajasthan', phone: '9876500000' });
+    for (const p of [late, nowa]) await V('POST', '/api/docs', { type: 'INV', party_id: p.id, date: '2026-09-01', due_date: '2026-09-10', lines: [{ item_id: bulb.id, qty: 10, rate: 118 }] });
+    const offRun = await E('POST', '/api/settings/auto-wa/run');
+    check('reminders cannot be run before they are turned on', offRun.status === 400, JSON.stringify(offRun.data));
+    await V('PUT', '/api/settings/auto-wa', { on: true });
+    const run = await V('POST', '/api/settings/auto-wa/run');
+    const w = seen.wa.find((x) => x.body.to === '919876500022');
+    check('due customers get the approved template on WhatsApp, with name, business, amount and their bill link', run.sent >= 1 && w && w.auth === 'Bearer test-wa' && w.path === '/wa/555/messages'
+      && w.body.template.name === 'payment_reminder' && w.body.template.components[0].parameters[0].text === 'Late Payer' && w.body.template.components[0].parameters[1].text === 'Verma Electronics'
+      && /\/i\/[0-9a-f]{24}/.test(w.body.template.components[0].parameters[3].text), JSON.stringify([run, w && w.body]));
+    check('a number WhatsApp refuses is counted as failed, with the reason', run.failed === 1 && /Recipient not on WhatsApp/.test(run.errors.join()), JSON.stringify(run));
+    const run2 = await V('POST', '/api/settings/auto-wa/run');
+    check('nobody gets two reminders in a day', run2.sent === 0, JSON.stringify(run2));
+    const vq = await V('GET', '/api/vasooli');
+    const lp = vq.queue.find((r) => r.party_id === late.id);
+    check('the automatic reminder is logged and moves the schedule on', lp && lp.status === 'sent' && lp.last_sent.via === 'auto', JSON.stringify(lp));
+    const me2 = await V('GET', '/api/me');
+    check('the last run is shown in Settings', /sent/.test(me2.org.auto_wa_note), me2.org.auto_wa_note);
+    srv.close();
+  }
+}
+
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

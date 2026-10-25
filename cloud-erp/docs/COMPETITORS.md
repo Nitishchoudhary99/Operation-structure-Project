@@ -223,7 +223,7 @@ Y = native, P = partial / higher plan / add-on, N = absent. "Yes"/"No" for Smart
 | Reorder alerts + one-click / auto PO | Y (auto replen.) | N | P (alerts) | P (reorder pts) | P | Yes |
 | Cycle count / stock count + bulk adjust | Y (HHT) | N | P | P | P | Yes |
 | Bin/rack location + pick list | Y | N | N | Y | N | Yes |
-| Wave/batch picking, WMS putaway | Y | N | N | P | N | No |
+| Wave/batch picking, WMS putaway | Y | N | N | P | N | Yes (wave pick list, guided put-away; no HHT app) |
 | Batch / expiry tracking | Y | N | Y (Premium) | Y | Y | Yes (FEFO, expiry report) |
 | Serial / IMEI numbers | Y | N | Y (Premium) | Y | P | Yes (+ warranty lookup) |
 | Stock ageing (age buckets, dead / slow, ABC) | P (~) | N | N (~) | P (~) | Y | Yes |
@@ -233,17 +233,17 @@ Y = native, P = partial / higher plan / add-on, N = absent. "Yes"/"No" for Smart
 | Double-entry books, TB/P&L/BS | N | N | P | P (needs Books) | Y | Yes |
 | GST summary, e-invoice & e-way bill JSON | P | N | Y | Y (with Books) | Y | Yes |
 | Tally export | P (postings) | N | P | P | n/a | Yes |
-| Marketplace integrations (Amazon/Flipkart) | Y (core) | N | N | Y | N | P (order-report import + stock file) |
+| Marketplace integrations (Amazon/Flipkart) | Y (core) | N | N | Y | N | P (order reports + stock file; live Shopify / WooCommerce orders) |
 | Khata ledger, send-before-save, customer confirm/dispute link | N | Y (no confirm flow) | P (shared ledger link) | N | N | Yes |
 | WhatsApp/SMS reminders with UPI link | N | Y | Y | P | N | Yes |
 | Bulk reminders screen | N | P | P | N | N | Yes |
-| Automatic scheduled WhatsApp (Business API) | N | P (~) | P (scheduled) | N | N | No |
+| Automatic scheduled WhatsApp (Business API) | N | P (~) | P (scheduled) | N | N | Yes (opt-in, Growth+) |
 | Customer invoice links with UPI pay | N | P | Y | Y (payment gateway) | N | Yes |
 | POS with barcode / camera scan | P | N | Y | P | P | Yes |
 | Barcode label printing | Y | N | Y | Y | P | Yes |
-| Staff attendance / payroll | N | P (Pagarkhata app) | P (myBillBook Platinum+) | N | Y (payroll) | No |
-| AI features (OCR bill scan, assistants) | P (~, agentic R&D) | N | P (myBillBook OCR) | P (Zia) | N | No |
-| Offline data entry | N | Y (app) | Y (Vyapar) | N | Y (desktop) | No |
+| Staff attendance / payroll | N | P (Pagarkhata app) | P (myBillBook Platinum+) | N | Y (payroll) | Yes (attendance, advances, salary, payslip; no PF/ESI) |
+| AI features (OCR bill scan, assistants) | P (~, agentic R&D) | N | P (myBillBook OCR) | P (Zia) | N | Yes (supplier bill photo / PDF → purchase bill) |
+| Offline data entry | N | Y (app) | Y (Vyapar) | N | Y (desktop) | Yes (bills, POS, receipts, expenses; sync later) |
 | Mobile app / PWA install | Y (Android HHT) | Y | Y | Y | P | Yes (PWA) |
 | Roles + audit trail | Y | N | P | Y | Y (edit log) | Yes |
 | Today action list (what needs doing, one tap each) | N | N | N (~) | N (~) | N | Yes |
@@ -260,12 +260,12 @@ Full WMS (wave picking, putaway rules) is Vinculum/Unicommerce territory and mat
 
 1. ✅ *Built (PR #5).* **Batch + expiry tracking (FEFO pick, near-expiry alerts):** required by pharma, FMCG, food and agro-input distributors, a large segment where Marg/Vyapar win today.
 2. ✅ *Built.* **Serial / IMEI tracking:** mobile, electronics and appliance dealers need it for warranty and returns. It shares the same lot-tracking data model as #1, so it is cheap to add after it.
-3. **Automatic scheduled WhatsApp (Business API) reminders + payment-received receipts:** collections are the top daily pain. Auto-nudges on due dates beat manual sends and justify a paid add-on (per-message pass-through).
-4. **AI purchase-bill OCR → draft GRN/purchase bill:** suppliers send paper or PDF bills, and myBillBook already markets this. It cuts the slowest data-entry task and is visible "AI" in demos.
-5. **Offline data entry (PWA queue + sync) for POS, khata and GRN:** patchy connectivity in tier-2/3 markets is the main reason traders stay on Vyapar or desktop Tally.
-6. **Staff attendance + simple payroll/advances (salesman, helpers):** bundled by myBillBook and Khatabook (Pagarkhata), it raises daily active use, and the data feeds expense entries.
+3. ✅ *Built.* **Automatic scheduled WhatsApp (Business API) reminders + payment-received receipts:** collections are the top daily pain. Auto-nudges on due dates beat manual sends and justify a paid add-on (per-message pass-through).
+4. ✅ *Built.* **AI purchase-bill OCR → draft GRN/purchase bill:** suppliers send paper or PDF bills, and myBillBook already markets this. It cuts the slowest data-entry task and is visible "AI" in demos.
+5. ✅ *Built.* **Offline data entry (PWA queue + sync) for POS, khata and GRN:** patchy connectivity in tier-2/3 markets is the main reason traders stay on Vyapar or desktop Tally.
+6. ✅ *Built.* **Staff attendance + simple payroll/advances (salesman, helpers):** bundled by myBillBook and Khatabook (Pagarkhata), it raises daily active use, and the data feeds expense entries.
 7. 🟡 *Order import and stock file built; live API sync not yet.* **Marketplace + webstore sync (Amazon, Flipkart, Meesho, Shopify) for stock and orders:** a growing share of traders sell online. Start with inventory sync and order import rather than a full OMS.
-8. **Barcode GRN with QC hold/accept/reject and guided putaway to bins:** builds on the existing gate entry and bins, closes the inward-quality loop for distributors, and moves us towards Vinculum-lite WMS.
+8. 🟡 *Guided put-away and wave picking built; QC hold not yet.* **Barcode GRN with QC hold/accept/reject and guided putaway to bins:** builds on the existing gate entry and bins, closes the inward-quality loop for distributors, and moves us towards Vinculum-lite WMS.
 
 ### 8.4 Where SmartTrader stands (25 Oct 2026)
 
@@ -283,6 +283,9 @@ file, a Today action list, bills as PDF on WhatsApp in the customer's language, 
 | Zoho Inventory | Books and inventory are separate subscriptions; no khata, no udhaar culture features | One app: books, stock, khata, promises, collections in Hindi / Hinglish |
 | Vinculum / Unicommerce | Built for brands and 3PLs: quote-based price, implementation projects, no SME books | The parts an SME trader needs (bins, FEFO, serials, order import, stock file) at a small yearly price, set up in minutes |
 
-**Still behind (honest list):** live marketplace API sync, offline data entry, purchase-bill OCR, automatic WhatsApp
-Business API sending, staff attendance / payroll, and WMS depth (handheld putaway rules, wave picking). These are the
-next candidates, in about that order.
+**Built since (25 Oct 2026, second round):** staff attendance and salary with advances and payslips, offline billing
+with an outbox, supplier bill scanning with Claude, automatic WhatsApp reminders, live Shopify / WooCommerce orders,
+guided put-away and wave picking.
+
+**Still behind (honest list):** live Amazon / Flipkart API sync (needs developer registration with each marketplace),
+statutory payroll (PF / ESI / TDS), a handheld (HHT) warehouse app with put-away rules per zone, and QC hold at GRN.

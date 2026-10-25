@@ -3,7 +3,7 @@
    Every business table carries org_id: one database serves many businesses (multi-tenant).
    migrate() runs on the first request after each deploy, so no manual migration step is needed. */
 
-export const SCHEMA_VERSION = 23;
+export const SCHEMA_VERSION = 24;
 
 // document types whose monthly totals doc_month keeps (sales and purchase money documents)
 const MONTH_TYPES = `('INV','SRET','CNOTE','BILL','PRET','DNOTE')`;
@@ -103,6 +103,7 @@ export const DEFAULT_ACCOUNTS = [
   ['1100', 'Accounts Receivable (Debtors)', 'asset', 'ar', 0],
   ['1200', 'Inventory (Stock in Hand)', 'asset', 'inventory', 0],
   ['1300', 'GST Input Credit', 'asset', 'gst_input', 0],
+  ['1400', 'Staff Advances', 'asset', 'staff_adv', 0],
   ['2000', 'Accounts Payable (Creditors)', 'liability', 'ap', 0],
   ['2100', 'GST Output Payable', 'liability', 'gst_output', 0],
   ['2200', 'Goods Received Not Billed', 'liability', 'grni', 0],
@@ -117,7 +118,7 @@ export const DEFAULT_ACCOUNTS = [
   ['5200', 'Round Off', 'expense', 'round_off', 0],
   ['5300', 'Purchase Rate Difference', 'expense', 'pur_adj', 0],
   ['6000', 'Rent', 'expense', null, 0],
-  ['6010', 'Salaries & Wages', 'expense', null, 0],
+  ['6010', 'Salaries & Wages', 'expense', 'salary', 0],
   ['6020', 'Electricity', 'expense', null, 0],
   ['6030', 'Transport & Freight', 'expense', null, 0],
   ['6040', 'Telephone & Internet', 'expense', null, 0],
@@ -427,6 +428,40 @@ export const MIGRATIONS = {
     `ALTER TABLE docs ADD COLUMN approved_by INTEGER`,
     `CREATE TABLE IF NOT EXISTS channel_orders (org_id INTEGER NOT NULL, channel TEXT NOT NULL, order_id TEXT NOT NULL, doc_id INTEGER,
        created_at TEXT NOT NULL, PRIMARY KEY (org_id, channel, order_id))`,
+  ],
+  /* staff attendance and salary (src/payroll.js), requests that may be replayed after being offline (idem_keys),
+     automatic WhatsApp reminders (orgs.auto_wa) and signed order webhooks from web stores (shop_hooks). */
+  24: [
+    `CREATE TABLE IF NOT EXISTS staff (id INTEGER PRIMARY KEY, org_id INTEGER NOT NULL, name TEXT NOT NULL, phone TEXT DEFAULT '', title TEXT DEFAULT '',
+       pay_type TEXT NOT NULL DEFAULT 'month' CHECK (pay_type IN ('month','day')), rate INTEGER NOT NULL DEFAULT 0, ot_rate INTEGER NOT NULL DEFAULT 0,
+       join_date TEXT NOT NULL, active INTEGER NOT NULL DEFAULT 1, notes TEXT DEFAULT '', created_at TEXT NOT NULL)`,
+    `CREATE INDEX IF NOT EXISTS ix_staff_org ON staff (org_id, active)`,
+    `CREATE TABLE IF NOT EXISTS attendance (org_id INTEGER NOT NULL, staff_id INTEGER NOT NULL, date TEXT NOT NULL,
+       status TEXT NOT NULL CHECK (status IN ('P','A','H','L','O')), ot_hours REAL NOT NULL DEFAULT 0, marked_by INTEGER, PRIMARY KEY (staff_id, date))`,
+    `CREATE INDEX IF NOT EXISTS ix_att_org ON attendance (org_id, date)`,
+    `CREATE TABLE IF NOT EXISTS staff_txns (id INTEGER PRIMARY KEY, org_id INTEGER NOT NULL, staff_id INTEGER NOT NULL, kind TEXT NOT NULL CHECK (kind IN ('advance','salary')),
+       date TEXT NOT NULL, month TEXT DEFAULT '', gross INTEGER NOT NULL DEFAULT 0, bonus INTEGER NOT NULL DEFAULT 0, advance_cut INTEGER NOT NULL DEFAULT 0,
+       other_cut INTEGER NOT NULL DEFAULT 0, amount INTEGER NOT NULL, account_id INTEGER, detail TEXT NOT NULL DEFAULT '{}', notes TEXT DEFAULT '',
+       status TEXT NOT NULL DEFAULT 'done' CHECK (status IN ('done','cancelled')), created_by INTEGER, created_at TEXT NOT NULL, txk TEXT UNIQUE)`,
+    `CREATE INDEX IF NOT EXISTS ix_stxn_staff ON staff_txns (org_id, staff_id, id)`,
+    `CREATE UNIQUE INDEX IF NOT EXISTS ux_stxn_salary ON staff_txns (staff_id, month) WHERE kind = 'salary' AND status = 'done'`,
+    `UPDATE accounts SET sys = 'salary' WHERE code = '6010' AND sys IS NULL AND type = 'expense'
+       AND NOT EXISTS (SELECT 1 FROM accounts a WHERE a.org_id = accounts.org_id AND a.sys = 'salary')`,
+    `INSERT INTO accounts (org_id, code, name, type, sys, is_cash) SELECT o.id, '6011', 'Salaries & Wages', 'expense', 'salary', 0 FROM orgs o
+       WHERE NOT EXISTS (SELECT 1 FROM accounts a WHERE a.org_id = o.id AND (a.sys = 'salary' OR a.code = '6011'))`,
+    `INSERT INTO accounts (org_id, code, name, type, sys, is_cash) SELECT o.id, '1400', 'Staff Advances', 'asset', 'staff_adv', 0 FROM orgs o
+       WHERE NOT EXISTS (SELECT 1 FROM accounts a WHERE a.org_id = o.id AND (a.sys = 'staff_adv' OR a.code = '1400'))`,
+    `INSERT INTO accounts (org_id, code, name, type, sys, is_cash) SELECT o.id, '1401', 'Staff Advances', 'asset', 'staff_adv', 0 FROM orgs o
+       WHERE NOT EXISTS (SELECT 1 FROM accounts a WHERE a.org_id = o.id AND (a.sys = 'staff_adv' OR a.code = '1401'))`,
+    `CREATE TABLE IF NOT EXISTS idem_keys (org_id INTEGER NOT NULL, key TEXT NOT NULL, user_id INTEGER, status INTEGER NOT NULL DEFAULT 0,
+       body TEXT, created_at TEXT NOT NULL, PRIMARY KEY (org_id, key))`,
+    `CREATE INDEX IF NOT EXISTS ix_idem_at ON idem_keys (created_at)`,
+    `ALTER TABLE orgs ADD COLUMN auto_wa INTEGER NOT NULL DEFAULT 0`,
+    `ALTER TABLE orgs ADD COLUMN auto_wa_note TEXT DEFAULT ''`,
+    `CREATE TABLE IF NOT EXISTS shop_hooks (id INTEGER PRIMARY KEY, org_id INTEGER NOT NULL, kind TEXT NOT NULL CHECK (kind IN ('shopify','woocommerce','custom')),
+       name TEXT NOT NULL, token TEXT NOT NULL UNIQUE, secret TEXT NOT NULL, warehouse_id INTEGER, active INTEGER NOT NULL DEFAULT 1,
+       created_at TEXT NOT NULL, last_at TEXT, last_error TEXT DEFAULT '', orders INTEGER NOT NULL DEFAULT 0)`,
+    `CREATE INDEX IF NOT EXISTS ix_hooks_org ON shop_hooks (org_id)`,
   ],
 };
 
