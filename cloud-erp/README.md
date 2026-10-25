@@ -223,6 +223,8 @@ cloud-erp/
   src/receive.js       receiving: what is expected (bills in transit, orders, gate), codes learnt while scanning, bins chosen or made
   src/claims.js        transit claims on transporters / insurers: details, money received, the rest closed as a loss
   tools/gen-og.mjs     makes the link-preview posters (public/og-*.png) in the three languages
+  tools/gen-seo-pages.py  the public pages for search engines: product, business-type, feature and Hindi pages, the visitors'
+                       home page inside public/index.html, public/404.html and both sitemaps (edit the text there, then run it)
   public/              the web app (plain HTML/CSS/JS, no build step), PWA manifest + service worker, csv.js (export), _headers
   public/billocr.js    reads a supplier's bill photo / PDF on the phone (Tesseract OCR and pdf.js in public/vendor/)
   test/run.mjs         end-to-end test against a running worker
@@ -232,6 +234,10 @@ cloud-erp/
 
 ## Security notes
 
+- Every page and file is sent with a strict policy: scripts only from this site (and Razorpay Checkout), no inline script or
+  `onclick=` (`script-src-attr 'none'`), no framing, HSTS for two years (preload-ready), and JSON that other sites may not embed.
+  `/.well-known/security.txt` says where to report a problem; renew its `Expires` date (src/worker.js) before October 2027.
+- Unknown addresses answer a real 404 (`public/404.html`); the app itself routes by `#/…`, so it needs no fallback.
 - Passwords are hashed with PBKDF2-SHA256 and a per-user salt. Sessions are HMAC-signed, HttpOnly, SameSite=Lax cookies
   (Secure on https) that carry a session id. **Sign out** puts that id on a revoked list, so a copied cookie stops working at once;
   changing a password, a password set by the owner, switching a user off and **Sign out everywhere** (Settings) end every token of that user.

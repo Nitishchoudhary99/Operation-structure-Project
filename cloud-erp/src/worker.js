@@ -2103,7 +2103,11 @@ async function sharePage(request, env, kind, token) {
 }
 
 /* the static files come from the ASSETS binding; headers are added to everything the Worker sends */
+/* RFC 9116: where to report a security problem (renew Expires before it passes) */
+const SECURITY_TXT = 'Contact: https://wa.me/919068446139\nContact: https://docbrisk.com/security\nExpires: 2027-10-01T00:00:00.000Z\n' +
+  'Preferred-Languages: en, hi\nCanonical: https://erp.docbrisk.com/.well-known/security.txt\nPolicy: https://docbrisk.com/security\n';
 async function respond(request, env, url) {
+  if (url.pathname === '/.well-known/security.txt') return new Response(SECURITY_TXT, { headers: { 'Content-Type': 'text/plain; charset=utf-8', 'Cache-Control': 'public, max-age=86400' } });
   const share = url.pathname.match(/^\/(k|i|c)\/([0-9a-f]{24})\/?$/);
   if (share && env.ASSETS) return sharePage(request, env, share[1], share[2]).catch(() => env.ASSETS.fetch(new Request(url.origin + '/', request)));
   if (!url.pathname.startsWith('/api/')) {

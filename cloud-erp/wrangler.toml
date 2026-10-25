@@ -8,12 +8,12 @@ compatibility_date = "2025-09-01"
 keep_vars = true
 
 # The web app. API calls (/api/*) run the worker first; everything else is a static file,
-# and unknown paths fall back to index.html so the single-page app can route them.
+# and an unknown path gets public/404.html with a real 404 (the app routes by #hash, so it needs no fallback).
 [assets]
 directory = "./public"
 binding = "ASSETS"
-not_found_handling = "single-page-application"
-run_worker_first = ["/api/*", "/k/*", "/i/*", "/c/*"]
+not_found_handling = "404-page"
+run_worker_first = ["/api/*", "/k/*", "/i/*", "/c/*", "/.well-known/*"]
 
 # Create once with:  npx wrangler d1 create smarttrader-erp
 # then paste the database_id it prints below. Tables are created automatically on first request.

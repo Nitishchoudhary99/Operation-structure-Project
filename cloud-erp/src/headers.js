@@ -17,6 +17,8 @@ export const CSP_APP = [
   "base-uri 'none'",
   "form-action 'self'",
   "frame-ancestors 'none'",
+  "script-src-attr 'none'",                      // no onclick= anywhere: buttons are wired in app.js
+  'upgrade-insecure-requests',
 ].join('; ');
 /* JSON, downloads and images are never pages: they may not load or run anything, nor be framed */
 export const CSP_API = "default-src 'none'; frame-ancestors 'none'; base-uri 'none'";
@@ -25,7 +27,9 @@ export const BASE_HEADERS = {
   'X-Content-Type-Options': 'nosniff',
   'X-Frame-Options': 'DENY',
   'Referrer-Policy': 'no-referrer',
-  'Strict-Transport-Security': 'max-age=31536000; includeSubDomains',
+  'Strict-Transport-Security': 'max-age=63072000; includeSubDomains; preload',
+  'Cross-Origin-Opener-Policy': 'same-origin-allow-popups',     // Razorpay and Google sign-in may still open their windows
+  'X-Permitted-Cross-Domain-Policies': 'none',
   'Permissions-Policy': 'camera=(self), microphone=(), geolocation=(), payment=(self "https://checkout.razorpay.com" "https://api.razorpay.com"), usb=(), serial=()',
 };
 
@@ -36,5 +40,6 @@ export function secure(res, api) {
   try { out.headers.set('X-Content-Type-Options', 'nosniff'); } catch (e) { out = new Response(res.body, res); }
   for (const [k, v] of Object.entries(BASE_HEADERS)) out.headers.set(k, v);
   out.headers.set('Content-Security-Policy', api ? CSP_API : CSP_APP);
+  if (api) out.headers.set('Cross-Origin-Resource-Policy', 'same-origin');     // another site cannot embed our JSON or files
   return out;
 }

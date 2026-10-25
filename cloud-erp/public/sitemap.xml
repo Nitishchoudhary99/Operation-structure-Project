@@ -1,9 +1,22 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
-  <url><loc>https://erp.docbrisk.com/</loc><lastmod>2026-10-12</lastmod><changefreq>weekly</changefreq><priority>1.0</priority></url>
-  <url><loc>https://erp.docbrisk.com/gst-billing-software/</loc><lastmod>2026-10-12</lastmod><changefreq>monthly</changefreq><priority>0.9</priority></url>
-  <url><loc>https://erp.docbrisk.com/khata-book-app/</loc><lastmod>2026-10-12</lastmod><changefreq>monthly</changefreq><priority>0.9</priority></url>
-  <url><loc>https://erp.docbrisk.com/inventory-management-software/</loc><lastmod>2026-10-12</lastmod><changefreq>monthly</changefreq><priority>0.9</priority></url>
-  <url><loc>https://erp.docbrisk.com/pricing/</loc><lastmod>2026-10-12</lastmod><changefreq>monthly</changefreq><priority>0.8</priority></url>
-  <url><loc>https://erp.docbrisk.com/privacy/</loc><lastmod>2026-10-25</lastmod><changefreq>yearly</changefreq><priority>0.3</priority></url>
+<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9" xmlns:xhtml="http://www.w3.org/1999/xhtml">
+  <url><loc>https://erp.docbrisk.com/</loc><lastmod>2026-10-25</lastmod><priority>1.0</priority></url>
+  <url><loc>https://erp.docbrisk.com/gst-billing-software/</loc><lastmod>2026-10-25</lastmod><xhtml:link rel="alternate" hreflang="en-IN" href="https://erp.docbrisk.com/gst-billing-software/"/><xhtml:link rel="alternate" hreflang="hi-IN" href="https://erp.docbrisk.com/hi/gst-billing-software/"/><xhtml:link rel="alternate" hreflang="x-default" href="https://erp.docbrisk.com/gst-billing-software/"/><priority>0.9</priority></url>
+  <url><loc>https://erp.docbrisk.com/khata-book-app/</loc><lastmod>2026-10-25</lastmod><xhtml:link rel="alternate" hreflang="en-IN" href="https://erp.docbrisk.com/khata-book-app/"/><xhtml:link rel="alternate" hreflang="hi-IN" href="https://erp.docbrisk.com/hi/khata-book-app/"/><xhtml:link rel="alternate" hreflang="x-default" href="https://erp.docbrisk.com/khata-book-app/"/><priority>0.9</priority></url>
+  <url><loc>https://erp.docbrisk.com/inventory-management-software/</loc><lastmod>2026-10-25</lastmod><priority>0.9</priority></url>
+  <url><loc>https://erp.docbrisk.com/pricing/</loc><lastmod>2026-10-25</lastmod><priority>0.9</priority></url>
+  <url><loc>https://erp.docbrisk.com/kirana-store-billing-software/</loc><lastmod>2026-10-25</lastmod><priority>0.9</priority></url>
+  <url><loc>https://erp.docbrisk.com/medical-store-billing-software/</loc><lastmod>2026-10-25</lastmod><priority>0.9</priority></url>
+  <url><loc>https://erp.docbrisk.com/wholesale-distributor-software/</loc><lastmod>2026-10-25</lastmod><priority>0.9</priority></url>
+  <url><loc>https://erp.docbrisk.com/mobile-shop-billing-software/</loc><lastmod>2026-10-25</lastmod><priority>0.9</priority></url>
+  <url><loc>https://erp.docbrisk.com/hardware-shop-billing-software/</loc><lastmod>2026-10-25</lastmod><priority>0.9</priority></url>
+  <url><loc>https://erp.docbrisk.com/pos-billing-software/</loc><lastmod>2026-10-25</lastmod><priority>0.8</priority></url>
+  <url><loc>https://erp.docbrisk.com/e-invoice-software/</loc><lastmod>2026-10-25</lastmod><priority>0.8</priority></url>
+  <url><loc>https://erp.docbrisk.com/whatsapp-payment-reminder-app/</loc><lastmod>2026-10-25</lastmod><priority>0.8</priority></url>
+  <url><loc>https://erp.docbrisk.com/accounting-software-for-small-business/</loc><lastmod>2026-10-25</lastmod><priority>0.8</priority></url>
+  <url><loc>https://erp.docbrisk.com/warehouse-management-software/</loc><lastmod>2026-10-25</lastmod><priority>0.8</priority></url>
+  <url><loc>https://erp.docbrisk.com/purchase-management-software/</loc><lastmod>2026-10-25</lastmod><priority>0.8</priority></url>
+  <url><loc>https://erp.docbrisk.com/hi/gst-billing-software/</loc><lastmod>2026-10-25</lastmod><xhtml:link rel="alternate" hreflang="en-IN" href="https://erp.docbrisk.com/gst-billing-software/"/><xhtml:link rel="alternate" hreflang="hi-IN" href="https://erp.docbrisk.com/hi/gst-billing-software/"/><xhtml:link rel="alternate" hreflang="x-default" href="https://erp.docbrisk.com/gst-billing-software/"/><priority>0.8</priority></url>
+  <url><loc>https://erp.docbrisk.com/hi/khata-book-app/</loc><lastmod>2026-10-25</lastmod><xhtml:link rel="alternate" hreflang="en-IN" href="https://erp.docbrisk.com/khata-book-app/"/><xhtml:link rel="alternate" hreflang="hi-IN" href="https://erp.docbrisk.com/hi/khata-book-app/"/><xhtml:link rel="alternate" hreflang="x-default" href="https://erp.docbrisk.com/khata-book-app/"/><priority>0.8</priority></url>
+  <url><loc>https://erp.docbrisk.com/privacy/</loc><lastmod>2026-10-25</lastmod><priority>0.3</priority></url>
 </urlset>

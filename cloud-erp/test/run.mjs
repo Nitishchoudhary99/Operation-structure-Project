@@ -1141,6 +1141,24 @@ else {
   check('the page has no inline script or handler', !/<script(?![^>]*(type="application\/ld\+json"|src=))/i.test(page) && !/\son[a-z]+=/i.test(page));
   const appjs = await (await fetch(BASE + '/app.js')).text();
   check('the app has no inline handler or javascript: link', !/\son(click|change|input|submit|load|error)=/i.test(appjs.replace(/\.on(click|change|input|submit|load|error)\b/g, '')) && !/href="javascript:/i.test(appjs));
+
+  // search engines: visitors' home page, real 404s, every page in the sitemap, Hindi pages paired with English
+  check('the home page is a real page for visitors (heading, links to the product pages, FAQ data)', /<div class="landing">[\s\S]*<h1>/.test(page)
+    && (page.match(/href="\/[a-z-]+\/"/g) || []).length >= 15 && /"@type": "FAQPage"/.test(page));
+  const nf = await fetch(BASE + '/no-such-page-' + Date.now());
+  check('an unknown address answers 404 with the not-found page, not the app', nf.status === 404 && /This page does not exist/.test(await nf.text()));
+  const smap = await (await fetch(BASE + '/sitemap.xml')).text(), locs = [...smap.matchAll(/<loc>([^<]+)<\/loc>/g)].map((m) => m[1].replace('https://erp.docbrisk.com', ''));
+  const answers = await Promise.all(locs.map(async (l) => { const r = await fetch(BASE + l); const h = await r.text(); return { l, ok: r.status === 200, canon: (h.match(/rel="canonical" href="([^"]+)"/) || [])[1] }; }));
+  check('every sitemap page answers 200 with its own canonical address', locs.length >= 19 && answers.every((a) => a.ok && a.canon === 'https://erp.docbrisk.com' + a.l), JSON.stringify(answers.filter((a) => !a.ok || a.canon !== 'https://erp.docbrisk.com' + a.l)));
+  const hiPage = await (await fetch(BASE + '/hi/gst-billing-software/')).text(), enPage = await (await fetch(BASE + '/gst-billing-software/')).text();
+  const sec = await fetch(BASE + '/.well-known/security.txt'), st = await sec.text();
+  check('security.txt says where to report a problem, and is not about to expire', sec.status === 200 && /^Contact: https:\/\//m.test(st)
+    && Date.parse((st.match(/^Expires: (.+)$/m) || [])[1]) > Date.now() + 30 * 864e5, st);
+  const api = await fetch(BASE + '/api/health');
+  check('JSON may not be embedded by another site; pages keep their opener safe', api.headers.get('cross-origin-resource-policy') === 'same-origin'
+    && (await fetch(BASE + '/')).headers.get('cross-origin-opener-policy') === 'same-origin-allow-popups' && /script-src-attr 'none'/.test(CSP_APP));
+  check('Hindi and English pages point to each other (hreflang)', /<html lang="hi">/.test(hiPage) && /hreflang="en-IN" href="https:\/\/erp.docbrisk.com\/gst-billing-software\/"/.test(hiPage)
+    && /hreflang="hi-IN" href="https:\/\/erp.docbrisk.com\/hi\/gst-billing-software\/"/.test(enPage));
 }
 
 /* --- finding 25: spreadsheet formulas in exports --- */
