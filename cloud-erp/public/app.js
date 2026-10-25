@@ -257,14 +257,14 @@ const ADV_DOCS = ['QUOTE', 'SO', 'DN', 'PO', 'GRN'];
 const simple = () => !ME || (ME.org.mode || 'simple') !== 'advanced';
 /* which permission area a menu entry needs (custom roles may not see every area) */
 const navArea = (h) => /^(receipts|payments|expenses|accounts|journal)$/.test(h) ? 'finance' : /^(sales\/|pos$|recurring$)/.test(h) ? 'sales' : /^(purchase\/|gate\/in$)/.test(h) ? 'purchase'
-  : /^(items|stock|stockcount|gate\/out|pending)$/.test(h) ? 'items' : /^(parties|reminders)$/.test(h) ? 'masters' : /^(khata|vaade)$/.test(h) ? 'khata'
+  : /^(items|stock|stockcount|gate\/out|pending|bins|expiry|stock-ageing)$/.test(h) ? 'items' : /^(parties|reminders)$/.test(h) ? 'masters' : /^(khata|vaade)$/.test(h) ? 'khata'
   : /^(reports\/|tally$|daybook$)/.test(h) ? 'reports' : h === 'plan' ? 'settings' : '';
 const seen = (h) => { if (h === 'cash') return !ME.view || ME.view.finance !== false || ME.view.reports !== false; const a = navArea(h); return !a || !ME.view || ME.view[a] !== false; };
 const NAV = [
   ['', [['dashboard', 'Dashboard']]],
   ['Sales', [['pos', 'Quick Bill (POS)'], ['sales/INV', 'Invoices'], ['recurring', 'Recurring Bills'], ['sales/SO', 'Sales Orders'], ['sales/DN', 'Delivery Notes'], ['sales/QUOTE', 'Quotations'], ['sales/SRET', 'Sales Returns'], ['sales/CNOTE', 'Credit Notes (rate diff)'], ['receipts', 'Receipts']]],
   ['Purchase', [['purchase/PO', 'Purchase Orders'], ['gate/in', 'Gate Entry (inward)'], ['purchase/GRN', 'Goods Receipts (GRN)'], ['purchase/BILL', 'Purchase Bills'], ['purchase/PRET', 'Purchase Returns'], ['purchase/DNOTE', 'Debit Notes (rate diff)'], ['payments', 'Payments']]],
-  ['Inventory', [['items', 'Items'], ['stock', 'Stock & Godowns'], ['stockcount', 'Stock Count'], ['gate/out', 'Gate Pass (outward)'], ['pending', 'Pending Orders']]],
+  ['Inventory', [['items', 'Items'], ['stock', 'Stock & Godowns'], ['stock-ageing', 'Stock Ageing'], ['bins', 'Bins & Racks'], ['expiry', 'Batch & Expiry'], ['stockcount', 'Stock Count'], ['gate/out', 'Gate Pass (outward)'], ['pending', 'Pending Orders']]],
   ['Contacts', [['parties', 'Customers & Suppliers'], ['khata', 'Khata Book'], ['reminders', 'Vasooli (Collections)'], ['vaade', 'Vaade (Promises)']]],
   ['Accounts', [['expenses', 'Expenses'], ['accounts', 'Chart of Accounts'], ['journal', 'Journal Voucher'], ['daybook', 'Day Book']]],
   ['Reports', [['reports/pnl', 'Profit & Loss'], ['reports/balance-sheet', 'Balance Sheet'], ['reports/trial-balance', 'Trial Balance'], ['reports/gst', 'GST Summary'], ['reports/ageing', 'Outstanding (Ageing)'], ['reports/register', 'Registers'], ['cash', 'Kal ka Cash'], ['tally', 'Tally Export']]],
@@ -512,11 +512,21 @@ route(/^new\/([A-Z]+)$/, async (el, m, q) => {
   const fromDoc = !!draft.ref_id;
   const isNote = !!T.note;
   const isSale = T.side === 'sales', money = ['INV', 'BILL'].includes(type);
+  // batches (items that track batch & expiry): typed when goods come in, chosen (or first-to-expire) when they go out
+  const movesStock = !!T.stock && !(type === 'INV' && draft.ref_type === 'DN') && !(type === 'BILL' && draft.ref_type === 'GRN');
+  const tracks = (id) => { const it = items.find((i) => i.id === +id); return !!(it && it.track_batch); };
+  const lotCell = (l) => {
+    if (!movesStock) return l.batch_no ? `<div class="lot muted">${lotLine(l)}<input type="hidden" name="batch_no" value="${esc(l.batch_no)}"><input type="hidden" name="expiry" value="${esc(l.expiry || '')}"></div>` : '';
+    const hide = tracks(l.item_id) || l.batch_no ? '' : ' hidden';
+    return T.stock === 'in'
+      ? `<div class="lot"${hide}><input name="batch_no" placeholder="Batch no." maxlength="40" value="${esc(l.batch_no || '')}" aria-label="Batch number"><input name="expiry" type="month" value="${esc((l.expiry || '').slice(0, 7))}" aria-label="Expiry month" title="Expiry"></div>`
+      : `<div class="lot"${hide}><select name="batch_no" data-batches aria-label="Batch"><option value="">Batch: first to expire</option>${l.batch_no ? `<option value="${esc(l.batch_no.split(',')[0].trim())}" selected>${esc(l.batch_no.split(',')[0].trim())}</option>` : ''}</select></div>`;
+  };
   const itemOpt = (sel) => `<option value="">Choose item…</option>` + items.map((i) => `<option value="${i.id}" ${+sel === i.id ? 'selected' : ''}>${esc(i.name)}${i.is_service ? '' : ` (${qtyf(i.qty_on_hand)} ${esc(i.unit)})`}</option>`).join('');
   const gstOpt = (sel) => ME.gst_rates.map((g) => `<option value="${g}" ${+sel === g ? 'selected' : ''}>${g}%</option>`).join('');
   const lineRow = (l) => `<tr>
       <td class="c-item">${fromDoc ? `<b>${esc(l.item || l.description)}</b>${isNote && l.orig_rate !== undefined ? `<div class="muted">billed at ${inr(l.orig_rate)}</div>` : ''}<input type="hidden" name="item_id" value="${esc(l.item_id || '')}"><input type="hidden" name="src_line_id" value="${esc(l.src_line_id || '')}"><input type="hidden" name="description" value="${esc(l.description || '')}">`
-        : `<select name="item_id" aria-label="Item">${itemOpt(l.item_id)}</select><input name="description" placeholder="or type a name / note" value="${esc(l.description || '')}" style="margin-top:4px">`}</td>
+        : `<select name="item_id" aria-label="Item">${itemOpt(l.item_id)}</select><input name="description" placeholder="or type a name / note" value="${esc(l.description || '')}" style="margin-top:4px">`}${lotCell(l)}</td>
       <td class="c-n" data-l="Qty"><input name="qty" type="number" step="any" min="0" inputmode="decimal" value="${esc(l.qty ?? 1)}" aria-label="Quantity"></td>
       <td class="c-n" data-l="${isNote ? 'Rate diff ₹' : 'Rate ₹'}"><input name="rate" type="number" step="any" min="0" inputmode="decimal" value="${esc(l.rate ?? '')}" aria-label="Rate"></td>
       <td class="c-n" data-l="Disc %"><input name="discount_pct" type="number" step="any" min="0" max="100" inputmode="decimal" value="${esc(l.discount_pct ?? 0)}" aria-label="Discount percent"></td>
@@ -584,6 +594,17 @@ route(/^new\/([A-Z]+)$/, async (el, m, q) => {
     form.dataset.total = total;
     if (type === 'INV') creditBanner();
   };
+  const lotCache = new Map();
+  const fillBatches = async (tr) => {
+    const bsel = $('[data-batches]', tr), id = +(($('[name=item_id]', tr) || {}).value || 0), wid = +form.elements.warehouse_id.value || 0;
+    if (!bsel || !id || !tracks(id)) return;
+    const key = id + ':' + wid;
+    if (!lotCache.has(key)) lotCache.set(key, GET(`/api/items/${id}/lots?warehouse_id=${wid}`).then((r) => r.batches).catch(() => []));
+    const list = await lotCache.get(key), cur = bsel.value;
+    bsel.innerHTML = '<option value="">Batch: first to expire</option>' + list.map((b) => `<option value="${esc(b.batch_no)}">${esc(b.batch_no)}${b.expiry ? ` · exp ${mmyy(b.expiry)}` : ''} · ${qtyf(b.qty)} left</option>`).join('')
+      + (cur && !list.some((b) => b.batch_no === cur) ? `<option value="${esc(cur)}">${esc(cur)}</option>` : '');
+    bsel.value = cur;
+  };
   const wireRow = (tr) => {
     const sel = $('select[name=item_id]', tr);
     if (sel) sel.onchange = () => {
@@ -593,8 +614,11 @@ route(/^new\/([A-Z]+)$/, async (el, m, q) => {
         $('[name=gst_rate]', tr).value = it.gst_rate;
         $('[name=description]', tr).value = '';
       }
+      const lot = $('.lot', tr);
+      if (lot) { lot.hidden = !(it && it.track_batch); const b = $('[name=batch_no]', lot); if (b && !lot.hidden && b.tagName === 'SELECT') { b.value = ''; fillBatches(tr); } }
       recalc();
     };
+    fillBatches(tr);
     const del = $('[data-del]', tr);
     if (del) del.onclick = () => { if ($$('tr', tbody).length > 1) { tr.remove(); recalc(); } };
   };
@@ -602,6 +626,7 @@ route(/^new\/([A-Z]+)$/, async (el, m, q) => {
   form.addEventListener('input', recalc);
   form.addEventListener('change', recalc);
   if ($('#addline')) $('#addline').onclick = () => { tbody.insertAdjacentHTML('beforeend', lineRow({})); wireRow(tbody.lastElementChild); recalc(); };
+  if (form.elements.warehouse_id && form.elements.warehouse_id.tagName === 'SELECT') form.elements.warehouse_id.addEventListener('change', () => $$('tr', tbody).forEach(fillBatches));
   if ($('#newparty')) $('#newparty').onclick = () => partyForm({ kind: side }, async (p) => {
     parties.push(p); const s = form.elements.party_id;
     s.insertAdjacentHTML('beforeend', `<option value="${p.id}">${esc(p.name)}</option>`); s.value = p.id; recalc();
@@ -612,7 +637,8 @@ route(/^new\/([A-Z]+)$/, async (el, m, q) => {
     const f = form.elements;
     const lines = $$('tr', tbody).map((tr) => {
       const g = (n) => { const x = $(`[name=${n}]`, tr); return x ? x.value : ''; };
-      return { item_id: +g('item_id') || null, description: g('description'), qty: g('qty'), rate: g('rate'), discount_pct: g('discount_pct'), gst_rate: g('gst_rate'), src_line_id: +g('src_line_id') || undefined };
+      return { item_id: +g('item_id') || null, description: g('description'), qty: g('qty'), rate: g('rate'), discount_pct: g('discount_pct'), gst_rate: g('gst_rate'), src_line_id: +g('src_line_id') || undefined,
+        batch_no: g('batch_no'), expiry: g('expiry') };
     }).filter((l) => +l.qty > 0 && (!isNote || +l.rate > 0));
     const body = { type, party_id: +f.party_id.value, date: f.date.value, warehouse_id: +f.warehouse_id.value, notes: f.notes.value, lines, ref_id: draft.ref_id, extra: cfRead(form), design: f.design ? f.design.value : '' };
     if (ge) body.gate_entry_id = ge.id;
@@ -657,6 +683,9 @@ function hsnSummary(d, inter) {
     + '</tbody></table>';
 }
 
+/* batch and expiry as printed: "Batch B2 · Exp 12/26" */
+const mmyy = (d) => (d ? `${d.slice(5, 7)}/${d.slice(2, 4)}` : '');
+const lotLine = (l) => (l.batch_no ? `<div class="muted">Batch ${esc(l.batch_no)}${l.expiry ? ` · Exp ${mmyy(l.expiry)}` : ''}</div>` : '');
 function docPaper(d) {
   const o = d.org, p = d.party || {}, P = o.print || {};
   const isTax = ['INV', 'BILL', 'SRET', 'PRET', 'CNOTE', 'DNOTE'].includes(d.type);
@@ -669,8 +698,8 @@ function docPaper(d) {
   const bank = ours && P.bank_account ? `<p class="bank"><b>Bank details</b><br>${[P.bank_name, 'A/c ' + P.bank_account, P.bank_ifsc && 'IFSC ' + P.bank_ifsc, P.bank_branch].filter(Boolean).map(esc).join(' &middot; ')}</p>` : '';
   const upi = d.type === 'INV' && o.upi_id && d.balance > 0 && P.show_upi !== false;
   const lineCells = (l, i) => compact
-    ? `<td>${esc(l.item || l.description)}${l.print_extra ? `<div class="muted">${esc(l.print_extra)}</div>` : ''}<div class="muted">${qtyf(l.qty)} ${esc(l.unit || '')} &times; ${inr(l.rate)}${l.discount_pct ? ` &minus;${l.discount_pct}%` : ''}${l.gst_rate ? ` &middot; GST ${l.gst_rate}%` : ''}</div></td><td class="num">${inr(l.total)}</td>`
-    : `<td>${i + 1}</td><td>${esc(l.item || l.description)}${l.item && l.description && l.description !== l.item ? `<div class="muted">${esc(l.description)}</div>` : ''}${l.print_extra ? `<div class="muted">${esc(l.print_extra)}</div>` : ''}</td>${hasHsn ? `<td>${esc(l.hsn || '')}</td>` : ''}
+    ? `<td>${esc(l.item || l.description)}${l.print_extra ? `<div class="muted">${esc(l.print_extra)}</div>` : ''}${lotLine(l)}<div class="muted">${qtyf(l.qty)} ${esc(l.unit || '')} &times; ${inr(l.rate)}${l.discount_pct ? ` &minus;${l.discount_pct}%` : ''}${l.gst_rate ? ` &middot; GST ${l.gst_rate}%` : ''}</div></td><td class="num">${inr(l.total)}</td>`
+    : `<td>${i + 1}</td><td>${esc(l.item || l.description)}${l.item && l.description && l.description !== l.item ? `<div class="muted">${esc(l.description)}</div>` : ''}${l.print_extra ? `<div class="muted">${esc(l.print_extra)}</div>` : ''}${lotLine(l)}</td>${hasHsn ? `<td>${esc(l.hsn || '')}</td>` : ''}
         <td class="num">${qtyf(l.qty)} ${esc(l.unit || '')}</td><td class="num">${inr(l.rate)}</td>${hasDisc ? `<td class="num">${l.discount_pct ? l.discount_pct + '%' : ''}</td>` : ''}<td class="num">${inr(l.taxable)}</td><td class="num">${l.gst_rate}%</td>
         ${inter ? `<td class="num">${inr(l.igst)}</td>` : `<td class="num">${inr(l.cgst)}</td><td class="num">${inr(l.sgst)}</td>`}<td class="num">${inr(l.total)}</td>`;
   const heads = compact ? '<th>Item</th><th class="num">Amount</th>'
@@ -895,8 +924,11 @@ function itemForm(i = {}) {
     { k: 'sku', label: 'Item code (SKU)', value: i.sku, more: true }, { k: 'category', label: 'Category', value: i.category, more: true },
     { k: 'reorder_level', label: 'Low stock alert at', type: 'number', value: i.reorder_level ?? 0, more: true, help: 'Warn me when stock falls to this.' },
     { k: 'barcode', label: 'Barcode', value: i.barcode, placeholder: 'Scan, or leave empty', more: true },
-    { k: 'location', label: 'Rack / shelf', value: i.location, placeholder: 'e.g. A-03-2', more: true },
+    { k: 'location', label: 'Default bin (rack / shelf)', value: i.location, placeholder: 'e.g. A-03-2', more: true, help: 'New stock of this item goes into this bin. Make bins in Inventory → Bins & Racks.' },
+    ...(i.is_service ? [] : [{ k: 'track_batch', label: 'Track batch & expiry (medicines, food, cosmetics)', type: 'checkbox', value: !!i.track_batch, more: true }]),
     ...(i.id ? [] : [{ k: 'opening_rate', label: 'Cost of current stock (₹ per unit)', type: 'number', more: true, help: 'Empty = buying price.' },
+      { k: 'opening_batch', label: 'Batch of current stock', more: true, help: 'Only for items that track batches.' },
+      { k: 'opening_expiry', label: 'Expiry of current stock', type: 'month', more: true },
       { k: 'is_service', label: 'This is a service (no stock)', type: 'checkbox', more: true }]),
     ...cfModal('item', i.extra),
   ], async (v) => {
@@ -926,11 +958,15 @@ route(/^item\/(\d+)$/, async (el, m) => {
   dirty('items');
   const it = (await master('items')).find((x) => x.id === +m[1]);
   if (!it) throw new Error('Item not found.');
-  const { rows } = await GET(`/api/items/${it.id}/moves`);
+  const [{ rows }, lots] = await Promise.all([GET(`/api/items/${it.id}/moves`), it.is_service ? null : GET(`/api/items/${it.id}/lots`).catch(() => null)]);
   el.innerHTML = head(esc(it.name), `${it.is_service ? '' : `<a class="btn" href="#/labels/${it.id}">Print barcode labels</a>`}<button class="btn" id="edit">Edit</button><button class="btn danger" id="del">Delete</button>`) + `
     <div class="kpis"><div class="kpi"><div class="l">In stock</div><div class="v">${qtyf(it.qty_on_hand)} ${esc(it.unit)}</div></div>
       <div class="kpi"><div class="l">Average cost</div><div class="v">${inr(it.avg_cost)}</div></div><div class="kpi"><div class="l">Stock value</div><div class="v">${inr(it.stock_value)}</div></div>
       <div class="kpi"><div class="l">Sale price</div><div class="v">${inr(it.sale_price)}</div><div class="s">GST ${it.gst_rate}% &middot; HSN ${esc(it.hsn)}</div></div></div>
+    ${lots && (lots.bins.length || lots.batches.length) ? `<div class="grid g2">
+      ${lots.bins.length ? `<div class="panel flush"><div style="padding:14px 16px 0"><h3>Bins</h3></div>${table([{ h: 'Bin', f: (r) => `<b>${esc(r.code)}</b>${r.code === it.location ? ' <span class="badge">default</span>' : ''}` }, { h: 'Godown', k: 'warehouse' }, { h: 'Qty', num: 1, f: (r) => qtyf(r.qty) }], lots.bins)}</div>` : ''}
+      ${lots.batches.length ? `<div class="panel flush"><div style="padding:14px 16px 0"><h3>Batches</h3></div>${table([{ h: 'Batch', k: 'batch_no' }, { h: 'Expiry', f: (r) => (r.expiry ? fdate(r.expiry) : '') },
+        { h: 'Godown', k: 'warehouse', cls: 'hide-sm' }, { h: 'Qty', num: 1, f: (r) => qtyf(r.qty) }], lots.batches)}</div>` : ''}</div>` : ''}
     <div class="panel flush"><div style="padding:14px 16px 0"><h3>Stock movements</h3></div>${table([{ h: 'Date', f: (r) => fdate(r.date) }, { h: 'Voucher', f: (r) => r.number ? `<a href="#/doc/${r.ref_id}">${esc(r.number)}</a>` : esc(r.ref_type) },
       { h: 'Godown', k: 'warehouse' }, { h: 'Note', k: 'note', cls: 'hide-sm' }, { h: 'In', num: 1, f: (r) => r.qty > 0 ? qtyf(r.qty) : '' }, { h: 'Out', num: 1, f: (r) => r.qty < 0 ? qtyf(-r.qty) : '' },
       { h: 'Unit cost', num: 1, f: (r) => inr(r.unit_cost), cls: 'hide-sm' }, { h: 'Balance', num: 1, f: (r) => qtyf(r.balance) }], rows.slice().reverse(), { empty: 'No movements yet.' })}</div>`;
@@ -950,10 +986,13 @@ route(/^stock$/, async (el) => {
     ${s.rows.some((r) => r.suggested_order) ? '<div class="row"><a class="btn primary" href="#/new/PO?reorder=1">Raise a purchase order for low items</a></div>' : ''}`;
   const itemOpts = opts(stocked, (i) => `${i.name} (${qtyf(i.qty_on_hand)} ${i.unit})`), whOpts = opts(whs);
   $('#adj').onclick = () => modal('Adjust stock', [{ k: 'item_id', label: 'Item', type: 'select', options: itemOpts, wide: true }, { k: 'warehouse_id', label: 'Godown', type: 'select', options: whOpts },
-    { k: 'qty', label: 'Quantity (+ add, − remove)', type: 'number' }, { k: 'reason', label: 'Reason', value: 'Physical count', wide: true }, { k: 'date', label: 'Date', type: 'date', value: ME.today }],
+    { k: 'qty', label: 'Quantity (+ add, − remove)', type: 'number' }, { k: 'reason', label: 'Reason', value: 'Physical count', wide: true }, { k: 'date', label: 'Date', type: 'date', value: ME.today },
+    { k: 'batch_no', label: 'Batch no.', more: true, help: 'For items that track batches. Removing without a batch takes the first to expire.' }, { k: 'expiry', label: 'Expiry (when adding)', type: 'month', more: true },
+    { k: 'bin', label: 'Bin (when adding)', placeholder: 'e.g. A-01-2', more: true, help: 'Empty = the item\'s default bin.' }],
   async (v) => { await POST('/api/stock/adjust', { ...v, item_id: +v.item_id, warehouse_id: +v.warehouse_id }); dirty('items', 'accounts', 'warehouses'); toast('Stock adjusted'); render(); });
   $('#xfer').onclick = () => modal('Transfer between godowns', [{ k: 'item_id', label: 'Item', type: 'select', options: itemOpts, wide: true }, { k: 'from_warehouse_id', label: 'From', type: 'select', options: whOpts },
-    { k: 'to_warehouse_id', label: 'To', type: 'select', options: whOpts, value: whs[1] && whs[1].id }, { k: 'qty', label: 'Quantity', type: 'number' }, { k: 'date', label: 'Date', type: 'date', value: ME.today }],
+    { k: 'to_warehouse_id', label: 'To', type: 'select', options: whOpts, value: whs[1] && whs[1].id }, { k: 'qty', label: 'Quantity', type: 'number' }, { k: 'date', label: 'Date', type: 'date', value: ME.today },
+    { k: 'batch_no', label: 'Batch no.', more: true, help: 'Empty = the first to expire. The batch goes along to the other godown.' }],
   async (v) => { await POST('/api/stock/transfer', { ...v, item_id: +v.item_id, from_warehouse_id: +v.from_warehouse_id, to_warehouse_id: +v.to_warehouse_id }); dirty('warehouses'); toast('Transferred'); render(); });
   $('#wh').onclick = () => modal('New godown / warehouse', [{ k: 'name', label: 'Name', wide: true }], async (v) => { await POST('/api/warehouses', v); dirty('warehouses'); render(); });
 });
@@ -2425,12 +2464,120 @@ route(/^picklist\/(\d+)$/, async (el, m) => {
   const d = await GET('/api/docs/' + m[1]);
   const lines = d.lines.filter((l) => l.item_id && !l.is_service).map((l) => ({ ...l, pick: d.type === 'SO' ? l.remaining : l.qty }))
     .filter((l) => l.pick > 0.0005).sort((a, b) => (a.location || '~').localeCompare(b.location || '~', 'en', { numeric: true }) || a.item.localeCompare(b.item));
+  // where to pick from in this godown, in the order stock is taken: not put away first, then the default bin
+  const lotsOf = new Map(await Promise.all([...new Set(lines.map((l) => l.item_id))].map(async (id) => [id, await GET(`/api/items/${id}/lots?warehouse_id=${d.warehouse_id}`).catch(() => null)])));
+  const where = (l) => {
+    const L = lotsOf.get(l.item_id);
+    const bins = L ? L.bins.slice().sort((a, b) => (b.code === l.location) - (a.code === l.location) || a.code.localeCompare(b.code, 'en', { numeric: true })) : [];
+    return bins.length ? bins.map((b) => `<b>${esc(b.code)}</b> <span class="muted">(${qtyf(b.qty)})</span>`).join('<br>') : l.location ? `<b>${esc(l.location)}</b>` : '<span class="muted">not put away</span>';
+  };
+  const batchOf = (l) => (l.batch_no ? esc(l.batch_no) + (l.expiry ? `<div class="muted">exp ${mmyy(l.expiry)}</div>` : '')
+    : ((lotsOf.get(l.item_id) || { batches: [] }).batches.slice(0, 2).map((b) => `${esc(b.batch_no)}${b.expiry ? ` <span class="muted">exp ${mmyy(b.expiry)}</span>` : ''}`).join('<br>')));
   el.innerHTML = head(`Pick list · ${esc(d.number)}`, `<a class="btn" href="#/doc/${d.id}">Back</a><button class="btn primary" data-act="print">Print</button>`) + `
     <div class="doc-paper"><div class="hdr"><div><div style="font-size:18px;font-weight:700">PICK LIST</div><div>${esc(d.label)} ${esc(d.number)} · ${fdate(d.date)}</div></div>
       <div style="text-align:right"><b>${esc((d.party || {}).name || '')}</b><div>Godown: ${esc(d.warehouse || '')}</div></div></div>
-      <div class="tbl-wrap"><table class="dl"><thead><tr><th>✓</th><th>Bin / rack</th><th>Item</th><th class="num">Qty to pick</th><th>Picked by</th></tr></thead>
-      <tbody>${lines.map((l) => `<tr><td style="width:28px">☐</td><td><b>${esc(l.location || '—')}</b></td><td>${esc(l.item)}</td><td class="num"><b>${qtyf(l.pick)}</b> ${esc(l.unit || '')}</td><td style="width:120px"></td></tr>`).join('')}</tbody></table></div>
+      <div class="tbl-wrap"><table class="dl"><thead><tr><th>✓</th><th>Bin / rack</th><th>Item</th><th>Batch</th><th class="num">Qty to pick</th><th>Picked by</th></tr></thead>
+      <tbody>${lines.map((l) => `<tr><td style="width:28px">☐</td><td>${where(l)}</td><td>${esc(l.item)}</td><td>${batchOf(l)}</td><td class="num"><b>${qtyf(l.pick)}</b> ${esc(l.unit || '')}</td><td style="width:120px"></td></tr>`).join('')}</tbody></table></div>
       <div class="foot"><div>Total lines: ${lines.length}</div><div class="sign">Checked by ____________</div></div></div>`;
+});
+
+/* ======================================================================= bins & racks (src/lots.js)
+   A godown's racks and shelves: how much of each item sits in each bin, what is not put away yet, put-away and moves
+   between bins, and printable bin labels. Bills and receipts move the bins by themselves (default bin in, FIFO out). */
+route(/^bins$/, async (el, m, q) => {
+  const whs = await master('warehouses'), wid = +q.get('wh') || (whs[0] && whs[0].id);
+  const b = await GET(`/api/bins?warehouse_id=${wid}`), items = await master('items');
+  const binOpts = (empty) => [{ v: 0, t: empty }, ...b.bins.map((x) => ({ v: x.id, t: x.code }))];
+  el.innerHTML = head('Bins & Racks', `${b.bins.length ? `<a class="btn" href="#/bin-labels?wh=${wid}">Print bin labels</a>` : ''}${ME.can.stock ? '<button class="btn" id="move">Move stock</button><button class="btn primary" id="addb">+ Add bins</button>' : ''}`) + `
+    ${whs.length > 1 ? `<div class="panel"><label class="f inline-f">Godown<select id="wh">${whs.map((w) => `<option value="${w.id}" ${w.id === wid ? 'selected' : ''}>${esc(w.name)}</option>`).join('')}</select></label></div>` : ''}
+    <div class="kpis"><div class="kpi"><div class="l">Bins</div><div class="v">${b.bins.length}</div><div class="s">${b.bins.filter((x) => x.items).length} in use</div></div>
+      <div class="kpi"><div class="l">Not put away</div><div class="v ${b.not_put_away.length ? 'neg' : ''}">${b.not_put_away.length}</div><div class="s">item${b.not_put_away.length === 1 ? '' : 's'} waiting for a bin</div></div></div>
+    ${b.bins.length ? '' : `<div class="panel">${emptyCta('Make your racks and shelves once, like A-01-1 (rack A, shelf 1, level 1). Give each item a default bin: new stock goes there, and the pick list shows where to pick from.',
+      ME.can.stock ? '<button class="btn primary" data-addb>+ Add bins</button>' : '')}</div>`}
+    ${b.not_put_away.length ? `<div class="panel flush"><div class="row" style="padding:14px 16px 0"><h3>Not put away</h3></div>
+      <p class="muted" style="padding:0 16px">In this godown but in no bin yet. Put them away so the pick list knows where they are.</p>
+      ${table([{ h: 'Item', f: (r) => `<a href="#/item/${r.id}">${esc(r.name)}</a>${r.location ? `<div class="muted">default bin ${esc(r.location)}</div>` : ''}` },
+        { h: 'Qty', num: 1, f: (r) => `${qtyf(r.free)} ${esc(r.unit)}` }, { h: '', f: (r) => ME.can.stock && b.bins.length ? `<button class="btn sm" data-put="${r.id}">Put away</button>` : '' }], b.not_put_away)}</div>` : ''}
+    ${b.bins.length ? `<div class="panel flush"><div class="row" style="padding:14px 16px 0"><h3>Bins</h3><span class="spacer"></span><input id="bq" placeholder="Find a bin…" style="max-width:180px"></div>
+      <div class="bins" id="binlist">${b.bins.map((x) => `<button type="button" class="bin${x.items ? ' used' : ''}" data-bin="${x.id}" data-code="${esc(x.code)}"><b>${esc(x.code)}</b>
+        <span>${x.items ? `${x.items} item${x.items === 1 ? '' : 's'} · ${qtyf(x.qty)}` : 'empty'}</span></button>`).join('')}</div></div>` : ''}`;
+  if ($('#wh')) $('#wh').onchange = (e) => go('bins?wh=' + e.target.value);
+  const add = () => modal('Add bins', [
+    { k: 'racks', label: 'Racks', placeholder: 'A-D, or A B C', required: true, help: 'Letters, or a range like A-D.' },
+    { k: 'shelves', label: 'Shelves per rack', type: 'number', value: 4 }, { k: 'levels', label: 'Levels per shelf', type: 'number', value: 0, help: '0 = no levels: A-01, A-02…' },
+    { k: 'zone', label: 'Zone (optional)', placeholder: 'e.g. Cold room', more: true }],
+  async (v) => { const r = await POST('/api/bins', { ...v, warehouse_id: wid }); toast(`${r.added} bins ready`); render(); },
+  { submit: 'Make bins', intro: '<p class="muted">Bin codes look like A-01-1: rack A, shelf 01, level 1. Bins that already exist are skipped.</p>' });
+  if ($('#addb')) $('#addb').onclick = add;
+  if ($('[data-addb]')) $('[data-addb]').onclick = add;
+  const stocked = items.filter((i) => !i.is_service);
+  const moveForm = (it, fromBin = 0, qty = '') => modal('Move stock between bins', [
+    { k: 'item_id', label: 'Item', type: 'select', options: opts(stocked), value: it || '', wide: true },
+    { k: 'from_bin_id', label: 'From', type: 'select', options: binOpts('Not put away'), value: fromBin },
+    { k: 'to_bin_id', label: 'To', type: 'select', options: binOpts('Out of bins'), value: '' }, { k: 'qty', label: 'Quantity', type: 'number', value: qty }],
+  async (v) => { await POST('/api/bins/move', { ...v, item_id: +v.item_id, from_bin_id: +v.from_bin_id, to_bin_id: +v.to_bin_id, warehouse_id: wid }); toast('Moved'); render(); });
+  if ($('#move')) $('#move').onclick = () => moveForm();
+  $$('[data-put]', el).forEach((x) => x.onclick = () => { const r = b.not_put_away.find((y) => y.id === +x.dataset.put); moveForm(r.id, 0, r.free); });
+  if ($('#bq')) $('#bq').oninput = (e) => { const f = e.target.value.toUpperCase(); $$('[data-bin]', el).forEach((x) => { x.hidden = f && !x.dataset.code.includes(f); }); };
+  $$('[data-bin]', el).forEach((x) => x.onclick = async () => {
+    const c = await GET('/api/bins/' + x.dataset.bin);
+    const S = sheet(`<h2>Bin ${esc(c.bin.code)}</h2><p class="muted">${esc(c.bin.warehouse)}${c.bin.zone ? ' · ' + esc(c.bin.zone) : ''}</p>
+      ${c.items.length ? table([{ h: 'Item', f: (r) => `<a href="#/item/${r.id}" data-x>${esc(r.name)}</a>` }, { h: 'Qty', num: 1, f: (r) => `${qtyf(r.qty)} ${esc(r.unit)}` },
+        { h: '', f: (r) => ME.can.stock ? `<button class="btn sm" data-mv="${r.id}">Move</button>` : '' }], c.items) : '<p class="muted">Empty.</p>'}
+      <div class="actions">${!c.items.length && ME.can.stock ? '<button type="button" class="btn danger" id="delbin">Delete bin</button>' : ''}<button type="button" class="btn" data-x>Close</button></div>`);
+    $$('[data-mv]', S.el).forEach((y) => y.onclick = () => { const r = c.items.find((z) => z.id === +y.dataset.mv); S.close(); moveForm(r.id, c.bin.id, r.qty); });
+    if ($('#delbin', S.el)) $('#delbin', S.el).onclick = async () => { try { await api('DELETE', '/api/bins/' + c.bin.id); S.close(); toast('Bin deleted'); render(); } catch (e) { toast(e.message, 'err'); } };
+  });
+});
+route(/^bin-labels$/, async (el, m, q) => {
+  const b = await GET(`/api/bins?warehouse_id=${+q.get('wh') || ''}`);
+  el.innerHTML = head(`Bin labels · ${esc(b.warehouse.name)}`, `<a class="btn" href="#/bins?wh=${b.warehouse.id}">Back</a><button class="btn primary" data-act="print">Print labels</button>`) + `
+    <p class="muted no-print">One label per bin. Stick it on the shelf: scanning it in the POS search finds the bin.</p>
+    <div class="labels">${b.bins.map((x) => `<div class="label"><div class="ln" style="font-size:20px;font-weight:800">${esc(x.code)}</div><svg class="bc" data-code="${esc(x.code)}"></svg><div class="lp">${esc(b.warehouse.name)}${x.zone ? ' · ' + esc(x.zone) : ''}</div></div>`).join('')}</div>`;
+  await loadScript('/vendor/JsBarcode.all.min.js');
+  $$('.labels .bc', el).forEach((s) => window.JsBarcode(s, s.dataset.code, { format: 'CODE128', width: 1.6, height: 40, fontSize: 12, margin: 0, textMargin: 1 }));
+});
+
+/* ======================================================================= batch & expiry: what expires soon, and what has */
+route(/^expiry$/, async (el, m, q) => {
+  const days = +q.get('days') || 90, r = await GET(`/api/reports/expiry?days=${days}`);
+  const tracked = (await master('items')).filter((i) => i.track_batch).length;
+  el.innerHTML = head('Batch & Expiry', `<select id="days" aria-label="Show" style="width:auto">${[30, 60, 90, 180, 365].map((d) => `<option value="${d}" ${d === days ? 'selected' : ''}>Next ${d} days</option>`).join('')}</select><button class="btn" id="csv">Export CSV</button>`) + `
+    ${tracked ? '' : `<div class="panel warnbox">No item tracks batches yet. Open an item → Edit → More details → <b>Track batch & expiry</b>. Then type the batch and expiry on purchase bills; sales take the batch that expires first.</div>`}
+    <div class="kpis"><div class="kpi"><div class="l">Expired, still in stock</div><div class="v neg">${r.expired_value === undefined ? r.rows.filter((x) => x.days_left < 0).length : inr(r.expired_value)}</div><div class="s">return to the supplier or write off</div></div>
+      <div class="kpi"><div class="l">Expiring in ${days} days</div><div class="v">${r.soon_value === undefined ? r.rows.filter((x) => x.days_left >= 0).length : inr(r.soon_value)}</div><div class="s">sell these first</div></div></div>
+    <div class="panel flush">${table([{ h: 'Item', f: (x) => `<a href="#/item/${x.item_id}">${esc(x.name)}</a>` }, { h: 'Batch', k: 'batch_no' }, { h: 'Godown', k: 'warehouse', cls: 'hide-sm' },
+      { h: 'Expiry', f: (x) => `${fdate(x.expiry)}<div class="${x.days_left < 0 ? 'neg' : x.days_left <= 30 ? 'warn' : 'muted'}">${x.days_left < 0 ? `expired ${-x.days_left} days ago` : `${x.days_left} days left`}</div>` },
+      { h: 'Qty', num: 1, f: (x) => `${qtyf(x.qty)} ${esc(x.unit)}` }, ...(r.rows[0] && r.rows[0].value !== undefined ? [{ h: 'Value', num: 1, f: (x) => inr(x.value) }] : [])], r.rows,
+    { empty: 'Nothing expires in this period.' })}</div>`;
+  $('#days').onchange = (e) => go('expiry?days=' + e.target.value);
+  $('#csv').onclick = () => download('expiry.csv', toCsv([{ h: 'Item', k: 'name' }, { h: 'Batch', k: 'batch_no' }, { h: 'Godown', k: 'warehouse' }, { h: 'Expiry', k: 'expiry' }, { h: 'Days left', k: 'days_left' }, { h: 'Qty', k: 'qty' }, { h: 'Value', k: 'value' }], r.rows));
+});
+
+/* ======================================================================= stock ageing: how old the stock on hand is */
+route(/^stock-ageing$/, async (el, m, q) => {
+  const whs = await master('warehouses'), wid = +q.get('wh') || 0, show = q.get('show') || '';
+  const r = await GET(`/api/reports/stock-ageing${wid ? '?warehouse_id=' + wid : ''}`), costs = r.totals !== undefined;
+  const rows = r.rows.filter((x) => !show || x.move === show || x.abc === show);
+  const MOVE = { dead: ['b-unpaid', 'dead'], slow: ['b-partial', 'slow'], moving: ['b-paid', 'moving'], new: ['', 'new'] };
+  el.innerHTML = head('Stock Ageing', `<button class="btn" id="csv">Export CSV</button>`) + `
+    <div class="panel"><div class="row">${whs.length > 1 ? `<label class="f inline-f">Godown<select id="wh"><option value="">All godowns</option>${whs.map((w) => `<option value="${w.id}" ${w.id === wid ? 'selected' : ''}>${esc(w.name)}</option>`).join('')}</select></label>` : ''}
+      <label class="f inline-f">Show<select id="show"><option value="">All items</option><option value="dead" ${show === 'dead' ? 'selected' : ''}>Dead stock (no sale in 6 months)</option><option value="slow" ${show === 'slow' ? 'selected' : ''}>Slow (no sale in 3 months)</option>
+        <option value="A" ${show === 'A' ? 'selected' : ''}>A class (top 70% of sales)</option><option value="B" ${show === 'B' ? 'selected' : ''}>B class</option><option value="C" ${show === 'C' ? 'selected' : ''}>C class</option></select></label></div>
+      <p class="muted" style="margin:8px 0 0">First in, first out: what is left of an item is its latest purchases, so each part is as old as the day it came in. ABC is from the last 12 months of sales.</p></div>
+    ${costs ? `<div class="age-bar">${r.buckets.map((b, k) => `<div class="kpi"><div class="l">${esc(b)}</div><div class="v ${k >= 4 ? 'neg' : ''}">${inr0(r.totals[k])}</div></div>`).join('')}</div>` : ''}
+    <div class="kpis"><div class="kpi"><div class="l">Dead stock</div><div class="v neg">${r.dead} item${r.dead === 1 ? '' : 's'}</div><div class="s">${costs ? inr0(r.dead_value) + ' stuck' : 'no sale in 6 months'}</div></div>
+      <div class="kpi"><div class="l">Slow moving</div><div class="v">${r.slow} item${r.slow === 1 ? '' : 's'}</div><div class="s">no sale in 3 months</div></div></div>
+    <div class="panel flush">${table([{ h: 'Item', f: (x) => `<a href="#/item/${x.id}">${esc(x.name)}</a><div class="muted">${esc(x.category || '')}</div>` },
+      { h: 'Qty', num: 1, f: (x) => `${qtyf(x.qty)} ${esc(x.unit)}` }, ...(costs ? [{ h: 'Value', num: 1, f: (x) => inr(x.value) }] : []),
+      ...r.buckets.map((b, k) => ({ h: b.replace(' days', 'd'), num: 1, cls: 'hide-sm', f: (x) => (x.qtys[k] ? qtyf(x.qtys[k]) : '') })),
+      { h: 'Oldest', num: 1, f: (x) => `${x.oldest_days}d` }, { h: 'Last sale', f: (x) => (x.last_sale ? `${fdate(x.last_sale)}<div class="muted">${x.days_since_sale}d ago</div>` : '<span class="muted">never</span>'), cls: 'hide-sm' },
+      { h: 'Moving', f: (x) => `<span class="badge ${MOVE[x.move][0]}">${MOVE[x.move][1]}</span>` }, { h: 'ABC', f: (x) => `<b>${x.abc}</b>` }], rows, { empty: 'No stock on hand.' })}</div>`;
+  const nav = () => go(`stock-ageing?${new URLSearchParams({ ...(($('#wh') || {}).value ? { wh: $('#wh').value } : {}), ...($('#show').value ? { show: $('#show').value } : {}) })}`);
+  if ($('#wh')) $('#wh').onchange = nav;
+  $('#show').onchange = nav;
+  $('#csv').onclick = () => download('stock-ageing.csv', toCsv([{ h: 'Item', k: 'name' }, { h: 'Qty', k: 'qty' }, ...(costs ? [{ h: 'Value', k: 'value' }] : []),
+    ...r.buckets.map((b, k) => ({ h: b, f: (x) => x.qtys[k] })), { h: 'Oldest (days)', k: 'oldest_days' }, { h: 'Last sale', k: 'last_sale' }, { h: 'Moving', k: 'move' }, { h: 'ABC', k: 'abc' }], rows));
 });
 
 /* ======================================================================= shared: downloads, UPI QR, scripts */

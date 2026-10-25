@@ -11,7 +11,7 @@ import { isEmptyOrg } from './restore.js';
 
 /* ---------- the backup file ---------- */
 const BACKUP_TABLES = ['accounts', 'warehouses', 'parties', 'items', 'stock', 'stock_moves', 'docs', 'payments', 'journals', 'journal_lines',
-  'khata', 'counters', 'gate_entries', 'roles', 'vaade', 'vaada_kisht', 'recurring', 'billing_orders', 'audit', 'org_files', 'reminder_log', 'confirmations'];
+  'khata', 'counters', 'gate_entries', 'roles', 'vaade', 'vaada_kisht', 'recurring', 'billing_orders', 'audit', 'org_files', 'reminder_log', 'confirmations', 'bins', 'bin_stock', 'batches', 'batch_moves'];
 
 /* Every record of this business. Login secrets (password hashes, salts), private link tokens and caches rebuilt
    from the records are left out. */

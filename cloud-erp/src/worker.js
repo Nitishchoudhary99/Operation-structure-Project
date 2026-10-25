@@ -27,6 +27,7 @@ import { queue as vasooliQueue, logReminder, summary as vasooliSummary, summaryT
 import { cleanVaada, splitPlan, planOptions, minPart, risk, riskStatements, riskInput, setStatements, evalSet, writeBackStatements, promiseOut, pctOf,
   forecast, inr0, FREE_OPEN_MAX } from './vaada.js';
 import { STATES, einvoiceJson, ewaybillJson } from './gst.js';
+import { listBins, addBins, deleteBin, binContents, moveInBins, itemLots, expiryReport } from './lots.js';
 import { tallyXml } from './tally.js';
 import { printOf, cleanPrint, imageFromDataUrl, shortHash, imageResponse, FILE_KINDS, seriesOf, numberSpec, formatNumber, cleanSeries, fyParts,
   fieldsOf, extraOf, cleanField, cleanExtra, extraFilter, printExtra, LAYOUTS } from './custom.js';
@@ -529,6 +530,14 @@ router.add('DELETE', '/api/parties/:id', async (c) => {
 router.add('POST', '/api/parties/:id/opening', async (c) => json(await partyOpening(c, +c.params.id, c.body)));
 router.add('GET', '/api/parties/:id/ledger', async (c) => json(await rep.partyLedger(c.db, c.org, +c.params.id, c.url.searchParams)));
 
+/* ======================================================================= bins (racks / shelves) and batches: src/lots.js */
+router.add('GET', '/api/bins', async (c) => json(await listBins(c, +c.url.searchParams.get('warehouse_id') || 0)));
+router.add('POST', '/api/bins', async (c) => json(await addBins(c, c.body)));
+router.add('POST', '/api/bins/move', async (c) => json(await moveInBins(c, c.body)));
+router.add('GET', '/api/bins/:id', async (c) => json(await binContents(c, +c.params.id)));
+router.add('DELETE', '/api/bins/:id', async (c) => json(await deleteBin(c, +c.params.id)));
+router.add('GET', '/api/items/:id/lots', async (c) => json(await itemLots(c, +c.params.id, +c.url.searchParams.get('warehouse_id') || 0)));
+
 /* ======================================================================= items & warehouses */
 const itemFields = (b, c) => ({
   extra: b.extra === undefined ? null : cleanExtra(fieldsOf(c.org), 'item', b.extra),
@@ -536,7 +545,8 @@ const itemFields = (b, c) => ({
   gst_rate: num(b.gst_rate, 'GST rate', { min: 0, max: 100, def: 0 }),
   purchase_price: b.purchase_price === undefined ? null : toPaise(num(b.purchase_price, 'Purchase price', { min: 0, def: 0 })), sale_price: toPaise(num(b.sale_price, 'Sale price', { min: 0, def: 0 })),
   reorder_level: num(b.reorder_level, 'Reorder level', { min: 0, def: 0 }), is_service: b.is_service ? 1 : 0,
-  barcode: str(b.barcode, 48).replace(/\s+/g, ''), location: str(b.location, 30),
+  barcode: str(b.barcode, 48).replace(/\s+/g, ''), location: str(b.location, 30).toUpperCase(),
+  track_batch: b.track_batch === undefined ? null : b.track_batch === true || b.track_batch === 1 || b.track_batch === '1' || b.track_batch === 'on' ? 1 : 0,
 });
 async function barcodeTaken(c, code, exceptId = 0) {
   if (!code) return;
@@ -559,12 +569,13 @@ router.add('POST', '/api/items', async (c) => {
   const f = itemFields(c.body, c);
   if (await c.db.prepare(`SELECT 1 FROM items WHERE org_id = ? AND name = ?`).bind(c.org.id, f.name).first()) throw bad(`An item called ${f.name} already exists.`);
   await barcodeTaken(c, f.barcode);
-  const r = await c.db.prepare(`INSERT INTO items (org_id, sku, name, category, unit, hsn, gst_rate, purchase_price, sale_price, reorder_level, is_service, avg_cost, barcode, location, extra, created_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING *`)
+  const r = await c.db.prepare(`INSERT INTO items (org_id, sku, name, category, unit, hsn, gst_rate, purchase_price, sale_price, reorder_level, is_service, avg_cost, barcode, location, extra,
+      track_batch, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING *`)
     .bind(c.org.id, f.sku, f.name, f.category, f.unit, f.hsn, f.gst_rate, f.purchase_price ?? 0, f.sale_price, f.reorder_level, f.is_service, f.purchase_price ?? 0, f.barcode, f.location,
-      f.extra ?? cleanExtra(fieldsOf(c.org), 'item', {}), nowIso()).first();
+      f.extra ?? cleanExtra(fieldsOf(c.org), 'item', {}), f.is_service ? 0 : f.track_batch ?? 0, nowIso()).first();
   if (c.body.opening_qty && +c.body.opening_qty > 0 && !f.is_service) {
-    await stockAdjust(c, { item_id: r.id, qty: c.body.opening_qty, rate: c.body.opening_rate === undefined || c.body.opening_rate === '' ? R(f.purchase_price ?? 0) : c.body.opening_rate, reason: 'opening', warehouse_id: c.body.warehouse_id });
+    await stockAdjust(c, { item_id: r.id, qty: c.body.opening_qty, rate: c.body.opening_rate === undefined || c.body.opening_rate === '' ? R(f.purchase_price ?? 0) : c.body.opening_rate, reason: 'opening',
+      warehouse_id: c.body.warehouse_id, batch_no: c.body.opening_batch, expiry: c.body.opening_expiry });
   }
   return json(itemOut(await c.db.prepare(`SELECT * FROM items WHERE id = ?`).bind(r.id).first(), c));
 });
@@ -575,7 +586,8 @@ router.add('PUT', '/api/items/:id', async (c) => {
   if (dup) throw bad(`An item called ${f.name} already exists.`);
   await barcodeTaken(c, f.barcode, +c.params.id);
   const r = await c.db.prepare(`UPDATE items SET sku = ?, name = ?, category = ?, unit = ?, hsn = ?, gst_rate = ?, purchase_price = COALESCE(?, purchase_price), sale_price = ?, reorder_level = ?, barcode = ?, location = ?,
-      extra = COALESCE(?, extra) WHERE id = ? AND org_id = ?`).bind(f.sku, f.name, f.category, f.unit, f.hsn, f.gst_rate, f.purchase_price, f.sale_price, f.reorder_level, f.barcode, f.location, f.extra, +c.params.id, c.org.id).run();
+      extra = COALESCE(?, extra), track_batch = CASE WHEN is_service = 1 THEN 0 ELSE COALESCE(?, track_batch) END WHERE id = ? AND org_id = ?`)
+    .bind(f.sku, f.name, f.category, f.unit, f.hsn, f.gst_rate, f.purchase_price, f.sale_price, f.reorder_level, f.barcode, f.location, f.extra, f.track_batch, +c.params.id, c.org.id).run();
   if (!r.meta.changes) throw notFound('Item not found.');
   return json({ ok: true });
 });
@@ -666,7 +678,7 @@ async function docDetail(c, id) {
   if (!d) throw notFound('Document not found.');
   if (c.user && !canView(c.user, DOC_TYPES[d.type].side)) throw forbidden('Your role cannot see this document.');
   const [lines, party, children, parent, pays] = await Promise.all([
-    c.db.prepare(`SELECT l.*, i.name AS item, i.unit, i.hsn, i.is_service, i.location, i.extra AS item_extra FROM doc_lines l LEFT JOIN items i ON i.id = l.item_id WHERE l.doc_id = ? ORDER BY l.id`).bind(id).all(),
+    c.db.prepare(`SELECT l.*, i.name AS item, i.unit, i.hsn, i.is_service, i.location, i.track_batch, i.extra AS item_extra FROM doc_lines l LEFT JOIN items i ON i.id = l.item_id WHERE l.doc_id = ? ORDER BY l.id`).bind(id).all(),
     c.db.prepare(`SELECT * FROM parties WHERE id = ?`).bind(d.party_id).first(),
     c.db.prepare(`SELECT id, type, number, date, status, total FROM docs WHERE ref_id = ? AND org_id = ? ORDER BY id`).bind(id, c.org.id).all(),
     d.ref_id ? c.db.prepare(`SELECT id, type, number, date, status FROM docs WHERE id = ?`).bind(d.ref_id).first() : null,
@@ -700,10 +712,10 @@ router.add('GET', '/api/docs/:id/convert', async (c) => {
   }
   const lines = src.lines.filter((l) => l.remaining > 0.0005).map((l) => ({
     item_id: l.item_id, item: l.item, unit: l.unit, description: l.description, qty: l.remaining, rate: l.rate,
-    discount_pct: l.discount_pct, gst_rate: l.gst_rate, src_line_id: l.id,
+    discount_pct: l.discount_pct, gst_rate: l.gst_rate, src_line_id: l.id, batch_no: l.batch_no || '', expiry: l.expiry || '',
   }));
   if (!lines.length) throw bad(`Nothing left to ${['SRET', 'PRET'].includes(to) ? 'return' : 'process'} on ${src.number}.`);
-  return json({ type: to, party_id: src.party_id, ref_id: src.id, ref_number: src.number, warehouse_id: src.warehouse_id, date: today(), extra: src.extra, lines });
+  return json({ type: to, party_id: src.party_id, ref_id: src.id, ref_number: src.number, ref_type: src.type, warehouse_id: src.warehouse_id, date: today(), extra: src.extra, lines });
 });
 
 /* Print design of one document (presentation only, so it can change after saving; '' goes back to the business default) */
@@ -1626,6 +1638,16 @@ const REPORTS = {
   ageing: (c) => rep.ageing(c.db, c.org, c.url.searchParams),
   stock: async (c) => { const s = await rep.stockReport(c.db, c.org); if (!seesCosts(c.user)) { s.rows.forEach((r) => noCosts(r, ['avg_cost', 'value'])); delete s.total_value; } return s; },
   daybook: (c) => rep.dayBook(c.db, c.org, c.url.searchParams),
+  'stock-ageing': async (c) => {
+    const s = await rep.stockAgeing(c.db, c.org, c.url.searchParams);
+    if (!seesCosts(c.user)) { s.rows.forEach((r) => { delete r.value; delete r.values; delete r.sales_value; }); delete s.totals; }
+    return s;
+  },
+  expiry: async (c) => {
+    const s = await expiryReport(c, +c.url.searchParams.get('days') || 90);
+    if (!seesCosts(c.user)) { s.rows.forEach((r) => delete r.value); delete s.expired_value; delete s.soon_value; }
+    return s;
+  },
   register: (c) => rep.register(c.db, c.org, c.url.searchParams),
 };
 router.add('GET', '/api/reports/:name', async (c) => {
@@ -1698,7 +1720,9 @@ const READ_AREAS = [
   [/^\/api\/vaade\/(cash|check)\/?$/, OPEN],
   [/^\/api\/items(\/lookup)?\/?$/, ['items', 'sales', 'purchase']],
   [/^\/api\/items\/\d+\/moves\/?$/, 'items'],
-  [/^\/api\/reports\/stock\/?$/, 'items'],
+  [/^\/api\/reports\/(stock|stock-ageing|expiry)\/?$/, 'items'],
+  [/^\/api\/items\/\d+\/lots\/?$/, ['items', 'sales', 'purchase']],
+  [/^\/api\/bins(\/|$)/, 'items'],
   [/^\/api\/reports\//, 'reports'],
   [/^\/api\/export\//, 'reports'],
   [/^\/api\/(payments|accounts\/\d+\/ledger)(\/|$)/, 'finance'],

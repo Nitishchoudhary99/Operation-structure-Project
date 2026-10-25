@@ -167,6 +167,62 @@ export async function stockReport(db, org) {
     reorder_count: rows.filter((r) => r.status !== 'ok').length };
 }
 
+/* Stock ageing: how old the stock on hand is. FIFO: what is left of an item is its latest receipts (the oldest went out
+   first), so each part is as old as the day it came in. Cancelled documents and their reversals are not receipts, and
+   for the whole business neither are transfers between godowns. Per item also: the last sale (stock that does not move
+   stands out) and an ABC class from the last 12 months' sales (A: the items making 70% of sales value, B: the next 20%). */
+export const AGE_BUCKETS = [[0, 30], [31, 60], [61, 90], [91, 180], [181, 365], [366, 1e9]];
+export async function stockAgeing(db, org, q) {
+  const t = today(), wh = +q.get('warehouse_id') || 0;
+  const [layers, items, sales] = await db.batch([
+    db.prepare(`WITH inmv AS (
+        SELECT m.item_id, m.date, m.qty, SUM(m.qty) OVER (PARTITION BY m.item_id ORDER BY m.date DESC, m.id DESC) AS cum FROM stock_moves m
+        WHERE m.org_id = ?1 AND m.qty > 0 AND m.ref_type NOT LIKE '%-X' AND ((?2 = 0 AND m.ref_type != 'XFER') OR m.warehouse_id = ?2)
+          AND NOT EXISTS (SELECT 1 FROM docs d WHERE d.id = m.ref_id AND d.org_id = ?1 AND d.status = 'cancelled' AND m.ref_type IN ('GRN','BILL','SRET','INV','DN','PRET'))),
+      onhand AS (SELECT i.id, CASE WHEN ?2 = 0 THEN i.qty_on_hand ELSE COALESCE((SELECT qty FROM stock s WHERE s.item_id = i.id AND s.warehouse_id = ?2), 0) END AS qty
+        FROM items i WHERE i.org_id = ?1 AND i.is_service = 0)
+      SELECT o.id, inmv.date, MIN(inmv.qty, o.qty - (inmv.cum - inmv.qty)) AS left_qty FROM onhand o JOIN inmv ON inmv.item_id = o.id
+      WHERE o.qty > 0.0005 AND inmv.cum - inmv.qty < o.qty - 0.0005`).bind(org.id, wh),
+    db.prepare(`SELECT i.id, i.name, i.sku, i.category, i.unit, i.avg_cost, i.location,
+        CASE WHEN ?2 = 0 THEN i.qty_on_hand ELSE COALESCE((SELECT qty FROM stock s WHERE s.item_id = i.id AND s.warehouse_id = ?2), 0) END AS qty,
+        (SELECT MAX(date) FROM stock_moves m WHERE m.org_id = ?1 AND m.item_id = i.id AND m.qty < 0 AND m.ref_type IN ('INV','DN')) AS last_sale
+      FROM items i WHERE i.org_id = ?1 AND i.is_service = 0`).bind(org.id, wh),
+    db.prepare(`SELECT l.item_id, SUM(CASE WHEN d.type = 'INV' THEN l.taxable ELSE -l.taxable END) AS v FROM doc_lines l JOIN docs d ON d.id = l.doc_id
+      WHERE d.org_id = ? AND d.type IN ('INV','SRET') AND d.status != 'cancelled' AND d.date >= ? AND l.item_id IS NOT NULL GROUP BY l.item_id`).bind(org.id, addDays(t, -365)),
+  ]);
+  const days = (d) => Math.round((Date.parse(t) - Date.parse(d)) / 864e5);
+  const byItem = new Map();
+  for (const l of layers.results) { if (!byItem.has(l.id)) byItem.set(l.id, []); byItem.get(l.id).push(l); }
+  // ABC from the last 12 months of sales value
+  const sv = new Map(sales.results.map((r) => [r.item_id, Math.max(0, r.v)])), totalSales = [...sv.values()].reduce((a, b) => a + b, 0);
+  const abc = new Map();
+  let run = 0;
+  for (const [id, v] of [...sv.entries()].filter(([, v]) => v > 0).sort((a, b) => b[1] - a[1])) {
+    abc.set(id, run < totalSales * 0.7 ? 'A' : run < totalSales * 0.9 ? 'B' : 'C');
+    run += v;
+  }
+  const totals = AGE_BUCKETS.map(() => 0);
+  const rows = items.results.filter((i) => i.qty > 0.0005).map((i) => {
+    const qtys = AGE_BUCKETS.map(() => 0);
+    let covered = 0, oldest = 0;
+    for (const l of byItem.get(i.id) || []) {
+      const a = Math.max(0, days(l.date)), k = AGE_BUCKETS.findIndex(([lo, hi]) => a >= lo && a <= hi);
+      qtys[k] += l.left_qty; covered += l.left_qty; oldest = Math.max(oldest, a);
+    }
+    if (i.qty - covered > 0.0005) { qtys[AGE_BUCKETS.length - 1] += i.qty - covered; oldest = Math.max(oldest, 366); }   // older than any receipt on record
+    const values = qtys.map((x) => Math.round(x * i.avg_cost) / 100);
+    values.forEach((v, k) => { totals[k] += v; });
+    const since = i.last_sale ? days(i.last_sale) : null;
+    return { id: i.id, name: i.name, sku: i.sku, category: i.category, unit: i.unit, location: i.location, qty: roundQ(i.qty), qtys: qtys.map(roundQ), values,
+      value: Math.round(i.qty * i.avg_cost) / 100, oldest_days: oldest, last_sale: i.last_sale, days_since_sale: since,
+      move: since === null ? (oldest > 90 ? 'dead' : 'new') : since > 180 ? 'dead' : since > 90 ? 'slow' : 'moving', abc: abc.get(i.id) || '-', sales_value: R(sv.get(i.id) || 0) };
+  }).sort((a, b) => b.oldest_days - a.oldest_days || b.value - a.value);
+  return { today: t, buckets: AGE_BUCKETS.map(([lo, hi]) => (hi >= 1e9 ? `${lo}+ days` : `${lo}-${hi} days`)), rows,
+    totals: totals.map((v) => Math.round(v * 100) / 100), dead: rows.filter((r) => r.move === 'dead').length, slow: rows.filter((r) => r.move === 'slow').length,
+    dead_value: Math.round(rows.filter((r) => r.move === 'dead').reduce((s, r) => s + r.value * 100, 0)) / 100 };
+}
+const roundQ = (q) => Math.round(q * 1000) / 1000;
+
 export async function itemMoves(db, org, itemId) {
   const { results } = await db.prepare(`SELECT m.date, m.qty, m.unit_cost, m.value, m.ref_type, m.ref_id, m.note, w.name AS warehouse, d.number
       FROM stock_moves m JOIN warehouses w ON w.id = m.warehouse_id LEFT JOIN docs d ON d.id = m.ref_id AND d.org_id = m.org_id AND m.ref_type = d.type
