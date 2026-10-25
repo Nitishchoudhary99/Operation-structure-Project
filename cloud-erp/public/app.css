@@ -743,3 +743,50 @@ tr.done td { opacity: .5; }
 .wa-poster .big { font-size: 20px; font-weight: 700; }
 .wa-poster #wapq .qr { justify-content: center; margin: 16px 0; }
 .wa-poster #wapq .qr svg { width: 260px; height: 260px; }
+
+/* the home page for visitors (made by tools/gen-seo-pages.py inside #app; the app replaces it when it starts) */
+.app-loading { display: none; padding: 40px; color: var(--muted); }
+html.in .landing { display: none; }
+html.in .app-loading { display: block; }
+.landing { font-size: 16px; line-height: 1.6; background: var(--panel); min-height: 100vh; }
+.landing .top { flex-wrap: wrap; padding: 12px 20px; }
+.landing .logo { display: flex; align-items: center; gap: 8px; font-weight: 800; color: var(--ink); text-decoration: none; margin-right: auto; }
+.landing .logo img { border-radius: 8px; }
+.landing .top nav { display: flex; gap: 16px; flex-wrap: wrap; }
+.landing .top nav a { color: var(--muted); font-weight: 600; font-size: 15px; }
+.landing main { max-width: 1080px; margin: 0 auto; padding: 0 20px 40px; }
+.landing h1 { font-size: clamp(30px, 5vw, 46px); line-height: 1.15; margin: 0 0 14px; }
+.landing h2 { font-size: 26px; margin: 44px 0 16px; }
+.landing h3 { font-size: 18px; margin: 0 0 6px; color: var(--ink); text-transform: none; letter-spacing: 0; font-weight: 700; }
+.landing .hero { padding: 56px 0 20px; }
+.landing .lead { font-size: 19px; color: var(--muted); max-width: 780px; }
+.landing .btn.big { padding: 13px 22px; font-size: 17px; }
+.landing .cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 14px; }
+.landing .cards + .cards { margin-top: 14px; }
+.landing .card { border: 1px solid var(--line); border-radius: 12px; padding: 18px; background: var(--soft); }
+.landing .card p { margin: 0; color: var(--muted); }
+.landing a.card.link { display: block; color: var(--ink); text-decoration: none; }
+.landing a.card.link h3 { color: var(--brand); }
+.landing a.card.link:hover { border-color: var(--brand); }
+.landing .prices .card { display: flex; flex-direction: column; background: var(--panel); }
+.landing .prices .card.pop { border: 2px solid var(--brand); }
+.landing .price { font-size: 30px; font-weight: 800; margin: 4px 0 8px; }
+.landing .price span { font-size: 14px; font-weight: 400; color: var(--muted); }
+.landing .prices ul { flex: 1; }
+.landing .ticks { padding-left: 0; list-style: none; }
+.landing .ticks li { padding-left: 26px; position: relative; margin: 6px 0; }
+.landing .ticks li::before { content: "✓"; position: absolute; left: 0; color: #15803d; font-weight: 800; }
+.landing .steps { display: block; padding-left: 22px; list-style: decimal; }
+.landing .steps li { font-size: 16px; color: var(--ink); margin: 8px 0; }
+.landing .steps li::before { content: none; }
+.landing details { border: 1px solid var(--line); border-radius: 10px; padding: 12px 16px; margin: 8px 0; }
+.landing summary { font-weight: 700; cursor: pointer; }
+.landing .cta { text-align: center; background: var(--soft); border-radius: 16px; padding: 30px 20px; margin-top: 44px; }
+.landing .cta h2 { margin-top: 0; }
+.landing footer { border-top: 1px solid var(--line); padding: 28px 20px; color: var(--muted); font-size: 14px; max-width: 1080px; margin: 0 auto; }
+.landing .fgrid { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 18px; }
+.landing footer h4 { margin: 0 0 8px; font-size: 14px; color: var(--ink); }
+.landing footer ul { list-style: none; padding: 0; margin: 0; }
+.landing footer li { margin: 6px 0; }
+.landing footer li a { color: var(--muted); }
+@media (max-width: 640px) { .landing .top nav { order: 3; width: 100%; overflow-x: auto; flex-wrap: nowrap; white-space: nowrap; } .landing .hero { padding-top: 32px; } }

@@ -80,8 +80,9 @@ async function api(method, path, body, opt = {}) {
   }
   let data = {};
   try { data = await res.json(); } catch (e) { /* empty */ }
-  if (res.status === 401 && !path.startsWith('/api/auth')) { ME = null; idbDo('get', 'readwrite', (s) => s.clear()); renderAuth(); throw new ApiError('Please sign in.', 401); }
+  if (res.status === 401 && !path.startsWith('/api/auth')) { ME = null; idbDo('get', 'readwrite', (s) => s.clear()); signedOut(); throw new ApiError('Please sign in.', 401); }
   if (!res.ok) throw new ApiError(data.error || `Request failed (${res.status})`, res.status, data);
+  if (path === '/api/me') remember(true);
   if (method === 'GET' && rendering && pageCache.size < 60) pageCache.set(path, { at: Date.now(), data: structuredClone(data) });
   if (method === 'GET' && OFF_GET.test(path)) {
     const owner = path === '/api/me' ? `${data.user.id}:${data.org.id}` : offOwner();
@@ -228,6 +229,19 @@ function words(n) {
 }
 
 /* ======================================================================= auth screens */
+/* The visitors' home page (tools/gen-seo-pages.py writes it into #app) stays for anyone who is not signed in and has no
+   app address; public/boot.js hides it on a device where someone is signed in (the st:in flag kept here). */
+const LANDING = (document.querySelector('#app .landing') || {}).outerHTML || '';
+function remember(on) { try { if (on) localStorage.setItem('st:in', '1'); else localStorage.removeItem('st:in'); } catch (e) { /* storage off */ } }
+const bareHome = () => /^#?\/?$/.test(location.hash);
+function signedOut() {
+  let was = false;
+  try { was = localStorage.getItem('st:in') === '1'; } catch (e) { /* storage off */ }
+  remember(false);
+  document.documentElement.classList.remove('in');
+  if (!was && bareHome() && LANDING) { if (!$('#app .landing')) $('#app').innerHTML = LANDING; return; }
+  renderAuth();
+}
 function renderAuth(mode = /^#\/?signup/.test(location.hash) ? 'signup' : 'login') {
   $('#app').innerHTML = `<div class="auth">
     <div class="pitch">
@@ -437,7 +451,7 @@ function shell() {
   $('#logout').onclick = async () => {
     const waiting = (await queueAll()).length;
     if (waiting && !confirm(`${waiting} entr${waiting === 1 ? 'y was' : 'ies were'} saved without internet and not sent yet. Signing out deletes ${waiting === 1 ? 'it' : 'them'}. Sign out anyway?`)) return;
-    await POST('/api/auth/logout').catch(() => {}); await offClear(); ME = null; location.hash = ''; renderAuth();
+    await POST('/api/auth/logout').catch(() => {}); await offClear(); ME = null; remember(false); location.hash = ''; renderAuth();
   };
   const nb = $('#newbtn'), nm = $('#newmenu');
   if (nb) {
@@ -3007,7 +3021,7 @@ route(/^settings$/, async (el, m, q) => {
   sub('#pw', async (v) => { await POST('/api/me/password', v); toast('Password changed'); $('#pw').reset(); });
   if ($('#logoutall')) $('#logoutall').onclick = async () => {
     if (!confirm('Sign out of SmartTrader on every device, including this one?')) return;
-    await POST('/api/me/logout-all'); ME = null; location.hash = ''; renderAuth();
+    await POST('/api/me/logout-all'); ME = null; remember(false); location.hash = ''; renderAuth();
   };
   if ($('#backup')) $('#backup').onclick = () => fileDownload('/api/export/backup');
   if ($('#backupx')) $('#backupx').onclick = () => fileDownload('/api/export/excel');
@@ -4499,6 +4513,11 @@ async function boot() {
   await render();
 }
 window.addEventListener('hashchange', () => {
+  // not signed in: the home page's Sign in / Start free links open the forms, and Back returns to the home page
+  if (!ME && !/^#\/(admin|reset|verify|k\/)/.test(location.hash)) {
+    if (/^#\/?(login|signup)/.test(location.hash)) return renderAuth();
+    if (bareHome() && LANDING) { $('#app').innerHTML = LANDING; return; }
+  }
   $('#modal-root').innerHTML = '';
   if ($('#cam-root #cx')) $('#cam-root #cx').click();      // a camera left open stops
   ['#gres', '#newmenu'].forEach((x) => { const e = $(x); if (e) e.hidden = true; });
