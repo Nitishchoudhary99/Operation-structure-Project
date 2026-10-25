@@ -99,8 +99,10 @@ export async function endAllSessions(env, userId) {
 
 /* seat = how many older active staff the business has: when a plan lapses only the owner and the oldest staff keep a seat */
 export const USER_SQL = `SELECT u.id, u.org_id, u.email, u.name, u.role, u.active, u.pw_changed_at, u.role_id, u.ui, r.name AS role_name, r.perms,
+  rr.perms AS role_perms, rr.rules AS role_rules, rr.ui AS role_ui,
   (SELECT COUNT(*) FROM users x WHERE x.org_id = u.org_id AND x.active = 1 AND x.role != 'owner' AND x.id < u.id) AS seat
-  FROM users u LEFT JOIN roles r ON r.id = u.role_id AND r.org_id = u.org_id WHERE u.id = ?`;
+  FROM users u LEFT JOIN roles r ON r.id = u.role_id AND r.org_id = u.org_id
+  LEFT JOIN role_rules rr ON rr.org_id = u.org_id AND rr.role_key = CASE WHEN u.role = 'custom' THEN 'c:' || u.role_id ELSE u.role END WHERE u.id = ?`;
 export const REVOKED_SQL = `SELECT 1 AS x FROM revoked_tokens WHERE jti = ?`;
 /* the user row still matches the session: active, same business, password not changed since */
 export const sessionValid = (user, p) => !!(user && user.active && user.org_id === p.o && user.pw_changed_at === p.v);
@@ -123,9 +125,11 @@ const WRITE = {
   gate: ['owner', 'admin', 'accountant', 'store', 'sales'],
 };
 /* Custom roles (role = 'custom', role_id -> roles): per-area "view" and "edit" switches.
-   Built-in roles keep the table above and can view everything, as before. Only owner/admin manage users and roles.
+   Built-in roles keep the table above and can view everything, unless the owner changed them (Settings → Roles): then
+   role_rules.perms holds their own view / edit lists, like a custom role. Only owner/admin manage users and roles.
    'gate' is the security gate register alone, for a guard who should see and do nothing else. */
 export const AREAS = ['sales', 'purchase', 'items', 'masters', 'finance', 'khata', 'reports', 'settings', 'gate'];
+export const BUILT_IN = ['admin', 'accountant', 'store', 'sales'];
 const AREA_OF = { stock: 'items' };
 export function permsOf(user) {
   let p = {};
@@ -134,15 +138,54 @@ export function permsOf(user) {
   return { edit, view: AREAS.filter((a) => edit.includes(a) || (Array.isArray(p.view) && p.view.includes(a))) };
 }
 const areaOf = (area) => own(AREA_OF, area) || area;
+/* what a built-in role may see and change as standard, in the custom roles' terms */
+export const standardPerms = (role) => ({ view: [...AREAS],
+  edit: AREAS.filter((a) => (own(WRITE, a) || []).includes(role) || (a === 'items' && WRITE.stock.includes(role))) });
+/* the owner's own version of a built-in role, or null */
+const changed = (user) => (user.role !== 'owner' && user.role !== 'custom' && user.role_perms ? permsOf({ perms: user.role_perms }) : null);
 export function can(user, area) {
   if (user.role === 'custom') return area !== 'users' && permsOf(user).edit.includes(areaOf(area));
+  const o = changed(user);
+  if (o) return area === 'users' ? user.role === 'admin' && o.edit.includes('settings') : o.edit.includes(areaOf(area));
   const roles = own(WRITE, area);
   return !!(roles && roles.includes(user.role));
 }
-export const canView = (user, area) => !user || user.role !== 'custom' || permsOf(user).view.includes(areaOf(area));
-/* purchase rates, average cost, stock value and profit: hidden from custom roles that see neither reports nor purchase */
-export const seesCosts = (user) => canView(user, 'reports') || canView(user, 'purchase');
+/* reads are checked area by area for custom roles and for built-in roles the owner changed */
+export const limitedView = (user) => !!user && (user.role === 'custom' || !!changed(user));
+export const canView = (user, area) => {
+  if (!user) return true;
+  const p = user.role === 'custom' ? permsOf(user) : changed(user);
+  return !p || p.view.includes(areaOf(area));
+};
+/* purchase rates, average cost, stock value and profit: hidden from roles that see neither reports nor purchase, or told not to */
+export const seesCosts = (user) => (canView(user, 'reports') || canView(user, 'purchase')) && !rulesOf(user).hide_costs;
 export function requireCan(user, area) { if (!can(user, area)) throw forbidden(); }
+
+/* Limits a role works under (role_rules.rules), set by the owner in Settings → Roles. The owner has none.
+   no_cancel: cannot cancel bills, payments or other entries; no_credit: a sale must be paid in full (no udhaar);
+   hide_costs: no purchase rates or profit; max_discount: the lowest price is the item's price less this % (rate cuts
+   and discounts together); backdate_days: how many days back a bill or payment may be dated (0 = today only). */
+export function cleanRules(r) {
+  const n = (x, max) => (x === '' || x === null || x === undefined || !Number.isFinite(+x) ? null : Math.max(0, Math.min(max, +x)));
+  const d = n(r && r.backdate_days, 3650), m = n(r && r.max_discount, 100);
+  return { no_cancel: !!(r && r.no_cancel), no_credit: !!(r && r.no_credit), hide_costs: !!(r && r.hide_costs),
+    max_discount: m === null ? null : Math.round(m * 100) / 100, backdate_days: d === null ? null : Math.round(d) };
+}
+export function rulesOf(user) {
+  let r = {};
+  if (user && user.role !== 'owner' && user.role_rules) { try { r = JSON.parse(user.role_rules) || {}; } catch (e) { r = {}; } }
+  return cleanRules(r);
+}
+export function requireCancel(user) {
+  if (rulesOf(user).no_cancel) throw forbidden('Your role cannot cancel entries. Ask the owner or an admin.');
+}
+/* a date further back than the role allows */
+export function checkBackdate(user, d, today, what = 'an entry') {
+  const n = rulesOf(user).backdate_days;
+  if (n === null) return;
+  const t = new Date(today + 'T00:00:00Z'); t.setUTCDate(t.getUTCDate() - n);
+  if (d < t.toISOString().slice(0, 10)) throw forbidden(n === 0 ? `Your role can date ${what} today only.` : `Your role can date ${what} at most ${n} day${n === 1 ? '' : 's'} back.`);
+}
 
 /* Each user's own menu (users.ui): a job that picks the screens (the role decides when there is none), or screens the owner
    ticked one by one, and the screen the app opens on. Only what is shown changes: what a user may do stays with the role. */

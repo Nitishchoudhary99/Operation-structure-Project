@@ -3,7 +3,7 @@
    Every business table carries org_id: one database serves many businesses (multi-tenant).
    migrate() runs on the first request after each deploy, so no manual migration step is needed. */
 
-export const SCHEMA_VERSION = 25;
+export const SCHEMA_VERSION = 26;
 
 // document types whose monthly totals doc_month keeps (sales and purchase money documents)
 const MONTH_TYPES = `('INV','SRET','CNOTE','BILL','PRET','DNOTE')`;
@@ -105,6 +105,7 @@ export const DEFAULT_ACCOUNTS = [
   ['1210', 'Goods in Transit', 'asset', 'git', 0],
   ['1300', 'GST Input Credit', 'asset', 'gst_input', 0],
   ['1400', 'Staff Advances', 'asset', 'staff_adv', 0],
+  ['1410', 'Transit & Insurance Claims', 'asset', 'claims', 0],
   ['2000', 'Accounts Payable (Creditors)', 'liability', 'ap', 0],
   ['2100', 'GST Output Payable', 'liability', 'gst_output', 0],
   ['2200', 'Goods Received Not Billed', 'liability', 'grni', 0],
@@ -116,6 +117,7 @@ export const DEFAULT_ACCOUNTS = [
   ['4200', 'Sales Discounts & Rate Difference', 'income', 'sales_adj', 0],
   ['5000', 'Cost of Goods Sold', 'expense', 'cogs', 0],
   ['5100', 'Stock Adjustments (Loss / Gain)', 'expense', 'stock_adj', 0],
+  ['5110', 'Transit Loss & Damage', 'expense', 'transit_loss', 0],
   ['5200', 'Round Off', 'expense', 'round_off', 0],
   ['5300', 'Purchase Rate Difference', 'expense', 'pur_adj', 0],
   ['6000', 'Rent', 'expense', null, 0],
@@ -487,6 +489,30 @@ export const MIGRATIONS = {
        WHERE NOT EXISTS (SELECT 1 FROM accounts a WHERE a.org_id = o.id AND (a.sys = 'git' OR a.code = '1210'))`,
     `INSERT INTO accounts (org_id, code, name, type, sys, is_cash) SELECT o.id, '1211', 'Goods in Transit', 'asset', 'git', 0 FROM orgs o
        WHERE NOT EXISTS (SELECT 1 FROM accounts a WHERE a.org_id = o.id AND (a.sys = 'git' OR a.code = '1211'))`,
+  ],
+  /* goods of a bill-first bill damaged or lost on the way, written off (write_offs: our loss, or a claim on the transporter
+     or insurer; the GST input on them is reversed), and each role made to measure (role_rules: the rights of a built-in
+     role when the owner changed them, limits such as no cancelling or no udhaar, and the role's menu). */
+  26: [
+    `CREATE TABLE IF NOT EXISTS write_offs (id INTEGER PRIMARY KEY, org_id INTEGER NOT NULL, number TEXT NOT NULL, bill_id INTEGER NOT NULL,
+       date TEXT NOT NULL, mode TEXT NOT NULL CHECK (mode IN ('loss','claim')), reason TEXT DEFAULT '', value INTEGER NOT NULL DEFAULT 0,
+       cgst INTEGER NOT NULL DEFAULT 0, sgst INTEGER NOT NULL DEFAULT 0, igst INTEGER NOT NULL DEFAULT 0,
+       status TEXT NOT NULL DEFAULT 'done' CHECK (status IN ('done','cancelled')), created_by INTEGER, created_at TEXT NOT NULL, txk TEXT UNIQUE)`,
+    `CREATE UNIQUE INDEX IF NOT EXISTS ux_wo_number ON write_offs (org_id, number)`,
+    `CREATE INDEX IF NOT EXISTS ix_wo_bill ON write_offs (org_id, bill_id)`,
+    `CREATE TABLE IF NOT EXISTS write_off_lines (write_off_id INTEGER NOT NULL, line_id INTEGER NOT NULL, item_id INTEGER, qty REAL NOT NULL,
+       value INTEGER NOT NULL, cgst INTEGER NOT NULL DEFAULT 0, sgst INTEGER NOT NULL DEFAULT 0, igst INTEGER NOT NULL DEFAULT 0)`,
+    `CREATE INDEX IF NOT EXISTS ix_wol_wo ON write_off_lines (write_off_id)`,
+    `CREATE TABLE IF NOT EXISTS role_rules (org_id INTEGER NOT NULL, role_key TEXT NOT NULL, perms TEXT, rules TEXT NOT NULL DEFAULT '{}', ui TEXT,
+       updated_at TEXT, PRIMARY KEY (org_id, role_key))`,
+    `INSERT INTO accounts (org_id, code, name, type, sys, is_cash) SELECT o.id, '1410', 'Transit & Insurance Claims', 'asset', 'claims', 0 FROM orgs o
+       WHERE NOT EXISTS (SELECT 1 FROM accounts a WHERE a.org_id = o.id AND (a.sys = 'claims' OR a.code = '1410'))`,
+    `INSERT INTO accounts (org_id, code, name, type, sys, is_cash) SELECT o.id, '1411', 'Transit & Insurance Claims', 'asset', 'claims', 0 FROM orgs o
+       WHERE NOT EXISTS (SELECT 1 FROM accounts a WHERE a.org_id = o.id AND (a.sys = 'claims' OR a.code = '1411'))`,
+    `INSERT INTO accounts (org_id, code, name, type, sys, is_cash) SELECT o.id, '5110', 'Transit Loss & Damage', 'expense', 'transit_loss', 0 FROM orgs o
+       WHERE NOT EXISTS (SELECT 1 FROM accounts a WHERE a.org_id = o.id AND (a.sys = 'transit_loss' OR a.code = '5110'))`,
+    `INSERT INTO accounts (org_id, code, name, type, sys, is_cash) SELECT o.id, '5111', 'Transit Loss & Damage', 'expense', 'transit_loss', 0 FROM orgs o
+       WHERE NOT EXISTS (SELECT 1 FROM accounts a WHERE a.org_id = o.id AND (a.sys = 'transit_loss' OR a.code = '5111'))`,
   ],
 };
 

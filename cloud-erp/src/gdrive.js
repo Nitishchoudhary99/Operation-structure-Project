@@ -12,7 +12,7 @@ import { isEmptyOrg } from './restore.js';
 /* ---------- the backup file ---------- */
 const BACKUP_TABLES = ['accounts', 'warehouses', 'parties', 'items', 'stock', 'stock_moves', 'docs', 'payments', 'journals', 'journal_lines',
   'khata', 'counters', 'gate_entries', 'roles', 'vaade', 'vaada_kisht', 'recurring', 'billing_orders', 'audit', 'org_files', 'reminder_log', 'confirmations', 'bins', 'bin_stock', 'batches', 'batch_moves',
-  'serials', 'serial_moves', 'boms', 'productions', 'channel_orders', 'staff', 'attendance', 'staff_txns', 'shop_hooks', 'item_codes'];
+  'serials', 'serial_moves', 'boms', 'productions', 'channel_orders', 'staff', 'attendance', 'staff_txns', 'shop_hooks', 'item_codes', 'write_offs', 'role_rules'];
 
 /* Every record of this business. Login secrets (password hashes, salts), private link tokens and caches rebuilt
    from the records are left out. */
@@ -22,6 +22,7 @@ export async function buildBackup(db, orgId) {
   for (const t of BACKUP_TABLES) tables[t] = await all(`SELECT * FROM ${t} WHERE org_id = ?`);
   tables.doc_lines = await all(`SELECT l.* FROM doc_lines l JOIN docs d ON d.id = l.doc_id WHERE d.org_id = ?`);
   tables.bom_lines = await all(`SELECT l.* FROM bom_lines l JOIN boms b ON b.id = l.bom_id WHERE b.org_id = ?`);
+  tables.write_off_lines = await all(`SELECT l.* FROM write_off_lines l JOIN write_offs w ON w.id = l.write_off_id WHERE w.org_id = ?`);
   tables.payment_allocs = await all(`SELECT a.* FROM payment_allocs a JOIN payments p ON p.id = a.payment_id WHERE p.org_id = ?`);
   tables.users = await all(`SELECT id, email, name, role, role_id, active, created_at FROM users WHERE org_id = ?`);
   tables.parties.forEach((r) => { delete r.khata_token; });

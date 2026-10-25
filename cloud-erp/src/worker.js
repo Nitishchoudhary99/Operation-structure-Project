@@ -8,7 +8,8 @@ import {
 } from './lib.js';
 import {
   hashPassword, randomHex, sameText, passwordProblem, issueSession, sessionCookie, clearCookie, sessionFromRequest, sessionValid, USER_SQL, REVOKED_SQL, ROLES, can, requireCan, rateLimit,
-  AREAS, canView, seesCosts, permsOf, uiOf, loginGate, loginFailed, revokeSession, endAllSessions,
+  AREAS, canView, seesCosts, permsOf, uiOf, loginGate, loginFailed, revokeSession, endAllSessions, requireCancel, rulesOf, cleanRules,
+  standardPerms, BUILT_IN, limitedView,
 } from './auth.js';
 import {
   DOC_TYPES, NOTE_TYPES, stockCount, loadByIds, SYS_SQL, sysMap, createDoc, cancelDoc, createPayment, voidPayment, stockAdjust, stockTransfer, createExpense, createJournal, partyOpening,
@@ -18,7 +19,7 @@ import { getBom, saveBom, listProductions, createProduction, cancelProduction } 
 import { importOrders, stockFile } from './channels.js';
 import { waConfigured, runAutoReminders, remindOrg } from './autowa.js';
 import { listHooks, addHook, deleteHook, receiveHook } from './hooks.js';
-import { receivePending, matchBill, learnCode, autoBins } from './receive.js';
+import { receivePending, matchBill, learnCode, autoBins, writeOff, cancelWriteOff, writeOffOut } from './receive.js';
 import { listStaff, saveStaff, markAttendance, staffDetail, giveAdvance, paySalary, cancelStaffTxn, payslip, todayStaffQueries } from './payroll.js';
 import * as rep from './reports.js';
 import { PLANS, planOut, planOf, usage, checkCount, countError, seatBlocked, seatError, requireFeature, extendPlan, adminKey, trialUntil, hasFeature } from './saas.js';
@@ -233,7 +234,7 @@ router.add('POST', '/api/me/logout-all', async (c) => {
 router.add('GET', '/api/me', async (c) => json({
   user: { ...publicUser(c.user), role_key: c.user.role }, org: orgOut(c.org),
   can: Object.fromEntries(['settings', 'users', 'items', 'purchase', 'sales', 'stock', 'finance', 'khata', 'masters', 'gate'].map((a) => [a, can(c.user, a)])),
-  ui: uiOf(c.user.ui),
+  ui: uiOf(c.user.ui), role_ui: uiOf(c.user.role_ui), rules: rulesOf(c.user),
   view: Object.fromEntries(AREAS.map((a) => [a, canView(c.user, a)])), costs: seesCosts(c.user), wa_auto: waConfigured(c.env),
   doc_types: Object.fromEntries(Object.entries(DOC_TYPES).map(([k, v]) => [k, { label: v.label, side: v.side, from: v.from, prefix: v.prefix, note: !!v.note, stock: v.stock || '' }])),
   gst_rates: GST_RATES, today: today(), states: STATES.map(([, n]) => n), plan: planOut(c.org),
@@ -400,11 +401,34 @@ const cleanPerms = (b) => {
   const edit = pick(b && b.edit);
   return { view: [...new Set([...pick(b && b.view), ...edit])], edit };
 };
+/* Every role is made to measure (role_rules): limits (src/auth.js cleanRules) and the role's menu for all its users;
+   a built-in role's rights too, once the owner changes them (perms NULL = the standard rights). */
+const ROLE_NAMES = { admin: 'Admin', accountant: 'Accountant', store: 'Store / godown', sales: 'Sales' };
+const ruleText = (r) => Object.entries(r).filter(([, v]) => v !== null && v !== false).map(([k, v]) => (v === true ? k : `${k} ${v}`)).join(', ');
+const saveRuleStatement = (c, key, { perms = null, rules, ui }) => {
+  const u = uiOf(ui), noUi = !u.job && !u.screens && !u.home;
+  return c.db.prepare(`INSERT INTO role_rules (org_id, role_key, perms, rules, ui, updated_at) VALUES (?, ?, ?, ?, ?, ?)
+      ON CONFLICT(org_id, role_key) DO UPDATE SET perms = excluded.perms, rules = excluded.rules, ui = excluded.ui, updated_at = excluded.updated_at`)
+    .bind(c.org.id, key, perms ? JSON.stringify(perms) : null, JSON.stringify(cleanRules(rules || {})), noUi ? null : JSON.stringify(u), nowIso());
+};
 router.add('GET', '/api/roles', async (c) => {
   requireCan(c.user, 'users');
-  const { results } = await c.db.prepare(`SELECT r.id, r.name, r.perms, (SELECT COUNT(*) FROM users u WHERE u.role_id = r.id AND u.org_id = r.org_id) AS users
-      FROM roles r WHERE r.org_id = ? ORDER BY r.name`).bind(c.org.id).all();
-  return json({ rows: results.map((r) => ({ ...r, perms: permsOf(r) })), areas: AREAS });
+  const [rs, rr, n] = await c.db.batch([
+    c.db.prepare(`SELECT r.id, r.name, r.perms, (SELECT COUNT(*) FROM users u WHERE u.role_id = r.id AND u.org_id = r.org_id) AS users
+      FROM roles r WHERE r.org_id = ? ORDER BY r.name`).bind(c.org.id),
+    c.db.prepare(`SELECT role_key, perms, rules, ui FROM role_rules WHERE org_id = ?`).bind(c.org.id),
+    c.db.prepare(`SELECT role, COUNT(*) AS n FROM users WHERE org_id = ? AND role != 'custom' GROUP BY role`).bind(c.org.id),
+  ]);
+  const extra = (key) => { const x = rr.results.find((r) => r.role_key === key) || {}; return { rules: rulesOf({ role: '', role_rules: x.rules }), ui: uiOf(x.ui), own: x.perms || null }; };
+  return json({
+    rows: rs.results.map((r) => { const x = extra('c:' + r.id); return { ...r, perms: permsOf(r), rules: x.rules, ui: x.ui }; }),
+    builtin: BUILT_IN.map((key) => {
+      const x = extra(key), standard = standardPerms(key);
+      return { key, name: ROLE_NAMES[key], perms: x.own ? permsOf({ perms: x.own }) : standard, standard, changed: !!x.own, rules: x.rules, ui: x.ui,
+        users: (n.results.find((r) => r.role === key) || { n: 0 }).n, locked: key === 'admin' && c.user.role !== 'owner' };
+    }),
+    areas: AREAS,
+  });
 });
 router.add('POST', '/api/roles', async (c) => {
   requireCan(c.user, 'users');
@@ -412,23 +436,45 @@ router.add('POST', '/api/roles', async (c) => {
   if (await c.db.prepare(`SELECT 1 FROM roles WHERE org_id = ? AND name = ?`).bind(c.org.id, name).first()) throw bad(`A role called ${name} already exists.`);
   if ((await c.db.prepare(`SELECT COUNT(*) AS n FROM roles WHERE org_id = ?`).bind(c.org.id).first()).n >= 20) throw bad('At most 20 roles.');
   const [r] = await c.db.batch([c.db.prepare(`INSERT INTO roles (org_id, name, perms, created_at) VALUES (?, ?, ?, ?) RETURNING id`).bind(c.org.id, name, JSON.stringify(perms), nowIso()),
-    auditStatement(c, 'add role', `${name}: edit ${perms.edit.join(',')}; view ${perms.view.join(',')}`)]);
-  return json({ id: r.results[0].id, name, perms });
+    auditStatement(c, 'add role', `${name}: edit ${perms.edit.join(',')}; view ${perms.view.join(',')}; ${ruleText(cleanRules(c.body.rules || {}))}`.slice(0, 300))]);
+  const id = r.results[0].id;
+  await c.db.batch([saveRuleStatement(c, 'c:' + id, { rules: c.body.rules, ui: c.body.ui })]);
+  return json({ id, name, perms, rules: cleanRules(c.body.rules || {}), ui: uiOf(c.body.ui) });
 });
 router.add('PUT', '/api/roles/:id', async (c) => {
   requireCan(c.user, 'users');
   const name = reqStr(c.body.name, 'Role name', 40), perms = cleanPerms(c.body.perms);
   if (await c.db.prepare(`SELECT 1 FROM roles WHERE org_id = ? AND name = ? AND id != ?`).bind(c.org.id, name, +c.params.id).first()) throw bad(`A role called ${name} already exists.`);
   const [r] = await c.db.batch([c.db.prepare(`UPDATE roles SET name = ?, perms = ? WHERE id = ? AND org_id = ?`).bind(name, JSON.stringify(perms), +c.params.id, c.org.id),
-    auditStatement(c, 'edit role', `${name}: edit ${perms.edit.join(',')}; view ${perms.view.join(',')}`)]);
+    auditStatement(c, 'edit role', `${name}: edit ${perms.edit.join(',')}; view ${perms.view.join(',')}; ${ruleText(cleanRules(c.body.rules || {}))}`.slice(0, 300))]);
   if (!r.meta.changes) throw notFound('Role not found.');
-  return json({ id: +c.params.id, name, perms });
+  await c.db.batch([saveRuleStatement(c, 'c:' + +c.params.id, { rules: c.body.rules, ui: c.body.ui })]);
+  return json({ id: +c.params.id, name, perms, rules: cleanRules(c.body.rules || {}), ui: uiOf(c.body.ui) });
 });
 router.add('DELETE', '/api/roles/:id', async (c) => {
   requireCan(c.user, 'users');
   if (await c.db.prepare(`SELECT 1 FROM users WHERE org_id = ? AND role_id = ?`).bind(c.org.id, +c.params.id).first()) throw bad('Some users have this role. Give them another role first.');
-  const r = await c.db.prepare(`DELETE FROM roles WHERE id = ? AND org_id = ?`).bind(+c.params.id, c.org.id).run();
+  const [r] = await c.db.batch([c.db.prepare(`DELETE FROM roles WHERE id = ? AND org_id = ?`).bind(+c.params.id, c.org.id),
+    c.db.prepare(`DELETE FROM role_rules WHERE org_id = ? AND role_key = ?`).bind(c.org.id, 'c:' + +c.params.id)]);
   if (!r.meta.changes) throw notFound('Role not found.');
+  return json({ ok: true });
+});
+/* a built-in role made to measure: perms (null = its standard rights), rules, ui; only the owner changes the admin role */
+const builtinKey = (c) => {
+  requireCan(c.user, 'users');
+  const key = oneOf(c.params.key, BUILT_IN, 'Role');
+  if (key === 'admin' && c.user.role !== 'owner') throw forbidden('Only the owner changes the admin role.');
+  return key;
+};
+router.add('PUT', '/api/roles/builtin/:key', async (c) => {
+  const key = builtinKey(c), perms = c.body.perms ? cleanPerms(c.body.perms) : null;
+  await c.db.batch([saveRuleStatement(c, key, { perms, rules: c.body.rules, ui: c.body.ui }),
+    auditStatement(c, 'edit role', `${key}: ${perms ? `edit ${perms.edit.join(',')}; view ${perms.view.join(',')}` : 'standard rights'}; ${ruleText(cleanRules(c.body.rules || {}))}`.slice(0, 300))]);
+  return json({ ok: true, key, perms: perms || standardPerms(key), changed: !!perms, rules: cleanRules(c.body.rules || {}), ui: uiOf(c.body.ui) });
+});
+router.add('DELETE', '/api/roles/builtin/:key', async (c) => {
+  const key = builtinKey(c);
+  await c.db.batch([c.db.prepare(`DELETE FROM role_rules WHERE org_id = ? AND role_key = ?`).bind(c.org.id, key), auditStatement(c, 'edit role', `${key}: back to standard`)]);
   return json({ ok: true });
 });
 
@@ -795,7 +841,7 @@ router.add('GET', '/api/docs', async (c) => {
   if (q.get('to')) { where.push('d.date <= ?'); args.push(date(q.get('to'))); }
   if (q.get('q')) { where.push('(d.number LIKE ? OR p.name LIKE ?)'); args.push(`%${q.get('q')}%`, `%${q.get('q')}%`); }
   const cf = extraFilter(fieldsOf(c.org), 'doc', q, 'd.extra');
-  if (c.user.role === 'custom') {      // custom role: only the sides it may see
+  if (limitedView(c.user)) {      // custom (or changed) role: only the sides it may see
     const types = Object.keys(DOC_TYPES).filter((t) => canView(c.user, DOC_TYPES[t].side));
     where.push(`d.type IN (${types.map((t) => `'${t}'`).join(',') || "''"})`);
   }
@@ -810,20 +856,22 @@ async function docDetail(c, id) {
   const d = await c.db.prepare(`SELECT d.*, w.name AS warehouse FROM docs d LEFT JOIN warehouses w ON w.id = d.warehouse_id WHERE d.id = ? AND d.org_id = ?`).bind(id, c.org.id).first();
   if (!d) throw notFound('Document not found.');
   if (c.user && !canView(c.user, DOC_TYPES[d.type].side)) throw forbidden('Your role cannot see this document.');
-  const [lines, party, children, parent, pays] = await Promise.all([
+  const [lines, party, children, parent, pays, wos] = await Promise.all([
     c.db.prepare(`SELECT l.*, i.name AS item, i.unit, i.hsn, i.is_service, i.location, i.track_batch, i.track_serial, i.extra AS item_extra FROM doc_lines l LEFT JOIN items i ON i.id = l.item_id WHERE l.doc_id = ? ORDER BY l.id`).bind(id).all(),
     c.db.prepare(`SELECT * FROM parties WHERE id = ?`).bind(d.party_id).first(),
     c.db.prepare(`SELECT id, type, number, date, status, total FROM docs WHERE ref_id = ? AND org_id = ? ORDER BY id`).bind(id, c.org.id).all(),
     d.ref_id ? c.db.prepare(`SELECT id, type, number, date, status FROM docs WHERE id = ?`).bind(d.ref_id).first() : null,
     c.db.prepare(`SELECT pa.amount, pa.note_id, p.id, p.number, p.date, p.kind, n.number AS note_number FROM payment_allocs pa
         LEFT JOIN payments p ON p.id = pa.payment_id LEFT JOIN docs n ON n.id = pa.note_id WHERE pa.doc_id = ?`).bind(id).all(),
+    // goods of a bill-first bill written off (damaged / lost on the way)
+    d.type === 'BILL' && d.transit ? c.db.prepare(`SELECT * FROM write_offs WHERE bill_id = ? AND org_id = ? ORDER BY id`).bind(id, c.org.id).all() : { results: [] },
   ]);
   const money = (x) => R(x), defs = fieldsOf(c.org), side = DOC_TYPES[d.type].side;
   return {
     ...d, extra: extraOf(d.extra), print_fields: [...printExtra(defs, 'doc', d.extra, side), ...printExtra(defs, 'party', party && party.extra)], taxable: money(d.taxable), cgst: money(d.cgst), sgst: money(d.sgst), igst: money(d.igst), round_off: money(d.round_off),
     total: money(d.total), paid: money(d.paid), balance: money(d.total - d.paid), label: DOC_TYPES[d.type].label, side: DOC_TYPES[d.type].side,
     party: party && { ...party, extra: extraOf(party.extra) }, parent, children: children.results.map((x) => ({ ...x, total: money(x.total) })),
-    settlements: pays.results.map((p) => ({ ...p, amount: money(p.amount), number: p.number || p.note_number })),
+    settlements: pays.results.map((p) => ({ ...p, amount: money(p.amount), number: p.number || p.note_number })), write_offs: wos.results.map(writeOffOut),
     lines: lines.results.map(({ item_extra, ...l }) => ({ ...l, print_extra: printExtra(defs, 'item', item_extra).map((x) => `${x.label}: ${x.value}`).join(' · '), rate: money(l.rate), taxable: money(l.taxable), cgst: money(l.cgst), sgst: money(l.sgst), igst: money(l.igst),
       total: money(l.total), cost: c.user && !seesCosts(c.user) ? undefined : money(l.cost),
       // a bill booked before its goods came: returns only from what came, receipts from what has not
@@ -836,6 +884,8 @@ router.add('GET', '/api/docs/:id', async (c) => json(await docDetail(c, +c.param
 router.add('POST', '/api/docs', async (c) => json(await docDetail(c, (await createDoc(c, c.body)).id)));
 router.add('POST', '/api/docs/:id/cancel', async (c) => { await cancelDoc(c, +c.params.id); return json(await docDetail(c, +c.params.id)); });
 router.add('POST', '/api/docs/:id/approve', async (c) => { await approveDoc(c, +c.params.id); return json(await docDetail(c, +c.params.id)); });
+router.add('POST', '/api/docs/:id/write-off', async (c) => json(await writeOff(c, +c.params.id, c.body)));
+router.add('POST', '/api/write-offs/:id/cancel', async (c) => json(await cancelWriteOff(c, +c.params.id)));
 
 /* A ready-to-post draft of the next document in the chain, with the quantities still open. */
 router.add('GET', '/api/docs/:id/convert', async (c) => {
@@ -1404,6 +1454,7 @@ router.add('DELETE', '/api/khata/entries/:id', async (c) => {
 });
 router.add('POST', '/api/khata/entries/:id/reverse', async (c) => {
   requireCan(c.user, 'khata');
+  requireCancel(c.user);
   const e = await c.db.prepare(`SELECT * FROM khata WHERE id = ? AND org_id = ?`).bind(+c.params.id, c.org.id).first();
   if (!e) throw notFound('Entry not found.');
   if (e.status !== 'sent') throw bad('Only sent entries can be reversed. A pending entry can simply be discarded.');
@@ -1742,7 +1793,7 @@ router.add('PUT', '/api/settings/vaada', async (c) => {
 const ymBack = (t, n) => { let d = t.slice(0, 8) + '01'; for (let i = 0; i < n; i++) d = addDays(d, -1).slice(0, 8) + '01'; return d.slice(0, 7); };
 router.add('GET', '/api/vaade/cash', async (c) => {
   requireFeature(c.org, 'cash');
-  if (c.user.role === 'custom' && !canView(c.user, 'finance') && !canView(c.user, 'reports')) throw forbidden('Your role cannot see this. Ask the owner.');
+  if (limitedView(c.user) && !canView(c.user, 'finance') && !canView(c.user, 'reports')) throw forbidden('Your role cannot see this. Ask the owner.');
   const t = today(), o = c.org.id, db = c.db;
   if (c.url.searchParams.get('fresh') === '1') await limitHi(c, 'vcash:' + o, 10, 3600, 'Bahut baar dobara banaya. Thodi der baad try karein.');
   else {
@@ -1952,7 +2003,7 @@ async function handleApi(request, env, counter) {
     if (!sessionValid(c.user, p) || !c.org || (p.i && res[2].results.length)) throw new HttpError(401, 'Please sign in.');
     c.sys = write ? sysMap(res[res.length - 1].results) : null;
     if (seatBlocked(c.org, c.user)) throw seatError(c.org);
-    if (c.user.role === 'custom' && request.method === 'GET') {
+    if (limitedView(c.user) && request.method === 'GET') {
       const area = readArea(url);
       if (area === null) throw forbidden('Your role cannot see this. Ask the owner.');
       if (area !== OPEN && !(Array.isArray(area) ? area : [area]).some((a) => canView(c.user, a))) throw forbidden('Your role cannot see this. Ask the owner.');

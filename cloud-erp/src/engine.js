@@ -6,7 +6,7 @@ import {
   HttpError, bad, notFound, str, reqStr, num, date, addDays, nowIso, uid, lineCalc, toPaise, roundQty, today, loadByIds,
   counterStatements, counterValueSql, own,
 } from './lib.js';
-import { requireCan, can } from './auth.js';
+import { requireCan, can, requireCancel, checkBackdate, rulesOf } from './auth.js';
 import { lotState, takeOut, putIn, lotStatements, planBatchText, cleanBatch, cleanSerials } from './lots.js';
 export { loadByIds };
 import { stateCode } from './gst.js';
@@ -141,6 +141,18 @@ export function moneyStatus(total, paid) { return paid <= 0 ? 'unpaid' : paid >=
 /* a bill-first bill: 1 while some of its goods are still to come, 2 once every goods line came or was closed short */
 export const TRANSIT_SQL = `UPDATE docs SET transit = CASE WHEN EXISTS (SELECT 1 FROM doc_lines l JOIN items i ON i.id = l.item_id
     WHERE l.doc_id = ?1 AND i.is_service = 0 AND l.recv_qty + l.short_qty < l.qty - 0.0005) THEN 1 ELSE 2 END WHERE id = ?1 AND transit IN (1, 2)`;
+/* what each line of such a bill has already handed on (receipts and shortage notes: their cost; write-offs: their value),
+   so the last part of a line takes exactly what is left of its value */
+export async function creditedOf(db, orgId, billId) {
+  const { results } = await db.prepare(`SELECT id, SUM(v) AS v FROM (
+      SELECT dl.src_line_id AS id, dl.cost AS v FROM doc_lines dl JOIN docs d ON d.id = dl.doc_id
+        WHERE d.org_id = ?1 AND d.ref_id = ?2 AND d.status != 'cancelled' AND d.type IN ('GRN', 'DNOTE')
+      UNION ALL SELECT wl.line_id, wl.value FROM write_off_lines wl JOIN write_offs w ON w.id = wl.write_off_id
+        WHERE w.org_id = ?1 AND w.bill_id = ?2 AND w.status = 'done') GROUP BY id`).bind(orgId, billId).all();
+  return new Map(results.map((r) => [r.id, r.v || 0]));
+}
+/* the part of a bill line's value (or tax) that `qty` more takes: pro rata, the last part takes what is left */
+export const partOf = (line, total, qty, done, already) => (done + qty >= line.qty - 0.0005 ? total - already : Math.round(total * qty / line.qty));
 export async function createDoc(ctx, body) {
   const { db } = ctx;
   const type = str(body.type, 10).toUpperCase();
@@ -151,6 +163,8 @@ export async function createDoc(ctx, body) {
   if (cap) await checkInvoiceLimit(db, ctx.org);
   const orgId = ctx.org.id;
   const d = date(body.date);
+  const limits = rulesOf(ctx.user);       // what the owner allows this role (Settings → Roles)
+  checkBackdate(ctx.user, d, today(), `a ${T.label.toLowerCase()}`);
 
   const party = await db.prepare(`SELECT * FROM parties WHERE id = ? AND org_id = ?`).bind(+body.party_id || 0, orgId).first();
   if (!party) throw bad(T.side === 'sales' ? 'Choose a customer.' : 'Choose a supplier.');
@@ -184,13 +198,7 @@ export async function createDoc(ctx, body) {
       .bind(orgId, party.id, partyRef).first();
     if (dup) throw bad(`Bill ${partyRef} of ${party.name} is already entered as ${dup.number}.`);
   }
-  // what the bill's lines have already handed on to receipts and shortage notes (their cost), so the last part takes the rest
-  const credited = new Map();
-  if (fromBill || short) {
-    const { results } = await db.prepare(`SELECT dl.src_line_id AS id, SUM(dl.cost) AS v FROM doc_lines dl JOIN docs d ON d.id = dl.doc_id
-        WHERE d.org_id = ? AND d.ref_id = ? AND d.status != 'cancelled' AND d.type IN ('GRN', 'DNOTE') GROUP BY dl.src_line_id`).bind(orgId, src.id).all();
-    for (const r of results) credited.set(r.id, r.v || 0);
-  }
+  const credited = fromBill || short ? await creditedOf(db, orgId, src.id) : new Map();
 
   const wh = await warehouseOf(ctx, +body.warehouse_id || (src && src.warehouse_id) || 0);
   // inter-state when the two GST state codes differ (from GSTIN, else state name); falls back to comparing names
@@ -219,6 +227,11 @@ export async function createDoc(ctx, body) {
     let gst = num(raw.gst_rate, `Line ${n} GST rate`, { min: 0, max: 100, def: item ? item.gst_rate : 0 });
     const desc = str(raw.description, 300) || (item ? item.name : '');
     if (!item && !desc) throw bad(`Line ${n}: choose an item or type a description.`);
+    // a role with a discount limit: the price after rate cut and discount stays at or above the item's price less that %
+    if (limits.max_discount !== null && item && item.sale_price > 0 && T.side === 'sales' && !T.note && type !== 'SRET') {
+      const floor = Math.round(item.sale_price * (1 - limits.max_discount / 100));
+      if (Math.round(rate * (1 - disc / 100)) < floor) throw new HttpError(403, `Line ${n}: the lowest price your role may give for ${item.name} is ₹${(floor / 100).toFixed(2)} (${limits.max_discount}% off ₹${(item.sale_price / 100).toFixed(2)}).`);
+    }
     let srcLine = null, git = 0;
     if (raw.src_line_id) {
       srcLine = srcLines.get(+raw.src_line_id);
@@ -231,8 +244,7 @@ export async function createDoc(ctx, body) {
       if (fromBill || short) {
         if (!item || item.is_service) throw bad(`Line ${n}: only goods are received.`);
         rate = srcLine.rate; disc = srcLine.discount_pct; gst = srcLine.gst_rate;      // at the bill's price
-        const after = srcLine.recv_qty + srcLine.short_qty + qty;
-        git = after >= srcLine.qty - 0.0005 ? srcLine.taxable - (credited.get(srcLine.id) || 0) : Math.round(srcLine.taxable * qty / srcLine.qty);
+        git = partOf(srcLine, srcLine.taxable, qty, srcLine.recv_qty + srcLine.short_qty, credited.get(srcLine.id) || 0);
         credited.set(srcLine.id, (credited.get(srcLine.id) || 0) + git);
         if (fromBill) srcLine.recv_qty = roundQty(srcLine.recv_qty + qty); else srcLine.short_qty = roundQty(srcLine.short_qty + qty);
       } else srcLine.done_qty = roundQty(srcLine.done_qty + qty);     // two lines from one source line share what is left
@@ -443,6 +455,9 @@ export async function createDoc(ctx, body) {
     }));
   }
 
+  if (type === 'INV' && limits.no_credit && total - paidNow > 0) {
+    throw new HttpError(403, 'Your role makes only bills paid in full: take the whole amount now (cash, UPI or card), or ask the owner to give udhaar.');
+  }
   if (type === 'INV') await creditGate(ctx, party, total - paidNow, body, st);
   st.push(auditStatement(ctx, `create ${type}`, `${party.name} ${total / 100}`));
   try { await db.batch(st); } catch (e) {
@@ -515,6 +530,7 @@ export async function createPayment(ctx, body) {
   const acct = await cashAccount(db, ctx.org.id, +body.account_id);
   const amount = toPaise(num(body.amount, 'Amount', { min: 0.01 }));
   const d = date(body.date);
+  checkBackdate(ctx.user, d, today(), `a ${kind}`);
   const docType = kind === 'receipt' ? 'INV' : 'BILL';
   const { results: open } = await db.prepare(`SELECT id, number, total, paid, due_date FROM docs
       WHERE org_id = ? AND party_id = ? AND type = ? AND status IN ('unpaid', 'partial') ORDER BY due_date, id`).bind(ctx.org.id, party.id, docType).all();
@@ -599,8 +615,10 @@ export async function cancelDoc(ctx, id) {
   const doc = await db.prepare(`SELECT * FROM docs WHERE id = ? AND org_id = ?`).bind(id, ctx.org.id).first();
   if (!doc) throw notFound('Document not found.');
   requireCan(ctx.user, DOC_TYPES[doc.type].side === 'sales' ? 'sales' : 'purchase');
+  requireCancel(ctx.user);
   if (doc.status === 'cancelled') throw bad('Already cancelled.');
-  const child = await db.prepare(`SELECT number FROM docs WHERE ref_id = ? AND org_id = ? AND status != 'cancelled' LIMIT 1`).bind(doc.id, ctx.org.id).first();
+  const child = await db.prepare(`SELECT number FROM docs WHERE ref_id = ?1 AND org_id = ?2 AND status != 'cancelled'
+      UNION ALL SELECT number FROM write_offs WHERE bill_id = ?1 AND org_id = ?2 AND status = 'done' LIMIT 1`).bind(doc.id, ctx.org.id).first();
   if (child) throw bad(`Cancel ${child.number} first: it was made from this document.`);
   const pay = await db.prepare(`SELECT 1 FROM payment_allocs WHERE doc_id = ? AND payment_id > 0 LIMIT 1`).bind(doc.id).first();
   if (pay) throw bad('Void the payments against this document first.');
@@ -640,6 +658,7 @@ export async function cancelDoc(ctx, id) {
 export async function voidPayment(ctx, id) {
   const { db } = ctx;
   requireCan(ctx.user, 'finance');
+  requireCancel(ctx.user);
   const p = await db.prepare(`SELECT * FROM payments WHERE id = ? AND org_id = ?`).bind(id, ctx.org.id).first();
   if (!p) throw notFound('Payment not found.');
   if (p.notes && p.notes.startsWith('[void]')) throw bad('Already void.');
@@ -768,6 +787,7 @@ export async function createExpense(ctx, body) {
   const amount = toPaise(num(body.amount, 'Amount', { min: 0.01 }));
   const gst = toPaise(num(body.gst_amount, 'GST', { min: 0, def: 0 }));
   const d = date(body.date);
+  checkBackdate(ctx.user, d, today(), 'an expense');
   const narr = `${exp.name}${body.notes ? ': ' + str(body.notes, 200) : ''}`;
   await db.batch([
     ...journalStatements(db, ctx, { date: d, narration: narr, refType: 'EXP', refId: null,

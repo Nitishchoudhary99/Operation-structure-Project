@@ -7,7 +7,7 @@
    Books: an advance is Dr Staff Advances / Cr cash; a salary is Dr Salaries & Wages (earned + bonus) / Cr Staff Advances
    (the advance cut) / Cr cash (what is paid). Cancelling reverses the journal. */
 import { bad, notFound, str, reqStr, num, toPaise, nowIso, today, date, uid, oneOf, addDays } from './lib.js';
-import { requireCan } from './auth.js';
+import { requireCan, requireCancel } from './auth.js';
 import { journalStatements, auditStatement, cashAccount } from './engine.js';
 
 const R = (p) => Math.round(p) / 100;
@@ -194,6 +194,7 @@ export async function paySalary(c, id, body) {
 
 export async function cancelStaffTxn(c, txnId) {
   requireCan(c.user, 'finance');
+  requireCancel(c.user);
   const t = await c.db.prepare(`SELECT t.*, s.name FROM staff_txns t JOIN staff s ON s.id = t.staff_id WHERE t.id = ? AND t.org_id = ?`).bind(txnId, c.org.id).first();
   if (!t) throw notFound('Payment not found.');
   if (t.status === 'cancelled') throw bad('Already cancelled.');

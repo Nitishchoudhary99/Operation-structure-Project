@@ -1890,5 +1890,136 @@ else {
   check('the restored books match, Goods in Transit included', tbR.balanced && JSON.stringify(tbO.rows.map((r) => [r.code, r.debit, r.credit])) === JSON.stringify(tbR.rows.map((r) => [r.code, r.debit, r.credit])));
 }
 
+/* goods damaged or lost on the way written off (our loss, or a claim on the transporter; the GST input on them reversed),
+   and every role made to measure: a built-in role's rights changed, limits (no cancelling, no udhaar, a discount cap,
+   today's date only, no costs) and the role's menu, enforced on the server */
+{
+  const ip = '203.0.113.180';
+  const email = `wo${Date.now()}@test.in`;
+  const su = await rq('POST', '/api/auth/signup', { business: 'Mehta Crockery', name: 'M', email, password: 'Mehta-pass-1234', state: 'Rajasthan' }, { ip });
+  const V = async (m, p, b) => { const r = await rq(m, p, b, { cookie: su.cookie, ip }); if (r.status >= 400) throw new Error(`${m} ${p} -> ${r.status} ${r.data.error}`); return r.data; };
+  const E = (m, p, b) => rq(m, p, b, { cookie: su.cookie, ip });
+  const sup = await V('POST', '/api/parties', { name: 'Khurja Pottery', kind: 'supplier', state: 'Rajasthan', gstin: '08AAACK1234F1Z5' });
+  const cust = await V('POST', '/api/parties', { name: 'Gupta Caterers', kind: 'customer', state: 'Rajasthan', phone: '9876500031' });
+  const cup = await V('POST', '/api/items', { name: 'Tea cup', unit: 'pc', sale_price: 100, purchase_price: 50, gst_rate: 18 });
+  const plate = await V('POST', '/api/items', { name: 'Dinner plate', unit: 'pc', sale_price: 300, purchase_price: 200, gst_rate: 18 });
+  const saucer = await V('POST', '/api/items', { name: 'Saucer', unit: 'pc', sale_price: 2, purchase_price: 1, gst_rate: 18 });
+  const accts = (await V('GET', '/api/accounts')).rows, cash = accts.find((a) => a.sys === 'cash');
+  const bal = async (sys) => {
+    const tb = await V('GET', '/api/reports/trial-balance'), a = accts.find((x) => x.sys === sys), r = a && tb.rows.find((x) => x.code === a.code);
+    return r ? Math.round(((r.debit || 0) - (r.credit || 0)) * 100) / 100 : 0;
+  };
+  check('every business has accounts for transit losses and claims', accts.some((a) => a.sys === 'transit_loss') && accts.some((a) => a.sys === 'claims'));
+
+  const bill = await V('POST', '/api/docs', { type: 'BILL', party_id: sup.id, transit: true, party_ref: 'KP/77', lines: [
+    { item_id: cup.id, qty: 10, rate: 50 }, { item_id: plate.id, qty: 4, rate: 200 }, { item_id: saucer.id, qty: 3, rate: 1, discount_pct: 12.5 }] });
+  const L = (id) => bill.lines.find((l) => l.item_id === id), saucerTaxable = L(saucer.id).taxable;
+  const gstBefore = await bal('gst_input'), apBefore = await bal('ap');
+  check('the bill parks its goods in Goods in Transit', eq(await bal('git'), 500 + 800 + saucerTaxable));
+
+  // validation
+  const tooMany = await E('POST', `/api/docs/${bill.id}/write-off`, { lines: [{ line_id: L(cup.id).id, qty: 11 }] });
+  const none = await E('POST', `/api/docs/${bill.id}/write-off`, { lines: [] });
+  const badMode = await E('POST', `/api/docs/${bill.id}/write-off`, { mode: 'gift', lines: [{ line_id: L(cup.id).id, qty: 1 }] });
+  check('a write-off of more than is still to come, of nothing, or of an unknown kind is refused', tooMany.status === 400 && /only 10 still to come/.test(tooMany.data.error)
+    && none.status === 400 && badMode.status === 400, JSON.stringify([tooMany.data, none.data, badMode.data]));
+
+  // 2 cups broke on the way: our loss; 1 plate lost: the transporter pays
+  const woA = await V('POST', `/api/docs/${bill.id}/write-off`, { mode: 'loss', reason: 'Broken in the truck', lines: [{ line_id: L(cup.id).id, qty: 2 }] });
+  check('broken goods are written off at the bill\'s price with the GST on them reversed', woA.number === 'WO-00001' && woA.value === 100 && woA.cgst === 9 && woA.sgst === 9
+    && eq(await bal('transit_loss'), 118) && eq(await bal('gst_input'), gstBefore - 18) && eq(await bal('ap'), apBefore), JSON.stringify([woA, await bal('transit_loss'), await bal('gst_input')]));
+  const woB = await V('POST', `/api/docs/${bill.id}/write-off`, { mode: 'claim', reason: 'LR 4411: one carton missing', lines: [{ line_id: L(plate.id).id, qty: 1 }] });
+  check('lost goods the transporter will pay for become a claim', woB.value === 200 && eq(await bal('claims'), 236) && eq(await bal('git'), 1000 + saucerTaxable), JSON.stringify([woB, await bal('claims'), await bal('git')]));
+  let bd = await V('GET', `/api/docs/${bill.id}`);
+  check('the bill shows what is still to come and its write-offs', bd.lines.find((l) => l.item_id === cup.id).to_receive === 8 && bd.lines.find((l) => l.item_id === plate.id).to_receive === 3
+    && bd.write_offs.length === 2 && bd.write_offs[0].mode === 'loss' && bd.write_offs[0].total === 118, JSON.stringify(bd.write_offs));
+
+  // the rest comes: Goods in Transit ends at exactly zero, a saucer written off in between
+  await V('POST', `/api/docs/${bill.id}/write-off`, { lines: [{ line_id: L(saucer.id).id, qty: 1 }] });
+  await V('POST', '/api/docs', { type: 'GRN', party_id: sup.id, ref_id: bill.id, lines: [{ item_id: cup.id, qty: 8, src_line_id: L(cup.id).id },
+    { item_id: plate.id, qty: 3, src_line_id: L(plate.id).id }, { item_id: saucer.id, qty: 2, src_line_id: L(saucer.id).id }] });
+  bd = await V('GET', `/api/docs/${bill.id}`);
+  check('received and written off together, the bill is done and Goods in Transit is empty to the paisa', bd.transit === 2 && eq(await bal('git'), 0), JSON.stringify([bd.transit, await bal('git')]));
+  const gst = await V('GET', '/api/reports/gst');
+  check('the GST summary shows the input credit reversed and adds it to the GST payable', gst.itc_reversed.n === 3 && eq(gst.itc_reversed.tax, 18 + 36 + bd.write_offs[2].gst)
+    && eq(gst.net_payable, gst.outward.total.tax - gst.inward.total.tax + gst.itc_reversed.tax), JSON.stringify(gst.itc_reversed));
+
+  // the cups turn up after all: cancel the write-off and they are to come again
+  await V('POST', `/api/write-offs/${woA.id}/cancel`);
+  bd = await V('GET', `/api/docs/${bill.id}`);
+  check('a cancelled write-off puts the goods back on the way and undoes the loss and the GST reversal', bd.transit === 1 && bd.lines.find((l) => l.item_id === cup.id).to_receive === 2
+    && eq(await bal('transit_loss'), bd.write_offs[2].total) && eq(await bal('git'), 100), JSON.stringify([bd.transit, await bal('transit_loss'), await bal('git')]));
+  check('a cancelled write-off cannot be cancelled again', (await E('POST', `/api/write-offs/${woA.id}/cancel`)).status === 400);
+  const g2 = await V('POST', '/api/docs', { type: 'GRN', party_id: sup.id, ref_id: bill.id, lines: [{ item_id: cup.id, qty: 2, src_line_id: L(cup.id).id }] });
+  check('they are received at the value left', g2.lines[0].cost === 100 && eq(await bal('git'), 0), JSON.stringify(g2.lines));
+  check('the books balance', (await V('GET', '/api/reports/trial-balance')).balanced === true);
+
+  // every role made to measure
+  const roles = await V('GET', '/api/roles');
+  const std = (k) => roles.builtin.find((r) => r.key === k);
+  check('the four built-in roles are listed with their standard rights', roles.builtin.length === 4 && std('store').perms.edit.includes('purchase') && std('store').perms.edit.includes('items')
+    && !std('sales').perms.edit.includes('purchase') && std('sales').changed === false, JSON.stringify(roles.builtin.map((r) => [r.key, r.perms.edit])));
+  await V('POST', '/api/users', { email: 'kavita' + email, name: 'Kavita (counter)', role: 'sales', password: 'Kavita-pass-1234' });
+  await V('POST', '/api/users', { email: 'gopal' + email, name: 'Gopal (godown)', role: 'store', password: 'Gopal-pass-1234' });
+  await V('POST', '/api/users', { email: 'anil' + email, name: 'Anil (admin)', role: 'admin', password: 'Anil-pass-12345' });
+  await V('PUT', '/api/roles/builtin/sales', { rules: { no_cancel: true, no_credit: true, hide_costs: true, max_discount: 10, backdate_days: 0 }, ui: { job: 'counter', home: 'pos' } });
+  const login = async (who, pw) => (await rq('POST', '/api/auth/login', { email: who + email, password: pw }, { ip })).cookie;
+  const kc = await login('kavita', 'Kavita-pass-1234'), K = (m, p, b) => rq(m, p, b, { cookie: kc, ip });
+  const kme = (await K('GET', '/api/me')).data;
+  check('a sales person gets the limits and the menu of the sales role', kme.rules.no_credit === true && kme.rules.max_discount === 10 && kme.rules.backdate_days === 0
+    && kme.role_ui.job === 'counter' && kme.role_ui.home === 'pos' && kme.can.sales === true, JSON.stringify([kme.rules, kme.role_ui]));
+  const pay = (amt) => ({ amount: amt, account_id: cash.id });
+  const udhaar = await K('POST', '/api/docs', { type: 'INV', party_id: cust.id, lines: [{ item_id: cup.id, qty: 1, rate: 100 }] });
+  check('no udhaar: a bill not paid in full is refused', udhaar.status === 403 && /paid in full/.test(udhaar.data.error), JSON.stringify(udhaar.data));
+  const okDisc = await K('POST', '/api/docs', { type: 'INV', party_id: cust.id, lines: [{ item_id: cup.id, qty: 1, rate: 100, discount_pct: 10, gst_rate: 18 }], payment: pay(106.2) });
+  const bigDisc = await K('POST', '/api/docs', { type: 'INV', party_id: cust.id, lines: [{ item_id: cup.id, qty: 1, rate: 100, discount_pct: 11 }], payment: pay(200) });
+  const lowRate = await K('POST', '/api/docs', { type: 'INV', party_id: cust.id, lines: [{ item_id: cup.id, qty: 1, rate: 85 }], payment: pay(200) });
+  check('a discount up to the role\'s cap is fine; more, or a lower rate, is refused', okDisc.status === 200 && bigDisc.status === 403 && lowRate.status === 403 && /lowest price/.test(lowRate.data.error),
+    JSON.stringify([okDisc.status, okDisc.data.error, bigDisc.data, lowRate.data]));
+  const y = new Date(Date.now() + 5.5 * 3600e3 - 86400e3).toISOString().slice(0, 10);
+  const old = await K('POST', '/api/docs', { type: 'INV', party_id: cust.id, date: y, lines: [{ item_id: cup.id, qty: 1, rate: 100 }], payment: pay(118) });
+  check('today\'s date only: a bill dated yesterday is refused', old.status === 403 && /today only/.test(old.data.error), JSON.stringify(old.data));
+  check('no cancelling', (await K('POST', `/api/docs/${okDisc.data.id}/cancel`)).status === 403);
+  const kItems = (await K('GET', '/api/items')).data.rows;
+  check('no costs: purchase rates are hidden', kItems.length && kItems.every((i) => !('purchase_price' in i) && !('avg_cost' in i)), JSON.stringify(kItems[0]));
+  check('the owner works without the limits', (await E('POST', '/api/docs', { type: 'INV', party_id: cust.id, date: y, lines: [{ item_id: cup.id, qty: 1, rate: 50 }] })).status === 200);
+
+  // a built-in role's rights changed, then put back
+  const gc = await login('gopal', 'Gopal-pass-1234'), G = (m, p, b) => rq(m, p, b, { cookie: gc, ip });
+  const billBody = { type: 'BILL', party_id: sup.id, lines: [{ item_id: cup.id, qty: 1, rate: 50 }] };
+  await V('PUT', '/api/roles/builtin/store', { perms: { view: ['items', 'gate', 'masters'], edit: ['items', 'gate'] } });
+  const gNo = await G('POST', '/api/docs', billBody), gSee = await G('GET', '/api/docs?type=BILL'), gGate = await G('POST', '/api/gate', { kind: 'in', vehicle_no: 'RJ14 1' });
+  check('a built-in role\'s rights can be cut: the godown no longer makes or sees bills, still logs the gate', gNo.status === 403 && gSee.status === 403 && gGate.status === 200,
+    JSON.stringify([gNo.status, gSee.status, gGate.status]));
+  check('the change shows on the roles list', (await V('GET', '/api/roles')).builtin.find((r) => r.key === 'store').changed === true);
+  await V('DELETE', '/api/roles/builtin/store');
+  check('back to standard, the godown makes bills again', (await G('POST', '/api/docs', billBody)).status === 200);
+  await V('PUT', '/api/roles/builtin/sales', { perms: { view: ['sales', 'items', 'masters', 'khata', 'finance'], edit: ['sales', 'masters', 'khata', 'finance'] }, rules: {} });
+  check('rights can also be added: the sales role now records expenses', (await K('POST', '/api/expenses', { account_id: accts.find((a) => a.type === 'expense' && !a.sys).id, amount: 50, paid_from: cash.id })).status === 200);
+
+  // only the owner changes the admin role; an admin may change the others
+  const ac = await login('anil', 'Anil-pass-12345'), A = (m, p, b) => rq(m, p, b, { cookie: ac, ip });
+  check('an admin cannot change the admin role, but can change the others', (await A('PUT', '/api/roles/builtin/admin', { rules: {} })).status === 403
+    && (await A('PUT', '/api/roles/builtin/sales', { rules: { no_cancel: true } })).status === 200);
+  // own roles carry limits and a menu too
+  const own = await V('POST', '/api/roles', { name: 'Counter', perms: { view: ['sales'], edit: ['sales'] }, rules: { max_discount: 5, no_cancel: true }, ui: { job: 'counter' } });
+  const ownRow = (await V('GET', '/api/roles')).rows.find((r) => r.id === own.id);
+  check('a role of your own keeps its limits and menu', ownRow.rules.max_discount === 5 && ownRow.rules.no_cancel === true && ownRow.ui.job === 'counter', JSON.stringify(ownRow));
+
+  // backup and restore keep the write-offs, their books and the roles' rules
+  const j = await (await fetch(BASE + '/api/export/backup', { headers: { Cookie: su.cookie, 'CF-Connecting-IP': ip } })).json();
+  const nu = await rq('POST', '/api/auth/signup', { business: 'Mehta Restore', name: 'R', email: 'r' + email, password: 'Mehta-pass-1234', state: 'Rajasthan' }, { ip: '203.0.113.181' });
+  const R2 = (m, p, b) => rq(m, p, b, { cookie: nu.cookie, ip: '203.0.113.181' });
+  const rr = await R2('POST', '/api/restore', j);
+  const rroles = (await R2('GET', '/api/roles')).data;
+  const rbill = (await R2('GET', '/api/docs?type=BILL')).data.rows.find((d) => d.number === bill.number);
+  const rbd = rbill && (await R2('GET', `/api/docs/${rbill.id}`)).data;
+  check('restored: the write-offs, the sales role\'s rules and a role of your own with its rules', rr.status === 200 && rbd && rbd.write_offs.length === 3
+    && rroles.builtin.find((r) => r.key === 'sales').rules.no_cancel === true && rroles.rows.find((r) => r.name === 'Counter').rules.max_discount === 5,
+  JSON.stringify([rr.status, rbd && rbd.write_offs.length, rroles.builtin.map((r) => r.rules), rroles.rows]));
+  const tbO = await V('GET', '/api/reports/trial-balance'), tbR = (await R2('GET', '/api/reports/trial-balance')).data;
+  check('the restored books match, transit losses and claims included', tbR.balanced && JSON.stringify(tbO.rows.map((r) => [r.code, r.debit, r.credit])) === JSON.stringify(tbR.rows.map((r) => [r.code, r.debit, r.credit])));
+}
+
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);
