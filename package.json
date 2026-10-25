@@ -5,5 +5,8 @@
   "scripts": {
     "build": "node --check cloud-erp/src/worker.js && echo \"no build step: wrangler bundles cloud-erp/src/worker.js on deploy\"",
     "deploy": "wrangler deploy"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^1.3.0"
   }
 }

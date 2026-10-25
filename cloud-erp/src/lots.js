@@ -333,3 +333,67 @@ export async function expiryReport(c, days) {
   const sum = (f) => Math.round(rows.filter(f).reduce((s, r) => s + r.value * 100, 0)) / 100;
   return { today: t, until, rows, expired_value: sum((r) => r.days_left < 0), soon_value: sum((r) => r.days_left >= 0) };
 }
+
+/* Guided put-away: for each item waiting in no bin, the bin it should go to, in this order of preference: its default
+   bin, a bin that already holds it, then the first empty bin (bins are walked in code order: A-01-1, A-01-2, ...). */
+export async function putawayPlan(c, warehouseId) {
+  const L = await listBins(c, warehouseId);
+  if (!L.not_put_away.length || !L.bins.length) return { ...L, rows: [] };
+  const ids = L.not_put_away.map((r) => r.id);
+  const held = await loadByIds(c.db, `SELECT bs.item_id, bs.bin_id, bs.qty FROM bin_stock bs WHERE bs.org_id = ? AND bs.warehouse_id = ? AND bs.qty > 0.0005 AND bs.item_id IN (?ids)`,
+    [c.org.id, L.warehouse.id], ids);
+  const byCode = new Map(L.bins.map((b) => [b.code, b])), byId = new Map(L.bins.map((b) => [b.id, b]));
+  // an empty bin that is some item's default bin is kept for that item
+  const { results: kept } = await c.db.prepare(`SELECT DISTINCT location FROM items WHERE org_id = ? AND location != ''`).bind(c.org.id).all();
+  const reserved = new Set(kept.map((r) => r.location));
+  const empty = L.bins.filter((b) => !b.items && !reserved.has(b.code)).sort((a, b) => a.code.localeCompare(b.code, 'en', { numeric: true }));
+  let next = 0;
+  const rows = L.not_put_away.map((r) => {
+    let bin = r.location && byCode.get(r.location), why = 'default bin';
+    if (!bin) {
+      const h = held.filter((x) => x.item_id === r.id).sort((a, b) => b.qty - a.qty)[0];
+      if (h) { bin = byId.get(h.bin_id); why = 'already holds this item'; }
+    }
+    if (!bin && next < empty.length) { bin = empty[next++]; why = 'empty bin'; }
+    return { ...r, suggest: bin ? { bin_id: bin.id, code: bin.code, why } : null };
+  });
+  return { warehouse: L.warehouse, bins: L.bins.map((b) => ({ id: b.id, code: b.code })), rows };
+}
+
+/* Wave picking: one pick list for many open sales orders / delivery notes of one godown, walked bin by bin,
+   with how much of each line goes to which order (for packing after the pick). */
+export async function wavePick(c, ids) {
+  requireCan(c.user, 'stock');
+  ids = [...new Set(ids.map(Number).filter(Boolean))].slice(0, 50);
+  if (!ids.length) throw bad('Choose the orders to pick.');
+  const docs = await loadByIds(c.db, `SELECT d.id, d.type, d.number, d.warehouse_id, d.status, p.name AS party FROM docs d LEFT JOIN parties p ON p.id = d.party_id
+      WHERE d.org_id = ? AND d.type IN ('SO','DN') AND d.status NOT IN ('cancelled','pending') AND d.id IN (?ids)`, [c.org.id], ids);
+  if (!docs.length) throw bad('None of these orders can be picked.');
+  const wh = docs[0].warehouse_id;
+  if (docs.some((d) => d.warehouse_id !== wh)) throw bad('Pick orders of one godown at a time.');
+  const lines = await loadByIds(c.db, `SELECT l.doc_id, l.item_id, l.qty, l.done_qty, l.batch_no, i.name, i.unit, i.location FROM doc_lines l JOIN items i ON i.id = l.item_id
+      WHERE l.doc_id IN (?ids) AND i.is_service = 0`, [], docs.map((d) => d.id));
+  const docOf = new Map(docs.map((d) => [d.id, d])), need = new Map();
+  for (const l of lines) {
+    const d = docOf.get(l.doc_id), q = roundQty(d.type === 'SO' ? l.qty - l.done_qty : l.qty);
+    if (q <= 0.0005) continue;
+    if (!need.has(l.item_id)) need.set(l.item_id, { item_id: l.item_id, name: l.name, unit: l.unit, location: l.location, qty: 0, orders: [] });
+    const n = need.get(l.item_id); n.qty = roundQty(n.qty + q); n.orders.push({ number: d.number, party: d.party, qty: q });
+  }
+  const itemIds = [...need.keys()];
+  const [bins, batches] = itemIds.length ? await Promise.all([
+    loadByIds(c.db, `SELECT bs.item_id, b.code, bs.qty FROM bin_stock bs JOIN bins b ON b.id = bs.bin_id WHERE bs.org_id = ? AND bs.warehouse_id = ? AND bs.qty > 0.0005 AND bs.item_id IN (?ids)`, [c.org.id, wh], itemIds),
+    loadByIds(c.db, `SELECT item_id, batch_no, expiry, qty FROM batches WHERE org_id = ? AND warehouse_id = ? AND qty > 0.0005 AND item_id IN (?ids)`, [c.org.id, wh], itemIds),
+  ]) : [[], []];
+  const byNum = (a, b) => a.localeCompare(b, 'en', { numeric: true });
+  const rows = [...need.values()].map((n) => {
+    // where to take it from: the default bin first, then the other bins in walking order, until the quantity is covered
+    const mine = bins.filter((b) => b.item_id === n.item_id).sort((a, b) => (b.code === n.location) - (a.code === n.location) || byNum(a.code, b.code));
+    let left = n.qty; const from = [];
+    for (const b of mine) { if (left <= 0.0005) break; const q = Math.min(left, b.qty); from.push({ code: b.code, qty: roundQty(q) }); left = roundQty(left - q); }
+    const fefo = batches.filter((b) => b.item_id === n.item_id).sort((a, b) => (a.expiry || '9999').localeCompare(b.expiry || '9999'));
+    return { ...n, from, short_of_bins: roundQty(Math.max(0, left)), batches: fefo.slice(0, 3).map((b) => ({ batch_no: b.batch_no, expiry: b.expiry, qty: roundQty(b.qty) })) };
+  }).sort((a, b) => byNum((a.from[0] || {}).code || a.location || '~', (b.from[0] || {}).code || b.location || '~') || a.name.localeCompare(b.name));
+  const w = await c.db.prepare(`SELECT name FROM warehouses WHERE id = ?`).bind(wh).first();
+  return { warehouse: w ? w.name : '', docs: docs.map((d) => ({ id: d.id, number: d.number, party: d.party })), rows };
+}

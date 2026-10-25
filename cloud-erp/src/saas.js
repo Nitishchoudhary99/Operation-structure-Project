@@ -6,11 +6,11 @@ import { HttpError, today, addDays, own } from './lib.js';
 export const PLANS = {
   free: { label: 'Free', price: 0, invoices_per_month: 50, users: 1, warehouses: 1, features: [] },
   starter: { label: 'Starter', price: 999, invoices_per_month: Infinity, users: 2, warehouses: 1, features: ['tally', 'vaada'] },
-  growth: { label: 'Growth', price: 2499, invoices_per_month: Infinity, users: 5, warehouses: 3, features: ['tally', 'einvoice', 'vaada', 'cash'] },
-  business: { label: 'Business', price: 4499, invoices_per_month: Infinity, users: 15, warehouses: Infinity, features: ['tally', 'einvoice', 'priority', 'vaada', 'cash'] },
+  growth: { label: 'Growth', price: 2499, invoices_per_month: Infinity, users: 5, warehouses: 3, features: ['tally', 'einvoice', 'vaada', 'cash', 'autowa'] },
+  business: { label: 'Business', price: 4499, invoices_per_month: Infinity, users: 15, warehouses: Infinity, features: ['tally', 'einvoice', 'priority', 'vaada', 'cash', 'autowa'] },
 };
 export const FEATURE_LABEL = { tally: 'Tally export', einvoice: 'E-invoice & e-way bill JSON', priority: 'Priority WhatsApp support',
-  vaada: 'Kisht plans & udhaar check', cash: 'Kal ka Cash (4-week cash view)' };
+  vaada: 'Kisht plans & udhaar check', cash: 'Kal ka Cash (4-week cash view)', autowa: 'Automatic WhatsApp reminders' };
 export const hasFeature = (org, f) => planOf(org).features.includes(f);
 export const TRIAL_DAYS = 14;
 

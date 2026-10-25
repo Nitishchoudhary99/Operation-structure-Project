@@ -33,3 +33,5 @@ enabled = true
 # WhatsApp number for customer support (shown in the app, pricing and Plan & Billing)
 [vars]
 SUPPORT_WHATSAPP = "919068446139"
+# address of the app, for links in messages sent by the scheduled jobs (automatic WhatsApp reminders)
+APP_URL = "https://erp.docbrisk.com"

@@ -70,12 +70,17 @@ function cleanDate(v) {
   return '';
 }
 const STATE_BY = new Map(STATES.flatMap(([code, name]) => [[name.toLowerCase(), name], [code, name]]));
+const ISO = { an: 'Andaman and Nicobar Islands', ap: 'Andhra Pradesh', ar: 'Arunachal Pradesh', as: 'Assam', br: 'Bihar', ch: 'Chandigarh', ct: 'Chhattisgarh', cg: 'Chhattisgarh',
+  dn: 'Dadra and Nagar Haveli and Daman and Diu', dh: 'Dadra and Nagar Haveli and Daman and Diu', dd: 'Dadra and Nagar Haveli and Daman and Diu', dl: 'Delhi', ga: 'Goa', gj: 'Gujarat',
+  hr: 'Haryana', hp: 'Himachal Pradesh', jk: 'Jammu and Kashmir', jh: 'Jharkhand', ka: 'Karnataka', kl: 'Kerala', la: 'Ladakh', ld: 'Lakshadweep', mp: 'Madhya Pradesh',
+  mh: 'Maharashtra', mn: 'Manipur', ml: 'Meghalaya', mz: 'Mizoram', nl: 'Nagaland', or: 'Odisha', od: 'Odisha', py: 'Puducherry', pb: 'Punjab', rj: 'Rajasthan', sk: 'Sikkim',
+  tn: 'Tamil Nadu', ts: 'Telangana', tg: 'Telangana', tr: 'Tripura', up: 'Uttar Pradesh', ut: 'Uttarakhand', uk: 'Uttarakhand', wb: 'West Bengal' };
 const ALIAS = { 'orissa': 'Odisha', 'pondicherry': 'Puducherry', 'new delhi': 'Delhi', 'nct of delhi': 'Delhi', 'jammu & kashmir': 'Jammu and Kashmir',
   'andaman & nicobar islands': 'Andaman and Nicobar Islands', 'dadra & nagar haveli': 'Dadra and Nagar Haveli and Daman and Diu', 'uttaranchal': 'Uttarakhand' };
-function cleanState(v) {
-  const t = String(v || '').trim().toLowerCase().replace(/\s+/g, ' ');
+export function cleanState(v) {
+  const t = String(v || '').trim().toLowerCase().replace(/\s+/g, ' ').replace(/^in-/, '');
   if (!t) return '';
-  const hit = STATE_BY.get(t) || STATE_BY.get(ALIAS[t] ? ALIAS[t].toLowerCase() : '') || ALIAS[t];
+  const hit = STATE_BY.get(t) || STATE_BY.get(ALIAS[t] ? ALIAS[t].toLowerCase() : '') || ALIAS[t] || (t.length === 2 ? ISO[t] : '');
   return hit || t.replace(/\b\w/g, (x) => x.toUpperCase()).slice(0, 60);
 }
 
@@ -91,6 +96,23 @@ export async function readOrders(c, body) {
     .concat(at.amount === undefined && at.unit === undefined ? ['amount'] : []);
   if (missing.length) throw bad(`Could not find these columns: ${missing.map((k) => ({ order: 'Order ID', qty: 'Quantity', sku: 'SKU', amount: 'Price / Amount' })[k]).join(', ')}. Found: ${rows[0].slice(0, 12).join(', ')}.`);
   const get = (r, k) => (at[k] === undefined ? '' : String(r[at[k]] ?? '').trim());
+  const orders = new Map();
+  for (const r of rows.slice(1)) {
+    const id = str(get(r, 'order'), 60);
+    if (!id) continue;
+    const status = get(r, 'status').toLowerCase();
+    if (/cancel|return|refund|rto/.test(status)) continue;
+    if (!orders.has(id)) orders.set(id, { order_id: id, date: cleanDate(get(r, 'date')) || today(), state: cleanState(get(r, 'state')), lines: [] });
+    const qty = roundQty(parseFloat(get(r, 'qty')) || 0), amt = money(get(r, 'amount')), unit = money(get(r, 'unit'));
+    orders.get(id).lines.push({ sku: get(r, 'sku'), name: get(r, 'name'), qty, gross: Number.isFinite(amt) && amt > 0 ? amt : Number.isFinite(unit) ? unit * qty : NaN });
+  }
+  const R = await matchOrders(c, channel, label, [...orders.values()]);
+  return { ...R, columns: Object.fromEntries(Object.entries(at).map(([k, i]) => [k, rows[0][i]])) };
+}
+
+/* orders from any source [{ order_id, date, state, lines: [{ sku, name, qty, gross (price incl. GST for the line) }] }]:
+   items matched by SKU, barcode or name, the GST rate of the item split back out of the price, and the ones billed before marked */
+export async function matchOrders(c, channel, label, raw) {
   const { results: items } = await c.db.prepare(`SELECT id, name, sku, barcode, gst_rate, is_service, unit FROM items WHERE org_id = ?`).bind(c.org.id).all();
   const bySku = new Map(), byName = new Map();
   for (const i of items) {
@@ -98,27 +120,20 @@ export async function readOrders(c, body) {
     if (i.barcode) bySku.set(i.barcode.toLowerCase(), i);
     byName.set(i.name.toLowerCase(), i);
   }
-  const orders = new Map();
-  for (const r of rows.slice(1)) {
-    const id = str(get(r, 'order'), 60);
-    if (!id) continue;
-    const status = get(r, 'status').toLowerCase();
-    if (/cancel|return|refund|rto/.test(status)) continue;
-    if (!orders.has(id)) orders.set(id, { order_id: id, date: cleanDate(get(r, 'date')) || today(), state: cleanState(get(r, 'state')), lines: [], problems: [] });
-    const o = orders.get(id);
-    const sku = str(get(r, 'sku'), 60), name = str(get(r, 'name'), 120);
-    const it = (sku && bySku.get(sku.toLowerCase())) || (name && byName.get(name.toLowerCase())) || null;
-    const qty = roundQty(parseFloat(get(r, 'qty')) || 0);
-    const amt = money(get(r, 'amount')), unit = money(get(r, 'unit'));
-    const gross = Number.isFinite(amt) && amt > 0 ? amt : Number.isFinite(unit) ? unit * qty : NaN;   // price incl. GST for the line
-    if (!it) { o.problems.push(`SKU ${sku || name || '?'} is not in your items`); continue; }
-    if (it.is_service) { o.problems.push(`${it.name} is a service`); continue; }
-    if (!(qty > 0)) { o.problems.push(`no quantity for ${it.name}`); continue; }
-    if (!(gross >= 0)) { o.problems.push(`no price for ${it.name}`); continue; }
-    o.lines.push({ item_id: it.id, item: it.name, unit: it.unit, qty, gst_rate: it.gst_rate, gross: Math.round(gross * 100) / 100,
-      rate: Math.round((gross / (1 + it.gst_rate / 100) / qty) * 100) / 100 });
-  }
-  const list = [...orders.values()];
+  const list = raw.map((r) => {
+    const o = { order_id: str(r.order_id, 60), date: r.date || today(), state: r.state || '', lines: [], problems: [] };
+    for (const l of r.lines) {
+      const sku = str(l.sku, 60), name = str(l.name, 120), qty = roundQty(+l.qty || 0), gross = +l.gross;
+      const it = (sku && bySku.get(sku.toLowerCase())) || (name && byName.get(name.toLowerCase())) || null;
+      if (!it) { o.problems.push(`SKU ${sku || name || '?'} is not in your items`); continue; }
+      if (it.is_service) { o.problems.push(`${it.name} is a service`); continue; }
+      if (!(qty > 0)) { o.problems.push(`no quantity for ${it.name}`); continue; }
+      if (!(gross >= 0)) { o.problems.push(`no price for ${it.name}`); continue; }
+      o.lines.push({ item_id: it.id, item: it.name, unit: it.unit, qty, gst_rate: it.gst_rate, gross: Math.round(gross * 100) / 100,
+        rate: Math.round((gross / (1 + it.gst_rate / 100) / qty) * 100) / 100 });
+    }
+    return o;
+  });
   const done = new Set((await loadByIds(c.db, `SELECT order_id FROM channel_orders WHERE org_id = ? AND channel = ? AND order_id IN (?ids)`, [c.org.id, channel],
     list.map((o) => o.order_id))).map((r) => r.order_id));
   for (const o of list) {
@@ -127,7 +142,7 @@ export async function readOrders(c, body) {
     o.total = Math.round(o.lines.reduce((s, l) => s + l.gross, 0) * 100) / 100;
     if (!o.lines.length && !o.problems.length) o.problems.push('no lines');
   }
-  return { channel, label, columns: Object.fromEntries(Object.entries(at).map(([k, i]) => [k, rows[0][i]])), orders: list,
+  return { channel, label, orders: list,
     ready: list.filter((o) => !o.done && !o.problems.length).length, already: done.size, problems: list.filter((o) => o.problems.length).length };
 }
 
@@ -145,16 +160,7 @@ export async function importOrders(c, body) {
     if (o.done) { out.push({ order_id: id, skipped: 'already imported' }); continue; }
     if (o.problems.length) { out.push({ order_id: id, error: o.problems.join('; ') }); continue; }
     try {
-      let p = await c.db.prepare(`SELECT id FROM parties WHERE org_id = ? AND name = ?`).bind(c.org.id, o.party).first();
-      if (!p) {
-        // the marketplace pays out about a week later: that is when these bills fall due
-        p = await c.db.prepare(`INSERT INTO parties (org_id, name, kind, state, credit_days, created_at) VALUES (?, ?, 'customer', ?, 7, ?)
-            ON CONFLICT(org_id, name) DO UPDATE SET name = excluded.name RETURNING id`).bind(c.org.id, o.party, o.state, nowIso()).first();
-      }
-      const doc = await createDoc(c, { type: 'INV', party_id: p.id, date: o.date, warehouse_id: +body.warehouse_id || 0, notes: `${R.label} order ${o.order_id}`,
-        lines: o.lines.map((l) => ({ item_id: l.item_id, qty: l.qty, rate: l.rate, gst_rate: l.gst_rate })) });
-      await c.db.prepare(`INSERT INTO channel_orders (org_id, channel, order_id, doc_id, created_at) VALUES (?, ?, ?, (SELECT id FROM docs WHERE org_id = ? AND id = ?), ?)
-          ON CONFLICT DO NOTHING`).bind(c.org.id, R.channel, o.order_id, c.org.id, doc.id, nowIso()).run();
+      const doc = await billOrder(c, R, o, +body.warehouse_id || 0);
       out.push({ order_id: id, doc_id: doc.id, number: doc.number });
     } catch (e) {
       const known = e instanceof HttpError && e.status < 500;
@@ -163,6 +169,21 @@ export async function importOrders(c, body) {
     }
   }
   return { results: out };
+}
+
+/* one matched order as a sales invoice, to the party of its channel and buyer state */
+export async function billOrder(c, R, o, warehouseId = 0) {
+  let p = await c.db.prepare(`SELECT id FROM parties WHERE org_id = ? AND name = ?`).bind(c.org.id, o.party).first();
+  if (!p) {
+    // the marketplace pays out about a week later: that is when these bills fall due
+    p = await c.db.prepare(`INSERT INTO parties (org_id, name, kind, state, credit_days, created_at) VALUES (?, ?, 'customer', ?, 7, ?)
+        ON CONFLICT(org_id, name) DO UPDATE SET name = excluded.name RETURNING id`).bind(c.org.id, o.party, o.state, nowIso()).first();
+  }
+  const doc = await createDoc(c, { type: 'INV', party_id: p.id, date: o.date, warehouse_id: warehouseId, notes: `${R.label} order ${o.order_id}`,
+    lines: o.lines.map((l) => ({ item_id: l.item_id, qty: l.qty, rate: l.rate, gst_rate: l.gst_rate })) });
+  await c.db.prepare(`INSERT INTO channel_orders (org_id, channel, order_id, doc_id, created_at) VALUES (?, ?, ?, (SELECT id FROM docs WHERE org_id = ? AND id = ?), ?)
+      ON CONFLICT DO NOTHING`).bind(c.org.id, R.channel, o.order_id, c.org.id, doc.id, nowIso()).run();
+  return doc;
 }
 
 /* SKU and quantity in hand (one godown or all), for the marketplace's stock upload */

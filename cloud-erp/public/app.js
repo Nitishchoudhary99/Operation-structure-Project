@@ -25,20 +25,96 @@ let ME = null;                  // { user, org, can, doc_types, gst_rates, today
 const cache = {};               // masters used by forms; cleared after writes
 
 class ApiError extends Error { constructor(msg, status, data) { super(msg); this.status = status; this.data = data || {}; } }
-async function api(method, path, body) {
-  const res = await fetch(path, {
-    method, credentials: 'same-origin',
-    headers: { 'Content-Type': 'application/json', 'X-Requested-With': 'SmartTrader' },
-    body: body === undefined ? undefined : JSON.stringify(body),
-  });
+/* Offline: the last copy of what a bill needs (the business, customers, items, godowns, accounts) stays on this device,
+   and bills, receipts and expenses made without internet wait in an outbox. Each carries an Idempotency-Key, so a
+   bill sent twice (the answer was lost, or it was synced again) is saved once. Signing out clears both. */
+const OFF_GET = /^\/api\/(me|parties|items|warehouses|accounts|settings\/print|settings\/fields)$/;
+const OFF_POST = /^\/api\/(docs|payments|expenses)$/;
+const idb = (() => {
+  let p = null;
+  return () => p || (p = new Promise((ok, no) => {
+    const r = indexedDB.open('smarttrader-offline', 1);
+    r.onupgradeneeded = () => { r.result.createObjectStore('get'); r.result.createObjectStore('queue', { keyPath: 'key' }); };
+    r.onsuccess = () => ok(r.result); r.onerror = () => no(r.error);
+  }));
+})();
+async function idbDo(store, mode, fn) {
+  try {
+    const db = await idb();
+    return await new Promise((ok, no) => { const tx = db.transaction(store, mode), req = fn(tx.objectStore(store)); tx.oncomplete = () => ok(req ? req.result : undefined); tx.onerror = () => no(tx.error); });
+  } catch (e) { return undefined; }      // private mode or no IndexedDB: no offline copy, nothing breaks
+}
+const offOwner = () => (ME ? `${ME.user.id}:${ME.org.id}` : '');
+const newKey = () => (crypto.randomUUID ? crypto.randomUUID() : Date.now().toString(36) + Math.random().toString(36).slice(2, 12));
+const queueAll = async () => ((await idbDo('queue', 'readonly', (s) => s.getAll())) || []).filter((x) => x.owner === offOwner()).sort((a, b) => a.at - b.at);
+const offClear = () => Promise.all([idbDo('get', 'readwrite', (s) => s.clear()), idbDo('queue', 'readwrite', (s) => s.clear())]);
+async function api(method, path, body, opt = {}) {
+  const key = method === 'POST' && OFF_POST.test(path) ? opt.key || newKey() : '';
+  let res;
+  try {
+    res = await fetch(path, {
+      method, credentials: 'same-origin',
+      headers: { 'Content-Type': 'application/json', 'X-Requested-With': 'SmartTrader', ...(key ? { 'Idempotency-Key': key } : {}) },
+      body: body === undefined ? undefined : JSON.stringify(body),
+    });
+  } catch (e) {                                    // no internet
+    if (method === 'GET' && OFF_GET.test(path)) {
+      const hit = await idbDo('get', 'readonly', (s) => s.get(path));
+      if (hit && (path === '/api/me' || hit.owner === offOwner())) return { ...hit.data, _offline: true };
+    }
+    if (key && !opt.noQueue && ME) {
+      await idbDo('queue', 'readwrite', (s) => s.put({ key, owner: offOwner(), method, path, body, at: Date.now(), label: opt.label || queueLabel(path, body) }));
+      outboxBadge();
+      return { queued: true, key };
+    }
+    throw new ApiError('No internet. Check the connection and try again.', 0);
+  }
   let data = {};
   try { data = await res.json(); } catch (e) { /* empty */ }
-  if (res.status === 401 && !path.startsWith('/api/auth')) { ME = null; renderAuth(); throw new ApiError('Please sign in.', 401); }
+  if (res.status === 401 && !path.startsWith('/api/auth')) { ME = null; idbDo('get', 'readwrite', (s) => s.clear()); renderAuth(); throw new ApiError('Please sign in.', 401); }
   if (!res.ok) throw new ApiError(data.error || `Request failed (${res.status})`, res.status, data);
+  if (method === 'GET' && OFF_GET.test(path)) {
+    const owner = path === '/api/me' ? `${data.user.id}:${data.org.id}` : offOwner();
+    idbDo('get', 'readwrite', (s) => s.put({ owner, data, at: Date.now() }, path));
+  }
   return data;
 }
+function queueLabel(path, b) {
+  const party = b && b.party_id && cache.parties ? (cache.parties.find((p) => p.id === +b.party_id) || {}).name : '';
+  if (path === '/api/docs') return `${(ME.doc_types[b.type] || {}).label || 'Bill'}${party ? ' · ' + party : ''}`;
+  if (path === '/api/payments') return `${b.kind === 'receipt' ? 'Receipt' : 'Payment'} ₹${b.amount}${party ? ' · ' + party : ''}`;
+  return `Expense ₹${b.amount}`;
+}
+/* send what waits in the outbox, oldest first; a refused one stays with its reason, no internet stops the round */
+let syncing = false;
+async function syncOutbox() {
+  if (syncing || !ME || !navigator.onLine) return;
+  syncing = true;
+  let sent = 0;
+  try {
+    for (const it of await queueAll()) {
+      try {
+        await api(it.method, it.path, it.body, { key: it.key, noQueue: true });
+        await idbDo('queue', 'readwrite', (s) => s.delete(it.key)); sent++;
+      } catch (e) {
+        if (!e.status) break;
+        await idbDo('queue', 'readwrite', (s) => s.put({ ...it, error: e.message, status: e.status, data: e.data || {} }));
+      }
+    }
+  } finally {
+    syncing = false;
+    if (sent) { dirty('items', 'accounts', 'parties'); toast(`${sent} saved entr${sent === 1 ? 'y' : 'ies'} sent to the cloud`); }
+    outboxBadge();
+  }
+}
+async function outboxBadge() {
+  const b = $('#outbox'); if (!b) return;
+  const q = await queueAll(), bad = q.filter((x) => x.error).length;
+  b.hidden = !q.length;
+  b.innerHTML = `&#8635; ${q.length}<span class="hide-sm"> to sync</span>${bad ? ' <b>!</b>' : ''}`;
+}
 const GET = (p) => api('GET', p);
-const POST = (p, b = {}) => api('POST', p, b);
+const POST = (p, b = {}, opt) => api('POST', p, b, opt);
 async function master(name) {
   if (!cache[name]) cache[name] = (await GET('/api/' + name)).rows;
   return cache[name];
@@ -252,21 +328,21 @@ function renderVerify(token) {
 /* ======================================================================= shell & router */
 /* Modules most small shops do not need. Simple mode (the default) hides them; Settings → Advanced shows them.
    Nothing is deleted: the screens and data stay, only the menu and buttons change. */
-const ADVANCED = new Set(['sales/SO', 'sales/DN', 'sales/QUOTE', 'purchase/PO', 'gate/in', 'purchase/GRN', 'gate/out', 'stockcount', 'pending']);
+const ADVANCED = new Set(['sales/SO', 'sales/DN', 'sales/QUOTE', 'purchase/PO', 'gate/in', 'purchase/GRN', 'gate/out', 'stockcount', 'pending', 'wave']);
 const ADV_DOCS = ['QUOTE', 'SO', 'DN', 'PO', 'GRN'];
 const simple = () => !ME || (ME.org.mode || 'simple') !== 'advanced';
 /* which permission area a menu entry needs (custom roles may not see every area) */
-const navArea = (h) => /^(receipts|payments|expenses|accounts|journal)$/.test(h) ? 'finance' : /^(sales\/|pos$|recurring$|channels$)/.test(h) ? 'sales' : /^(purchase\/|gate\/in$)/.test(h) ? 'purchase'
-  : /^(items|stock|stockcount|gate\/out|pending|bins|expiry|stock-ageing|serials|production)$/.test(h) ? 'items' : /^(parties|reminders)$/.test(h) ? 'masters' : /^(khata|vaade)$/.test(h) ? 'khata'
+const navArea = (h) => /^(receipts|payments|expenses|accounts|journal|staff)$/.test(h) ? 'finance' : /^(sales\/|pos$|recurring$|channels$)/.test(h) ? 'sales' : /^(purchase\/|gate\/in$)/.test(h) ? 'purchase'
+  : /^(items|stock|stockcount|gate\/out|pending|bins|expiry|stock-ageing|serials|production|wave|putaway)$/.test(h) ? 'items' : /^(parties|reminders)$/.test(h) ? 'masters' : /^(khata|vaade)$/.test(h) ? 'khata'
   : /^(reports\/|tally$|daybook$)/.test(h) ? 'reports' : h === 'plan' ? 'settings' : '';
 const seen = (h) => { if (h === 'cash') return !ME.view || ME.view.finance !== false || ME.view.reports !== false; const a = navArea(h); return !a || !ME.view || ME.view[a] !== false; };
 const NAV = [
   ['', [['dashboard', 'Dashboard']]],
   ['Sales', [['pos', 'Quick Bill (POS)'], ['sales/INV', 'Invoices'], ['channels', 'Online Orders (Amazon…)'], ['recurring', 'Recurring Bills'], ['sales/SO', 'Sales Orders'], ['sales/DN', 'Delivery Notes'], ['sales/QUOTE', 'Quotations'], ['sales/SRET', 'Sales Returns'], ['sales/CNOTE', 'Credit Notes (rate diff)'], ['receipts', 'Receipts']]],
   ['Purchase', [['purchase/PO', 'Purchase Orders'], ['gate/in', 'Gate Entry (inward)'], ['purchase/GRN', 'Goods Receipts (GRN)'], ['purchase/BILL', 'Purchase Bills'], ['purchase/PRET', 'Purchase Returns'], ['purchase/DNOTE', 'Debit Notes (rate diff)'], ['payments', 'Payments']]],
-  ['Inventory', [['items', 'Items'], ['stock', 'Stock & Godowns'], ['stock-ageing', 'Stock Ageing'], ['bins', 'Bins & Racks'], ['expiry', 'Batch & Expiry'], ['serials', 'Serial / IMEI'], ['production', 'Production (BOM)'], ['stockcount', 'Stock Count'], ['gate/out', 'Gate Pass (outward)'], ['pending', 'Pending Orders']]],
+  ['Inventory', [['items', 'Items'], ['stock', 'Stock & Godowns'], ['stock-ageing', 'Stock Ageing'], ['bins', 'Bins & Racks'], ['expiry', 'Batch & Expiry'], ['serials', 'Serial / IMEI'], ['production', 'Production (BOM)'], ['wave', 'Wave Pick List'], ['stockcount', 'Stock Count'], ['gate/out', 'Gate Pass (outward)'], ['pending', 'Pending Orders']]],
   ['Contacts', [['parties', 'Customers & Suppliers'], ['khata', 'Khata Book'], ['reminders', 'Vasooli (Collections)'], ['vaade', 'Vaade (Promises)']]],
-  ['Accounts', [['expenses', 'Expenses'], ['accounts', 'Chart of Accounts'], ['journal', 'Journal Voucher'], ['daybook', 'Day Book']]],
+  ['Accounts', [['staff', 'Staff & Salary'], ['expenses', 'Expenses'], ['accounts', 'Chart of Accounts'], ['journal', 'Journal Voucher'], ['daybook', 'Day Book']]],
   ['Reports', [['reports/pnl', 'Profit & Loss'], ['reports/balance-sheet', 'Balance Sheet'], ['reports/trial-balance', 'Trial Balance'], ['reports/gst', 'GST Summary'], ['reports/ageing', 'Outstanding (Ageing)'], ['reports/register', 'Registers'], ['cash', 'Kal ka Cash'], ['tally', 'Tally Export']]],
   ['Settings', [['settings', 'Settings'], ['plan', 'Plan & Billing']]],
 ];
@@ -288,6 +364,7 @@ function shell() {
       <header class="top">
         <button class="btn sm burger" id="burger" aria-label="Menu">&#9776;</button>
         <strong class="orgname">${esc(ME.org.name)}</strong>
+        <a class="btn sm outbox" id="outbox" href="#/outbox" hidden title="Saved without internet, waiting to be sent"></a>
         <div class="gsearch"><input id="gq" type="search" placeholder="Search items, customers, bills…" autocomplete="off" aria-label="Search" enterkeyhint="search">
           <div class="gres" id="gres" hidden></div></div>
         ${news.length ? `<div class="newmenu"><button class="btn primary" id="newbtn" aria-haspopup="true" aria-expanded="false">+ <span>New</span></button>
@@ -296,7 +373,11 @@ function shell() {
       <main class="page" id="page"></main>
     </div></div>`;
   $('#burger').onclick = () => $('#side').classList.toggle('open');
-  $('#logout').onclick = async () => { await POST('/api/auth/logout'); ME = null; location.hash = ''; renderAuth(); };
+  $('#logout').onclick = async () => {
+    const waiting = (await queueAll()).length;
+    if (waiting && !confirm(`${waiting} entr${waiting === 1 ? 'y was' : 'ies were'} saved without internet and not sent yet. Signing out deletes ${waiting === 1 ? 'it' : 'them'}. Sign out anyway?`)) return;
+    await POST('/api/auth/logout').catch(() => {}); await offClear(); ME = null; location.hash = ''; renderAuth();
+  };
   const nb = $('#newbtn'), nm = $('#newmenu');
   if (nb) {
     nb.onclick = (e) => { e.stopPropagation(); nm.hidden = !nm.hidden; nb.setAttribute('aria-expanded', String(!nm.hidden)); };
@@ -362,8 +443,10 @@ async function render() {
     const m = path.match(re);
     if (!m) continue;
     page.innerHTML = '<div class="muted">Loading&hellip;</div>';
+    page.onclick = page.onkeydown = page.onchange = null;     // a page's own handlers must not outlive it
     try { await fn(page, m, q); const tab = $('.tabs a.on', page); if (tab && tab.parentNode.scrollWidth > tab.parentNode.clientWidth) tab.parentNode.scrollLeft = tab.offsetLeft - tab.parentNode.offsetLeft - 16; } catch (e) {
-      if (e.status !== 401) page.innerHTML = `<div class="err">${esc(e.message)}</div>`;
+      if (e.status === 0) offlinePage(page);
+      else if (e.status !== 401) page.innerHTML = `<div class="err">${esc(e.message)}</div>`;
     }
     window.scrollTo(0, 0);
     return;
@@ -432,6 +515,8 @@ const TODAY = {
   to_deliver: ['blue', (n) => `${n} sales order${n > 1 ? 's' : ''} to deliver`, '#/pending', 'Open'],
   to_receive: ['blue', (n) => `${n} purchase order${n > 1 ? 's' : ''} to receive`, '#/pending', 'Open'],
   put_away: ['blue', (n) => `${n} item${n > 1 ? 's' : ''} not put away in bins`, '#/bins', 'Put away'],
+  attendance: ['blue', (n) => `Mark today's attendance (${n} staff)`, '#/staff', 'Mark'],
+  salary_due: ['amber', (n) => `Last month's salary not paid for ${n} staff`, '#/staff?month=last', 'Pay'],
 };
 function todayCard(t) {
   if (!t) return '';
@@ -526,6 +611,7 @@ route(/^new\/([A-Z]+)$/, async (el, m, q) => {
     if (!draft.party_id) draft.party_id = ge.party_id;
   }
   if (q.get('from')) draft = { ...draft, ...(await GET(`/api/docs/${q.get('from')}/convert?to=${type}`)) };
+  else if (q.get('scan')) { try { const sd = JSON.parse(sessionStorage.getItem('st_scan') || 'null'); if (sd && sd.type === type) draft = { ...draft, ...sd }; } catch (e) { /* no draft */ } }
   else if (q.get('copy')) draft = { ...draft, ...(await GET(`/api/docs/${encodeURIComponent(q.get('copy'))}/copy`)) };
   // purchase order for everything at or below its reorder level
   if (q.get('reorder') && type === 'PO') {
@@ -564,7 +650,10 @@ route(/^new\/([A-Z]+)$/, async (el, m, q) => {
       <td class="c-n" data-l="GST"><select name="gst_rate" aria-label="GST rate">${gstOpt(l.gst_rate ?? 0)}</select></td>
       <td class="num c-amt" data-amt data-l="Amount"></td>
       <td class="c-del">${fromDoc && !isNote && ['SRET', 'PRET'].includes(type) ? '' : '<button type="button" class="btn sm danger" data-del aria-label="Remove line">&times;</button>'}</td></tr>`;
-  el.innerHTML = head(`New ${esc(T.label)}${fromDoc ? ` <span class="muted">from ${esc(draft.ref_number)}</span>` : ''}`) + `
+  const canScan = ME.scan && T.side === 'purchase' && !fromDoc && !isNoteType(type);
+  el.innerHTML = head(`New ${esc(T.label)}${fromDoc ? ` <span class="muted">from ${esc(draft.ref_number)}</span>` : ''}`,
+    canScan ? '<button type="button" class="btn primary" id="scanbill">&#128247; Scan supplier bill</button><input type="file" id="scanfile" accept="image/*,application/pdf" hidden>' : '') + `
+    ${q.get('scan') && draft.scan_note ? `<div class="panel ${draft.scan_ok ? '' : 'warnbox'}">${draft.scan_note}</div>` : ''}
     <form id="docf"><div class="err" hidden></div>
     ${ge ? `<div class="panel warnbox">Receiving against gate entry <b>${esc(ge.number)}</b>: vehicle ${esc(ge.vehicle_no)}${ge.challan_no ? `, challan ${esc(ge.challan_no)}` : ''}${ge.packages ? `, ${ge.packages} packages` : ''}.</div>` : ''}
     ${isNote ? `<div class="panel muted">${isSale ? 'A credit note lowers what the customer owes' : 'A debit note lowers what you owe the supplier'} without any goods moving: rate difference, discount, short supply or damage claim. Enter the difference per unit on each line that changes.</div>` : ''}
@@ -583,7 +672,7 @@ route(/^new\/([A-Z]+)$/, async (el, m, q) => {
       <tbody id="lines">${draft.lines.map(lineRow).join('')}</tbody></table></div>
       ${fromDoc ? '' : '<div style="padding:10px"><button type="button" class="btn sm" id="addline">+ Add line</button></div>'}</div>
     <div class="grid g2">
-      <div class="panel"><label class="f">Design <span class="muted">(how this bill looks)</span><select name="design">${designOptions(draft.design || '', true)}</select></label><label class="f">Notes / terms<textarea name="notes" rows="3"></textarea></label>
+      <div class="panel"><label class="f">Design <span class="muted">(how this bill looks)</span><select name="design">${designOptions(draft.design || '', true)}</select></label><label class="f">Notes / terms<textarea name="notes" rows="3">${esc(draft.notes || '')}</textarea></label>
         ${money ? `<div class="form" style="margin-top:12px"><label class="f">${isSale ? 'Amount received now' : 'Amount paid now'} (₹)<input type="number" step="any" min="0" inputmode="decimal" name="pay_amount" placeholder="0"><small class="help">Leave empty for credit (udhaar).</small></label>
           <label class="f">${isSale ? 'Money went into' : 'Paid from'}<select name="pay_account">${cashAccts.map((o) => `<option value="${o.v}">${esc(o.t)}</option>`).join('')}</select></label></div>` : ''}</div>
       <div class="panel"><div class="totals" id="totals"></div></div>
@@ -592,6 +681,7 @@ route(/^new\/([A-Z]+)$/, async (el, m, q) => {
     <div class="row savebar"><span class="sb-total" id="sbtotal"></span><span class="spacer"></span><a class="btn hide-sm" href="#" data-act="back">Cancel</a><button class="btn primary" id="save">Save ${esc(T.label)}</button></div></form>`;
 
   const form = $('#docf'), tbody = $('#lines');
+  if ($('#scanbill')) { $('#scanbill').onclick = () => $('#scanfile').click(); $('#scanfile').onchange = (e) => { const f = e.target.files[0]; e.target.value = ''; if (f) scanBillFlow(f, type); }; }
   const partyOf = () => parties.find((p) => p.id === +form.elements.party_id.value);
   // udhaar check (Vaada Pakka): a banner while the sale is on credit, for a risky customer
   let risk = null, riskFor = 0;
@@ -704,6 +794,7 @@ route(/^new\/([A-Z]+)$/, async (el, m, q) => {
     const save = async () => {
       try {
         const d = await POST('/api/docs', body);
+        if (d.queued) { toast('No internet: saved on this device. It is sent by itself when you are back online.', 'info'); go('outbox'); return; }
         dirty('items', 'parties', 'accounts');
         toast(`${d.number} saved`); go('doc/' + d.id);
       } catch (err) {
@@ -882,6 +973,7 @@ async function paymentForm(kind, { party_id = '', amount = '', doc } = {}) {
     const body = { ...v, kind, party_id: +v.party_id, account_id: +v.account_id };
     if (doc) body.allocations = [{ doc_id: doc.id, amount: Math.min(+v.amount, doc.balance) }];
     const r = await POST('/api/payments', body);
+    if (r.queued) { toast('No internet: saved on this device, sent when online.', 'info'); return; }
     dirty('accounts', 'parties'); toast(`${r.number} saved`);
     if (kind === 'receipt') setTimeout(() => sendReceipt(r, (parties.find((x) => x.id === +v.party_id) || {}).lang), 0);
     else render();
@@ -1221,7 +1313,37 @@ route(/^channels$/, async (el) => {
       <div id="chres"></div></div>
     <div class="panel"><h3 style="margin-top:0">Stock file for the marketplace</h3>
       <p class="muted">Keep your online stock the same as the shop: download SKU and quantity in hand, and upload it in the seller panel (inventory / stock update). Items need a SKU or barcode.</p>
-      <div class="row">${whs.length > 1 ? `<select id="stwh" aria-label="Godown"><option value="0">All godowns</option>${whs.map((w) => `<option value="${w.id}">${esc(w.name)}</option>`).join('')}</select>` : ''}<button class="btn" id="stdl">Download stock file (CSV)</button></div></div>`;
+      <div class="row">${whs.length > 1 ? `<select id="stwh" aria-label="Godown"><option value="0">All godowns</option>${whs.map((w) => `<option value="${w.id}">${esc(w.name)}</option>`).join('')}</select>` : ''}<button class="btn" id="stdl">Download stock file (CSV)</button></div></div>
+    ${ME.can.settings ? `<div class="panel" id="hooks"><div class="row"><h3 style="margin:0">Live orders from your own web store</h3><span class="spacer"></span><button class="btn" id="addhook">+ Connect a store</button></div>
+      <p class="muted">Shopify, WooCommerce or your own website: every paid order becomes a GST invoice by itself, the moment it is placed.</p><div id="hooklist"><span class="muted">Loading…</span></div></div>` : ''}`;
+  const HOOK_HELP = {
+    shopify: (h) => `<ol><li>In Shopify admin open <b>Settings → Notifications → Webhooks</b> and tap <b>Create webhook</b>.</li><li>Event: <b>Order payment</b>, format <b>JSON</b>, URL:<br><code class="mono">${esc(h.url)}</code></li><li>Save. The orders paid from now on come here as invoices.</li></ol>`,
+    woocommerce: (h) => `<ol><li>In WordPress open <b>WooCommerce → Settings → Advanced → Webhooks → Add webhook</b>.</li><li>Topic: <b>Order updated</b>, delivery URL:<br><code class="mono">${esc(h.url)}</code></li><li>Secret: <code class="mono">${esc(h.secret)}</code> (shown only now: copy it)</li><li>Status <b>Active</b>, save. Orders become invoices when they are Processing or Completed.</li></ol>`,
+    custom: (h) => `<p>POST each paid order as JSON to <code class="mono">${esc(h.url)}</code>, signed: header <code>X-Signature</code> = base64 HMAC-SHA256 of the raw body with the secret <code class="mono">${esc(h.secret)}</code> (shown only now).</p>
+      <pre class="mono small">{"order_id": "1001", "date": "2026-10-25", "state": "Maharashtra",\n "lines": [{"sku": "ABC-1", "name": "…", "qty": 2, "amount": 1180}]}</pre><p class="muted small">amount = the line's price including GST.</p>`,
+  };
+  const drawHooks = async () => {
+    const box = $('#hooklist'); if (!box) return;
+    const { rows } = await GET('/api/hooks');
+    box.innerHTML = rows.length ? table([{ h: 'Store', f: (h) => `<b>${esc(h.name)}</b><div class="muted">${esc(h.kind)}</div>` },
+      { h: 'Orders billed', num: 1, k: 'orders' }, { h: 'Last order', f: (h) => h.last_at ? new Date(h.last_at).toLocaleString('en-IN', { dateStyle: 'medium', timeStyle: 'short' }) + (h.last_error ? `<div class="neg small">${esc(h.last_error)}</div>` : '') : '<span class="muted">none yet</span>' },
+      { h: '', f: (h) => `<button class="btn sm" data-hcopy="${esc(h.url)}">Copy address</button> <button class="btn sm danger" data-hdel="${h.id}">Remove</button>` }], rows) : '<p class="muted">No store connected.</p>';
+  };
+  drawHooks().catch(() => {});
+  if ($('#addhook')) $('#addhook').onclick = () => modal('Connect a web store', [
+    { k: 'kind', label: 'Store', type: 'select', options: [{ v: 'shopify', t: 'Shopify' }, { v: 'woocommerce', t: 'WooCommerce (WordPress)' }, { v: 'custom', t: 'My own website' }] },
+    { k: 'name', label: 'Name (bills go to "<name> (buyer\'s state)")', placeholder: 'e.g. My Shopify' },
+    ...(whs.length > 1 ? [{ k: 'warehouse_id', label: 'Ship from godown', type: 'select', options: opts(whs) }] : []),
+    { k: 'secret', label: 'Shopify only: the signing key shown on the Webhooks page', wide: true, placeholder: 'Your webhooks will be signed with …' }],
+  async (v) => {
+    const h = await POST('/api/hooks', { ...v, warehouse_id: +v.warehouse_id || 0 });
+    setTimeout(() => modal(`${h.name}: last step in your store`, [], async () => { drawHooks(); }, { submit: 'Done', intro: HOOK_HELP[h.kind]({ ...h }) }), 0);
+  }, { submit: 'Connect', intro: '<p class="muted">Items are matched by SKU, so give your items the same SKU as in the store.</p>' });
+  el.onclick = async (e) => {
+    const cp = e.target.closest('[data-hcopy]'), del = e.target.closest('[data-hdel]');
+    if (cp) { try { await navigator.clipboard.writeText(cp.dataset.hcopy); toast('Address copied'); } catch (err) { prompt('Copy this address', cp.dataset.hcopy); } }
+    if (del && confirm('Remove this store? Its orders will no longer come in.')) { try { await api('DELETE', '/api/hooks/' + del.dataset.hdel); drawHooks(); } catch (err) { toast(err.message, 'err'); } }
+  };
   const f = $('#chf');
   f.elements.channel.onchange = () => { $('#chhelp').textContent = CHANNEL_HELP[f.elements.channel.value]; $('#storef').hidden = f.elements.channel.value !== 'other'; };
   $('#stdl').onclick = () => fileDownload('/api/channels/stock?warehouse_id=' + (($('#stwh') || {}).value || 0));
@@ -1265,6 +1387,291 @@ route(/^channels$/, async (el) => {
       go1.hidden = true;
     };
   };
+});
+
+/* ======================================================================= staff, attendance and salary */
+const MARKS = [['P', 'Present'], ['A', 'Absent'], ['H', 'Half day'], ['L', 'Paid leave'], ['O', 'Week off / holiday']];
+const monthName = (m) => new Date(m + '-01T00:00:00Z').toLocaleString('en-IN', { month: 'long', year: 'numeric', timeZone: 'UTC' });
+const shiftMonth = (m, k) => { const d = new Date(m + '-01T00:00:00Z'); d.setUTCMonth(d.getUTCMonth() + k); return d.toISOString().slice(0, 7); };
+const payLabel = (s) => `${inr0(s.rate)} / ${s.pay_type === 'day' ? 'day' : 'month'}`;
+function staffForm(s = {}, after) {
+  modal(s.id ? `Edit ${s.name}` : 'Add staff', [
+    { k: 'name', label: 'Name', value: s.name, required: true }, { k: 'phone', label: 'Mobile (for payslip on WhatsApp)', value: s.phone, type: 'tel' },
+    { k: 'pay_type', label: 'Pay', type: 'select', value: s.pay_type || 'month', options: [{ v: 'month', t: 'Monthly salary' }, { v: 'day', t: 'Daily wage' }] },
+    { k: 'rate', label: 'Salary / wage (₹)', type: 'number', value: s.rate ?? '', required: true },
+    { k: 'title', label: 'Work (e.g. salesman, helper)', value: s.title, more: true }, { k: 'join_date', label: 'Joined on', type: 'date', value: s.join_date || ME.today, more: true },
+    { k: 'ot_rate', label: 'Overtime ₹ per hour', type: 'number', value: s.ot_rate || '', more: true },
+    ...(s.id ? [{ k: 'active', label: 'Still working here', type: 'checkbox', value: s.active !== 0, more: true }] : []),
+    { k: 'notes', label: 'Notes', value: s.notes, more: true }],
+  async (v) => { await (s.id ? api('PUT', '/api/staff/' + s.id, v) : POST('/api/staff', v)); toast(s.id ? 'Saved' : `${v.name} added`); after(); },
+  { submit: s.id ? 'Save' : 'Add', intro: '<p class="muted">Monthly staff: a day you do not mark counts as present, so mark only absences, half days and leave. Daily-wage staff: mark the days they worked.</p>' });
+}
+route(/^staff$/, async (el, m, q) => {
+  const month = q.get('month') === 'last' ? shiftMonth(ME.today.slice(0, 7), -1) : q.get('month') || ME.today.slice(0, 7), d = await GET('/api/staff?month=' + month);
+  const live = d.rows.filter((s) => s.active), isNow = month === ME.today.slice(0, 7);
+  const markBtns = (s) => `<div class="marks" role="group" aria-label="Attendance today for ${esc(s.name)}">${MARKS.map(([k, t]) => `<button type="button" class="mk mk-${k} ${s.today === k ? 'on' : ''}" data-mk="${k}" data-s="${s.id}" title="${t}" aria-pressed="${s.today === k}">${k === 'H' ? '½' : k}</button>`).join('')}</div>`;
+  el.innerHTML = head('Staff & Salary', '<button class="btn primary" id="add">+ Add staff</button>') + `
+    ${live.length ? `<div class="panel"><div class="row"><h3 style="margin:0">Aaj ki haazri <span class="muted">· ${fdate(d.today)}</span></h3><span class="spacer"></span><button class="btn sm" id="allp">Mark all present</button></div>
+      <div class="att">${live.map((s) => `<div class="att-row"><span><b>${esc(s.name)}</b>${s.title ? ` <span class="muted">${esc(s.title)}</span>` : ''}</span>${markBtns(s)}</div>`).join('')}</div>
+      <p class="muted small" style="margin:8px 0 0">P present · A absent · ½ half day · L paid leave · O week off. Tap again to change.</p></div>` : ''}
+    <div class="row" style="margin:6px 0 10px"><a class="btn sm" href="#/staff?month=${shiftMonth(month, -1)}">&lsaquo; ${esc(monthName(shiftMonth(month, -1)))}</a><b style="margin:0 8px">${esc(monthName(month))}</b>
+      ${isNow ? '' : `<a class="btn sm" href="#/staff?month=${shiftMonth(month, 1)}">${esc(monthName(shiftMonth(month, 1)))} &rsaquo;</a>`}</div>
+    <div class="panel flush">${table([{ h: 'Name', f: (s) => `<a href="#/staff/${s.id}?month=${month}"><b>${esc(s.name)}</b></a>${s.active ? '' : ' <span class="badge">left</span>'}<div class="muted">${esc(payLabel(s))}</div>` },
+      { h: 'Days', num: 1, f: (s) => `${qtyf(s.pay.payable)}<div class="muted">A ${s.pay.A} · ½ ${s.pay.H}</div>` },
+      { h: isNow ? 'Earned so far' : 'Salary', num: 1, f: (s) => inr0(s.pay.earned) }, { h: 'Advance due', num: 1, f: (s) => s.advance_due ? `<span class="neg">${inr0(s.advance_due)}</span>` : '<span class="muted">—</span>' },
+      { h: '', f: (s) => s.paid ? `<a href="#/payslip/${s.paid.id}">${badge('paid')} ${inr0(s.paid.amount)}</a>` : s.active && s.pay.from ? `<a class="btn sm" href="#/staff/${s.id}?month=${month}&pay=1">Pay</a>` : '' }],
+    d.rows, { empty: emptyCta('Add your staff to mark attendance, give advances and pay salaries. Salary, advance and the books stay in step.', '<button class="btn primary" data-addfirst>+ Add staff</button>') })}</div>`;
+  const reload = () => render();
+  $('#add').onclick = () => staffForm({}, reload);
+  const af = $('[data-addfirst]', el); if (af) af.onclick = () => staffForm({}, reload);
+  el.onclick = async (e) => {
+    const b = e.target.closest('[data-mk]'); if (!b) return;
+    const was = b.classList.contains('on'), row = b.parentElement;
+    $$('[data-mk]', row).forEach((x) => { x.classList.remove('on'); x.setAttribute('aria-pressed', 'false'); });
+    if (!was) { b.classList.add('on'); b.setAttribute('aria-pressed', 'true'); }
+    try { await POST('/api/staff/attendance', { marks: [{ staff_id: +b.dataset.s, status: was ? '' : b.dataset.mk }] }); } catch (err) { toast(err.message, 'err'); reload(); }
+  };
+  if ($('#allp')) $('#allp').onclick = async () => {
+    const marks = live.filter((s) => !s.today).map((s) => ({ staff_id: s.id, status: 'P' }));
+    if (!marks.length) return toast('Everyone is already marked');
+    try { await POST('/api/staff/attendance', { marks }); toast(`${marks.length} marked present`); reload(); } catch (err) { toast(err.message, 'err'); }
+  };
+});
+route(/^staff\/(\d+)$/, async (el, m, q) => {
+  const month = q.get('month') || ME.today.slice(0, 7), d = await GET(`/api/staff/${m[1]}?month=${month}`), s = d.staff, p = d.pay;
+  const by = new Map(d.marks.map((x) => [x.date, x])), n = p.days, lead = (new Date(month + '-01T00:00:00Z').getUTCDay() + 6) % 7;   // Monday first
+  const cells = [...Array(lead).fill('<span></span>'), ...Array.from({ length: n }, (_, i) => {
+    const day = `${month}-${String(i + 1).padStart(2, '0')}`, mk = by.get(day), future = day > ME.today, before = day < s.join_date;
+    return `<button type="button" class="cal-d ${mk ? 'mk-' + mk.status : ''} ${future || before ? 'off' : ''}" data-day="${day}" ${future || before ? 'disabled' : ''} aria-label="${fdate(day)}: ${mk ? MARKS.find(([k]) => k === mk.status)[1] : 'not marked'}">
+      <small>${i + 1}</small><b>${mk ? (mk.status === 'H' ? '½' : mk.status) : ''}</b>${mk && mk.ot_hours ? `<i>+${mk.ot_hours}h</i>` : ''}</button>`;
+  })].join('');
+  el.innerHTML = head(esc(s.name), `<button class="btn" id="edit">Edit</button><button class="btn" id="adv">Give advance</button>${d.paid ? `<a class="btn" href="#/payslip/${d.paid.id}">Payslip</a>` : p.from ? '<button class="btn primary" id="pay">Pay salary</button>' : ''}`) + `
+    <div class="kpis"><div class="kpi"><div class="l">Pay</div><div class="v">${esc(payLabel(s))}</div><div class="s">${esc(s.title || '')}${s.phone ? ' · ' + esc(s.phone) : ''}</div></div>
+      <div class="kpi"><div class="l">${esc(monthName(month))}</div><div class="v">${inr0(p.earned)}</div><div class="s">${qtyf(p.payable)} payable day${p.payable === 1 ? '' : 's'}${p.ot_hours ? ` · OT ${p.ot_hours} h` : ''}</div></div>
+      <div class="kpi"><div class="l">Advance due</div><div class="v ${d.advance_due ? 'neg' : ''}">${inr0(d.advance_due)}</div></div></div>
+    <div class="panel"><div class="row"><a class="btn sm" href="#/staff/${s.id}?month=${shiftMonth(month, -1)}">&lsaquo;</a><b style="margin:0 10px">${esc(monthName(month))}</b>
+      ${month < ME.today.slice(0, 7) ? `<a class="btn sm" href="#/staff/${s.id}?month=${shiftMonth(month, 1)}">&rsaquo;</a>` : ''}<span class="spacer"></span>
+      <span class="muted small">P ${p.P} · A ${p.A} · ½ ${p.H} · L ${p.L} · O ${p.O}${s.pay_type === 'month' ? ` · not marked ${p.unmarked} (counted present)` : ''}</span></div>
+      <div class="cal"><span class="cal-h">Mon</span><span class="cal-h">Tue</span><span class="cal-h">Wed</span><span class="cal-h">Thu</span><span class="cal-h">Fri</span><span class="cal-h">Sat</span><span class="cal-h">Sun</span>${cells}</div>
+      <p class="muted small" style="margin:8px 0 0">Tap a day to mark it: P → A → ½ → L → O → clear. Long-press (or right-click) to add overtime hours.</p></div>
+    <div class="panel flush"><div style="padding:14px 16px 0"><h3>Payments</h3></div>${table([{ h: 'Date', f: (t) => fdate(t.date) },
+      { h: 'What', f: (t) => t.kind === 'salary' ? `Salary ${esc(monthName(t.month))}` : 'Advance' }, { h: 'From', k: 'account', cls: 'hide-sm' },
+      { h: 'Amount', num: 1, f: (t) => `${t.status === 'cancelled' ? '<s>' : ''}${inr0(t.amount)}${t.status === 'cancelled' ? '</s>' : ''}` },
+      { h: '', f: (t) => (t.kind === 'salary' && t.status === 'done' ? `<a class="btn sm" href="#/payslip/${t.id}">Payslip</a> ` : '') + (t.status === 'done' ? `<button class="btn sm danger" data-cx="${t.id}">Cancel</button>` : badge('cancelled')) }],
+    d.txns, { empty: 'No advance or salary yet.' })}</div>`;
+  const reload = () => render();
+  $('#edit').onclick = () => staffForm(s, reload);
+  const cash = await cashOpts();
+  $('#adv').onclick = () => modal(`Advance to ${s.name}`, [{ k: 'amount', label: 'Amount (₹)', type: 'number', required: true }, { k: 'paid_from', label: 'Paid from', type: 'select', options: cash },
+    { k: 'date', label: 'Date', type: 'date', value: ME.today }, { k: 'notes', label: 'Note', more: true }],
+  async (v) => { await POST(`/api/staff/${s.id}/advance`, v); dirty('accounts'); toast('Advance saved'); reload(); }, { intro: '<p class="muted">You can cut it from a salary later, in parts or all at once.</p>' });
+  const payNow = () => modal(`Pay ${s.name}: ${monthName(month)}`, [
+    { k: 'gross', label: `Salary earned (₹) · ${qtyf(p.payable)} days${p.ot_pay ? ` + OT ${inr0(p.ot_pay)}` : ''}`, type: 'number', value: p.earned },
+    { k: 'advance_cut', label: `Cut from advance (₹) · due ${inr0(d.advance_due)}`, type: 'number', value: Math.min(d.advance_due, p.earned) || '' },
+    { k: 'paid_from', label: 'Paid from', type: 'select', options: cash }, { k: 'date', label: 'Date', type: 'date', value: ME.today },
+    { k: 'bonus', label: 'Bonus / incentive (₹)', type: 'number', more: true }, { k: 'other_cut', label: 'Other deduction (₹, e.g. damage)', type: 'number', more: true },
+    { k: 'notes', label: 'Note', more: true }],
+  async (v) => { const r = await POST(`/api/staff/${s.id}/salary`, { ...v, month }); dirty('accounts'); toast(`Paid ${inr0(r.net)}`); go('payslip/' + r.id); }, { submit: 'Pay salary' });
+  if ($('#pay')) $('#pay').onclick = payNow;
+  if (q.get('pay') && $('#pay')) payNow();
+  const order = ['', 'P', 'A', 'H', 'L', 'O'];
+  const save = async (btn, status, ot = 0) => {
+    try { await POST('/api/staff/attendance', { marks: [{ staff_id: s.id, date: btn.dataset.day, status, ot_hours: ot }] }); reload(); } catch (err) { toast(err.message, 'err'); }
+  };
+  $$('.cal-d[data-day]', el).forEach((b) => {
+    b.onclick = () => { const cur = (by.get(b.dataset.day) || {}).status || ''; save(b, order[(order.indexOf(cur) + 1) % order.length], (by.get(b.dataset.day) || {}).ot_hours || 0); };
+    b.oncontextmenu = (e) => {
+      e.preventDefault();
+      const cur = by.get(b.dataset.day) || {}, h = prompt(`Overtime hours on ${fdate(b.dataset.day)}`, cur.ot_hours || '');
+      if (h !== null) save(b, cur.status || 'P', +h || 0);
+    };
+  });
+  el.onclick = async (e) => {
+    const c = e.target.closest('[data-cx]'); if (!c) return;
+    if (!confirm('Cancel this payment? Its entry in the books is reversed.')) return;
+    try { await POST(`/api/staff/txns/${c.dataset.cx}/cancel`); dirty('accounts'); toast('Cancelled'); reload(); } catch (err) { toast(err.message, 'err'); }
+  };
+});
+route(/^payslip\/(\d+)$/, async (el, m) => {
+  const p = await GET('/api/staff/payslip/' + m[1]), dt = p.detail, o = p.org;
+  const line = (k, v, cls = '') => `<tr class="${cls}"><td>${k}</td><td class="num">${v}</td></tr>`;
+  const text = `*${o.name}* - Salary slip ${monthName(p.month)}\n${p.name}\nDays paid: ${qtyf(dt.payable || 0)} of ${dt.days || ''}\nEarned: ${inr0(p.gross)}${p.bonus ? `\nBonus: ${inr0(p.bonus)}` : ''}${p.advance_cut ? `\nAdvance cut: -${inr0(p.advance_cut)}` : ''}${p.other_cut ? `\nOther deduction: -${inr0(p.other_cut)}` : ''}\n*Paid: ${inr0(p.net)}* on ${fdate(p.date)}${dt.advance_left ? `\nAdvance still due: ${inr0(dt.advance_left)}` : ''}`;
+  const phone = String(p.phone || '').replace(/\D/g, '').replace(/^0/, '');
+  el.innerHTML = head(`Payslip ${esc(p.name)}`, `${p.status === 'cancelled' ? badge('cancelled') : ''}<a class="btn got" target="_blank" rel="noopener" href="https://wa.me/${phone ? (phone.length === 10 ? '91' + phone : phone) : ''}?text=${encodeURIComponent(text)}">WhatsApp</a><button class="btn primary" data-act="print">Print</button>`) + `
+    <div class="panel slip"><div class="row"><div><h2 style="margin:0">${esc(o.name)}</h2><div class="muted">${esc(o.address || '')}${o.phone ? ' · ' + esc(o.phone) : ''}</div></div><span class="spacer"></span><div style="text-align:right"><b>Salary slip</b><div>${esc(monthName(p.month))}</div></div></div>
+      <hr><div class="row"><div><b>${esc(p.name)}</b>${p.title ? `<div class="muted">${esc(p.title)}</div>` : ''}</div><span class="spacer"></span><div class="muted">Paid on ${fdate(p.date)}</div></div>
+      <table class="t" style="margin-top:12px"><tbody>
+        ${line('Pay', `${inr0(dt.rate)} / ${p.pay_type === 'day' ? 'day' : 'month'}`)}
+        ${line('Days in month', dt.days || '')}${line('Present / leave / week off', `${dt.P || 0} / ${dt.L || 0} / ${dt.O || 0}${p.pay_type === 'month' && dt.unmarked ? ` (+${dt.unmarked} not marked)` : ''}`)}
+        ${line('Absent / half days', `${dt.A || 0} / ${dt.H || 0}`)}${line('<b>Days paid</b>', `<b>${qtyf(dt.payable || 0)}</b>`)}
+        ${line('Salary for the days', inr(dt.base))}${dt.ot_pay ? line(`Overtime (${dt.ot_hours} h)`, inr(dt.ot_pay)) : ''}
+        ${p.gross !== dt.earned ? line('Salary (as paid)', inr(p.gross)) : ''}${p.bonus ? line('Bonus / incentive', inr(p.bonus)) : ''}
+        ${p.advance_cut ? line('Advance cut', '−' + inr(p.advance_cut)) : ''}${p.other_cut ? line('Other deduction', '−' + inr(p.other_cut)) : ''}
+        ${line('<b>Net paid</b>', `<b>${inr(p.net)}</b>`, 'grand')}${dt.advance_left ? line('Advance still due', inr(dt.advance_left)) : ''}
+      </tbody></table>
+      <p class="muted small" style="margin-top:16px">${esc(words(p.net))}</p>
+      <div class="row" style="margin-top:40px"><span class="muted">Employee's signature</span><span class="spacer"></span><span class="muted">For ${esc(o.name)}</span></div></div>`;
+});
+
+/* ======================================================================= offline: what still works, and the outbox */
+function offlinePage(page) {
+  page.innerHTML = head('No internet right now') + `<div class="panel"><p>This screen needs the internet. These still work, and are sent by themselves when you are back online:</p>
+    <div class="row" style="flex-wrap:wrap;gap:8px">${ME.can.sales ? '<a class="btn primary" href="#/new/INV">New invoice</a><a class="btn" href="#/pos">Quick bill (POS)</a>' : ''}
+      ${ME.can.purchase ? '<a class="btn" href="#/new/BILL">Purchase bill</a>' : ''}${ME.can.finance || ME.can.sales ? '<button class="btn" data-off="receipt">Receive payment</button>' : ''}
+      ${ME.can.finance ? '<button class="btn" data-off="expense">Expense</button>' : ''}<a class="btn" href="#/outbox">Outbox</a></div>
+    <p class="muted small" style="margin-top:10px">Customers, items and prices are the copy saved the last time you were online.</p></div>`;
+  page.onclick = (e) => {
+    const b = e.target.closest('[data-off]'); if (!b) return;
+    if (b.dataset.off === 'receipt') paymentForm('receipt'); else expenseForm();
+  };
+}
+async function expenseForm() {
+  const exp = (await master('accounts')).filter((a) => a.type === 'expense' && !['cogs', 'stock_adj', 'round_off'].includes(a.sys));
+  modal('Add expense', [{ k: 'account_id', label: 'Expense head', type: 'select', options: opts(exp, (a) => a.name) },
+    { k: 'amount', label: 'Amount before GST (₹)', type: 'number', required: true }, { k: 'gst_amount', label: 'GST paid (input credit, ₹)', type: 'number', value: 0 },
+    { k: 'paid_from', label: 'Paid from', type: 'select', options: await cashOpts() }, { k: 'date', label: 'Date', type: 'date', value: ME.today }, { k: 'notes', label: 'Notes', wide: true }],
+  async (v) => { const r = await POST('/api/expenses', { ...v, account_id: +v.account_id, paid_from: +v.paid_from }); dirty('accounts'); toast(r.queued ? 'No internet: saved on this device, sent when online.' : 'Expense saved', r.queued ? 'info' : 'ok'); render(); });
+}
+route(/^outbox$/, async (el) => {
+  const q = await queueAll();
+  el.innerHTML = head('Outbox', q.length ? '<button class="btn primary" id="syncnow">Send now</button>' : '') + `
+    <div class="panel muted">Made on this device without internet. They go to the cloud by themselves when you are online. A bill gets its number then, and the stock is checked then.</div>
+    ${q.length ? `<div class="panel flush">${table([{ h: 'Entry', f: (x) => `<b>${esc(x.label)}</b>${x.body && x.body.lines ? `<div class="muted">${x.body.lines.length} line${x.body.lines.length > 1 ? 's' : ''}</div>` : ''}` },
+      { h: 'Made', f: (x) => new Date(x.at).toLocaleString('en-IN', { dateStyle: 'medium', timeStyle: 'short' }) },
+      { h: 'Status', f: (x) => x.error ? `<span class="neg">${esc(x.error)}</span>` : '<span class="muted">waiting</span>' },
+      { h: '', f: (x) => `${x.status === 409 && x.data && x.data.credit_warning ? `<button class="btn sm" data-ok="${esc(x.key)}">Save anyway</button> ` : ''}<button class="btn sm danger" data-drop="${esc(x.key)}">Discard</button>` }], q)}</div>`
+      : `<div class="panel">${emptyCta('Nothing waiting. Everything is saved in the cloud.')}</div>`}`;
+  if ($('#syncnow')) $('#syncnow').onclick = async () => { await syncOutbox(); render(); };
+  el.onclick = async (e) => {
+    const d = e.target.closest('[data-drop]'), ok = e.target.closest('[data-ok]');
+    if (d && confirm('Discard this entry? It was never sent, so nothing else changes.')) { await idbDo('queue', 'readwrite', (s) => s.delete(d.dataset.drop)); outboxBadge(); render(); }
+    if (ok) {
+      const it = q.find((x) => x.key === ok.dataset.ok);
+      await idbDo('queue', 'readwrite', (s) => s.put({ ...it, body: { ...it.body, credit_ok: true }, error: '', status: 0 }));
+      await syncOutbox(); render();
+    }
+  };
+});
+
+/* ======================================================================= purchase bill scan */
+const isNoteType = (t) => ['SRET', 'PRET', 'CNOTE', 'DNOTE'].includes(t);
+/* a photo is made smaller (long side 2000 px, JPEG) before it goes up: quicker on a phone network, same reading */
+async function billFileData(file) {
+  if (file.type === 'application/pdf') {
+    if (file.size > 5e6) throw new Error('This PDF is over 5 MB. Scan the bill a page at a time.');
+    return new Promise((ok, no) => { const r = new FileReader(); r.onload = () => ok(r.result); r.onerror = () => no(r.error); r.readAsDataURL(file); });
+  }
+  if (!/^image\//.test(file.type)) throw new Error('Choose a photo or a PDF of the bill.');
+  const img = await createImageBitmap(file);
+  const k = Math.min(1, 2000 / Math.max(img.width, img.height)), cv = document.createElement('canvas');
+  cv.width = Math.round(img.width * k); cv.height = Math.round(img.height * k);
+  cv.getContext('2d').drawImage(img, 0, 0, cv.width, cv.height);
+  return cv.toDataURL('image/jpeg', 0.85);
+}
+async function scanBillFlow(file, type) {
+  const root = $('#modal-root');
+  root.innerHTML = `<div class="modal-bg"><div class="modal" role="status"><h2>Reading the bill…</h2><p class="muted">Usually 10 to 30 seconds. Keep this screen open.</p><div class="prog"><i class="spin"></i></div></div></div>`;
+  let r;
+  try { r = await POST('/api/purchase/scan', { file: await billFileData(file) }); } catch (e) { root.innerHTML = ''; return toast(e.message, 'err'); }
+  const [parties, items] = await Promise.all([master('parties'), master('items')]);
+  const sups = parties.filter((p) => p.kind !== 'customer');
+  const itemOpts = (l) => `<option value="new" ${l.item_id ? '' : 'selected'}>+ New item: ${esc(l.name || '(no name)')}</option>`
+    + items.filter((i) => !i.is_service).map((i) => `<option value="${i.id}" ${i.id === l.item_id ? 'selected' : ''}>${esc(i.name)}</option>`).join('');
+  const sum = r.lines.reduce((s, l) => s + l.qty * l.rate * (1 - l.discount_pct / 100) * (1 + l.gst_rate / 100), 0);
+  const form = modal('Check what was read', [], async (v, f) => {
+    const sel = f.elements.sup.value;
+    let partyId = +sel || 0;
+    if (sel === 'new') {
+      const p = await POST('/api/parties', { name: f.elements.sup_name.value || r.supplier.name, kind: 'supplier', gstin: r.supplier.gstin, state: r.supplier.state, phone: r.supplier.phone, address: r.supplier.address });
+      partyId = p.id;
+    }
+    const lines = [];
+    for (const [i, l] of r.lines.entries()) {
+      const choice = f.elements['it' + i].value;
+      if (choice === 'skip') continue;
+      let itemId = +choice || 0;
+      if (choice === 'new') {
+        const it = await POST('/api/items', { name: l.name, hsn: l.hsn, unit: l.unit || 'Pcs', gst_rate: l.gst_rate, purchase_price: l.rate, sale_price: 0, track_batch: !!l.batch_no });
+        itemId = it.id;
+      }
+      lines.push({ item_id: itemId, qty: l.qty || 1, rate: l.rate, discount_pct: l.discount_pct, gst_rate: l.gst_rate, batch_no: l.batch_no, expiry: l.expiry ? l.expiry + '-01' : '' });
+    }
+    dirty('items', 'parties');
+    const note = r.adds_up ? `Filled from the scanned bill${r.bill_no ? ` no. <b>${esc(r.bill_no)}</b>` : ''}. Check the lines, then save.`
+      : `⚠ The lines add up to <b>${inr(sum)}</b> but the bill says <b>${inr(r.totals.total)}</b>. Check each line against the bill before saving.`;
+    sessionStorage.setItem('st_scan', JSON.stringify({ type, party_id: partyId, date: r.bill_date || ME.today, notes: [r.bill_no && `Supplier bill no. ${r.bill_no}`, r.bill_date && `dated ${r.bill_date}`].filter(Boolean).join(' '),
+      lines: lines.length ? lines : [{}], scan_note: note + (r.notes ? `<div class="muted small">Note: ${esc(r.notes)}</div>` : ''), scan_ok: r.adds_up }));
+    location.hash = `#/new/${type}?scan=${Date.now()}`;
+  }, { submit: 'Fill the bill', intro: `
+    <div class="form"><label class="f">Supplier<select name="sup">${r.supplier.party_id ? '' : `<option value="new" selected>+ New supplier: ${esc(r.supplier.name)}${r.supplier.gstin ? ` (${esc(r.supplier.gstin)})` : ''}</option>`}
+      ${sups.map((p) => `<option value="${p.id}" ${p.id === r.supplier.party_id ? 'selected' : ''}>${esc(p.name)}</option>`).join('')}</select></label>
+      <label class="f">New supplier's name<input name="sup_name" value="${esc(r.supplier.name)}"></label>
+      <label class="f">Bill no. / date<input value="${esc([r.bill_no, r.bill_date && fdate(r.bill_date)].filter(Boolean).join(' · '))}" disabled></label></div>
+    ${r.adds_up ? '' : `<div class="warnbox panel" style="margin:10px 0">The lines add up to <b>${inr(sum)}</b>, the bill total is <b>${inr(r.totals.total)}</b>. Some figure may be misread: check after filling.</div>`}
+    <div class="tbl-wrap"><table class="t"><thead><tr><th>On the bill</th><th class="num">Qty</th><th class="num">Rate</th><th class="num">GST</th><th>Your item</th></tr></thead><tbody>
+      ${r.lines.map((l, i) => `<tr><td>${esc(l.name)}${l.hsn ? `<div class="muted">HSN ${esc(l.hsn)}</div>` : ''}${l.batch_no ? `<div class="muted">Batch ${esc(l.batch_no)}${l.expiry ? ' · ' + esc(l.expiry) : ''}</div>` : ''}</td>
+        <td class="num">${qtyf(l.qty)} ${esc(l.unit)}</td><td class="num">${inr(l.rate)}</td><td class="num">${l.gst_rate}%</td>
+        <td><select name="it${i}" aria-label="Item for ${esc(l.name)}">${itemOpts(l)}<option value="skip">Leave out</option></select>${l.match === 'guess' ? '<div class="muted small">best guess: check</div>' : ''}</td></tr>`).join('')}
+    </tbody></table></div>
+    <p class="muted small">Reading a photo can make mistakes. Nothing is saved until you save the bill.</p>` });
+  const sn = form.elements.sup_name.closest('label');
+  const syncSup = () => { sn.hidden = form.elements.sup.value !== 'new'; };
+  form.elements.sup.onchange = syncSup; syncSup();
+}
+
+/* ======================================================================= guided put-away and wave picking */
+route(/^putaway$/, async (el, m, q) => {
+  const whs = await master('warehouses'), wid = +q.get('wh') || (whs[0] && whs[0].id);
+  const P = await GET('/api/bins/putaway?warehouse_id=' + wid);
+  const codeToId = new Map(P.bins.map((b) => [b.code.toUpperCase(), b.id]));
+  el.innerHTML = head(`Put away · ${esc(P.warehouse.name)}`, `<a class="btn" href="#/bins?wh=${wid}">Bins</a>${P.rows.length ? '<button class="btn primary" id="putall">Put all as suggested</button>' : ''}`) + `
+    <div class="panel muted">Walk the list: take the goods to the bin shown (its default bin, a bin that already has it, or an empty one), scan or type the bin's label, tap <b>Done</b>.</div>
+    ${P.rows.length ? `<div class="panel flush">${table([{ h: 'Item', f: (r) => `<b>${esc(r.name)}</b>` },
+      { h: 'Qty', f: (r) => `<input class="pa-q" data-q="${r.id}" type="number" step="any" min="0" inputmode="decimal" value="${r.free}" style="width:90px" aria-label="Quantity"> ${esc(r.unit)}` },
+      { h: 'To bin', f: (r) => `<input class="pa-b mono" data-b="${r.id}" value="${esc(r.suggest ? r.suggest.code : '')}" placeholder="scan bin" style="width:110px" autocapitalize="characters" aria-label="Bin"><div class="muted small">${r.suggest ? esc(r.suggest.why) : 'no free bin: add bins'}</div>` },
+      { h: '', f: (r) => `<button class="btn sm primary" data-pa="${r.id}">Done</button>` }], P.rows)}</div>` : `<div class="panel">${emptyCta('Everything in this godown is in a bin.')}</div>`}`;
+  const put = async (id) => {
+    const code = ($(`[data-b="${id}"]`).value || '').trim().toUpperCase(), qty = +$(`[data-q="${id}"]`).value || 0, bin = codeToId.get(code);
+    if (!bin) throw new Error(`No bin called ${code || '(empty)'} in this godown.`);
+    await POST('/api/bins/move', { item_id: id, warehouse_id: wid, from_bin_id: 0, to_bin_id: bin, qty });
+    const tr = $(`[data-pa="${id}"]`).closest('tr'); tr.classList.add('done'); $(`[data-pa="${id}"]`).outerHTML = badge('ok');
+  };
+  el.onclick = async (e) => {
+    const b = e.target.closest('[data-pa]'); if (!b) return;
+    try { await put(+b.dataset.pa); } catch (err) { toast(err.message, 'err'); }
+  };
+  // a scanner types the label and Enter: that confirms the row
+  el.onkeydown = async (e) => { if (e.key === 'Enter' && e.target.matches('.pa-b')) { e.preventDefault(); try { await put(+e.target.dataset.b); } catch (err) { toast(err.message, 'err'); } } };
+  if ($('#putall')) $('#putall').onclick = async () => {
+    let n = 0;
+    for (const r of P.rows) { if (!$(`[data-pa="${r.id}"]`)) continue; try { await put(r.id); n++; } catch (err) { toast(`${r.name}: ${err.message}`, 'err'); break; } }
+    if (n) toast(`${n} item${n > 1 ? 's' : ''} put away`);
+  };
+});
+route(/^wave$/, async (el, m, q) => {
+  if (q.get('ids')) {
+    const w = await GET('/api/picklist?ids=' + q.get('ids'));
+    el.innerHTML = head('Wave pick list', '<a class="btn" href="#/wave">Change orders</a><button class="btn primary" data-act="print">Print</button>') + `
+      <div class="doc-paper"><div class="hdr"><div><div style="font-size:18px;font-weight:700">PICK LIST · ${w.docs.length} ORDERS</div><div>Godown: ${esc(w.warehouse)} · ${fdate(ME.today)}</div></div>
+        <div style="text-align:right" class="small">${w.docs.map((d) => `${esc(d.number)} ${esc(d.party || '')}`).join('<br>')}</div></div>
+        <div class="tbl-wrap"><table class="dl"><thead><tr><th>✓</th><th>Bin</th><th>Item</th><th>Batch (first to expire)</th><th class="num">Pick</th><th>For order</th></tr></thead>
+        <tbody>${w.rows.map((r) => `<tr><td style="width:28px">☐</td><td>${r.from.length ? r.from.map((f) => `<b>${esc(f.code)}</b> <span class="muted">${qtyf(f.qty)}</span>`).join('<br>') : r.location ? `<b>${esc(r.location)}</b>` : '<span class="muted">not put away</span>'}${r.short_of_bins && r.from.length ? `<div class="muted small">+${qtyf(r.short_of_bins)} not in a bin</div>` : ''}</td>
+          <td>${esc(r.name)}</td><td class="small">${r.batches.map((b) => `${esc(b.batch_no)}${b.expiry ? ` · ${mmyy(b.expiry)}` : ''}`).join('<br>')}</td><td class="num"><b>${qtyf(r.qty)}</b> ${esc(r.unit)}</td>
+          <td class="small">${r.orders.map((o) => `${esc(o.number)} × ${qtyf(o.qty)}`).join('<br>')}</td></tr>`).join('')}</tbody></table></div>
+        <div class="foot"><div>${w.rows.length} items to pick</div><div class="sign">Picked by ____________ Checked by ____________</div></div></div>`;
+    return;
+  }
+  const [so, dn] = await Promise.all([GET('/api/docs?type=SO'), GET('/api/docs?type=DN')]);
+  const open = [...so.rows.filter((d) => ['open', 'partial'].includes(d.status)), ...dn.rows.filter((d) => d.status === 'open')];
+  el.innerHTML = head('Wave pick list') + `<div class="panel muted">Pick many orders in one walk through the godown: choose the orders, get one list sorted bin by bin, with how much goes to each order.</div>
+    ${open.length ? `<div class="panel flush">${table([{ h: '<input type="checkbox" id="wall" aria-label="All">', f: (d) => `<input type="checkbox" class="wsel" value="${d.id}" aria-label="${esc(d.number)}">` },
+      { h: 'Order', k: 'number' }, { h: 'Customer', k: 'party' }, { h: 'Date', f: (d) => fdate(d.date) }, { h: 'Amount', num: 1, f: (d) => inr(d.total) }], open)}</div>
+      <div class="row savebar"><span class="muted" id="wcount">0 chosen</span><span class="spacer"></span><button class="btn primary" id="wgo" disabled>Make pick list</button></div>`
+      : `<div class="panel">${emptyCta('No open sales orders or delivery notes to pick.')}</div>`}`;
+  const upd = () => { const n = $$('.wsel:checked', el).length; $('#wcount').textContent = `${n} chosen`; $('#wgo').disabled = !n; };
+  if ($('#wall')) $('#wall').onchange = (e) => { $$('.wsel', el).forEach((x) => { x.checked = e.target.checked; }); upd(); };
+  el.onchange = (e) => { if (e.target.matches('.wsel')) upd(); };
+  if ($('#wgo')) $('#wgo').onclick = () => go('wave?ids=' + $$('.wsel:checked', el).map((x) => x.value).join(','));
 });
 
 /* ======================================================================= khata */
@@ -2027,10 +2434,7 @@ route(/^expenses$/, async (el, m, q) => {
   el.innerHTML = head('Expenses', `<button class="btn primary" id="new">+ Add expense</button>`) +
     `<div class="kpis">${exp.filter((a) => a.balance).map((a) => `<div class="kpi"><div class="l">${esc(a.name)}</div><div class="v">${inr0(a.balance)}</div></div>`).join('')}</div>
     <div class="panel flush">${table([{ h: 'Date', f: (r) => fdate(r.date) }, { h: 'Expense', k: 'narration' }, { h: 'Amount', num: 1, f: (r) => inr(r.lines.reduce((s, l) => s + l.credit, 0)) }], rows, { empty: emptyCta('No expenses this year. Add rent, salary, electricity and more to see your real profit.', '<button class="btn primary" data-ne>+ Add expense</button>') })}</div>`;
-  const form = async () => modal('Add expense', [{ k: 'account_id', label: 'Expense head', type: 'select', options: opts(exp, (a) => a.name) },
-    { k: 'amount', label: 'Amount before GST (₹)', type: 'number', required: true }, { k: 'gst_amount', label: 'GST paid (input credit, ₹)', type: 'number', value: 0 },
-    { k: 'paid_from', label: 'Paid from', type: 'select', options: await cashOpts() }, { k: 'date', label: 'Date', type: 'date', value: ME.today }, { k: 'notes', label: 'Notes', wide: true }],
-  async (v) => { await POST('/api/expenses', { ...v, account_id: +v.account_id, paid_from: +v.paid_from }); dirty('accounts'); toast('Expense saved'); render(); });
+  const form = () => expenseForm();
   $('#new').onclick = form;
   if ($('[data-ne]', el)) $('[data-ne]', el).onclick = form;
   if (takeNew(q)) form();
@@ -2355,6 +2759,12 @@ route(/^settings$/, async (el, m, q) => {
     ${ME.can.settings ? `<form class="panel" id="apprf"><h2>Approvals</h2><div class="form"><label class="f">Purchase orders above (₹) need approval<input name="po_above" type="number" min="0" step="1" inputmode="numeric" value="${(o.approvals || {}).po_above || ''}" placeholder="0 = no approval">
         <small class="help">A purchase order above this amount made by staff waits until the owner or an admin approves it. Yours go through straight away.</small></label></div>
       <div class="row" style="margin-top:12px"><span class="spacer"></span><button class="btn primary">Save</button></div></form>` : ''}
+    ${ME.can.settings && ME.wa_auto ? `<div class="panel" id="autowa"><h2>Automatic WhatsApp reminders</h2>
+      <p class="muted">Every morning, customers who are due a reminder on the Vasooli schedule get a WhatsApp message by themselves, from SmartTrader's WhatsApp Business number: their name, your business, the amount due and a link to the bills with your UPI. Nobody gets two in a day; VIP and promised customers follow the same rules as on the Vasooli screen.</p>
+      ${(ME.plan.features || []).includes('autowa') ? `<label class="mode-opt"><input type="checkbox" id="awon" ${o.auto_wa ? 'checked' : ''}> <span><b>Send reminders automatically</b><br><span class="muted">10 am to 1 pm, every day.</span></span></label>
+        ${o.auto_wa_note ? `<p class="muted small">Last run: ${esc(o.auto_wa_note.replace(/^more /, ''))}</p>` : ''}
+        <div class="row" style="margin-top:8px"><span class="spacer"></span><button type="button" class="btn" id="awrun" ${o.auto_wa ? '' : 'disabled'}>Send today's now</button></div>`
+        : '<p>Included in the <b>Growth</b> and <b>Business</b> plans. <a href="#/plan">See plans</a></p>'}</div>` : ''}
     ${canUsers ? `<div class="panel flush"><div class="row" style="padding:14px 16px"><h2 style="margin:0">Users</h2><span class="spacer"></span><button class="btn" id="adduser">+ Add user</button></div>
       ${table([{ h: 'Name', k: 'name' }, { h: 'Email', k: 'email', cls: 'hide-sm' }, { h: 'Role', f: (u) => u.role_key === 'owner' ? 'owner' : `<select data-role="${u.id}" aria-label="Role">${roleOpts.map((o) => `<option value="${esc(o.v)}" ${o.v === u.role_key ? 'selected' : ''}>${esc(o.t)}</option>`).join('')}</select>` },
         { h: 'Status', f: (u) => u.paused ? `${badge('partial')}<div class="muted">over plan limit</div>` : u.active ? badge('ok') : badge('cancelled') },
@@ -2372,6 +2782,15 @@ route(/^settings$/, async (el, m, q) => {
       <h3 style="margin-top:16px">Restore from a backup</h3><div id="restorebox"><span class="muted">Checking…</span></div></div>` : ''}
     <p class="muted">Selling SmartTrader to other businesses? <a href="#/admin">Open the admin panel</a> (needs the ADMIN_KEY secret).</p>
     ${canUsers ? `<div class="panel flush"><div style="padding:14px 16px 0"><h3>Audit trail</h3></div>${table([{ h: 'When', f: (a) => new Date(a.at).toLocaleString('en-IN') }, { h: 'User', k: 'user' }, { h: 'Action', k: 'action' }, { h: 'Detail', k: 'detail', cls: 'hide-sm' }], audit.slice(0, 100))}</div>` : ''}`;
+  if ($('#awon')) $('#awon').onchange = async (e) => {
+    try { await api('PUT', '/api/settings/auto-wa', { on: e.target.checked }); ME = await GET('/api/me'); toast(e.target.checked ? 'Automatic reminders on' : 'Automatic reminders off'); render(); }
+    catch (err) { e.target.checked = !e.target.checked; toast(err.message, 'err'); }
+  };
+  if ($('#awrun')) $('#awrun').onclick = async (e) => {
+    e.target.disabled = true;
+    try { const r = await POST('/api/settings/auto-wa/run'); ME = await GET('/api/me'); toast(`${r.sent} sent${r.failed ? `, ${r.failed} failed` : ''}${r.skipped ? `, ${r.skipped} without a mobile` : ''}`); render(); }
+    catch (err) { toast(err.message, 'err'); e.target.disabled = false; }
+  };
   if ($('#apprf')) $('#apprf').onsubmit = async (e) => {
     e.preventDefault();
     try { await api('PUT', '/api/settings/approvals', { po_above: e.target.elements.po_above.value || 0 }); ME = await GET('/api/me'); toast('Saved'); } catch (err) { toast(err.message, 'err'); }
@@ -2771,7 +3190,7 @@ route(/^bins$/, async (el, m, q) => {
       <div class="kpi"><div class="l">Not put away</div><div class="v ${b.not_put_away.length ? 'neg' : ''}">${b.not_put_away.length}</div><div class="s">item${b.not_put_away.length === 1 ? '' : 's'} waiting for a bin</div></div></div>
     ${b.bins.length ? '' : `<div class="panel">${emptyCta('Make your racks and shelves once, like A-01-1 (rack A, shelf 1, level 1). Give each item a default bin: new stock goes there, and the pick list shows where to pick from.',
       ME.can.stock ? '<button class="btn primary" data-addb>+ Add bins</button>' : '')}</div>`}
-    ${b.not_put_away.length ? `<div class="panel flush"><div class="row" style="padding:14px 16px 0"><h3>Not put away</h3></div>
+    ${b.not_put_away.length ? `<div class="panel flush"><div class="row" style="padding:14px 16px 0"><h3>Not put away</h3><span class="spacer"></span>${ME.can.stock && b.bins.length ? `<a class="btn sm primary" href="#/putaway?wh=${wid}">Guided put-away</a>` : ''}</div>
       <p class="muted" style="padding:0 16px">In this godown but in no bin yet. Put them away so the pick list knows where they are.</p>
       ${table([{ h: 'Item', f: (r) => `<a href="#/item/${r.id}">${esc(r.name)}</a>${r.location ? `<div class="muted">default bin ${esc(r.location)}</div>` : ''}` },
         { h: 'Qty', num: 1, f: (r) => `${qtyf(r.free)} ${esc(r.unit)}` }, { h: '', f: (r) => ME.can.stock && b.bins.length ? `<button class="btn sm" data-put="${r.id}">Put away</button>` : '' }], b.not_put_away)}</div>` : ''}
@@ -2989,6 +3408,7 @@ route(/^pos$/, async (el) => {
     const save = async () => {
       try {
         const d = await POST('/api/docs', body);
+        if (d.queued) { cart.length = 0; draw(); scan.focus(); toast('No internet: bill saved on this device, sent when online (Outbox).', 'info'); return; }
         dirty('items', 'accounts', 'parties');
         printReceipt(d, method, +$('#recv').value || 0);
         cart.length = 0; draw(); scan.focus(); toast(`${d.number} saved`);
@@ -3377,8 +3797,9 @@ function wireInstall() {
   };
 }
 if ('serviceWorker' in navigator) window.addEventListener('load', () => navigator.serviceWorker.register('/sw.js').catch(() => {}));
-window.addEventListener('offline', () => toast('You are offline. Saved screens still open; changes need internet.'));
-window.addEventListener('online', () => toast('Back online'));
+window.addEventListener('offline', () => toast('You are offline. New bills, receipts and expenses are saved on this device and sent later.', 'info'));
+window.addEventListener('online', () => { toast('Back online'); syncOutbox(); });
+setInterval(() => { if (navigator.onLine) syncOutbox(); }, 60000);
 
 /* ======================================================================= boot */
 async function boot() {
@@ -3406,8 +3827,10 @@ async function boot() {
     if (off) window.addEventListener('online', () => location.reload(), { once: true });
     return;
   }
+  if (ME._offline) ME.today = new Date(Date.now() - new Date().getTimezoneOffset() * 60000).toISOString().slice(0, 10);
   shell();
   wireInstall();
+  outboxBadge(); syncOutbox();
   await render();
 }
 window.addEventListener('hashchange', () => {
