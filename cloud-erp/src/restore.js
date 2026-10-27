@@ -15,8 +15,8 @@ import { auditStatement } from './engine.js';
 
 const ID_TABLES = ['accounts', 'warehouses', 'roles', 'parties', 'items', 'docs', 'doc_lines', 'payments', 'journals', 'journal_lines', 'khata',
   'stock_moves', 'gate_entries', 'vaade', 'vaada_kisht', 'recurring', 'reminder_log', 'confirmations', 'bins', 'batches', 'batch_moves',
-  'serials', 'serial_moves', 'boms', 'bom_lines', 'productions', 'staff', 'staff_txns', 'write_offs', 'claim_entries'];
-const OTHER_TABLES = ['payment_allocs', 'stock', 'counters', 'org_files', 'bin_stock', 'channel_orders', 'attendance', 'item_codes', 'write_off_lines', 'role_rules'];
+  'serials', 'serial_moves', 'boms', 'bom_lines', 'productions', 'staff', 'staff_txns', 'write_offs', 'claim_entries', 'mkt_settlements'];
+const OTHER_TABLES = ['payment_allocs', 'stock', 'counters', 'org_files', 'bin_stock', 'channel_orders', 'attendance', 'item_codes', 'write_off_lines', 'role_rules', 'channel_returns'];
 const ORG_FIELDS = ['name', 'gstin', 'state', 'address', 'phone', 'upi_id', 'fy_start', 'city', 'pincode', 'email', 'mode', 'print', 'series', 'fields', 'vaada', 'msg_lang', 'udyam', 'approvals'];
 const JSON_FIELDS = ['print', 'series', 'fields', 'vaada', 'approvals'];
 const PAY_REFS = ['payment', 'receipt', 'payment-X', 'receipt-X'];
@@ -127,6 +127,8 @@ export async function restoreBackup(c, backup) {
       bom_lines: (r) => ({ bom_id: to('boms', r.bom_id), item_id: to('items', r.item_id) }),
       productions: (r) => ({ item_id: to('items', r.item_id), warehouse_id: to('warehouses', r.warehouse_id), created_by: me, lines: itemsIn(r.lines) }),
       channel_orders: (r) => ({ doc_id: to('docs', r.doc_id) }),
+      channel_returns: (r) => ({ doc_id: to('docs', r.doc_id) }),
+      mkt_settlements: (r) => ({ account_id: to('accounts', r.account_id), created_by: me }),
       staff: () => ({}),
       staff_txns: (r) => ({ staff_id: to('staff', r.staff_id), account_id: to('accounts', r.account_id), created_by: me }),
       attendance: (r) => ({ staff_id: to('staff', r.staff_id), marked_by: me }),
@@ -197,6 +199,8 @@ export async function restoreBackup(c, backup) {
     counts.role_rules = insert('role_rules', T.role_rules, 'INSERT OR REPLACE');
     counts.bin_stock = insert('bin_stock', T.bin_stock);
     counts.channel_orders = insert('channel_orders', T.channel_orders);
+    counts.channel_returns = insert('channel_returns', T.channel_returns);
+    counts.mkt_settlements = insert('mkt_settlements', T.mkt_settlements);
     counts.attendance = insert('attendance', T.attendance);
     counts.item_codes = insert('item_codes', T.item_codes);
     counts.counters = insert('counters', T.counters, 'INSERT OR REPLACE');

@@ -16,7 +16,7 @@ import {
   auditStatement, cashAccount, approveDoc, approvalsOf,
 } from './engine.js';
 import { getBom, saveBom, listProductions, createProduction, cancelProduction } from './mfg.js';
-import { importOrders, stockFile } from './channels.js';
+import { importOrders, stockFile, readSettlement, postSettlement, listSettlements } from './channels.js';
 import { waConfigured, runAutoReminders, remindOrg } from './autowa.js';
 import { listHooks, addHook, deleteHook, receiveHook } from './hooks.js';
 import { receivePending, matchBill, learnCode, autoBins, writeOff, cancelWriteOff, writeOffOut } from './receive.js';
@@ -629,6 +629,9 @@ router.add('POST', '/api/productions/:id/cancel', async (c) => json(await cancel
 
 /* ======================================================================= marketplace orders and stock file: src/channels.js */
 router.add('POST', '/api/channels/import', async (c) => json(await importOrders(c, c.body)), { bodyMax: 3000000 });
+router.add('POST', '/api/channels/settlement', async (c) => json(await readSettlement(c, c.body)), { bodyMax: 8000000 });
+router.add('POST', '/api/channels/settlement/post', async (c) => json(await postSettlement(c, c.body)), { bodyMax: 8000000 });
+router.add('GET', '/api/channels/settlements', async (c) => json({ rows: await listSettlements(c) }));
 router.add('GET', '/api/channels/stock', async (c) => download(`stock-${today()}.csv`, await stockFile(c, +c.url.searchParams.get('warehouse_id') || 0), 'text/csv'));
 
 /* ======================================================================= staff, attendance and salary: src/payroll.js */

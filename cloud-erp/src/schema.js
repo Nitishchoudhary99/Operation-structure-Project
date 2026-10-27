@@ -3,7 +3,7 @@
    Every business table carries org_id: one database serves many businesses (multi-tenant).
    migrate() runs on the first request after each deploy, so no manual migration step is needed. */
 
-export const SCHEMA_VERSION = 30;
+export const SCHEMA_VERSION = 31;
 
 // document types whose monthly totals doc_month keeps (sales and purchase money documents)
 const MONTH_TYPES = `('INV','SRET','CNOTE','BILL','PRET','DNOTE')`;
@@ -575,6 +575,16 @@ export const MIGRATIONS = {
     `ALTER TABLE recurring ADD COLUMN raise_pct REAL NOT NULL DEFAULT 0`,
     `ALTER TABLE recurring ADD COLUMN raise_on TEXT`,
     `CREATE INDEX IF NOT EXISTS ix_recurring_org ON recurring (org_id, sent)`,
+  ],
+  /* online orders (src/channels.js): returns made from a marketplace's refund rows (once per credit note / order line),
+     and the marketplace payouts posted (once per settlement) */
+  31: [
+    `CREATE TABLE IF NOT EXISTS channel_returns (org_id INTEGER NOT NULL, channel TEXT NOT NULL, ret_key TEXT NOT NULL, order_id TEXT, doc_id INTEGER,
+      created_at TEXT NOT NULL, PRIMARY KEY (org_id, channel, ret_key))`,
+    `CREATE TABLE IF NOT EXISTS mkt_settlements (id INTEGER PRIMARY KEY, org_id INTEGER NOT NULL, channel TEXT NOT NULL, settlement_id TEXT NOT NULL, start_date TEXT,
+      end_date TEXT, deposit_date TEXT, total INTEGER NOT NULL DEFAULT 0, sales INTEGER NOT NULL DEFAULT 0, fees INTEGER NOT NULL DEFAULT 0, tcs INTEGER NOT NULL DEFAULT 0,
+      tds INTEGER NOT NULL DEFAULT 0, other INTEGER NOT NULL DEFAULT 0, orders INTEGER NOT NULL DEFAULT 0, account_id INTEGER, created_by INTEGER, created_at TEXT NOT NULL,
+      UNIQUE (org_id, channel, settlement_id))`,
   ],
 };
 

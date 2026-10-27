@@ -1472,7 +1472,7 @@ async function xlsxRows(buf) {
 }
 const rowsToCsv = (rows) => rows.map((r) => r.map((x) => { const t = String(x ?? ''); return /[",\n\r]/.test(t) ? `"${t.replace(/"/g, '""')}"` : t; }).join(',')).join('\n');
 const CHANNEL_HELP = {
-  amazon: 'Seller Central → Reports → Fulfilment → All Orders (or Order Reports) → Download. Pick the .txt file here.',
+  amazon: 'Best: Seller Central → Reports → Tax Document Library → Merchant Tax Report (MTR) B2C: it has the refunds too and Amazon\'s invoice numbers. Or Reports → Fulfilment → All Orders (.txt).',
   flipkart: 'Seller Hub → Orders → Download orders (Excel). Pick the .xlsx file here.',
   meesho: 'Supplier Panel → Orders → Download (CSV or Excel). Pick the file here.',
   other: 'Any CSV or Excel file with Order ID, SKU, Quantity and Price columns (Shopify, WooCommerce, your website…).',
@@ -1482,7 +1482,7 @@ route(/^channels$/, async (el) => {
   el.innerHTML = head('Online orders') + `
     <div class="panel"><h3 style="margin-top:0">Bill your Amazon, Flipkart and Meesho orders in one go</h3>
       <ol class="steps"><li>Download the order report from the seller panel</li><li>Pick it here</li><li>Check and tap <b>Make invoices</b></li></ol>
-      <p class="muted">Each order becomes a GST invoice: stock goes out, the buyer's state decides IGST or CGST+SGST, items are matched by SKU. An order is never billed twice.</p>
+      <p class="muted">Each order becomes a GST invoice: stock goes out, the buyer's state decides IGST or CGST+SGST, items are matched by SKU. An order is never billed twice. Refunds, returns and cancellations in the same file become sales returns against their invoice (stock back, GST reversed).</p>
       <form id="chf"><div class="form">
         <label class="f">Marketplace<select name="channel">${[['amazon', 'Amazon'], ['flipkart', 'Flipkart'], ['meesho', 'Meesho'], ['other', 'My website / other']].map(([v, t]) => `<option value="${v}">${t}</option>`).join('')}</select></label>
         <label class="f" id="storef" hidden>Store name<input name="store" placeholder="e.g. Shopify"></label>
@@ -1490,6 +1490,12 @@ route(/^channels$/, async (el) => {
         <label class="f wide">Order report (CSV, TXT or Excel)<input type="file" name="file" accept=".csv,.txt,.tsv,.xlsx,text/csv,text/plain"><small class="help" id="chhelp">${esc(CHANNEL_HELP.amazon)}</small></label>
       </div><div class="err" hidden></div><div class="row" style="margin-top:10px"><span class="spacer"></span><button class="btn primary">Check orders</button></div></form>
       <div id="chres"></div></div>
+    ${ME.can.finance ? `<div class="panel" id="payouts"><h3 style="margin-top:0">Amazon payouts: fees, TCS and TDS matched to your invoices</h3>
+      <ol class="steps"><li>Seller Central → Payments → <b>All Statements</b> → a settlement → <b>Download flat file (V2)</b></li><li>Pick it here and check</li><li>Tap <b>Post this payout</b></li></ol>
+      <p class="muted">Each order's money is matched to its invoice and marks it paid. What Amazon kept is booked for you: fees and commission as an expense, GST TCS and income-tax TDS (194-O) as credits you claim (GSTR-3B / ITR). You see what you really earned per order, and which orders were never paid.</p>
+      <form id="stf"><div class="form"><label class="f wide">Settlement report (.txt)<input type="file" name="file" accept=".txt,.tsv,.csv,text/plain"></label></div>
+        <div class="err" hidden></div><div class="row" style="margin-top:10px"><span class="spacer"></span><button class="btn primary">Check payout</button></div></form>
+      <div id="stres"></div><div id="stlist"></div></div>` : ''}
     <div class="panel"><h3 style="margin-top:0">Stock file for the marketplace</h3>
       <p class="muted">Keep your online stock the same as the shop: download SKU and quantity in hand, and upload it in the seller panel (inventory / stock update). Items need a SKU or barcode.</p>
       <div class="row">${whs.length > 1 ? `<select id="stwh" aria-label="Godown"><option value="0">All godowns</option>${whs.map((w) => `<option value="${w.id}">${esc(w.name)}</option>`).join('')}</select>` : ''}<button class="btn" id="stdl">Download stock file (CSV)</button></div></div>
@@ -1523,6 +1529,60 @@ route(/^channels$/, async (el) => {
     if (cp) { try { await navigator.clipboard.writeText(cp.dataset.hcopy); toast('Address copied'); } catch (err) { prompt('Copy this address', cp.dataset.hcopy); } }
     if (del && confirm('Remove this store? Its orders will no longer come in.')) { try { await api('DELETE', '/api/hooks/' + del.dataset.hdel); drawHooks(); } catch (err) { toast(err.message, 'err'); } }
   };
+  // Amazon payouts: check the file, then post it once
+  const drawPayouts = async () => {
+    const box = $('#stlist'); if (!box) return;
+    const { rows } = await GET('/api/channels/settlements');
+    const sum = (k) => rows.reduce((s, r) => s + r[k], 0);
+    box.innerHTML = rows.length ? `<h3>Payouts posted</h3>${table([{ h: 'Settlement', k: 'sid', f: (r) => `${esc(r.settlement_id)}<div class="muted small">${fdate(r.start_date)} – ${fdate(r.end_date)}</div>` },
+      { h: 'Deposit', k: 'dep', f: (r) => `${inr(r.total)}<div class="muted small">${fdate(r.deposit_date)}</div>` }, { h: 'Sales', k: 'sales', num: 1, cls: 'hide-sm', f: (r) => inr(r.sales) },
+      { h: 'Fees', k: 'fees', num: 1, f: (r) => inr(-r.fees) }, { h: 'TCS', k: 'tcs', num: 1, f: (r) => inr(-r.tcs) }, { h: 'TDS', k: 'tds', num: 1, f: (r) => inr(-r.tds) }], rows,
+      { foot: { sid: '<b>Total</b>', dep: `<b>${inr(sum('total'))}</b>`, sales: inr(sum('sales')), fees: inr(-sum('fees')), tcs: `<b>${inr(-sum('tcs'))}</b>`, tds: `<b>${inr(-sum('tds'))}</b>` } })}
+      <p class="muted small">TCS is claimed in GSTR-3B (it shows in GSTR-2X); TDS in your income-tax return (it shows in Form 26AS). Their balances are in Accounts: GST TCS Receivable and TDS Receivable.</p>` : '';
+  };
+  if ($('#stf')) {
+    drawPayouts().catch(() => {});
+    let sbody = null;
+    $('#stf').onsubmit = async (e) => {
+      e.preventDefault();
+      const sf = $('#stf'), err = $('.err', sf); err.hidden = true;
+      const file = sf.elements.file.files[0];
+      if (!file) { err.hidden = false; err.textContent = 'Choose the settlement report first.'; return; }
+      try {
+        sbody = { csv: new TextDecoder().decode(await file.arrayBuffer()) };
+        const s = await POST('/api/channels/settlement', sbody), T = s.totals;
+        const pct = (x) => (T.sale ? ` · ${Math.round(-x / T.sale * 1000) / 10}% of sales` : '');
+        const unb = s.orders.filter((o) => !o.doc_id && Math.abs(o.sale) > 0.004), accts = await cashOpts();
+        const bank = (await master('accounts')).find((a) => a.is_cash && a.sys === 'bank');
+        $('#stres').innerHTML = `<div class="kpis" style="margin-top:14px">
+            <div class="kpi"><div class="l">Deposited in bank</div><div class="v pos">${inr(T.deposit)}</div><div class="s">${fdate(s.deposit)} · settlement ${esc(s.settlement_id)}</div></div>
+            <div class="kpi"><div class="l">Customers paid for goods</div><div class="v">${inr(T.sale)}</div><div class="s">${s.orders.length} orders</div></div>
+            <div class="kpi"><div class="l">Amazon fees</div><div class="v neg">${inr(-T.fee)}</div><div class="s">${pct(T.fee).replace(' · ', '')}</div></div>
+            <div class="kpi"><div class="l">GST TCS (claim)</div><div class="v">${inr(-T.tcs)}</div><div class="s">GSTR-3B</div></div>
+            <div class="kpi"><div class="l">TDS 194-O (claim)</div><div class="v">${inr(-T.tds)}</div><div class="s">income-tax return</div></div>
+            ${T.other ? `<div class="kpi"><div class="l">Other (ads, reserve…)</div><div class="v">${inr(T.other)}</div></div>` : ''}</div>
+          ${s.posted ? `<div class="panel okbox">This payout was posted on ${new Date(s.posted).toLocaleDateString('en-IN')}.</div>` : ''}
+          ${!s.adds_up ? `<div class="panel warnbox">The lines add up to ${inr(s.file_sum)}, not the deposit ${inr(s.total)}. Download the report again.</div>` : ''}
+          ${unb.length ? `<div class="panel warnbox"><b>${unb.length} order(s) in this payout are not billed here</b> (sold before you used SmartTrader, or not imported yet): ${unb.slice(0, 15).map((o) => esc(o.order_id)).join(', ')}${unb.length > 15 ? '…' : ''}.
+            Import their orders above first, or book them as other income.</div>` : ''}
+          ${table([{ h: 'Order', f: (o) => `${esc(o.order_id)}${o.refund ? ' <span class="badge">refund</span>' : ''}` }, { h: 'Invoice', f: (o) => (o.doc_id ? `<a href="#/doc/${o.doc_id}">${esc(o.invoice)}</a>` : '<span class="neg small">not billed</span>') },
+            { h: 'Sale', num: 1, f: (o) => inr(o.sale) }, { h: 'Fees', num: 1, f: (o) => inr(o.fee) }, { h: 'TCS', num: 1, cls: 'hide-sm', f: (o) => inr(o.tcs) }, { h: 'TDS', num: 1, cls: 'hide-sm', f: (o) => inr(o.tds) },
+            { h: 'You got', num: 1, f: (o) => `<b>${inr(o.net)}</b>` }], s.orders.slice(0, 300))}
+          ${s.orders.length > 300 ? `<p class="muted">…and ${s.orders.length - 300} more orders.</p>` : ''}
+          ${s.posted || !s.adds_up ? '' : `<form id="stpost" class="row" style="margin-top:12px;flex-wrap:wrap;gap:10px"><label class="f inline-f">Money went into<select name="account_id">${accts.map((o) => `<option value="${o.v}" ${bank && +o.v === bank.id ? 'selected' : ''}>${esc(o.t)}</option>`).join('')}</select></label>
+            ${unb.length ? '<label class="check"><input type="checkbox" name="unbilled_ok"> Book unbilled orders as other income</label>' : ''}<span class="spacer"></span><button class="btn primary">Post this payout</button></form>`}`;
+        if ($('#stpost')) $('#stpost').onsubmit = async (ev) => {
+          ev.preventDefault();
+          const pf = ev.target, btn = $('button', pf); btn.disabled = true;
+          try {
+            const r = await POST('/api/channels/settlement/post', { ...sbody, account_id: +pf.elements.account_id.value, unbilled_ok: !!(pf.elements.unbilled_ok && pf.elements.unbilled_ok.checked) });
+            dirty('accounts', 'parties'); toast(`Payout posted: ${r.invoices} invoices marked paid, ${inr(r.deposit)} in the bank`);
+            pf.outerHTML = '<div class="panel okbox">Posted. The invoices are paid; fees, TCS and TDS are booked.</div>'; drawPayouts();
+          } catch (x) { btn.disabled = false; toast(x.message, 'err'); }
+        };
+      } catch (x) { err.hidden = false; err.textContent = x.message; }
+    };
+  }
   const f = $('#chf');
   f.elements.channel.onchange = () => { $('#chhelp').textContent = CHANNEL_HELP[f.elements.channel.value]; $('#storef').hidden = f.elements.channel.value !== 'other'; };
   $('#stdl').onclick = () => fileDownload('/api/channels/stock?warehouse_id=' + (($('#stwh') || {}).value || 0));
@@ -1541,13 +1601,33 @@ route(/^channels$/, async (el) => {
   };
   const showCheck = (r) => {
     const box = $('#chres'), todo = r.orders.filter((o) => !o.done && !o.problems.length), bad = r.orders.filter((o) => o.problems.length);
+    const rets = r.returns || [], retTodo = rets.filter((x) => !x.done && !x.problems.length), retBad = rets.filter((x) => !x.done && x.problems.length);
     box.innerHTML = `<div class="kpis" style="margin-top:14px"><div class="kpi"><div class="l">Ready to bill</div><div class="v">${r.ready}</div><div class="s">${inr0(todo.reduce((s, o) => s + o.total, 0))}</div></div>
-        <div class="kpi"><div class="l">Already billed</div><div class="v">${r.already}</div></div><div class="kpi"><div class="l">Need attention</div><div class="v ${bad.length ? 'neg' : ''}">${bad.length}</div></div></div>
+        <div class="kpi"><div class="l">Already billed</div><div class="v">${r.already}</div></div><div class="kpi"><div class="l">Need attention</div><div class="v ${bad.length ? 'neg' : ''}">${bad.length}</div></div>
+        ${rets.length ? `<div class="kpi"><div class="l">Returns / refunds to book</div><div class="v">${retTodo.length}</div><div class="s">${rets.filter((x) => x.done).length} done before</div></div>` : ''}</div>
+      ${retTodo.length ? `<div class="panel" id="retbox"><h3 style="margin-top:0">Returns and refunds</h3><p class="muted">Each becomes a sales return against its invoice: the goods come back into stock and the GST is reversed.</p>
+        ${table([{ h: 'Order', k: 'order_id' }, { h: 'Invoice', k: 'invoice' }, { h: 'Date', f: (x) => fdate(x.date) }, { h: 'Items', f: (x) => x.lines.map((l) => `${esc(l.item)} × ${qtyf(l.qty)}`).join('<br>') },
+          { h: 'Why', f: (x) => esc(x.why) }, { h: 'Amount', num: 1, f: (x) => inr(x.total) }], retTodo.slice(0, 200))}
+        <div class="row" style="margin-top:10px"><span class="muted" id="retstat"></span><span class="spacer"></span><button class="btn primary" id="retgo">Make ${retTodo.length} sales return${retTodo.length > 1 ? 's' : ''}</button></div></div>` : ''}
+      ${retBad.length ? `<div class="panel warnbox"><b>Refunds that cannot be booked here:</b><ul>${retBad.slice(0, 30).map((x) => `<li>${esc(x.order_id)}: ${esc(x.problems.join('; '))}</li>`).join('')}</ul></div>` : ''}
       ${bad.length ? `<div class="panel warnbox"><b>These orders will be skipped:</b><ul>${bad.slice(0, 50).map((o) => `<li>${esc(o.order_id)}: ${esc(o.problems.join('; '))}</li>`).join('')}</ul>
         <span class="muted">Fix: add the SKU to the item (Items → Edit → SKU), then check again.</span></div>` : ''}
       ${todo.length ? table([{ h: 'Order', k: 'order_id' }, { h: 'Date', f: (o) => fdate(o.date) }, { h: 'Bill to', k: 'party' }, { h: 'Items', f: (o) => o.lines.map((l) => `${esc(l.item)} × ${qtyf(l.qty)}`).join('<br>') },
         { h: 'Amount', num: 1, f: (o) => inr(o.total) }], todo.slice(0, 200)) + (todo.length > 200 ? `<p class="muted">…and ${todo.length - 200} more.</p>` : '')
         + `<div class="prog" hidden><i></i></div><div class="row" style="margin-top:10px"><span class="muted" id="chstat"></span><span class="spacer"></span><button class="btn primary" id="chgo">Make ${todo.length} invoice${todo.length > 1 ? 's' : ''}</button></div>` : '<p class="muted">Nothing new to bill in this file.</p>'}`;
+    if ($('#retgo')) $('#retgo').onclick = async () => {
+      const b = $('#retgo'); b.disabled = true;
+      const ok = [], fail = [];
+      for (let i = 0; i < retTodo.length; i += 2) {
+        const part = retTodo.slice(i, i + 2).map((x) => x.key);
+        try { for (const x of (await POST('/api/channels/import', { ...body, only_returns: part })).results) (x.number || x.skipped ? ok : fail).push(x); }
+        catch (x) { for (const k of part) fail.push({ order_id: k, error: x.message }); }
+        $('#retstat').textContent = `${Math.min(retTodo.length, i + 2)} of ${retTodo.length}…`;
+      }
+      dirty('items', 'parties', 'accounts');
+      $('#retstat').innerHTML = `<b>${ok.filter((x) => x.number).length} sales returns made.</b>${fail.length ? ` ${fail.length} failed: ${fail.slice(0, 10).map((x) => `${esc(x.order_id)} (${esc(x.error)})`).join(', ')}` : ''} <a href="#/sales/SRET">See returns</a>`;
+      b.hidden = true;
+    };
     if (!todo.length) return;
     $('#chgo').onclick = async () => {
       const go1 = $('#chgo'); go1.disabled = true; $('.prog', box).hidden = false;
@@ -1562,8 +1642,10 @@ route(/^channels$/, async (el) => {
         $('#chstat').textContent = `${Math.min(todo.length, i + 2)} of ${todo.length}…`;
       }
       dirty('items', 'parties', 'accounts');
-      $('#chstat').innerHTML = `<b>${ok.filter((x) => x.number).length} invoices made.</b>${fail.length ? ` ${fail.length} failed: ${fail.slice(0, 10).map((x) => `${esc(x.order_id)} (${esc(x.error)})`).join(', ')}` : ''} <a href="#/sales/INV">See invoices</a>`;
+      $('#chstat').innerHTML = `<b>${ok.filter((x) => x.number).length} invoices made.</b>${fail.length ? ` ${fail.length} failed: ${fail.slice(0, 10).map((x) => `${esc(x.order_id)} (${esc(x.error)})`).join(', ')}` : ''} <a href="#/sales/INV">See invoices</a>`
+        + (retBad.some((x) => !x.doc_id) ? ' <button type="button" class="btn sm primary" id="rechk">Check refunds now</button>' : '');
       go1.hidden = true;
+      if ($('#rechk')) $('#rechk').onclick = () => f.requestSubmit();
     };
   };
 });
