@@ -2430,5 +2430,90 @@ if (process.env.ERP_AI_MOCK) {
   srv.close();
 }
 
+/* TDS on payments and receipts, bank reconciliation with the BRS, fixed assets and depreciation */
+{
+  const ip = '203.0.113.185';
+  const su = await rq('POST', '/api/auth/signup', { business: 'Mehta Engineering', name: 'M', email: `acct${Date.now()}@test.in`, password: 'Acct-pass-1234', state: 'Maharashtra' }, { ip });
+  const V = async (m, p, b) => { const r = await rq(m, p, b, { cookie: su.cookie, ip }); if (r.status >= 400) throw new Error(`${m} ${p} -> ${r.status} ${r.data.error}`); return r.data; };
+  const E = (m, p, b) => rq(m, p, b, { cookie: su.cookie, ip });
+  const acc0 = (await V('GET', '/api/accounts')).rows, bank = acc0.find((a) => a.sys === 'bank'), day = (await V('GET', '/api/me')).today;
+  const bal = async (sys) => ((await V('GET', '/api/accounts')).rows.find((a) => a.sys === sys) || {}).balance;
+  const cust = await V('POST', '/api/parties', { name: 'Ramesh Traders', kind: 'customer', state: 'Maharashtra' });
+  const sup = await V('POST', '/api/parties', { name: 'Shree Contractors', kind: 'supplier', state: 'Maharashtra', gstin: '27AAPFU0939F1ZV' });
+  const svc = await V('POST', '/api/items', { name: 'Fabrication work', unit: 'job', sale_price: 1000, gst_rate: 18, is_service: true });
+
+  // TDS kept back from a contractor: the bill settled in full, the contractor gets the rest, TDS owed until the challan
+  const bill = await V('POST', '/api/docs', { type: 'BILL', party_id: sup.id, lines: [{ item_id: svc.id, qty: 10, rate: 1000 }] });
+  check('a TDS payment needs its section', (await E('POST', '/api/payments', { kind: 'payment', party_id: sup.id, account_id: bank.id, amount: 100, tds_rate: 2 })).status === 400);
+  const pay = await V('POST', '/api/payments', { kind: 'payment', party_id: sup.id, account_id: bank.id, amount: 11800, tds_section: '194C', tds_rate: 2, reference: 'CHQ000045',
+    allocations: [{ doc_id: bill.id, amount: 11800 }] });
+  check('TDS on a payment: the bill is paid in full, the bank pays the rest, TDS is owed to the government', pay.tds === 23600 && pay.tds_section === '194C'
+    && (await V('GET', `/api/docs/${bill.id}`)).status === 'paid' && await bal('tds_payable') === 236 && await bal('bank') === -11564, JSON.stringify([pay.tds, await bal('tds_payable'), await bal('bank')]));
+  const tr = await V('GET', '/api/tds');
+  check('TDS report: by section, the supplier\'s PAN from the GSTIN, due by the 7th; Today asks to pay it', tr.deducted.length === 1 && tr.deducted[0].pan === 'AAPFU0939F'
+    && tr.by_section[0].section === '194C' && tr.by_section[0].tds === 236 && tr.payable === 236 && /-(07|04-30)$/.test(tr.due)
+    && (await V('GET', '/api/today')).rows.some((r) => r.key === 'tds_due' && r.value === 236), JSON.stringify([tr.deducted, tr.by_section, tr.payable, tr.due]));
+  await V('POST', '/api/tds/challan', { date: day, amount: 236, account_id: bank.id, challan_no: 'CIN0510308' });
+  check('the challan clears TDS payable and the Today row', await bal('tds_payable') === 0 && (await V('GET', '/api/tds')).challans.length === 1
+    && !(await V('GET', '/api/today')).rows.some((r) => r.key === 'tds_due'));
+  const inv = await V('POST', '/api/docs', { type: 'INV', party_id: cust.id, lines: [{ item_id: svc.id, qty: 5, rate: 1000 }] });
+  const rc = await V('POST', '/api/payments', { kind: 'receipt', party_id: cust.id, account_id: bank.id, amount: 5900, tds_rate: 2, reference: 'UTR998877', allocations: [{ doc_id: inv.id, amount: 5900 }] });
+  check('a customer who deducted TDS: the invoice is paid in full, the bank gets the rest, the TDS is a claim', rc.tds === 11800 && (await V('GET', `/api/docs/${inv.id}`)).status === 'paid'
+    && await bal('tds_recv') === 118 && (await V('GET', '/api/tds')).by_customers.length === 1, JSON.stringify([rc.tds, await bal('tds_recv')]));
+
+  // bank reconciliation: an HDFC-style statement matched to the books; a bank charge added from it; the BRS
+  const ddmm = `${day.slice(8, 10)}/${day.slice(5, 7)}/${day.slice(2, 4)}`;
+  const stmt = ['HDFC BANK Ltd. Statement of account', 'Account No : 50100123456789', '',
+    'Date,Narration,Chq./Ref.No.,Value Dt,Withdrawal Amt.,Deposit Amt.,Closing Balance',
+    `${ddmm},CHQ PAID-MICR CTS-SHREE CONTRACTORS,0000000045,${ddmm},"11,564.00",,"-11,564.00"`,
+    `${ddmm},NEFT CR-HDFC0001234-RAMESH TRADERS-UTR998877,UTR998877,${ddmm},,"5,782.00","-5,782.00"`,
+    `${ddmm},SMS CHARGES FOR Q3,,${ddmm},17.70,,"-5,799.70"`, '', 'STATEMENT SUMMARY,,,,,,'].join('\n');
+  const ch = await V('POST', '/api/bank/check', { account_id: bank.id, csv: stmt });
+  check('statement read past the bank\'s heading; the cheque and the NEFT match the books, the SMS charge does not; the unpresented challan is listed',
+    ch.counts.lines === 3 && ch.counts.matched === 2 && ch.lines[2].status === 'none' && ch.lines[2].amount === -17.7 && ch.closing === -5799.7
+    && ch.book_open.length === 1 && ch.book_open[0].amount === -236, JSON.stringify([ch.counts, ch.lines.map((l) => [l.status, l.amount]), ch.book_open, ch.closing]));
+  await V('POST', '/api/bank/clear', { account_id: bank.id, items: ch.lines.filter((l) => l.status === 'match').map((l) => ({ line: l.line, date: l.date, key: l.key })) });
+  const charges = (await V('GET', '/api/accounts')).rows.find((a) => a.name === 'Bank Charges');
+  await V('POST', '/api/expenses', { account_id: charges.id, amount: 17.7, gst_amount: 0, paid_from: bank.id, date: day, notes: 'SMS CHARGES FOR Q3' });
+  const ch2 = await V('POST', '/api/bank/check', { account_id: bank.id, csv: stmt });
+  check('read again: the confirmed lines are done, the charge added from it now matches', ch2.counts.done === 2 && ch2.counts.matched === 1 && ch2.counts.none === 0, JSON.stringify(ch2.counts));
+  await V('POST', '/api/bank/clear', { account_id: bank.id, items: ch2.lines.filter((l) => l.status === 'match').map((l) => ({ line: l.line, date: l.date, key: l.key })) });
+  const B = await V('GET', `/api/bank/brs?account_id=${bank.id}&date=${day}`);
+  check('BRS: books, plus the cheque not yet presented, is what the bank shows', B.books === -6035.7 && B.not_presented.length === 1 && B.not_credited.length === 0 && B.bank === -5799.7,
+    JSON.stringify([B.books, B.bank, B.not_presented.length]));
+  const other = await rq('POST', '/api/auth/signup', { business: 'Other Co', name: 'O', email: `other${Date.now()}@test.in`, password: 'Other-pass-1234', state: 'Maharashtra' }, { ip: '203.0.113.186' });
+  const oBank = (await rq('GET', '/api/accounts', undefined, { cookie: other.cookie, ip: '203.0.113.186' })).data.rows.find((a) => a.sys === 'bank');
+  await rq('POST', '/api/bank/clear', { account_id: oBank.id, items: [{ line: ch.lines[0].line, date: day, key: 'x' }] }, { cookie: other.cookie, ip: '203.0.113.186' });
+  check('another business cannot touch these entries', (await rq('POST', '/api/bank/check', { account_id: bank.id, csv: stmt }, { cookie: other.cookie, ip: '203.0.113.186' })).status === 400
+    && (await V('POST', '/api/bank/check', { account_id: bank.id, csv: stmt })).counts.done === 3);
+  check('a file without the bank columns says what it needs', (await E('POST', '/api/bank/check', { account_id: bank.id, csv: 'a,b\n1,2\n' })).status === 400);
+
+  // fixed assets: WDV (half rate if used under 180 days in its first year), SLM by days; booked once, undone, a sale with its loss
+  const fyNow = (await V('GET', '/api/assets')).fy_now, y0 = +fyNow.slice(0, 4) - 1, prev = `${y0}${fyNow.slice(4)}`;
+  await V('POST', '/api/assets', { name: 'Lathe machine', category: 'plant', bought_on: `${y0}-05-10`, cost: 100000, method: 'wdv', rate: 15, paid: 'opening' });
+  const laptop = await V('POST', '/api/assets', { name: 'Laptop', category: 'computer', bought_on: `${y0 + 1}-01-15`, cost: 60000, gst: 10800, method: 'wdv', rate: 40, paid: 'cash', account_id: bank.id });
+  await V('POST', '/api/assets', { name: 'Delivery van', category: 'vehicle', bought_on: `${y0}-10-01`, cost: 800000, method: 'slm', life_years: 8, paid: 'supplier', party_id: sup.id });
+  const pv = await V('GET', '/api/assets/depreciation?fy=' + prev), L = (n) => pv.lines.find((l) => l.name === n).amount;
+  check('a year\'s depreciation: WDV 15% on the lathe, half of 40% on a laptop used under 180 days, SLM by days on the van', L('Lathe machine') === 15000 && L('Laptop') === 12000
+    && L('Delivery van') === 49863.01 && pv.total === 76863.01 && pv.can_book && !pv.booked, JSON.stringify(pv.lines));
+  await V('POST', '/api/assets/depreciation', { fy: prev });
+  check('booked: Depreciation against Accumulated Depreciation, once only', await bal('depreciation') === 76863.01 && await bal('acc_dep') === -76863.01
+    && (await E('POST', '/api/assets/depreciation', { fy: prev })).status === 400, JSON.stringify([await bal('depreciation'), await bal('acc_dep')]));
+  const cur = await V('GET', '/api/assets/depreciation?fy=' + fyNow), C = (n) => cur.lines.find((l) => l.name === n).amount;
+  check('the next year starts from what is left; a year not yet ended cannot be booked', C('Lathe machine') === 12750 && C('Laptop') === 19200 && C('Delivery van') === 100000
+    && !cur.can_book && (await E('POST', '/api/assets/depreciation', { fy: fyNow })).status === 400, JSON.stringify(cur.lines));
+  await V('POST', '/api/assets/depreciation/undo', { fy: prev });
+  check('undo takes the year back', await bal('depreciation') === 0 && !(await V('GET', '/api/assets/depreciation?fy=' + prev)).booked);
+  await V('POST', '/api/assets/depreciation', { fy: prev });
+  const sold = await V('POST', `/api/assets/${laptop.id}/dispose`, { date: day, amount: 40000, account_id: bank.id });
+  const list = (await V('GET', '/api/assets')).rows;
+  check('a laptop sold below its book value: out of the books, the loss booked', sold.gain === -8000 && await bal('asset_loss') === 8000 && list.find((a) => a.id === laptop.id).sold_on === day
+    && (await E('POST', `/api/assets/${laptop.id}/dispose`, { date: day, amount: 1 })).status === 400, JSON.stringify([sold, await bal('asset_loss')]));
+  check('the books balance after TDS, the bank charge, assets and depreciation', (await V('GET', '/api/reports/trial-balance')).balanced);
+  const bk = await (await fetch(BASE + '/api/export/backup', { headers: { Cookie: su.cookie, 'CF-Connecting-IP': ip } })).json();
+  check('the backup carries assets, depreciation, challans and the reconciled entries', bk.tables.fixed_assets.length === 3 && bk.tables.asset_dep.length === 3 && bk.tables.dep_runs.length === 1
+    && bk.tables.tds_challans.length === 1 && bk.tables.bank_clear.length === 3, ['fixed_assets', 'asset_dep', 'dep_runs', 'tds_challans', 'bank_clear'].map((t) => `${t} ${(bk.tables[t] || []).length}`).join(' '));
+}
+
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

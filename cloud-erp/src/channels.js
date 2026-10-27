@@ -11,7 +11,7 @@
    The stock file goes the other way: SKU and quantity in hand, for the marketplace's inventory upload. */
 import { HttpError, bad, str, roundQty, nowIso, today, loadByIds } from './lib.js';
 import { requireCan, checkBackdate } from './auth.js';
-import { createDoc, paymentStatements, journalStatements, auditStatement, cashAccount, SYS_SQL, sysMap } from './engine.js';
+import { createDoc, paymentStatements, journalStatements, auditStatement, cashAccount, ensureSysAccounts, TDS_ACCOUNTS } from './engine.js';
 import { STATES } from './gst.js';
 
 export const CHANNELS = { amazon: 'Amazon', flipkart: 'Flipkart', meesho: 'Meesho', other: 'Online' };
@@ -330,14 +330,8 @@ export async function readSettlement(c, body) {
 
 /* the marketplace's accounts, made the first time they are needed (an older business, or one restored from a backup) */
 const MKT_ACCOUNTS = [['mkt_clear', ['1120', '1121', '1129'], 'Marketplace Payouts Receivable', 'asset'], ['tcs_recv', ['1310', '1311', '1319'], 'GST TCS Receivable', 'asset'],
-  ['tds_recv', ['1320', '1321', '1329'], 'TDS Receivable (Income Tax)', 'asset'], ['mkt_fees', ['6070', '6071', '6079'], 'Marketplace Fees & Commission', 'expense']];
-async function marketAccounts(c) {
-  await c.db.batch(MKT_ACCOUNTS.flatMap(([sys, codes, name, type]) => codes.map((code) => c.db.prepare(`INSERT INTO accounts (org_id, code, name, type, sys, is_cash)
-    SELECT ?, ?, ?, ?, ?, 0 WHERE NOT EXISTS (SELECT 1 FROM accounts WHERE org_id = ? AND sys = ?) AND NOT EXISTS (SELECT 1 FROM accounts WHERE org_id = ? AND code = ?)`)
-    .bind(c.org.id, code, name, type, sys, c.org.id, sys, c.org.id, code))));
-  c.sys = sysMap((await c.db.prepare(SYS_SQL).bind(c.org.id).all()).results);
-  return c.sys;
-}
+  ['mkt_fees', ['6070', '6071', '6079'], 'Marketplace Fees & Commission', 'expense'], ...TDS_ACCOUNTS];
+const marketAccounts = (c) => ensureSysAccounts(c, MKT_ACCOUNTS);
 
 /* Post one payout, once: receipts (one per marketplace party) that mark the orders' invoices paid, through
    "Marketplace Payouts Receivable"; then one journal: bank gets the deposit, fees go to expense, TCS and TDS to the

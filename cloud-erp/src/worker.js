@@ -17,6 +17,9 @@ import {
 } from './engine.js';
 import { getBom, saveBom, listProductions, createProduction, cancelProduction } from './mfg.js';
 import { importOrders, stockFile, readSettlement, postSettlement, listSettlements } from './channels.js';
+import { checkStatement, clearLines, unclearLine, brs } from './bankrec.js';
+import { listAssets, addAsset, previewDep, bookDep, undoDep, disposeAsset } from './assets.js';
+import { tdsReport, payChallan } from './tds.js';
 import { waConfigured, runAutoReminders, remindOrg } from './autowa.js';
 import { listHooks, addHook, deleteHook, receiveHook } from './hooks.js';
 import { receivePending, matchBill, learnCode, autoBins, writeOff, cancelWriteOff, writeOffOut } from './receive.js';
@@ -632,6 +635,22 @@ router.add('POST', '/api/channels/import', async (c) => json(await importOrders(
 router.add('POST', '/api/channels/settlement', async (c) => json(await readSettlement(c, c.body)), { bodyMax: 8000000 });
 router.add('POST', '/api/channels/settlement/post', async (c) => json(await postSettlement(c, c.body)), { bodyMax: 8000000 });
 router.add('GET', '/api/channels/settlements', async (c) => json({ rows: await listSettlements(c) }));
+
+/* ======================================================================= bank reconciliation: src/bankrec.js */
+router.add('POST', '/api/bank/check', async (c) => json(await checkStatement(c, c.body)), { bodyMax: 6000000 });
+router.add('POST', '/api/bank/clear', async (c) => json(await clearLines(c, c.body)));
+router.add('POST', '/api/bank/unclear/:id', async (c) => json(await unclearLine(c, +c.params.id)));
+router.add('GET', '/api/bank/brs', async (c) => json(await brs(c, c.url.searchParams)));
+
+/* ======================================================================= fixed assets & depreciation: src/assets.js; TDS: src/tds.js */
+router.add('GET', '/api/assets', async (c) => json(await listAssets(c)));
+router.add('POST', '/api/assets', async (c) => json(await addAsset(c, c.body)));
+router.add('GET', '/api/assets/depreciation', async (c) => json(await previewDep(c, c.url.searchParams.get('fy'))));
+router.add('POST', '/api/assets/depreciation', async (c) => json(await bookDep(c, c.body.fy)));
+router.add('POST', '/api/assets/depreciation/undo', async (c) => json(await undoDep(c, c.body.fy)));
+router.add('POST', '/api/assets/:id/dispose', async (c) => json(await disposeAsset(c, +c.params.id, c.body)));
+router.add('GET', '/api/tds', async (c) => json(await tdsReport(c, c.url.searchParams)));
+router.add('POST', '/api/tds/challan', async (c) => json(await payChallan(c, c.body)));
 router.add('GET', '/api/channels/stock', async (c) => download(`stock-${today()}.csv`, await stockFile(c, +c.url.searchParams.get('warehouse_id') || 0), 'text/csv'));
 
 /* ======================================================================= staff, attendance and salary: src/payroll.js */
@@ -712,6 +731,9 @@ router.add('GET', '/api/today', async (c) => {
   add('disputed', 'finance', `SELECT COUNT(*) AS n, 0 AS v FROM confirmations WHERE org_id = ? AND status = 'disputed' AND answered_at >= ?`, o, addDays(t, -30));
   add('recurring', 'sales', `SELECT COUNT(*) AS n, 0 AS v FROM recurring WHERE org_id = ? AND active = 1 AND COALESCE(last_error, '') != ''`, o);
   add('recurring_send', 'sales', `SELECT COUNT(*) AS n, 0 AS v FROM recurring WHERE org_id = ? AND sent = 0 AND last_doc_id IS NOT NULL`, o);
+  // TDS kept back from suppliers and not yet paid to the government (due by the 7th); only a business that uses TDS has the account
+  add('tds_due', 'finance', `SELECT CASE WHEN SUM(cr - dr) > 0 THEN 1 ELSE 0 END AS n, COALESCE(SUM(cr - dr), 0) AS v FROM acct_month
+    WHERE org_id = ? AND account_id = (SELECT id FROM accounts WHERE org_id = ? AND sys = 'tds_payable')`, o, o);
   if (sees('finance')) want.push(...todayStaffQueries(db, o));
   // the owner's data is safe somewhere: a download (also to a folder: orgs.backup_at), or Google Drive
   if (u.role === 'owner') want.push(['backup', db.prepare(`SELECT (SELECT last_backup_at FROM drive_links WHERE org_id = ?) AS d,
@@ -722,7 +744,7 @@ router.add('GET', '/api/today', async (c) => {
     if (key === 'backup') { const b = backupHealth({ ...rs[i].results[0], a: c.org.backup_at, since: c.org.created_at }); if (b) rows.push(b); return; }
     const r = rs[i].results[0] || { n: 0, v: 0 };
     if (!r.n) return;
-    const money = ['overdue', 'promises', 'bills_due', 'approve', 'claims'].includes(key) || costs;
+    const money = ['overdue', 'promises', 'bills_due', 'approve', 'claims', 'tds_due'].includes(key) || costs;
     rows.push({ key, n: r.n, value: money ? R(r.v) : null });
   });
   return json({ date: t, rows });

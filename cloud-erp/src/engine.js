@@ -35,6 +35,17 @@ export const NOTE_TYPES = ['SRET', 'PRET', 'CNOTE', 'DNOTE'];
 export const SYS_SQL = `SELECT id, sys FROM accounts WHERE org_id = ? AND sys IS NOT NULL`;
 export const sysMap = (rows) => Object.fromEntries(rows.map((r) => [r.sys, r.id]));
 
+/* System accounts a feature needs, made the first time it is used (an older business, or one restored from a
+   backup): [[sys, [codes to try], name, type]]. A code already taken by the owner's own account is skipped. */
+export async function ensureSysAccounts(ctx, specs) {
+  await ctx.db.batch(specs.flatMap(([sys, codes, name, type]) => codes.map((code) => ctx.db.prepare(`INSERT INTO accounts (org_id, code, name, type, sys, is_cash)
+    SELECT ?, ?, ?, ?, ?, 0 WHERE NOT EXISTS (SELECT 1 FROM accounts WHERE org_id = ? AND sys = ?) AND NOT EXISTS (SELECT 1 FROM accounts WHERE org_id = ? AND code = ?)`)
+    .bind(ctx.org.id, code, name, type, sys, ctx.org.id, sys, ctx.org.id, code))));
+  ctx.sys = sysMap((await ctx.db.prepare(SYS_SQL).bind(ctx.org.id).all()).results);
+  return ctx.sys;
+}
+export const TDS_ACCOUNTS = [['tds_payable', ['2300', '2301', '2309'], 'TDS Payable', 'liability'], ['tds_recv', ['1320', '1321', '1329'], 'TDS Receivable (Income Tax)', 'asset']];
+
 export async function cashAccount(db, orgId, id) {
   const a = await db.prepare(`SELECT id, name FROM accounts WHERE id = ? AND org_id = ? AND is_cash = 1`).bind(id, orgId).first();
   if (!a) throw bad('Choose a cash, bank or UPI account to pay from / into.');
@@ -495,14 +506,17 @@ export const auditStatement = (ctx, action, detail = '') =>
 
 /* ---------------------------------------------------------------- payments */
 /* allocs: [{ doc_id | txk, amount, total }]  */
-export function paymentStatements(ctx, { kind, party, account, date: d, amount, reference = '', notes = '', allocs = [] }) {
+/* tds: income tax deducted at source on this payment (paise): kept back from the supplier and owed to the government
+   (TDS Payable), or kept back by the customer and claimed in the income-tax return (TDS Receivable). The bill is
+   settled in full either way; the money that moves is amount - tds. */
+export function paymentStatements(ctx, { kind, party, account, date: d, amount, reference = '', notes = '', allocs = [], tds = 0, tdsSection = '' }) {
   const { db } = ctx, sys = ctx.sys;
   const ptxk = uid();
   const nspec = numberSpec(ctx.org, kind, kind === 'receipt' ? 'RCT' : 'PAY', d);
   const st = [counterStatements(db, ctx.org.id, nspec.key),
-    db.prepare(`INSERT INTO payments (org_id, number, kind, party_id, account_id, date, amount, reference, notes, created_by, created_at, txk)
-                VALUES (?, ${counterValueSql}, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
-      .bind(ctx.org.id, nspec.fmt, ctx.org.id, nspec.key, kind, party.id, account, d, amount, reference, notes, ctx.user.id, nowIso(), ptxk)];
+    db.prepare(`INSERT INTO payments (org_id, number, kind, party_id, account_id, date, amount, reference, notes, created_by, created_at, txk, tds, tds_section)
+                VALUES (?, ${counterValueSql}, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+      .bind(ctx.org.id, nspec.fmt, ctx.org.id, nspec.key, kind, party.id, account, d, amount, reference, notes, ctx.user.id, nowIso(), ptxk, tds, tdsSection)];
   for (const a of allocs) {
     if (!a.amount) continue;
     const docExpr = a.txk ? '(SELECT id FROM docs WHERE txk = ?)' : '?';
@@ -512,8 +526,8 @@ export function paymentStatements(ctx, { kind, party, account, date: d, amount, 
                         WHERE ${a.txk ? 'txk' : 'id'} = ?`).bind(a.amount, a.amount, a.amount, a.txk || a.doc_id));
   }
   const lines = kind === 'receipt'
-    ? [D(account, amount), C(sys.ar, amount, party.id)]
-    : [D(sys.ap, amount, party.id), C(account, amount)];
+    ? [D(account, amount - tds), D(sys.tds_recv, tds), C(sys.ar, amount, party.id)]
+    : [D(sys.ap, amount, party.id), C(account, amount - tds), C(sys.tds_payable, tds)];
   st.push(...journalStatements(db, ctx, { date: d, narration: `${kind === 'receipt' ? 'Receipt from' : 'Payment to'} ${party.name}`,
     refType: kind, refTxk: ptxk, refTable: 'payments', lines }));
   return st;
@@ -531,6 +545,11 @@ export async function createPayment(ctx, body) {
   const amount = toPaise(num(body.amount, 'Amount', { min: 0.01 }));
   const d = date(body.date);
   checkBackdate(ctx.user, d, today(), `a ${kind}`);
+  // TDS: the rate (%) on the amount settled; a payment names the section (194C, 194J ...) for the TDS return
+  const tdsRate = num(body.tds_rate, 'TDS rate', { min: 0, max: 30, def: 0 });
+  const tds = tdsRate ? Math.round(amount * tdsRate / 100) : 0, tdsSection = tds ? str(body.tds_section, 12).toUpperCase() : '';
+  if (tds && kind === 'payment' && !/^19[0-9A-Z-]{1,6}$/.test(tdsSection)) throw bad('Choose the TDS section (e.g. 194C).');
+  if (tds) await ensureSysAccounts(ctx, TDS_ACCOUNTS);
   const docType = kind === 'receipt' ? 'INV' : 'BILL';
   const { results: open } = await db.prepare(`SELECT id, number, total, paid, due_date FROM docs
       WHERE org_id = ? AND party_id = ? AND type = ? AND status IN ('unpaid', 'partial') ORDER BY due_date, id`).bind(ctx.org.id, party.id, docType).all();
@@ -554,8 +573,8 @@ export async function createPayment(ctx, body) {
       if (a > 0) { allocs.push({ doc_id: o.id, amount: a }); left -= a; }
     }
   }
-  const st = paymentStatements(ctx, { kind, party, account: acct.id, date: d, amount, reference: str(body.reference, 80), notes: str(body.notes, 300), allocs });
-  st.push(auditStatement(ctx, `create ${kind}`, `${party.name} ${amount / 100}`));
+  const st = paymentStatements(ctx, { kind, party, account: acct.id, date: d, amount, reference: str(body.reference, 80), notes: str(body.notes, 300), allocs, tds, tdsSection });
+  st.push(auditStatement(ctx, `create ${kind}`, `${party.name} ${amount / 100}${tds ? ` (TDS ${tdsSection || tdsRate + '%'} ${tds / 100})` : ''}`));
   await db.batch(st);
   return db.prepare(`SELECT * FROM payments WHERE org_id = ? AND kind = ? ORDER BY id DESC LIMIT 1`).bind(ctx.org.id, kind).first();
 }
