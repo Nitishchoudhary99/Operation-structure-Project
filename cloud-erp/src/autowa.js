@@ -20,15 +20,16 @@ export function waNumber(phone) {
   return /^[6-9]\d{9}$/.test(n) ? '91' + n : '';
 }
 
-/* one template message; the body has 4 parameters: customer, business, amount, link */
-export async function sendReminder(env, to, lang, params) {
+/* one template message; the body has 4 parameters: customer, business, amount, link (name: another approved template
+   with the same parameters, e.g. WHATSAPP_BILL_TEMPLATE for a new recurring bill) */
+export async function sendReminder(env, to, lang, params, name) {
   const base = (env.WHATSAPP_API || 'https://graph.facebook.com/v21.0').replace(/\/$/, '');
   const code = lang === 'hi' ? env.WHATSAPP_LANG_HI || 'hi' : lang === 'en' ? env.WHATSAPP_LANG_EN || 'en' : env.WHATSAPP_LANG_HL || env.WHATSAPP_LANG_EN || 'en';
   const res = await fetch(`${base}/${env.WHATSAPP_PHONE_ID}/messages`, {
     method: 'POST',
     headers: { Authorization: `Bearer ${env.WHATSAPP_TOKEN}`, 'Content-Type': 'application/json' },
     body: JSON.stringify({ messaging_product: 'whatsapp', to, type: 'template',
-      template: { name: env.WHATSAPP_TEMPLATE || 'payment_reminder', language: { code },
+      template: { name: name || env.WHATSAPP_TEMPLATE || 'payment_reminder', language: { code },
         components: [{ type: 'body', parameters: params.map((t) => ({ type: 'text', text: String(t).slice(0, 200) })) }] } }),
   });
   let data = {};

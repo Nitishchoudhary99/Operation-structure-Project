@@ -3,7 +3,7 @@
    Every business table carries org_id: one database serves many businesses (multi-tenant).
    migrate() runs on the first request after each deploy, so no manual migration step is needed. */
 
-export const SCHEMA_VERSION = 29;
+export const SCHEMA_VERSION = 30;
 
 // document types whose monthly totals doc_month keeps (sales and purchase money documents)
 const MONTH_TYPES = `('INV','SRET','CNOTE','BILL','PRET','DNOTE')`;
@@ -563,6 +563,18 @@ export const MIGRATIONS = {
     `ALTER TABLE drive_links ADD COLUMN last_checked INTEGER`,
     // the newest download of a full backup (file, Excel or the app's folder backup), for the Today reminder
     `ALTER TABLE orgs ADD COLUMN backup_at TEXT`,
+  ],
+  /* recurring bills (src/recurring.js): the schedule's own customer and lines (JSON, rupees), its note, how the new bill
+     reaches the customer (auto / ask / off) and whether the newest one did, and a yearly price rise */
+  30: [
+    `ALTER TABLE recurring ADD COLUMN party_id INTEGER`,
+    `ALTER TABLE recurring ADD COLUMN lines TEXT`,
+    `ALTER TABLE recurring ADD COLUMN notes TEXT`,
+    `ALTER TABLE recurring ADD COLUMN send TEXT NOT NULL DEFAULT 'ask'`,
+    `ALTER TABLE recurring ADD COLUMN sent INTEGER NOT NULL DEFAULT 1`,
+    `ALTER TABLE recurring ADD COLUMN raise_pct REAL NOT NULL DEFAULT 0`,
+    `ALTER TABLE recurring ADD COLUMN raise_on TEXT`,
+    `CREATE INDEX IF NOT EXISTS ix_recurring_org ON recurring (org_id, sent)`,
   ],
 };
 

@@ -821,3 +821,32 @@ html.in .app-loading { display: block; }
 .landing footer li { margin: 6px 0; }
 .landing footer li a { color: var(--muted); }
 @media (max-width: 640px) { .landing .top nav { order: 3; width: 100%; overflow-x: auto; flex-wrap: nowrap; white-space: nowrap; } .landing .hero { padding-top: 32px; } }
+
+/* Recurring Bills (app.js recurring): the "To send" list, row buttons, the line editor and the customer picker */
+.rs-row { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 8px 0; border-top: 1px solid var(--line); }
+.rs-row:first-child { border-top: 0; }
+.rbtns { display: flex; flex-wrap: wrap; gap: 6px; justify-content: flex-end; }
+.rl { margin-top: 12px; }
+.rl-t td { vertical-align: top; }
+.rl-t input, .rl-t select { width: 100%; min-width: 0; }
+.rl-t td:first-child { min-width: 170px; }
+.rl-t td:nth-child(2), .rl-t td:nth-child(3) { min-width: 80px; }
+.rl-t input[data-k=description] { margin-top: 4px; }
+.pc-list { max-height: 300px; overflow-y: auto; border: 1px solid var(--line); border-radius: 8px; padding: 6px 10px; display: grid; gap: 6px; }
+.pc-list label[hidden] { display: none; }
+.rcards { display: none; }
+.rcard { display: grid; gap: 4px; margin-bottom: 10px; }
+.rcard .rbtns { justify-content: flex-start; margin-top: 6px; }
+.rcard[hidden] { display: none; }
+@media (max-width: 860px) {
+  .rcards { display: block; }
+  .rtable { display: none; }
+}
+@media (max-width: 600px) {
+  .rl-t thead { display: none; }
+  .rl-t, .rl-t tbody { display: block; }
+  .rl-t tr { display: grid; grid-template-columns: 1fr 1fr 1fr auto; gap: 6px; align-items: end; padding: 8px 0; border-top: 1px solid var(--line); }
+  .rl-t td { display: block; padding: 0; min-width: 0 !important; border: 0; }
+  .rl-t td:first-child { grid-column: 1 / -1; }
+  .rl-t td[data-l]::before { content: attr(data-l); display: block; font-size: 12px; color: var(--muted); margin-bottom: 2px; }
+}

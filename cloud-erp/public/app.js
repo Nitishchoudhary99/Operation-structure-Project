@@ -594,6 +594,7 @@ const TODAY = {
   disputed: ['red', (n) => `${n} customer${n > 1 ? 's' : ''} disputed their balance`, '#/reminders', 'See'],
   expired: ['red', (n) => `${n} batch${n > 1 ? 'es' : ''} past expiry still in stock`, '#/expiry', 'See'],
   recurring: ['red', (n) => `${n} recurring bill${n > 1 ? 's' : ''} could not be made`, '#/recurring', 'Fix'],
+  recurring_send: ['amber', (n) => `${n} new recurring bill${n > 1 ? 's' : ''} to send to customers`, '#/recurring', 'Send'],
   approve: ['amber', (n) => `${n} purchase order${n > 1 ? 's' : ''} waiting for your approval`, '#/purchase/PO?status=pending', 'Approve'],
   bills_due: ['amber', (n) => `${n} supplier bill${n > 1 ? 's' : ''} due within 7 days`, '#/reports/ageing?kind=payable', 'Pay'],
   expiring: ['amber', (n) => `${n} batch${n > 1 ? 'es' : ''} expire within 30 days`, '#/expiry', 'Sell first'],
@@ -762,6 +763,8 @@ route(/^new\/([A-Z]+)$/, async (el, m, q) => {
       ${refField ? `<label class="f">${type === 'GRN' ? 'Supplier challan / bill no.' : 'Supplier bill no.'}<input name="party_ref" maxlength="40" value="${esc(draft.party_ref || '')}" autocomplete="off"></label>` : ''}
       ${billFirst ? `<label class="f check wide"><input type="checkbox" name="transit"> <span>Goods not received yet (on the way)<small class="help">Stock comes in when the goods arrive: Purchase → Receive Goods.</small></span></label>` : ''}
       ${money || type === 'PO' || type === 'SO' || type === 'QUOTE' ? `<label class="f">${money ? 'Due date' : type === 'QUOTE' ? 'Valid until' : 'Expected by'}<input type="date" name="due_date" placeholder="auto"></label>` : ''}
+      ${money && !fromDoc && !isNote ? `<label class="f">Repeat this ${isSale ? 'invoice' : 'bill'}<select name="repeat">${[['', 'No, just once'], ...Object.entries(EVERY_T)].map(([v, t]) => `<option value="${v}" ${v === (q.get('repeat') || '') ? 'selected' : ''}>${t}</option>`).join('')}</select>
+        <small class="help">Rent, tuition, AMC: a new one is made by itself${isSale ? ' and sent to the customer' : ''}.</small></label>` : ''}
       ${whs.length > 1 ? `<label class="f">Godown<select name="warehouse_id">${whs.map((w) => `<option value="${w.id}" ${w.id === +draft.warehouse_id ? 'selected' : ''}>${esc(w.name)}</option>`).join('')}</select></label>`
         : `<input type="hidden" name="warehouse_id" value="${whs[0] ? whs[0].id : ''}">`}
       ${cfInputs('doc', draft.extra || {}, T.side)}
@@ -897,6 +900,12 @@ route(/^new\/([A-Z]+)$/, async (el, m, q) => {
         const d = await POST('/api/docs', body);
         if (d.queued) { toast('No internet: saved on this device. It is sent by itself when you are back online.', 'info'); go('outbox'); return; }
         dirty('items', 'parties', 'accounts');
+        if (f.repeat && f.repeat.value) {
+          try {
+            const rr = await POST(`/api/docs/${d.id}/recurring`, { every: f.repeat.value });
+            toast(`${d.number} saved. The next one is made by itself on ${fdate(rr.next_on)}, then ${EVERY_T[f.repeat.value].toLowerCase()}.`); go('recurring'); return;
+          } catch (er) { toast(`${d.number} saved, but it could not be set to repeat: ${er.message}`, 'err'); go('doc/' + d.id); return; }
+        }
         toast(d.transit === 1 ? `${d.number} saved. When the goods come, receive them in Purchase → Receive Goods.` : `${d.number} saved`); go('doc/' + d.id);
       } catch (err) {
         if (err.status === 409 && err.data.credit_warning) {
@@ -1090,11 +1099,12 @@ route(/^doc\/(\d+)$/, async (el, m) => {
   if ($('#recur')) $('#recur').onclick = () => {
     const nm = new Date(ME.today + 'T00:00:00Z'); nm.setUTCMonth(nm.getUTCMonth() + 1);
     modal(`Repeat ${d.number} automatically`, [
-      { k: 'every', label: 'Make it every', type: 'select', value: 'month', options: [{ v: 'week', t: 'Week' }, { v: 'month', t: 'Month' }, { v: 'quarter', t: '3 months (quarter)' }, { v: 'year', t: 'Year' }] },
+      { k: 'every', label: 'Make it', type: 'select', value: 'month', options: Object.entries(EVERY_T).map(([v, t]) => ({ v, t })) },
       { k: 'next_on', label: 'First new one on', type: 'date', value: nm.toISOString().slice(0, 10), required: true },
-      { k: 'ends_on', label: 'Stop after (optional)', type: 'date', value: '' }],
-    async (v) => { await POST(`/api/docs/${d.id}/recurring`, v); toast('Done. It will be made by itself every ' + v.every + '.'); go('recurring'); },
-    { submit: 'Start', intro: `<p class="muted">Every morning on the due date SmartTrader makes a new ${d.type === 'INV' ? 'invoice' : 'bill'} with the same party and items, dated that day. You can share it on WhatsApp from the Invoices list. हर महीने अपने आप नया बिल बन जाएगा।</p>` });
+      { k: 'ends_on', label: 'Stop after (optional)', type: 'date', value: '' },
+      ...(d.type === 'INV' ? [{ k: 'send', label: 'The customer gets each new bill', type: 'select', value: ME.org.auto_wa ? 'auto' : 'ask', options: Object.entries(SEND_T).map(([v, t]) => ({ v, t })) }] : [])],
+    async (v) => { await POST(`/api/docs/${d.id}/recurring`, v); toast(`Done. A new one is made by itself, ${EVERY_T[v.every].toLowerCase()}.`); go('recurring'); },
+    { submit: 'Start', intro: `<p class="muted">On each date SmartTrader makes a new ${d.type === 'INV' ? 'invoice' : 'bill'} with the same ${d.type === 'INV' ? 'customer' : 'supplier'} and items, says which period it is for${d.type === 'INV' ? ', and sends it to the customer with a UPI link' : ''}. Change the items, skip a month or add more customers later under Recurring Bills. हर महीने अपने आप नया बिल।</p>` });
   };
   if ($('#refs')) $('#refs').onclick = () => modal('GST portal numbers', [
     { k: 'irn', label: 'IRN (e-invoice)', value: d.irn, wide: true }, { k: 'ack_no', label: 'Ack No', value: d.ack_no }, { k: 'ack_date', label: 'Ack date', value: d.ack_date },
@@ -3632,7 +3642,7 @@ const waPhone = (p) => (/^91\d{10}$/.test(p) ? `+91 ${p.slice(2, 7)} ${p.slice(7
 const waWhen = (t) => (t ? new Date(t).toLocaleString('en-IN', { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' }) : '');
 // WhatsApp's *bold* and the links in what the bot sent, on escaped text
 const waBody = (s) => esc(s).replace(/\*([^*\n]+)\*/g, '<b>$1</b>').replace(/(https?:\/\/[^\s<]+)/g, '<a href="$1" target="_blank" rel="noopener">$1</a>').replace(/\n/g, '<br>');
-const WA_KIND = { bot: 'Bot', reply: 'Shop', reminder: 'Reminder' };
+const WA_KIND = { bot: 'Bot', reply: 'Shop', reminder: 'Reminder', bill: 'New bill' };
 route(/^wa-inbox$/, async (el, m, q) => {
   const tab = q.get('tab') || 'waiting';
   const { rows, waiting } = await GET('/api/wa/inbox');
@@ -3748,30 +3758,138 @@ route(/^pending$/, async (el) => {
 });
 
 /* ======================================================================= recurring invoices and bills */
+/* Rent, AMC, tuition, maintenance, monthly supply. A schedule keeps its own customer and lines (src/recurring.js):
+   change them, skip a month, raise the price every year, copy it to a whole class or building. Each new bill says
+   which period it is for and goes to the customer: by itself on WhatsApp, or from "To send" in one tap. */
+const EVERY_T = { week: 'Every week', month: 'Every month', quarter: 'Every 3 months', year: 'Every year' };
+const SEND_T = { auto: 'Send by itself on WhatsApp', ask: 'Remind me to send (one tap)', off: 'Do not send' };
+const perMonth = (r) => r.amount * ({ week: 52 / 12, month: 1, quarter: 1 / 3, year: 1 / 12 }[r.every] || 1);
 route(/^recurring$/, async (el) => {
   const { rows } = await GET('/api/recurring');
-  const every = { week: 'Every week', month: 'Every month', quarter: 'Every 3 months', year: 'Every year' };
-  el.innerHTML = head('Recurring Bills', ME.user.role === 'owner' ? '<button class="btn" id="rundue">Make due ones now</button>' : '') + `
-    <p class="muted">Rent, AMC, tuition, monthly supply: open any invoice or purchase bill and choose <b>More → Make it every month / week</b>. A new one is made by itself every morning on its date. हर महीने अपने आप बिल।</p>
-    <div class="panel flush">${table([
-      { h: 'Made from', f: (r) => `<a href="#/doc/${r.src_doc_id}">${esc(r.number)}</a><div class="muted">${esc(r.party || '')}</div>` },
-      { h: 'Repeats', f: (r) => esc(every[r.every] || r.every) + (r.ends_on ? `<div class="muted">till ${fdate(r.ends_on)}</div>` : '') },
-      { h: 'Next', f: (r) => r.active ? fdate(r.next_on) : '<span class="badge">stopped</span>' },
-      { h: 'Amount', num: 1, cls: 'hide-sm', f: (r) => inr(r.total) },
+  const live = rows.filter((r) => r.active), sales = live.filter((r) => r.type === 'INV');
+  // up to the same day next month: what the next round of bills brings in
+  const [ty, tm, td] = ME.today.split('-').map(Number), till = new Date(Date.UTC(ty, tm, Math.min(td, new Date(Date.UTC(ty, tm + 1, 0)).getUTCDate()))).toISOString().slice(0, 10);
+  const soon = live.flatMap((r) => r.upcoming.filter((d) => d <= till).map(() => r));
+  const toSend = rows.filter((r) => r.type === 'INV' && !r.sent && r.last_doc_id);
+  const btns = (r) => `<div class="rbtns"><button class="btn sm" data-redit="${r.id}">Edit</button>${r.active ? `<button class="btn sm" data-rskip="${r.id}" title="Skip the bill of ${fdate(r.next_on)}">Skip next</button>` : ''}
+        ${r.type === 'INV' ? `<button class="btn sm" data-rcopy="${r.id}" title="The same bill for more customers">+ Customers</button>` : ''}
+        ${r.active ? `<button class="btn sm danger" data-stop="${r.id}">Stop</button>` : `<button class="btn sm" data-resume="${r.id}">Resume</button>`}</div>`;
+  const gets = (r) => (r.type === 'BILL' ? '' : { auto: 'WhatsApp, by itself', ask: 'You send (one tap)', off: 'Not sent' }[r.send] || '');
+  const card = (r) => `<div class="rcard panel"><div class="row"><b>${esc(r.party || '')}</b><span class="spacer"></span><b>${inr(r.amount)}</b></div>
+    <div class="muted small">${esc(EVERY_T[r.every] || r.every)}${r.ends_on ? ` till ${fdate(r.ends_on)}` : ''}${r.raise_pct ? ` · +${r.raise_pct}% a year` : ''} · ${r.active ? `next ${fdate(r.next_on)}` : 'stopped'}${gets(r) ? ` · ${esc(gets(r))}` : ''}</div>
+    <div class="muted small">from <a href="#/doc/${r.src_doc_id}">${esc(r.number)}</a>${r.last_doc_id ? ` · last <a href="#/doc/${r.last_doc_id}">${esc(r.last_number)}</a>` : ''}</div>
+    ${r.last_error ? `<div class="neg small">${esc(r.last_error)}</div>` : ''}${btns(r)}</div>`;
+  const nextLine = (r) => r.upcoming.length ? `${fdate(r.upcoming[0])}${r.upcoming[1] ? `<div class="muted small">then ${r.upcoming.slice(1).map((d) => fdate(d).replace(/ \d{4}$/, '')).join(', ')}</div>` : ''}` : '';
+  el.innerHTML = head('Recurring Bills', `<a class="btn primary" href="#/new/INV?repeat=month">+ New recurring bill</a>${ME.user.role === 'owner' ? '<button class="btn" id="rundue">Make due ones now</button>' : ''}`) + `
+    <p class="muted">Rent, AMC, tuition, society maintenance, monthly supply: make the bill once and choose <b>Repeat</b>. A new one is made by itself on its date, says which month it is for, and reaches the customer on WhatsApp with a UPI link. हर महीने अपने आप बिल, ग्राहक को WhatsApp पर।</p>
+    ${rows.length ? `<div class="kpis">
+      <div class="kpi"><div class="l">Monthly income from repeat bills</div><div class="v pos">${inr0(sales.reduce((s, r) => s + perMonth(r), 0))}</div><div class="s">${sales.length} active for customers</div></div>
+      <div class="kpi"><div class="l">Till ${fdate(till)}</div><div class="v">${soon.length} bill${soon.length === 1 ? '' : 's'}</div><div class="s">about ${inr0(soon.reduce((s, r) => s + (r.type === 'INV' ? r.amount : 0), 0))} to collect</div></div>
+      ${toSend.length ? `<div class="kpi"><div class="l">Made, not sent yet</div><div class="v neg">${toSend.length}</div><div class="s"><a href="#rsend">Send them now</a></div></div>` : ''}
+    </div>` : ''}
+    ${toSend.length ? `<div class="panel" id="rsend"><div class="row"><h3 style="margin:0">To send to customers</h3><span class="spacer"></span><button class="btn sm" id="rs-all">Mark all as sent</button></div>
+      <div class="rs-list">${toSend.map((r) => `<div class="rs-row"><span><b>${esc(r.party || '')}</b> · <a href="#/doc/${r.last_doc_id}">${esc(r.last_number)}</a> · ${inr(r.last_total)}</span>
+        <span class="spacer"></span><button class="btn sm got" data-rsend="${r.id}">Send on WhatsApp</button><button class="btn sm" data-rsent="${r.id}">Sent</button></div>`).join('')}</div></div>` : ''}
+    ${rows.length > 6 ? '<input id="rfind" type="search" placeholder="Find a customer or bill…" aria-label="Find" style="margin:0 0 10px;max-width:360px">' : ''}
+    ${rows.length ? `<div class="rcards">${rows.map(card).join('')}</div>` : ''}
+    <div class="panel flush${rows.length ? ' rtable' : ''}">${table([
+      { h: 'Customer', f: (r) => `<b>${esc(r.party || '')}</b><div class="muted small">from <a href="#/doc/${r.src_doc_id}">${esc(r.number)}</a>${r.items ? ` · ${r.items} item${r.items > 1 ? 's' : ''}` : ''}${r.type === 'BILL' ? ' · purchase bill' : ''}</div>` },
+      { h: 'Repeats', f: (r) => esc(EVERY_T[r.every] || r.every) + (r.ends_on ? `<div class="muted small">till ${fdate(r.ends_on)}</div>` : '')
+        + (r.raise_pct ? `<div class="muted small">+${r.raise_pct}% a year from ${fdate(r.raise_on)}</div>` : '') },
+      { h: 'Next', f: (r) => r.active ? nextLine(r) : '<span class="badge">stopped</span>' },
+      { h: 'Amount', num: 1, f: (r) => inr(r.amount) },
+      { h: 'Customer gets it', cls: 'hide-sm', f: (r) => (r.type === 'BILL' ? '<span class="muted">—</span>' : esc(gets(r))) },
       { h: 'Last made', cls: 'hide-sm', f: (r) => (r.last_doc_id ? `<a href="#/doc/${r.last_doc_id}">${esc(r.last_number)}</a>` : '—') + (r.last_error ? `<div class="neg small">${esc(r.last_error)}</div>` : '') },
-      { h: '', f: (r) => r.active ? `<button class="btn sm danger" data-stop="${r.id}">Stop</button>` : `<button class="btn sm" data-resume="${r.id}">Resume</button>` }],
-    rows, { empty: emptyCta('No recurring bills yet. Open an invoice and choose "Make it every month".', '<a class="btn primary" href="#/sales/INV">Open invoices</a>') })}</div>`;
-  $$('[data-stop]', el).forEach((b) => { b.onclick = async () => {
-    if (!confirm('Stop this schedule? Bills already made stay as they are.')) return;
-    try { await POST(`/api/recurring/${b.dataset.stop}/stop`); toast('Stopped'); render(); } catch (e) { toast(e.message, 'err'); }
-  }; });
-  $$('[data-resume]', el).forEach((b) => { b.onclick = async () => {
-    try { await POST(`/api/recurring/${b.dataset.resume}/resume`); toast('Started again'); render(); } catch (e) { toast(e.message, 'err'); }
-  }; });
+      { h: '', f: btns }],
+    rows, { empty: emptyCta('No recurring bills yet. Make a bill once and choose <b>Repeat: every month</b>. It is then made by itself and sent to the customer.', '<a class="btn primary" href="#/new/INV?repeat=month">+ New recurring bill</a>') })}</div>`;
+  const byId = (id) => rows.find((r) => r.id === +id);
+  const act = (sel, fn) => $$(sel, el).forEach((b) => { b.onclick = async () => { try { await fn(b); } catch (e) { toast(e.message, 'err'); } }; });
+  act('[data-stop]', async (b) => { if (!confirm('Stop this schedule? Bills already made stay as they are.')) return; await POST(`/api/recurring/${b.dataset.stop}/stop`); toast('Stopped'); render(); });
+  act('[data-resume]', async (b) => { await POST(`/api/recurring/${b.dataset.resume}/resume`); toast('Started again'); render(); });
+  act('[data-rskip]', async (b) => {
+    const r = byId(b.dataset.rskip);
+    if (!confirm(`Skip the bill of ${fdate(r.next_on)} for ${r.party}? The one after it is made as usual.`)) return;
+    const x = await POST(`/api/recurring/${r.id}/skip`); toast(x.next_on ? `Skipped. Next bill on ${fdate(x.next_on)}.` : 'Skipped. That was the last one.'); render();
+  });
+  act('[data-redit]', (b) => recurringEdit(+b.dataset.redit));
+  act('[data-rcopy]', (b) => recurringCopy(byId(b.dataset.rcopy)));
+  act('[data-rsent]', async (b) => { await POST('/api/recurring/sent', { ids: [+b.dataset.rsent] }); render(); });
+  act('[data-rsend]', (b) => {
+    const r = byId(b.dataset.rsend);
+    sendDialog({ title: `Send ${r.last_number} to ${r.party}`, lang: r.lang, load: (l) => GET(`/api/docs/${r.last_doc_id}/share?lang=${l}`),
+      sent: () => POST('/api/recurring/sent', { ids: [r.id] }), closed: () => render() });
+  });
+  if ($('#rs-all')) $('#rs-all').onclick = async () => { await POST('/api/recurring/sent', { ids: toSend.map((r) => r.id) }); render(); };
+  if ($('#rfind')) $('#rfind').oninput = (e) => {
+    const t = e.target.value.trim().toLowerCase();
+    $$('table tbody tr, .rcard', el).forEach((x) => { x.hidden = !!t && !x.textContent.toLowerCase().includes(t); });
+  };
   if ($('#rundue')) $('#rundue').onclick = async () => {
     try { const r = await POST('/api/recurring/run'); dirty('items', 'accounts', 'parties'); toast(r.made ? `${r.made} made` : 'Nothing is due today'); render(); } catch (e) { toast(e.message, 'err'); }
   };
 });
+/* change a schedule: customer, how often, dates, how it is sent, the yearly rise and the lines on the bill */
+async function recurringEdit(id) {
+  const [r, parties, items] = await Promise.all([GET('/api/recurring/' + id), master('parties'), master('items')]);
+  const side = r.type === 'INV' ? 'customer' : 'supplier';
+  const plist = parties.filter((p) => p.kind === side || p.kind === 'both');
+  const itemOpt = (sel) => `<option value="">Type below…</option>` + items.map((i) => `<option value="${i.id}" ${+sel === i.id ? 'selected' : ''}>${esc(i.name)}</option>`).join('');
+  const gstOpt = (sel) => ME.gst_rates.map((g) => `<option value="${g}" ${+sel === g ? 'selected' : ''}>${g}%</option>`).join('');
+  const row = (l) => `<tr><td><select data-k="item_id" aria-label="Item">${itemOpt(l.item_id)}</select><input data-k="description" placeholder="or what it is for (e.g. Rent)" value="${esc(l.item_id ? '' : l.description || '')}"></td>
+    <td data-l="Qty"><input data-k="qty" type="number" step="any" min="0" inputmode="decimal" value="${esc(l.qty ?? 1)}" aria-label="Quantity"></td>
+    <td data-l="Rate ₹"><input data-k="rate" type="number" step="any" min="0" inputmode="decimal" value="${esc(l.rate ?? '')}" aria-label="Rate"></td>
+    <td data-l="GST"><select data-k="gst_rate" aria-label="GST">${gstOpt(l.gst_rate ?? 0)}</select><input type="hidden" data-k="discount_pct" value="${esc(l.discount_pct || 0)}"></td>
+    <td><button type="button" class="btn sm danger" data-rl-del aria-label="Remove">&times;</button></td></tr>`;
+  const f = modal(`Recurring bill from ${r.number}`, [
+    { k: 'party_id', label: side === 'customer' ? 'Customer' : 'Supplier', type: 'select', value: r.party_id, options: plist.map((p) => ({ v: p.id, t: p.name })) },
+    { k: 'every', label: 'Repeat', type: 'select', value: r.every, options: Object.entries(EVERY_T).map(([v, t]) => ({ v, t })) },
+    { k: 'next_on', label: 'Next bill on', type: 'date', value: r.next_on, required: true },
+    { k: 'ends_on', label: 'Stop after (optional)', type: 'date', value: r.ends_on || '' },
+    ...(r.type === 'INV' ? [{ k: 'send', label: 'The customer gets each new bill', type: 'select', value: r.send, options: Object.entries(SEND_T).map(([v, t]) => ({ v, t })),
+      help: r.send === 'auto' || ME.org.auto_wa ? 'By itself needs Automatic WhatsApp (Settings). Otherwise it waits under “To send”.' : 'Turn on Automatic WhatsApp in Settings to send by itself.' }] : []),
+    { k: 'raise_pct', label: 'Raise the price every year by (%)', type: 'number', value: r.raise_pct || '', placeholder: 'e.g. 5 for rent', more: !r.raise_pct },
+    { k: 'raise_on', label: 'First rise on', type: 'date', value: r.raise_on || '', more: !r.raise_pct, help: 'Empty: one year after the next bill.' },
+    { k: 'notes', label: 'Note on every bill', value: r.notes || '', more: true, help: 'The period (e.g. “For November 2026”) is added by itself.' },
+  ], async (v) => {
+    const lines = $$('#rl-body tr', f).map((tr) => Object.fromEntries($$('[data-k]', tr).map((x) => [x.dataset.k, x.value]))).filter((l) => (l.item_id || l.description) && +l.qty > 0);
+    await api('PUT', '/api/recurring/' + id, { ...v, raise_pct: v.raise_pct || 0, party_id: +v.party_id, lines });
+    toast('Saved. The next bill uses these.'); render();
+  }, { submit: 'Save', intro: '<p class="muted">Changes apply to the next bills only. Bills already made stay as they are.</p>' });
+  $('.form', f).insertAdjacentHTML('afterend', `<div class="rl"><h3>On each bill</h3><div class="tbl-wrap"><table class="t rl-t"><thead><tr><th>Item</th><th>Qty</th><th>Rate ₹</th><th>GST</th><th></th></tr></thead>
+    <tbody id="rl-body">${r.lines.map(row).join('')}</tbody></table></div><div class="row" style="margin-top:6px"><button type="button" class="btn sm" id="rl-add">+ Add line</button><span class="spacer"></span><b id="rl-sum"></b></div></div>`);
+  const sum = () => {
+    const t = $$('#rl-body tr', f).reduce((s, tr) => { const g = (k) => +($(`[data-k=${k}]`, tr).value || 0); return s + g('qty') * g('rate') * (1 - g('discount_pct') / 100) * (1 + g('gst_rate') / 100); }, 0);
+    $('#rl-sum', f).textContent = `About ${inr(t)} with GST`;
+  };
+  const wire = (tr) => {
+    $('[data-rl-del]', tr).onclick = () => { if ($$('#rl-body tr', f).length > 1) { tr.remove(); sum(); } };
+    $('[data-k=item_id]', tr).onchange = (e) => {
+      const it = items.find((i) => i.id === +e.target.value);
+      if (it) { $('[data-k=rate]', tr).value = it.sale_price ?? ''; $('[data-k=gst_rate]', tr).value = it.gst_rate; $('[data-k=description]', tr).value = ''; }
+      sum();
+    };
+  };
+  $$('#rl-body tr', f).forEach(wire);
+  $('#rl-add', f).onclick = () => { $('#rl-body', f).insertAdjacentHTML('beforeend', row({ qty: 1 })); wire($('#rl-body', f).lastElementChild); sum(); };
+  f.addEventListener('input', sum); sum();
+}
+/* the same bill for more customers: a class, a building, every AMC client */
+async function recurringCopy(r) {
+  const parties = (await master('parties')).filter((p) => (p.kind === 'customer' || p.kind === 'both') && p.id !== r.party_id);
+  const f = modal(`Same bill for more customers`, [], async () => {
+    const ids = $$('[data-pc]:checked', f).map((x) => +x.dataset.pc);
+    if (!ids.length) throw new Error('Tick at least one customer.');
+    const x = await POST(`/api/recurring/${r.id}/copy`, { party_ids: ids });
+    toast(`${x.count} more customer${x.count > 1 ? 's' : ''} will get this bill ${(EVERY_T[r.every] || '').toLowerCase()}, from ${fdate(r.next_on < ME.today ? ME.today : r.next_on)}.`); render();
+  }, { submit: 'Start for these', intro: `<p class="muted">Each customer gets their own bill of ${inr(r.amount)} ${(EVERY_T[r.every] || '').toLowerCase()}, with the same items. Change one later with Edit. Good for tuition, rent in a building, society maintenance, AMC.</p>` });
+  $('.form', f).insertAdjacentHTML('afterend', `<input type="search" id="pc-find" placeholder="Find…" aria-label="Find customer" style="margin:6px 0">
+    <div class="row" style="margin:0 0 6px"><button type="button" class="btn sm" id="pc-all">Tick all shown</button><span class="spacer"></span><span class="muted" id="pc-n">0 ticked</span></div>
+    <div class="pc-list">${parties.map((p) => `<label class="check" data-pn="${esc(p.name.toLowerCase())}"><input type="checkbox" data-pc="${p.id}"> ${esc(p.name)}${p.phone ? ` <span class="muted small">${esc(p.phone)}</span>` : ''}</label>`).join('') || '<p class="muted">No other customers yet.</p>'}</div>`);
+  const count = () => { $('#pc-n', f).textContent = `${$$('[data-pc]:checked', f).length} ticked`; };
+  f.addEventListener('change', count);
+  $('#pc-find', f).oninput = (e) => { const t = e.target.value.trim().toLowerCase(); $$('[data-pn]', f).forEach((l) => { l.hidden = !!t && !l.dataset.pn.includes(t); }); };
+  $('#pc-all', f).onclick = () => { $$('[data-pn]:not([hidden]) [data-pc]', f).forEach((x) => { x.checked = true; }); count(); };
+}
 
 /* ======================================================================= vasooli (collections): src/vasooli.js
    One screen for getting paid: who to remind today (on a schedule: 3 days before the due date, on it, then 7 / 15 / 30 /

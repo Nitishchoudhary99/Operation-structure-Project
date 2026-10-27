@@ -53,6 +53,12 @@ Market research and pricing advice: see [docs/COMPETITORS.md](docs/COMPETITORS.m
 - **Serial / IMEI** (`#/serials`): an item can track serial numbers, with a warranty in months. Serials are scanned or typed on the purchase bill, opening stock or production (one per line; the quantity follows the count). On a sale the shop taps the IMEIs in stock, or the oldest goes. They print on the bill (S/N). Scanning a serial shows where it is, who bought it on which bill, and whether it is still under warranty. Returns and cancellations bring it back; a cancelled purchase makes it void; a serial can never be in stock twice.
 - Bins, batches and serials are detail under each godown's quantity (`stock`), which stays the only figure the books and stock value use (`src/lots.js`).
 
+### Recurring bills (rent, AMC, tuition, maintenance, monthly supply)
+- **Make it once, choose Repeat** (`#/recurring`, `src/recurring.js`): the invoice / bill editor has *Repeat this invoice: every week / month / 3 months / year*; an invoice's More menu does the same. The schedule keeps **its own customer and lines**, so they can be changed (Edit) without touching the invoice it came from, and **+ Customers** puts the same bill on a whole class, building or AMC list at once (each gets their own schedule).
+- **Each new bill says what it is for** ("For November 2026 (monthly bill)") and is dated its day; **Skip next** leaves out one bill (a closed month, a free month); **a yearly rise** (e.g. 5% rent escalation) is applied from its day and stays; an end date stops it by itself.
+- **The customer gets it**: with Automatic WhatsApp on, every new invoice goes to the customer on WhatsApp by itself with its bill link and UPI (free text inside the 24-hour window, else the approved template: `WHATSAPP_BILL_TEMPLATE`, or the reminder template, same four parameters). Otherwise it waits under **To send** (and on Today) for one tap. Purchase bills are never sent.
+- The page shows the monthly income from repeat bills, what the next round brings in, and the next three dates of each schedule; phones get cards.
+
 ### Manufacturing, approvals, online orders
 - **Production (BOM)** (`#/production`, `src/mfg.js`): an item can have a recipe (which parts, how much, for how many made). The item page shows the cost of parts, the margin and how many can be made from stock now. **Make** takes the parts out (FEFO batches, bins, serials as any goods out) and brings the finished item in at their cost, so the stock value does not change and no journal is needed. A run can be cancelled while its goods are unused; a run may also record what was actually used.
 - **Purchase order approval**: Settings → Approvals sets an amount. A purchase order above it made by staff waits (`pending`) until the owner or an admin approves it; nothing can be received or billed against it before that. The owner's and admins' own orders go straight through. Waiting orders show on the Today card.
@@ -293,7 +299,8 @@ ERP_AI_MOCK=8796 node test/run.mjs http://localhost:8799
    `Namaste {{1}}, {{2}} ki taraf se yaad dilaana: aapka {{3}} baaki hai. Bill dekhein aur UPI se bharein: {{4}}`
    (1 = customer, 2 = business, 3 = amount, 4 = bill link). Wait until it is approved.
 3. Cloudflare → the ERP worker → Variables and Secrets: **WHATSAPP_TOKEN** (Secret) and **WHATSAPP_PHONE_ID**.
-   Optional: `WHATSAPP_TEMPLATE` (another template name), `WHATSAPP_LANG_EN` / `WHATSAPP_LANG_HI` / `WHATSAPP_LANG_HL`
+   Optional: `WHATSAPP_TEMPLATE` (another template name), `WHATSAPP_BILL_TEMPLATE` (for new recurring bills, same four
+   parameters; without it the reminder template is used), `WHATSAPP_LANG_EN` / `WHATSAPP_LANG_HI` / `WHATSAPP_LANG_HL`
    (template language codes; Hinglish customers get the English template unless `WHATSAPP_LANG_HL` is set).
    `APP_URL` (in wrangler.toml) is the address used in the links. Meta bills each message to the operator's account.
 
