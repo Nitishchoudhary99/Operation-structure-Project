@@ -26,7 +26,7 @@ import { listStaff, saveStaff, markAttendance, staffDetail, giveAdvance, paySala
 import * as rep from './reports.js';
 import { PLANS, planOut, planOf, usage, checkCount, countError, seatBlocked, seatError, requireFeature, extendPlan, adminKey, trialUntil, hasFeature } from './saas.js';
 import { secure } from './headers.js';
-import { createRecurring, listRecurring, stopRecurring, resumeRecurring, runDue } from './recurring.js';
+import { createRecurring, listRecurring, getRecurring, updateRecurring, copyRecurring, skipRecurring, markSent, stopRecurring, resumeRecurring, runDue } from './recurring.js';
 import { buildBackup, driveRoutes, runDriveBackups, listDriveBackups, readDriveBackup } from './gdrive.js';
 import { excelBackup } from './export.js';
 import { restoreBackup, isEmptyOrg } from './restore.js';
@@ -708,6 +708,7 @@ router.add('GET', '/api/today', async (c) => {
     AND s.qty - COALESCE((SELECT SUM(qty) FROM bin_stock b WHERE b.item_id = s.item_id AND b.warehouse_id = s.warehouse_id), 0) > 0.0005)`, o, o);
   add('disputed', 'finance', `SELECT COUNT(*) AS n, 0 AS v FROM confirmations WHERE org_id = ? AND status = 'disputed' AND answered_at >= ?`, o, addDays(t, -30));
   add('recurring', 'sales', `SELECT COUNT(*) AS n, 0 AS v FROM recurring WHERE org_id = ? AND active = 1 AND COALESCE(last_error, '') != ''`, o);
+  add('recurring_send', 'sales', `SELECT COUNT(*) AS n, 0 AS v FROM recurring WHERE org_id = ? AND sent = 0 AND last_doc_id IS NOT NULL`, o);
   if (sees('finance')) want.push(...todayStaffQueries(db, o));
   // the owner's data is safe somewhere: a download (also to a folder: orgs.backup_at), or Google Drive
   if (u.role === 'owner') want.push(['backup', db.prepare(`SELECT (SELECT last_backup_at FROM drive_links WHERE org_id = ?) AS d,
@@ -956,8 +957,13 @@ router.add('PUT', '/api/docs/:id/design', async (c) => {
 });
 
 /* Recurring: the document is made again by itself every week / month / quarter / year (src/recurring.js) */
-router.add('POST', '/api/docs/:id/recurring', async (c) => json({ id: await createRecurring(c, +c.params.id) }));
+router.add('POST', '/api/docs/:id/recurring', async (c) => json(await createRecurring(c, +c.params.id)));
 router.add('GET', '/api/recurring', async (c) => json({ rows: await listRecurring(c) }));
+router.add('GET', '/api/recurring/:id', async (c) => json(await getRecurring(c, +c.params.id)));
+router.add('PUT', '/api/recurring/:id', async (c) => json(await updateRecurring(c, +c.params.id)));
+router.add('POST', '/api/recurring/:id/copy', async (c) => json(await copyRecurring(c, +c.params.id)));
+router.add('POST', '/api/recurring/:id/skip', async (c) => json(await skipRecurring(c, +c.params.id)));
+router.add('POST', '/api/recurring/sent', async (c) => { requireCan(c.user, 'sales'); return json({ marked: await markSent(c, c.body.ids) }); });
 router.add('POST', '/api/recurring/:id/stop', async (c) => { await stopRecurring(c, +c.params.id); return json({ ok: true }); });
 router.add('POST', '/api/recurring/:id/resume', async (c) => { await resumeRecurring(c, +c.params.id); return json({ ok: true }); });
 router.add('POST', '/api/recurring/run', async (c) => {

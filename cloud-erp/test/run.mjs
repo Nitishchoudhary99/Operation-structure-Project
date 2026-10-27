@@ -628,7 +628,10 @@ check('IRN saved on invoice', (await api('GET', `/api/docs/${inv.id}`)).irn.leng
   const today0 = (await api('GET', '/api/me')).today;
   const src = await api('GET', `/api/docs/${inv.id}`);
   check('a quotation cannot repeat by itself', (await api('POST', `/api/docs/${qt.id}/recurring`, { every: 'month' }, true)).status === 400);
-  const rec = await api('POST', `/api/docs/${inv.id}/recurring`, { every: 'month', next_on: today0 });
+  const made0 = await api('POST', `/api/docs/${inv.id}/recurring`, { every: 'month', next_on: today0 });
+  const rec = (await api('GET', '/api/recurring')).rows.filter((r) => r.src_doc_id === inv.id).pop();
+  check('a schedule is made from the invoice, for its customer, sent by hand unless automatic WhatsApp is on', made0.count === 1 && made0.next_on === today0 && rec && rec.party_id === inv.party_id
+    && rec.send === 'ask' && rec.items >= 1, JSON.stringify([made0, rec]));
   const before = (await api('GET', '/api/docs?type=INV')).rows.length;
   const run1 = await api('POST', '/api/recurring/run');
   const list1 = (await api('GET', '/api/recurring')).rows.find((r) => r.id === rec.id);
@@ -638,6 +641,40 @@ check('IRN saved on invoice', (await api('GET', `/api/docs/${inv.id}`)).irn.leng
     JSON.stringify([run1, before, (await api('GET', '/api/docs?type=INV')).rows.length, made.party_id, src.party_id, made.date, today0, made.lines.length, src.lines.length, made.total, src.total]));
   const [y, mo, dd] = today0.split('-').map(Number), nm = new Date(Date.UTC(y, mo, 1)), last = new Date(Date.UTC(nm.getUTCFullYear(), nm.getUTCMonth() + 1, 0)).getUTCDate();
   check('...and its next date is a month on', list1.next_on === new Date(Date.UTC(nm.getUTCFullYear(), nm.getUTCMonth(), Math.min(dd, last))).toISOString().slice(0, 10) && list1.runs === 1, list1.next_on);
+  const MONTHS = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
+  check('the new bill says which month it is for', made.notes.includes(`For ${MONTHS[mo - 1]} ${y} (monthly bill)`), made.notes);
+  check('...and waits under "To send", shown on Today', list1.sent === 0 && (await api('GET', '/api/today')).rows.some((r) => r.key === 'recurring_send' && r.n >= 1));
+  await api('POST', '/api/recurring/sent', { ids: [rec.id] });
+  check('sent by hand: it leaves the list', (await api('GET', '/api/recurring')).rows.find((r) => r.id === rec.id).sent === 1
+    && !(await api('GET', '/api/today')).rows.some((r) => r.key === 'recurring_send'));
+  // change the schedule's own lines: the next bills change, the invoice it came from does not
+  const ed = await api('GET', `/api/recurring/${rec.id}`);
+  const newLines = ed.lines.map((l, i) => ({ ...l, rate: i === 0 ? l.rate + 10 : l.rate }));
+  const up = await api('PUT', `/api/recurring/${rec.id}`, { lines: newLines, notes: 'Shop rent', every: 'quarter', next_on: list1.next_on });
+  check('the schedule\'s lines, note and repeat change; the original invoice stays as it was', up.every === 'quarter' && up.notes === 'Shop rent' && up.lines[0].rate === ed.lines[0].rate + 10
+    && eq((await api('GET', `/api/docs/${inv.id}`)).total, src.total), JSON.stringify([up.lines[0], ed.lines[0]]));
+  check('an item of another business cannot be put on the bill', (await api('PUT', `/api/recurring/${rec.id}`, { lines: [{ item_id: 999999, qty: 1, rate: 5, gst_rate: 18 }] }, true)).status === 400);
+  check('a bill cannot be left with no lines', (await api('PUT', `/api/recurring/${rec.id}`, { lines: [] }, true)).status === 400);
+  const sk = await api('POST', `/api/recurring/${rec.id}/skip`);
+  const [qy, qm, qd] = list1.next_on.split('-').map(Number), q3 = new Date(Date.UTC(qy, qm - 1 + 3, 1)), ql = new Date(Date.UTC(q3.getUTCFullYear(), q3.getUTCMonth() + 1, 0)).getUTCDate();
+  check('skip next: the bill after it becomes the next', sk.next_on === new Date(Date.UTC(q3.getUTCFullYear(), q3.getUTCMonth(), Math.min(qd, ql))).toISOString().slice(0, 10), JSON.stringify(sk));
+  // the same bill for more customers (a class, a building)
+  const extra = [];
+  for (const n of ['Tenant A', 'Tenant B']) extra.push(await api('POST', '/api/parties', { name: n + ' ' + Date.now(), kind: 'customer', state: 'Maharashtra', phone: '98765' + String(Date.now()).slice(-5) }));
+  const cp2 = await api('POST', `/api/recurring/${rec.id}/copy`, { party_ids: extra.map((p) => p.id) });
+  const rowsC = (await api('GET', '/api/recurring')).rows;
+  check('the same bill for more customers: each gets their own schedule with the same lines and dates', cp2.count === 2
+    && extra.every((p) => { const r = rowsC.find((x) => x.party_id === p.id); return r && r.every === 'quarter' && r.next_on === sk.next_on && Math.abs(r.amount - up.amount) < 0.01; }), JSON.stringify(cp2));
+  check('a supplier cannot be put on a customer\'s bill', (await api('POST', `/api/recurring/${rec.id}/copy`, { party_ids: [sup.id] }, true)).status === 400);
+  // a yearly rise (rent): from its day, the rates go up and stay up
+  const r2made = await api('POST', `/api/docs/${inv.id}/recurring`, { every: 'month', next_on: today0, raise_pct: 10, raise_on: today0, send: 'off' });
+  const r2 = (await api('GET', '/api/recurring')).rows.filter((r) => r.src_doc_id === inv.id && r.raise_pct === 10).pop();
+  await api('POST', '/api/recurring/run');
+  const r2a = await api('GET', `/api/recurring/${r2.id}`), r2doc = await api('GET', `/api/docs/${(await api('GET', '/api/recurring')).rows.find((r) => r.id === r2.id).last_doc_id}`);
+  check('a 10% yearly rise is applied on its day and kept for the next bills, next rise a year on', r2made.count === 1 && Math.abs(r2a.lines[0].rate - Math.round(src.lines[0].rate * 1.1 * 100) / 100) < 0.011
+    && Math.abs(r2doc.lines[0].rate - r2a.lines[0].rate) < 0.011 && r2a.raise_on === `${y + 1}-${String(mo).padStart(2, '0')}-${String(dd).padStart(2, '0')}`.replace(/-02-29$/, '-02-28'), JSON.stringify([r2a.lines[0], r2a.raise_on, src.lines[0].rate]));
+  check('a bill marked "do not send" does not wait in To send', (await api('GET', '/api/recurring')).rows.find((r) => r.id === r2.id).sent === 1);
+  for (const r of (await api('GET', '/api/recurring')).rows.filter((x) => x.active && x.src_doc_id === inv.id && x.id !== rec.id)) await api('POST', `/api/recurring/${r.id}/stop`);
   check('running again the same day makes nothing more', (await api('POST', '/api/recurring/run')).made === 0);
   check('the first date cannot be in the past', (await api('POST', `/api/docs/${inv.id}/recurring`, { every: 'month', next_on: '2020-01-01' }, true)).status === 400);
   await api('POST', `/api/recurring/${rec.id}/stop`);
@@ -1772,6 +1809,17 @@ else {
     check('the automatic reminder is logged and moves the schedule on', lp && lp.status === 'sent' && lp.last_sent.via === 'auto', JSON.stringify(lp));
     const me2 = await V('GET', '/api/me');
     check('the last run is shown in Settings', /sent/.test(me2.org.auto_wa_note), me2.org.auto_wa_note);
+    // a recurring bill goes to the customer by itself on WhatsApp (automatic WhatsApp is on), with its bill link
+    const rinv = await V('POST', '/api/docs', { type: 'INV', party_id: late.id, lines: [{ item_id: bulb.id, qty: 1, rate: 500 }] });
+    const rsch = await V('POST', `/api/docs/${rinv.id}/recurring`, { every: 'month', next_on: me.today });
+    const waBefore = seen.wa.length;
+    await V('POST', '/api/recurring/run');
+    const rrow = (await V('GET', '/api/recurring')).rows.find((r) => r.src_doc_id === rinv.id);
+    const wb = seen.wa.slice(waBefore).find((x) => x.body.to === '919876500022');
+    check('with automatic WhatsApp on, each new recurring bill goes to the customer by itself, with its link', rsch.count === 1 && rrow.send === 'auto' && rrow.sent === 1 && wb
+      && /\/i\/[0-9a-f]{24}/.test(JSON.stringify(wb.body)), JSON.stringify([rrow, wb && wb.body]));
+    const ib0 = (await V('GET', '/api/wa/inbox')).rows || [];
+    check('...and shows in the WhatsApp inbox as a new bill', JSON.stringify(ib0).includes('"bill"'), JSON.stringify(ib0).slice(0, 300));
     srv.close();
   }
 }
