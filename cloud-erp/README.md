@@ -319,7 +319,10 @@ Never put these values in `wrangler.toml` or in code; the bot stays off (Setting
 ### Google Drive auto-backup (one-time setup by the SmartTrader operator)
 
 Customers connect their own Google Drive in **Settings → Backup**; a full backup then goes to a
-"SmartTrader Backup" folder in their Drive every day (or week), and the newest 30 are kept. The app asks only for
+"SmartTrader Backup" folder in their Drive every day (or week), with a readable **Excel copy** next to it (a tick
+box turns that off), and the newest 30 of each are kept. Google's MD5 of every stored file is compared with the
+app's own: a match shows "✓ checked", a mismatch removes the file and reports the backup as failed. Settings links
+straight to the folder and to the latest Excel (on a phone, they open in the Drive app). The app asks only for
 `drive.file`, so it sees just the files it made. To switch it on for everyone:
 
 1. Google Cloud Console → create a project → **APIs & Services → Library** → enable **Google Drive API**.
@@ -335,6 +338,19 @@ Customers connect their own Google Drive in **Settings → Backup**; a full back
 If a customer comes back from Google to Settings with a note, it says what happened (permission not given, signed out
 while Google was open, link too old) and what to do. Keep `SESSION_SECRET` fixed: the stored Google tokens are encrypted with a key made from it, so changing it means
 every business has to connect Drive again.
+
+### Backup to a folder on a computer, and backup reminders
+
+- **Settings → Backup → Backup to a folder on this computer** (Chrome or Edge on a computer; File System Access API,
+  `folderBackup` in `public/app.js`): the owner picks a folder once; the device remembers it (IndexedDB), and while
+  SmartTrader is open there a backup is written once a day or week (`smarttrader-backup-<date_time>.json` and
+  `smarttrader-excel-<date_time>.xlsx`), the newest 30 of each kept. Only files with those names are ever removed. A
+  folder inside Google Drive for desktop, OneDrive or a pen drive carries the copies on. After a browser restart
+  Chrome asks again before writing (unless "Allow on every visit" was chosen), so a small note offers "Save backup"
+  in one tap. Two open tabs: one writes (Web Locks). On a phone the box says to use Google Drive or Download.
+- **Today** tells the owner when the data is not safe anywhere: Google Drive backup failing for 2 days, no backup
+  at all after the first 3 days, or none for 7 days (a download, a folder backup or Google Drive all count;
+  `backupHealth` in `src/lib.js`, from `orgs.backup_at` and `drive_links`, so the check reads 1 row). Staff never see it.
 
 ## Not built yet (next steps)
 

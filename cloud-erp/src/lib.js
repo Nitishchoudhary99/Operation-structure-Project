@@ -126,3 +126,17 @@ export async function loadByIds(db, sql, fixed, ids) {
   }
   return out;
 }
+
+/* The Today row about backups, from the newest download (a), Google Drive (d: last backup, e: its error), whether
+   there are any bills (docs) and when the business started (since). Nothing to lose yet: no row. Google Drive
+   failing for 2 days, no backup ever (after the first 3 days), or none for a week: one row, before the day the
+   data is needed. */
+export function backupHealth(r, now = Date.now()) {
+  const DAY = 86400e3;
+  if (!r || !r.docs) return null;
+  if (r.e && (!r.d || now - Date.parse(r.d) > 2 * DAY)) return { key: 'drive_failing', n: 1, value: null };
+  const last = [r.a, r.d].filter(Boolean).sort().pop();
+  if (!last) return now - Date.parse(r.since) > 3 * DAY ? { key: 'backup_none', n: 1, value: null } : null;
+  const days = Math.floor((now - Date.parse(last)) / DAY);
+  return days >= 7 ? { key: 'backup_old', n: days, value: null } : null;
+}

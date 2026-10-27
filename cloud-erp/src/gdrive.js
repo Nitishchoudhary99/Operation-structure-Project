@@ -1,13 +1,16 @@
 /* Full backup of a business, downloaded or sent to the owner's own Google Drive (like WhatsApp's chat backup).
    Drive: the owner connects once (Google sign-in, scope drive.file: the app sees only the files it made itself).
-   A backup goes to a "SmartTrader Backup" folder every day or every week from the cron, and on "Back up now";
-   the newest 30 are kept. The Google refresh token is stored AES-GCM encrypted with a key derived from the session
-   secret. Needs the GDRIVE_CLIENT_ID and GDRIVE_CLIENT_SECRET settings (Google Cloud OAuth client, web type,
-   redirect URI https://<erp host>/api/gdrive/callback); without them Drive backup shows as "not set up". */
+   A backup goes to a "SmartTrader Backup" folder every day or every week from the cron, and on "Back up now",
+   with a readable Excel copy next to it (the owner can turn that off); the newest 30 of each are kept. Google's
+   checksum of each stored file is compared with ours, so a backup that says "checked" is known to be whole.
+   The Google refresh token is stored AES-GCM encrypted with a key derived from the session secret. Needs the
+   GDRIVE_CLIENT_ID and GDRIVE_CLIENT_SECRET settings (Google Cloud OAuth client, web type, redirect URI
+   https://<erp host>/api/gdrive/callback); without them Drive backup shows as "not set up". */
 import { HttpError, bad, forbidden, str, today, nowIso } from './lib.js';
 import { sessionSecret } from './auth.js';
 import { auditStatement } from './engine.js';
 import { isEmptyOrg } from './restore.js';
+import { excelBackup } from './export.js';
 
 /* ---------- the backup file ---------- */
 const BACKUP_TABLES = ['accounts', 'warehouses', 'parties', 'items', 'stock', 'stock_moves', 'docs', 'payments', 'journals', 'journal_lines',
@@ -115,18 +118,34 @@ async function ensureFolder(env, token, link, orgName) {
     body: JSON.stringify({ name: `SmartTrader Backup - ${orgName}`.slice(0, 120), mimeType: 'application/vnd.google-apps.folder' }) }), 'Drive folder');
   return f.id;
 }
-async function upload(env, token, folder, name, body) {
+const XLSX = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
+const md5hex = async (bytes) => {
+  try { return [...new Uint8Array(await crypto.subtle.digest('MD5', bytes))].map((x) => x.toString(16).padStart(2, '0')).join(''); } catch (e) { return ''; }
+};
+/* One file into the folder. Google answers with its own MD5 of what it stored: the same as ours means the file
+   arrived whole; a different one means it did not, so it is removed and the backup counts as failed. */
+async function upload(env, token, folder, name, bytes, mime) {
   const boundary = 'st' + b64u(crypto.getRandomValues(new Uint8Array(12)));
-  const meta = JSON.stringify({ name, parents: [folder], mimeType: 'application/json' });
-  const payload = `--${boundary}\r\nContent-Type: application/json; charset=UTF-8\r\n\r\n${meta}\r\n--${boundary}\r\nContent-Type: application/json\r\n\r\n${body}\r\n--${boundary}--`;
-  return gjson(await fetch(`${G(env).api}/upload/drive/v3/files?uploadType=multipart&fields=id,name,size`, {
+  const meta = JSON.stringify({ name, parents: [folder], mimeType: mime });
+  const head = enc.encode(`--${boundary}\r\nContent-Type: application/json; charset=UTF-8\r\n\r\n${meta}\r\n--${boundary}\r\nContent-Type: ${mime}\r\n\r\n`);
+  const tail = enc.encode(`\r\n--${boundary}--`);
+  const payload = new Uint8Array(head.length + bytes.length + tail.length);
+  payload.set(head); payload.set(bytes, head.length); payload.set(tail, head.length + bytes.length);
+  const f = await gjson(await fetch(`${G(env).api}/upload/drive/v3/files?uploadType=multipart&fields=id,name,size,md5Checksum`, {
     method: 'POST', headers: authed(token, { 'Content-Type': `multipart/related; boundary=${boundary}` }), body: payload }), 'Drive upload');
+  const ours = await md5hex(bytes);
+  if (f.md5Checksum && ours && f.md5Checksum !== ours) {
+    try { await fetch(`${G(env).api}/drive/v3/files/${encodeURIComponent(f.id)}`, { method: 'DELETE', headers: authed(token) }); } catch (e) { /* best effort */ }
+    throw new Error(`The copy of ${name} in Google Drive did not match what was sent, so it was removed. The next backup tries again.`);
+  }
+  return { ...f, checked: !!(f.md5Checksum && ours) };
 }
-/* keep the newest KEEP backups in the folder (only files this app made are visible to it) */
+/* keep the newest KEEP backups, and the newest KEEP Excel copies, in the folder (only files this app made are visible to it) */
 async function prune(env, token, folder) {
   const q = encodeURIComponent(`'${folder}' in parents and trashed = false`);
   const list = await gjson(await fetch(`${G(env).api}/drive/v3/files?q=${q}&orderBy=createdTime desc&pageSize=100&fields=files(id,name,createdTime)`, { headers: authed(token) }), 'Drive list');
-  const old = (list.files || []).filter((f) => /^smarttrader-backup-/.test(f.name)).slice(KEEP);
+  const mine = list.files || [];
+  const old = [/^smarttrader-backup-/, /^smarttrader-excel-/].flatMap((re) => mine.filter((f) => re.test(f.name)).slice(KEEP));
   for (const f of old) await fetch(`${G(env).api}/drive/v3/files/${encodeURIComponent(f.id)}`, { method: 'DELETE', headers: authed(token) });
   return old.length;
 }
@@ -136,7 +155,7 @@ export async function backupToDrive(env, orgId, by) {
   const db = env.DB;
   const link = await db.prepare(`SELECT * FROM drive_links WHERE org_id = ?`).bind(orgId).first();
   if (!link) throw bad('Google Drive is not connected.');
-  const org = await db.prepare(`SELECT id, name FROM orgs WHERE id = ?`).bind(orgId).first();
+  const org = await db.prepare(`SELECT * FROM orgs WHERE id = ?`).bind(orgId).first();
   // an empty business has nothing to back up (and an empty file would only crowd the list when restoring)
   if (!by && await isEmptyOrg(db, orgId)) return { ok: true, skipped: true };
   try {
@@ -144,15 +163,22 @@ export async function backupToDrive(env, orgId, by) {
     try { refresh = await unseal(env, link.refresh_enc); } catch (e) { const g = new Error('sealed'); g.gone = true; throw g; }   // the session secret changed
     const tok = await tokenCall(env, { grant_type: 'refresh_token', refresh_token: refresh });
     const folder = await ensureFolder(env, tok.access_token, link, org.name);
-    const b = await buildBackup(db, orgId);
+    const b = await buildBackup(db, orgId), bytes = enc.encode(b.json);
     const stamp = nowIso().slice(0, 16).replace('T', '_').replace(':', '-');
-    const f = await upload(env, tok.access_token, folder, `smarttrader-backup-${stamp}.json`, b.json);
+    const f = await upload(env, tok.access_token, folder, `smarttrader-backup-${stamp}.json`, bytes, 'application/json');
+    // the readable copy: a failure here does not undo the backup itself, it is only reported
+    let x = null, xerr = null;
+    if (link.excel !== 0) {
+      try { x = await upload(env, tok.access_token, folder, `smarttrader-excel-${stamp}.xlsx`, (await excelBackup(db, org)).bytes, XLSX); }
+      catch (e) { if (e.gone || e.scope || e.apiOff) throw e; xerr = 'The backup was saved, but its Excel copy was not: ' + String(e && e.message || e).slice(0, 200); }
+    }
     await prune(env, tok.access_token, folder);
-    const st = [db.prepare(`UPDATE drive_links SET folder_id = ?, last_backup_at = ?, last_file = ?, last_size = ?, last_error = NULL WHERE org_id = ?`)
-      .bind(folder, nowIso(), f.name || '', b.json.length, orgId)];
-    if (by) st.push(auditStatement({ db, org, user: by }, 'drive backup', `${b.records} records`));
+    const st = [db.prepare(`UPDATE drive_links SET folder_id = ?, last_backup_at = ?, last_file = ?, last_size = ?, last_file_id = ?, last_excel_id = ?, last_checked = ?,
+        last_error = ? WHERE org_id = ?`)
+      .bind(folder, nowIso(), f.name || '', bytes.length, f.id || null, x ? x.id : null, f.checked && (!x || x.checked) ? 1 : 0, xerr, orgId)];
+    if (by) st.push(auditStatement({ db, org, user: by }, 'drive backup', `${b.records} records${x ? ' + Excel' : ''}`));
     await db.batch(st);
-    return { ok: true, file: f.name, records: b.records, size: b.json.length };
+    return { ok: true, file: f.name, records: b.records, size: bytes.length, excel: !!x, checked: !!f.checked, ...(xerr ? { warning: xerr } : {}) };
   } catch (e) {
     const msg = e.gone ? 'Google access was removed. Connect Google Drive again.'
       : e.scope ? 'Google did not give SmartTrader permission for Drive files. Tap Disconnect, then Connect Google Drive again and press Continue on Google’s page (if it shows a Google Drive box, tick it).'
@@ -192,7 +218,8 @@ export async function readDriveBackup(env, orgId, fileId) {
 /* ---------- routes ---------- */
 const owner = (c) => { if (c.user.role !== 'owner') throw forbidden('Only the business owner can change Google Drive backup.'); };
 const statusOf = async (c) => {
-  const l = await c.db.prepare(`SELECT email, every, connected_at, last_backup_at, last_file, last_size, last_error, last_try_at FROM drive_links WHERE org_id = ?`).bind(c.org.id).first();
+  const l = await c.db.prepare(`SELECT email, every, excel, connected_at, last_backup_at, last_file, last_size, last_error, last_try_at, folder_id, last_excel_id, last_checked
+    FROM drive_links WHERE org_id = ?`).bind(c.org.id).first();
   return { configured: driveConfigured(c.env), connected: !!l, ...(l || {}) };
 };
 
@@ -248,9 +275,14 @@ export function driveRoutes(router) {
 
   router.add('PUT', '/api/gdrive', async (c) => {
     owner(c);
-    const every = String(c.body.every || '');
-    if (!['day', 'week'].includes(every)) throw bad('Back up every day or every week.');
-    await c.db.prepare(`UPDATE drive_links SET every = ? WHERE org_id = ?`).bind(every, c.org.id).run();
+    const sets = [], vals = [];
+    if (c.body.every !== undefined) {
+      if (!['day', 'week'].includes(c.body.every)) throw bad('Back up every day or every week.');
+      sets.push('every = ?'); vals.push(c.body.every);
+    }
+    if (c.body.excel !== undefined) { sets.push('excel = ?'); vals.push(c.body.excel ? 1 : 0); }
+    if (!sets.length) throw bad('Nothing to change.');
+    await c.db.prepare(`UPDATE drive_links SET ${sets.join(', ')} WHERE org_id = ?`).bind(...vals, c.org.id).run();
     return new Response(JSON.stringify(await statusOf(c)), { headers: { 'Content-Type': 'application/json' } });
   });
 

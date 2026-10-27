@@ -2,6 +2,7 @@
      node test/run.mjs [http://localhost:8787]
    Runs a full procure-to-pay and order-to-cash cycle for a fresh business, then checks that
    the books balance, stock value equals the inventory ledger, and every total is exact. */
+import { backupHealth } from '../src/lib.js';
 const BASE = process.argv[2] || process.env.ERP_URL || 'http://localhost:8787';
 let cookie = '', pass = 0, fail = 0;
 
@@ -348,11 +349,13 @@ check('only the owner can connect Google Drive', (await api('POST', '/api/gdrive
 if (process.env.ERP_GDRIVE_MOCK) {
   /* Google Drive backup against a stand-in Google (start the worker with the GDRIVE_* vars pointing at it, see README) */
   const http = await import('node:http');
-  const files = [], calls = [];
+  const files = [], calls = [], mock = { badMd5: false };
+  const { createHash } = await import('node:crypto');
   for (let i = 0; i < 32; i++) files.push({ id: 'old' + i, name: 'smarttrader-backup-old-' + i + '.json', createdTime: new Date(Date.UTC(2025, 0, 1 + i)).toISOString(), body: '' });
   const send = (res, code, o) => { res.writeHead(code, { 'Content-Type': 'application/json' }); res.end(JSON.stringify(o)); };
   const g = http.createServer((req, res) => {
-    let b = ''; req.on('data', (d) => { b += d; }); req.on('end', () => {
+    const chunks = []; req.on('data', (d) => chunks.push(d)); req.on('end', () => {
+      const b = Buffer.concat(chunks).toString('latin1');      // byte for byte, so an Excel upload stays intact
       const u = new URL(req.url, 'http://x'); calls.push(req.method + ' ' + u.pathname);
       if (u.pathname === '/token') {
         const f = new URLSearchParams(b);
@@ -374,14 +377,17 @@ if (process.env.ERP_GDRIVE_MOCK) {
       if (u.pathname.startsWith('/drive/v3/files/') && req.method === 'GET' && u.searchParams.get('alt') === 'media') {
         const f = files.find((x) => x.id === u.pathname.split('/').pop());
         if (!f) return send(res, 404, { error: { message: 'File not found' } });
-        res.writeHead(200, { 'Content-Type': 'application/json' }); return res.end(f.body);
+        res.writeHead(200, { 'Content-Type': f.mime || 'application/json' }); return res.end(f.bytes || f.body);
       }
       if (u.pathname.startsWith('/drive/v3/files/') && req.method === 'GET') return send(res, 200, { id: 'fold1', trashed: false });
       if (u.pathname.startsWith('/drive/v3/files/') && req.method === 'DELETE') { const id = u.pathname.split('/').pop(); files.splice(files.findIndex((f) => f.id === id), 1); res.writeHead(204); return res.end(); }
       if (u.pathname === '/upload/drive/v3/files') {
-        const parts = b.split(/--st[^\r\n]*/); const meta = JSON.parse(parts[1].split('\r\n\r\n')[1]); const body = parts[2].split('\r\n\r\n').slice(1).join('\r\n\r\n').replace(/\r\n$/, '');
-        const f = { id: 'f' + files.length + Date.now(), name: meta.name, createdTime: new Date().toISOString(), body, parents: meta.parents }; files.push(f);
-        return send(res, 200, { id: f.id, name: f.name, size: String(body.length) });
+        const parts = b.split(/--st[^\r\n]*/); const meta = JSON.parse(parts[1].split('\r\n\r\n')[1]);
+        const bytes = Buffer.from(parts[2].split('\r\n\r\n').slice(1).join('\r\n\r\n').replace(/\r\n$/, ''), 'latin1');
+        const f = { id: 'f' + files.length + Date.now(), name: meta.name, mime: meta.mimeType, createdTime: new Date().toISOString(), bytes, body: bytes.toString('utf8'), parents: meta.parents };
+        files.push(f);
+        const md5 = createHash('md5').update(bytes).digest('hex');
+        return send(res, 200, { id: f.id, name: f.name, size: String(bytes.length), md5Checksum: mock.badMd5 ? md5.replace(/^./, (ch) => (ch === '0' ? '1' : '0')) : md5 });
       }
       send(res, 404, { error: { message: 'unknown ' + u.pathname } });
     });
@@ -412,15 +418,32 @@ if (process.env.ERP_GDRIVE_MOCK) {
   check('a forged state is refused', bad1.status === 302 && /drive=bad/.test(bad1.headers.get('location')));
   const cb = await ofetch('/api/gdrive/callback?code=good&state=' + encodeURIComponent(state));
   check('Google sends the owner back: connected and the first backup is saved', cb.status === 302 && /drive=ok/.test(cb.headers.get('location')), cb.headers.get('location'));
-  const up = files.filter((f) => f.body);
+  const jsonOf = () => files.filter((f) => f.body && /^smarttrader-backup-.*\.json$/.test(f.name)), xlsxOf = () => files.filter((f) => /^smarttrader-excel-.*\.xlsx$/.test(f.name));
+  const up = jsonOf();
   const j = up.length ? JSON.parse(up[0].body) : {};
   check('the Drive file is the full backup, in the SmartTrader folder, without login secrets', up.length === 1 && j.format === 'smarttrader-backup' && j.tables.docs.length > 0
     && up[0].parents[0] === 'fold1' && !/pw_hash|khata_token|share_token|rt-secret/.test(up[0].body));
-  check('only the newest 30 backups are kept', files.length === 30 && files.some((f) => f.body), String(files.length));
+  const ux = xlsxOf();
+  check('a readable Excel copy goes next to it, whole (a real .xlsx with every sheet)', ux.length === 1 && ux[0].parents[0] === 'fold1'
+    && /spreadsheetml\.sheet$/.test(ux[0].mime || '') && ux[0].bytes.subarray(0, 2).toString('latin1') === 'PK' && ux[0].bytes.toString('latin1').includes('xl/worksheets/sheet10.xml'), ux.map((f) => f.name + ' ' + f.mime).join());
+  check('only the newest 30 backups are kept (the Excel copies counted on their own)', files.filter((f) => /\.json$/.test(f.name)).length === 30 && files.length === 31, String(files.length));
   const st1 = await (await ofetch('/api/gdrive')).json();
   check('status shows the Google account and the last backup', st1.connected && st1.email === 'owner@gmail.com' && !!st1.last_backup_at && !st1.last_error && !('refresh_enc' in st1), JSON.stringify(st1));
+  check('status says Google\'s checksum matched and links the folder and the Excel copy', st1.last_checked === 1 && st1.excel === 1 && st1.folder_id === 'fold1' && st1.last_excel_id === ux[0].id, JSON.stringify(st1));
   const now1 = await (await ofetch('/api/gdrive/backup', { method: 'POST', body: '{}' })).json();
-  check('Back up now saves another file', now1.ok && files.filter((f) => f.body).length === 2, JSON.stringify(now1));
+  check('Back up now saves another backup and Excel copy', now1.ok && now1.excel && now1.checked && jsonOf().length === 2 && xlsxOf().length === 2, JSON.stringify(now1));
+  const xoff = await (await ofetch('/api/gdrive', { method: 'PUT', body: JSON.stringify({ excel: false }) })).json();
+  const now2 = await (await ofetch('/api/gdrive/backup', { method: 'POST', body: '{}' })).json();
+  check('the Excel copy can be turned off', xoff.excel === 0 && now2.ok && !now2.excel && jsonOf().length === 3 && xlsxOf().length === 2, JSON.stringify(now2));
+  await ofetch('/api/gdrive', { method: 'PUT', body: JSON.stringify({ excel: true }) });
+  mock.badMd5 = true;
+  const mis = await ofetch('/api/gdrive/backup', { method: 'POST', body: '{}' }), misj = await mis.json();
+  mock.badMd5 = false;
+  const stm = await (await ofetch('/api/gdrive')).json();
+  check('a file Google stored differently is removed and the backup reported as failed', mis.status === 502 && /did not match/.test(misj.error || '') && jsonOf().length === 3
+    && /did not match/.test(stm.last_error || ''), misj.error);
+  const now3 = await (await ofetch('/api/gdrive/backup', { method: 'POST', body: '{}' })).json();
+  check('the next good backup clears the warning', now3.ok && !(await (await ofetch('/api/gdrive')).json()).last_error && jsonOf().length === 4, JSON.stringify(now3));
   {
     // a new, empty business connects the same Google account and restores the backup from Drive
     const nb = await rq('POST', '/api/auth/signup', { business: 'Drive Restore Co', name: 'D', email: `drive${Date.now()}@test.in`, password: 'Drive-pass-1', state: 'Rajasthan' }, { ip: '203.0.113.95' });
@@ -449,6 +472,21 @@ if (process.env.ERP_GDRIVE_MOCK) {
     && j.format === 'smarttrader-backup' && j.tables.docs.some((d) => d.id === inv.id) && j.tables.doc_lines.some((l) => l.doc_id === inv.id) && j.tables.parties.length >= 2);
   check('backup has no password hashes or private link tokens', !/pw_hash|"salt"|khata_token/.test(txt) && j.tables.users.length >= 2);
   check('backup holds only this business', j.tables.docs.every((d) => d.org_id === j.org.id) && j.tables.items.every((d) => d.org_id === j.org.id));
+  const bf = await fetch(BASE + '/api/export/backup?to=folder', { headers: { Cookie: ownerCookie } });
+  const aud = await (await fetch(BASE + '/api/audit', { headers: { Cookie: ownerCookie } })).json();
+  check('a backup the app saves in a folder is marked so in the audit trail', bf.ok && aud.rows.some((r) => r.action === 'backup' && /to a folder on a computer/.test(r.detail)));
+  const meB = await (await fetch(BASE + '/api/me', { headers: { Cookie: ownerCookie } })).json();
+  check('the business remembers when its data was last downloaded (for the Today reminder)', Date.now() - Date.parse(meB.org.backup_at || 0) < 120e3, meB.org.backup_at);
+  {
+    // the Today row about backups, at a fixed "now"
+    const n = Date.parse('2026-10-27T12:00:00Z'), D = 86400e3, at = (d) => new Date(n - d * D).toISOString(), key = (r) => (backupHealth(r, n) || {}).key || '';
+    check('backup reminder: nothing to lose yet, or a business only days old, gets none', key({ docs: 0, since: at(90) }) === '' && key({ docs: 5, since: at(2) }) === '');
+    check('backup reminder: never backed up after 3 days', key({ docs: 5, since: at(4) }) === 'backup_none');
+    check('backup reminder: last backup over a week ago, with the days', key({ docs: 5, since: at(90), a: at(9) }) === 'backup_old' && backupHealth({ docs: 5, since: at(90), a: at(9) }, n).n === 9);
+    check('backup reminder: a recent download or Drive backup is enough', key({ docs: 5, since: at(90), a: at(1) }) === '' && key({ docs: 5, since: at(90), a: at(30), d: at(0.5) }) === '');
+    check('backup reminder: Google Drive failing for 2 days', key({ docs: 5, since: at(90), d: at(3), e: 'Google access was removed.' }) === 'drive_failing'
+      && key({ docs: 5, since: at(90), d: at(0.5), e: 'The backup was saved, but its Excel copy was not' }) === '');
+  }
 
   // Excel copy: a real .xlsx (zip) with the sheets
   const xr = await fetch(BASE + '/api/export/excel', { headers: { Cookie: ownerCookie } });
@@ -1492,6 +1530,7 @@ else {
   check('the owner\'s own big PO needs no approval', ownPo.status === 'open', ownPo.status);
   const stTd = await S('GET', '/api/today');
   check('today for the store user leaves out money they do not handle', stTd.status === 200 && !stTd.data.rows.some((r) => ['approve', 'overdue', 'bills_due'].includes(r.key)), JSON.stringify(stTd.data.rows));
+  check('a business a few days old is not told to back up yet, and staff never are', !td.rows.some((r) => /^backup_|^drive_failing/.test(r.key)) && !stTd.data.rows.some((r) => /^backup_|^drive_failing/.test(r.key)));
 
   // marketplace orders: an Amazon report, two orders (one with two lines), one cancelled, one unknown SKU
   await V('PUT', `/api/items/${choc.id}`, { name: choc.name, unit: choc.unit, sale_price: 50, gst_rate: 18, sku: 'CHOC-1' });

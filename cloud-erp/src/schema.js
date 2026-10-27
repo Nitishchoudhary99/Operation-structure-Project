@@ -3,7 +3,7 @@
    Every business table carries org_id: one database serves many businesses (multi-tenant).
    migrate() runs on the first request after each deploy, so no manual migration step is needed. */
 
-export const SCHEMA_VERSION = 28;
+export const SCHEMA_VERSION = 29;
 
 // document types whose monthly totals doc_month keeps (sales and purchase money documents)
 const MONTH_TYPES = `('INV','SRET','CNOTE','BILL','PRET','DNOTE')`;
@@ -554,6 +554,15 @@ export const MIGRATIONS = {
     `CREATE UNIQUE INDEX IF NOT EXISTS ux_wa_wamid ON wa_messages (wamid) WHERE wamid IS NOT NULL`,
     `CREATE INDEX IF NOT EXISTS ix_wa_org ON wa_messages (org_id, phone, id)`,
     `CREATE INDEX IF NOT EXISTS ix_wa_at ON wa_messages (at)`,
+  ],
+  // Drive backup (src/gdrive.js): the readable Excel copy (on unless turned off), the newest files and whether Google's checksum matched
+  29: [
+    `ALTER TABLE drive_links ADD COLUMN excel INTEGER NOT NULL DEFAULT 1`,
+    `ALTER TABLE drive_links ADD COLUMN last_file_id TEXT`,
+    `ALTER TABLE drive_links ADD COLUMN last_excel_id TEXT`,
+    `ALTER TABLE drive_links ADD COLUMN last_checked INTEGER`,
+    // the newest download of a full backup (file, Excel or the app's folder backup), for the Today reminder
+    `ALTER TABLE orgs ADD COLUMN backup_at TEXT`,
   ],
 };
 
