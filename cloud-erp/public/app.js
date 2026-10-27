@@ -357,7 +357,7 @@ const ADVANCED = new Set(['sales/SO', 'sales/DN', 'sales/QUOTE', 'purchase/PO', 
 const ADV_DOCS = ['QUOTE', 'SO', 'DN', 'PO', 'GRN'];
 const simple = () => !ME || (ME.org.mode || 'simple') !== 'advanced';
 /* which permission area a menu entry needs (custom roles may not see every area); the gate register also opens with 'gate' */
-const navArea = (h) => /^(receipts|payments|expenses|accounts|journal|staff)$/.test(h) ? 'finance' : /^(sales\/|pos$|recurring$|channels$)/.test(h) ? 'sales' : /^(purchase\/|receive$)/.test(h) ? 'purchase'
+const navArea = (h) => /^(receipts|payments|expenses|accounts|journal|staff|bankrec|assets|tds)$/.test(h) ? 'finance' : /^(sales\/|pos$|recurring$|channels$)/.test(h) ? 'sales' : /^(purchase\/|receive$)/.test(h) ? 'purchase'
   : /^gate\/in$/.test(h) ? ['purchase', 'gate'] : /^gate\/out$/.test(h) ? ['items', 'gate'] : h === 'claims' ? ['purchase', 'finance'] : h === 'wa-inbox' ? ['sales', 'khata', 'finance']
   : /^(items|stock|stockcount|pending|bins|expiry|stock-ageing|serials|production|wave|putaway)$/.test(h) ? 'items' : /^(parties|reminders)$/.test(h) ? 'masters' : /^(khata|vaade)$/.test(h) ? 'khata'
   : /^(reports\/|tally$|daybook$)/.test(h) ? 'reports' : h === 'plan' ? 'settings' : '';
@@ -376,7 +376,7 @@ const JOBS = {
     'production', 'stockcount', 'wave', 'pending', 'gate/out', 'stock-ageing', 'claims'] },
   gate: { t: 'Gate / security guard', home: 'gate/in', screens: ['gate/in', 'gate/out'] },
   accounts: { t: 'Accountant', home: 'dashboard', screens: ['dashboard', 'sales/INV', 'sales/SRET', 'sales/CNOTE', 'receipts', 'purchase/BILL', 'purchase/PRET', 'purchase/DNOTE', 'payments',
-    'parties', 'khata', 'reminders', 'vaade', 'staff', 'expenses', 'accounts', 'journal', 'daybook', 'reports/pnl', 'reports/balance-sheet', 'reports/trial-balance', 'reports/gst', 'reports/ageing',
+    'parties', 'khata', 'reminders', 'vaade', 'staff', 'expenses', 'bankrec', 'assets', 'tds', 'accounts', 'journal', 'daybook', 'reports/pnl', 'reports/balance-sheet', 'reports/trial-balance', 'reports/gst', 'reports/ageing',
     'reports/register', 'cash', 'tally', 'claims', 'wa-inbox'] },
   sales: { t: 'Salesman', home: 'sales/INV', screens: ['dashboard', 'pos', 'sales/INV', 'sales/QUOTE', 'sales/SO', 'sales/DN', 'sales/SRET', 'receipts', 'channels', 'recurring', 'parties', 'khata',
     'reminders', 'vaade', 'items', 'stock', 'wa-inbox'] },
@@ -413,7 +413,7 @@ const NAV = [
   ['Purchase', [['receive', 'Receive Goods (scan)'], ['purchase/PO', 'Purchase Orders'], ['gate/in', 'Gate Entry (inward)'], ['purchase/GRN', 'Goods Receipts (GRN)'], ['purchase/BILL', 'Purchase Bills'], ['purchase/PRET', 'Purchase Returns'], ['purchase/DNOTE', 'Debit Notes (rate diff)'], ['claims', 'Transit Claims'], ['payments', 'Payments']]],
   ['Inventory', [['items', 'Items'], ['stock', 'Stock & Godowns'], ['stock-ageing', 'Stock Ageing'], ['bins', 'Bins & Racks'], ['expiry', 'Batch & Expiry'], ['serials', 'Serial / IMEI'], ['production', 'Production (BOM)'], ['wave', 'Wave Pick List'], ['stockcount', 'Stock Count'], ['gate/out', 'Gate Pass (outward)'], ['pending', 'Pending Orders']]],
   ['Contacts', [['parties', 'Customers & Suppliers'], ['khata', 'Khata Book'], ['reminders', 'Vasooli (Collections)'], ['vaade', 'Vaade (Promises)'], ['wa-inbox', 'WhatsApp Inbox']]],
-  ['Accounts', [['staff', 'Staff & Salary'], ['expenses', 'Expenses'], ['accounts', 'Chart of Accounts'], ['journal', 'Journal Voucher'], ['daybook', 'Day Book']]],
+  ['Accounts', [['staff', 'Staff & Salary'], ['expenses', 'Expenses'], ['bankrec', 'Bank Reconciliation'], ['assets', 'Fixed Assets'], ['tds', 'TDS'], ['accounts', 'Chart of Accounts'], ['journal', 'Journal Voucher'], ['daybook', 'Day Book']]],
   ['Reports', [['reports/pnl', 'Profit & Loss'], ['reports/balance-sheet', 'Balance Sheet'], ['reports/trial-balance', 'Trial Balance'], ['reports/gst', 'GST Summary'], ['reports/ageing', 'Outstanding (Ageing)'], ['reports/register', 'Registers'], ['cash', 'Kal ka Cash'], ['tally', 'Tally Export']]],
   ['Settings', [['settings', 'Settings'], ['plan', 'Plan & Billing']]],
 ];
@@ -611,6 +611,7 @@ const TODAY = {
   drive_failing: ['red', () => 'Google Drive backup is not working', '#/settings?backup=1', 'Fix'],
   backup_none: ['amber', () => 'Your business data has no backup yet', '#/settings?backup=1', 'Back up'],
   backup_old: ['amber', (n) => `No backup of your data for ${n} days`, '#/settings?backup=1', 'Back up'],
+  tds_due: ['amber', () => 'TDS kept back from suppliers, to pay to the government by the 7th', '#/tds', 'Pay'],
 };
 function todayCard(t) {
   if (!t) return '';
@@ -1138,25 +1139,43 @@ route(/^doc\/(\d+)$/, async (el, m) => {
 });
 
 /* ======================================================================= payments & receipts */
-async function paymentForm(kind, { party_id = '', amount = '', doc } = {}) {
+/* TDS sections with their usual rates (src/tds.js TDS_SECTIONS; the rate can be changed on the payment) */
+const TDS_SECT = [['194C', 'Contractor: individual / HUF', 1], ['194C', 'Contractor: company / firm', 2], ['194J', 'Professional fees', 10], ['194J', 'Technical services / royalty', 2],
+  ['194I', 'Rent: land, building, furniture', 10], ['194I', 'Rent: plant & machinery', 2], ['194H', 'Commission / brokerage', 2], ['194Q', 'Purchase of goods', 0.1], ['194A', 'Interest (not bank)', 10]];
+async function paymentForm(kind, { party_id = '', amount = '', doc, date = '', reference = '', account_id = '', after } = {}) {
   const parties = (await master('parties')).filter((p) => kind === 'receipt' ? p.kind !== 'supplier' : p.kind !== 'customer');
   const accts = await cashOpts();
-  modal(kind === 'receipt' ? 'Receive payment' : 'Pay supplier', [
+  const f = modal(kind === 'receipt' ? 'Receive payment' : 'Pay supplier', [
     { k: 'party_id', label: kind === 'receipt' ? 'From customer' : 'To supplier', type: 'select', options: [{ v: '', t: 'Choose…' }, ...opts(parties, (p) => `${p.name} (bal ${inr(p.balance)})`)], value: party_id, required: true },
-    { k: 'amount', label: 'Amount (₹)', type: 'number', value: amount, required: true },
-    { k: 'account_id', label: kind === 'receipt' ? 'Money went into' : 'Paid from', type: 'select', options: accts, help: 'Cash, bank or UPI.' },
-    { k: 'date', label: 'Date', type: 'date', value: ME.today },
-    { k: 'reference', label: 'UTR / cheque no.', more: true, help: 'From the bank or UPI app, to find it later.' },
+    { k: 'amount', label: kind === 'receipt' ? 'Amount (₹)' : 'Bill amount settled (₹)', type: 'number', value: amount, required: true },
+    { k: 'account_id', label: kind === 'receipt' ? 'Money went into' : 'Paid from', type: 'select', options: accts, value: account_id, help: 'Cash, bank or UPI.' },
+    { k: 'date', label: 'Date', type: 'date', value: date || ME.today },
+    { k: 'reference', label: 'UTR / cheque no.', more: true, value: reference, help: 'From the bank or UPI app, to find it later.' },
+    ...(kind === 'payment' ? [{ k: 'tds_section', label: 'TDS deducted (section)', type: 'select', more: true, options: [{ v: '', t: 'No TDS' }, ...TDS_SECT.map(([s, t, r]) => ({ v: `${s}|${r}`, t: `${s} ${t} (${r}%)` }))] },
+      { k: 'tds_rate', label: 'TDS rate (%)', type: 'number', more: true, help: 'The supplier gets the amount less TDS; the TDS is paid to the government by the 7th (Accounts → TDS).' }]
+      : [{ k: 'tds_rate', label: 'TDS the customer deducted (%)', type: 'number', more: true, help: 'E.g. 2 or 10. The bill is settled in full; the TDS is claimed in your income-tax return.' }]),
     { k: 'notes', label: 'Notes', more: true },
   ], async (v) => {
     const body = { ...v, kind, party_id: +v.party_id, account_id: +v.account_id };
+    if (v.tds_section) { const [s, r] = v.tds_section.split('|'); body.tds_section = s; body.tds_rate = +v.tds_rate || +r; }
     if (doc) body.allocations = [{ doc_id: doc.id, amount: Math.min(+v.amount, doc.balance) }];
     const r = await POST('/api/payments', body);
     if (r.queued) { toast('No internet: saved on this device, sent when online.', 'info'); return; }
-    dirty('accounts', 'parties'); toast(`${r.number} saved`);
-    if (kind === 'receipt') setTimeout(() => sendReceipt(r, (parties.find((x) => x.id === +v.party_id) || {}).lang), 0);
+    dirty('accounts', 'parties'); toast(`${r.number} saved${r.tds ? ` · TDS ${inr(r.tds / 100)} kept back` : ''}`);
+    if (after) after(r);
+    else if (kind === 'receipt') setTimeout(() => sendReceipt(r, (parties.find((x) => x.id === +v.party_id) || {}).lang), 0);
     else render();
   }, { intro: `<p class="muted">${doc ? `Against ${esc(doc.number)}.` : 'Applied to the oldest open ' + (kind === 'receipt' ? 'invoices' : 'bills') + ' first; any extra is kept as an advance.'}</p>` });
+  // with TDS: what actually moves
+  const net = document.createElement('p'); net.className = 'muted small'; net.hidden = true; $('.actions', f).before(net);
+  if (f.elements.tds_section) f.elements.tds_section.addEventListener('change', (e) => { f.elements.tds_rate.value = e.target.value ? e.target.value.split('|')[1] : ''; });
+  const upd = () => {
+    const sec = f.elements.tds_section ? f.elements.tds_section.value : '', rate = +f.elements.tds_rate.value || (sec ? +sec.split('|')[1] : 0), amt = +f.elements.amount.value || 0;
+    const t = Math.round(amt * rate) / 100;
+    net.hidden = !(rate && amt);
+    net.innerHTML = kind === 'payment' ? `TDS ${inr(t)} kept back · the supplier gets <b>${inr(amt - t)}</b>` : `The customer deducted ${inr(t)} TDS · money received <b>${inr(amt - t)}</b>`;
+  };
+  f.addEventListener('input', upd); f.addEventListener('change', upd);
 }
 /* the customer's receipt on WhatsApp at once, naming who collected it: cash taken by staff cannot quietly go missing */
 const sendReceipt = (r, lang) => sendDialog({ title: `Send receipt ${r.number}`, lang, later: 'Not now', closed: () => render(),
@@ -1786,11 +1805,13 @@ function offlinePage(page) {
     if (b.dataset.off === 'receipt') paymentForm('receipt'); else expenseForm();
   };
 }
-async function expenseForm() {
-  const exp = (await master('accounts')).filter((a) => a.type === 'expense' && !['cogs', 'stock_adj', 'round_off'].includes(a.sys));
-  modal('Add expense', [{ k: 'account_id', label: 'Expense head', type: 'select', options: opts(exp, (a) => a.name) },
-    { k: 'amount', label: 'Amount before GST (₹)', type: 'number', required: true }, { k: 'gst_amount', label: 'GST paid (input credit, ₹)', type: 'number', value: 0 },
-    { k: 'paid_from', label: 'Paid from', type: 'select', options: await cashOpts() }, { k: 'date', label: 'Date', type: 'date', value: ME.today }, { k: 'notes', label: 'Notes', wide: true }],
+async function expenseForm({ amount = '', date = '', notes = '', paid_from = '', head = '' } = {}) {
+  // heads the app books by itself (stock, transit loss, depreciation ...) are not typed in by hand
+  const exp = (await master('accounts')).filter((a) => a.type === 'expense' && !['cogs', 'stock_adj', 'round_off', 'transit_loss', 'pur_adj', 'depreciation', 'asset_loss'].includes(a.sys));
+  const pick = (head && exp.find((a) => a.name.toLowerCase().includes(head))) || (amount ? exp.find((a) => a.sys === 'misc_exp') : null);
+  modal('Add expense', [{ k: 'account_id', label: 'Expense head', type: 'select', options: opts(exp, (a) => a.name), value: pick ? pick.id : '' },
+    { k: 'amount', label: 'Amount before GST (₹)', type: 'number', required: true, value: amount }, { k: 'gst_amount', label: 'GST paid (input credit, ₹)', type: 'number', value: 0 },
+    { k: 'paid_from', label: 'Paid from', type: 'select', options: await cashOpts(), value: paid_from }, { k: 'date', label: 'Date', type: 'date', value: date || ME.today }, { k: 'notes', label: 'Notes', wide: true, value: notes }],
   async (v) => { const r = await POST('/api/expenses', { ...v, account_id: +v.account_id, paid_from: +v.paid_from }); dirty('accounts'); toast(r.queued ? 'No internet: saved on this device, sent when online.' : 'Expense saved', r.queued ? 'info' : 'ok'); render(); });
 }
 route(/^outbox$/, async (el) => {
@@ -2695,6 +2716,172 @@ route(/^expenses$/, async (el, m, q) => {
   if ($('[data-ne]', el)) $('[data-ne]', el).onclick = form;
   if (takeNew(q)) form();
 });
+/* ======================================================================= bank reconciliation (src/bankrec.js) */
+let bankLast = null;          // the statement being matched stays while entries are added from it; the page matches again
+route(/^bankrec$/, async (el) => {
+  dirty('accounts');
+  const accts = (await master('accounts')).filter((a) => a.is_cash && a.sys !== 'cash');
+  const pick = bankLast ? bankLast.account_id : (accts.find((a) => a.sys === 'bank') || accts[0] || {}).id;
+  el.innerHTML = head('Bank Reconciliation') + `
+    <div class="panel"><p class="muted" style="margin-top:0">Match your bank statement with your books in seconds. Download it from net banking as Excel or CSV (SBI, HDFC, ICICI, Axis, Kotak and others) and pick it here: each line is matched to your entries by amount and date, a cheque or UTR number deciding a tie. Bank charges, interest and transfers your books do not have are added in one tap. बैंक स्टेटमेंट और खाते का मिलान।</p>
+      <form id="bkf"><div class="form"><label class="f">Bank account<select name="account_id">${accts.map((a) => `<option value="${a.id}" ${a.id === pick ? 'selected' : ''}>${esc(a.name)} (${inr(a.balance)})</option>`).join('')}</select></label>
+        <label class="f wide">Bank statement (Excel or CSV)<input type="file" name="file" accept=".csv,.xlsx,.txt,text/csv"></label></div>
+        <div class="err" hidden></div><div class="row" style="margin-top:10px">${bankLast ? '<button type="button" class="btn" id="bkagain">Match the same statement again</button>' : ''}<span class="spacer"></span><button class="btn primary">Match</button></div></form></div>
+    <div id="bkres"></div><div id="brsbox"></div>`;
+  const f = $('#bkf'), err = $('.err', f);
+  const brsShow = async (acct, on, closing) => {
+    const B = await GET(`/api/bank/brs?account_id=${acct}&date=${on || ''}`);
+    const lst = (rows) => rows.length ? `<ul class="small">${rows.slice(0, 30).map((x) => `<li>${fdate(x.date)} · ${esc(x.party || x.narration)}${x.ref ? ` · ${esc(x.ref)}` : ''} · <b>${inr(Math.abs(x.amount))}</b></li>`).join('')}${rows.length > 30 ? `<li>…and ${rows.length - 30} more</li>` : ''}</ul>` : '';
+    const s = (rows) => rows.reduce((t, x) => t + Math.abs(x.amount), 0);
+    $('#brsbox').innerHTML = `<div class="panel"><h3 style="margin-top:0">Bank Reconciliation Statement on ${fdate(B.date)}</h3>
+      <table class="t brs"><tbody><tr><td>Balance as per your books</td><td class="num"><b>${inr(B.books)}</b></td></tr>
+        <tr><td>Less: deposits not yet credited by the bank (${B.not_credited.length})${lst(B.not_credited)}</td><td class="num">−${inr(s(B.not_credited))}</td></tr>
+        <tr><td>Add: cheques / payments not yet presented (${B.not_presented.length})${lst(B.not_presented)}</td><td class="num">+${inr(s(B.not_presented))}</td></tr>
+        <tr><td><b>Balance the bank should show</b></td><td class="num"><b>${inr(B.bank)}</b></td></tr>
+        ${closing !== null && closing !== undefined ? `<tr><td>Balance on the statement</td><td class="num">${inr(closing)}</td></tr>
+        <tr><td><b>${Math.abs(closing - B.bank) < 0.005 ? '✓ Matches' : 'Difference to look into'}</b></td><td class="num ${Math.abs(closing - B.bank) < 0.005 ? 'pos' : 'neg'}"><b>${inr(closing - B.bank)}</b></td></tr>` : ''}</tbody></table></div>`;
+  };
+  const show = (r) => {
+    const box = $('#bkres'), ready = r.lines.filter((l) => l.status === 'match'), none = r.lines.filter((l) => l.status === 'none');
+    const st = { match: '<span class="badge b-paid">matched</span>', done: '<span class="badge">done</span>', none: '<span class="badge b-unpaid">not in books</span>' };
+    box.innerHTML = `<div class="kpis"><div class="kpi"><div class="l">Statement lines</div><div class="v">${r.counts.lines}</div><div class="s">${fdate(r.from)} – ${fdate(r.to)}</div></div>
+        <div class="kpi"><div class="l">Matched, to confirm</div><div class="v pos">${r.counts.matched}</div></div><div class="kpi"><div class="l">Done before</div><div class="v">${r.counts.done}</div></div>
+        <div class="kpi"><div class="l">Not in your books</div><div class="v ${none.length ? 'neg' : ''}">${none.length}</div><div class="s">add them below</div></div></div>
+      ${ready.length ? `<div class="panel okbox row"><span>${ready.length} line${ready.length > 1 ? 's' : ''} matched to your entries. Check them below, then confirm.</span><span class="spacer"></span><button class="btn primary" id="bkok">Confirm ${ready.length} match${ready.length > 1 ? 'es' : ''}</button></div>` : ''}
+      <div class="panel flush">${table([{ h: 'Date', f: (l) => fdate(l.date) }, { h: 'Bank says', f: (l) => `${esc(l.desc)}${l.ref ? `<div class="muted small">${esc(l.ref)}</div>` : ''}` },
+        { h: 'Amount', num: 1, f: (l) => `<span class="${l.amount > 0 ? 'pos' : 'neg'}">${l.amount > 0 ? '+' : '−'}${inr(Math.abs(l.amount))}</span>` },
+        { h: 'In your books', f: (l) => `${st[l.status]}${l.book ? `<div class="small">${fdate(l.book.date)} · ${esc(l.book.party || l.book.narration)}${l.book.ref ? ` · ${esc(l.book.ref)}` : ''}</div>` : ''}` },
+        { h: '', f: (l) => l.status === 'none' ? (l.amount < 0 ? `<button class="btn sm" data-bexp="${l.i}">Add expense</button> <button class="btn sm" data-bpay="${l.i}">Pay supplier</button>`
+          : `<button class="btn sm" data-brec="${l.i}">Receive payment</button> <button class="btn sm" data-binc="${l.i}">Other income</button>`) : l.status === 'done' ? `<button class="btn sm" data-bun="${l.line}">Undo</button>` : '' }], r.lines)}</div>
+      ${r.book_open.length ? `<div class="panel"><h3 style="margin-top:0">In your books, not on this statement (${r.book_open.length})</h3><p class="muted">Cheques not yet presented, deposits not yet credited, or an entry made twice / with a wrong amount.</p>
+        ${table([{ h: 'Date', f: (x) => fdate(x.date) }, { h: 'Entry', f: (x) => esc(x.party || x.narration) + (x.ref ? `<div class="muted small">${esc(x.ref)}</div>` : '') }, { h: 'Amount', num: 1, f: (x) => inr(x.amount) }], r.book_open)}</div>` : ''}`;
+    const L = (i) => r.lines[+i];
+    if ($('#bkok')) $('#bkok').onclick = async () => {
+      try { const x = await POST('/api/bank/clear', { account_id: r.account.id, items: ready.map((l) => ({ line: l.line, date: l.date, key: l.key })) }); toast(`${x.cleared} entries reconciled`); run(); }
+      catch (e) { toast(e.message, 'err'); }
+    };
+    $$('[data-bexp]', box).forEach((b) => { b.onclick = () => { const l = L(b.dataset.bexp); expenseForm({ amount: Math.abs(l.amount), date: l.date, notes: l.desc, paid_from: r.account.id, head: /charge|fee|gst|commission/i.test(l.desc) ? 'bank' : '' }); }; });
+    $$('[data-bpay]', box).forEach((b) => { b.onclick = () => { const l = L(b.dataset.bpay); paymentForm('payment', { amount: Math.abs(l.amount), date: l.date, reference: l.ref, account_id: r.account.id, after: () => render() }); }; });
+    $$('[data-brec]', box).forEach((b) => { b.onclick = () => { const l = L(b.dataset.brec); paymentForm('receipt', { amount: l.amount, date: l.date, reference: l.ref, account_id: r.account.id, after: () => render() }); }; });
+    $$('[data-bun]', box).forEach((b) => { b.onclick = async () => { await POST('/api/bank/unclear/' + b.dataset.bun); run(); }; });
+    // interest, a refund, a cashback: money in that is not from a customer
+    $$('[data-binc]', box).forEach((b) => { b.onclick = async () => {
+      const l = L(b.dataset.binc), inc = (await master('accounts')).filter((a) => a.type === 'income' && !['sales', 'sales_adj'].includes(a.sys));
+      modal('Other income', [{ k: 'account_id', label: 'Income head', type: 'select', options: opts(inc), value: (inc.find((a) => a.sys === 'other_income') || {}).id },
+        { k: 'amount', label: 'Amount (₹)', type: 'number', value: l.amount, required: true }, { k: 'date', label: 'Date', type: 'date', value: l.date }, { k: 'notes', label: 'What it is', value: l.desc, wide: true }],
+      async (v) => {
+        await POST('/api/journals', { date: v.date, narration: v.notes || 'Other income', lines: [{ account_id: r.account.id, debit: +v.amount }, { account_id: +v.account_id, credit: +v.amount }] });
+        dirty('accounts'); toast('Income saved'); render();
+      }, { submit: 'Save', intro: '<p class="muted">Bank interest, a refund, a cashback: money that came into the bank but is not a customer\'s payment.</p>' });
+    }; });
+    brsShow(r.account.id, r.to, r.closing).catch(() => {});
+  };
+  const run = async () => { try { show(await POST('/api/bank/check', bankLast)); } catch (e) { err.hidden = false; err.textContent = e.message; } };
+  f.onsubmit = async (e) => {
+    e.preventDefault(); err.hidden = true;
+    const file = f.elements.file.files[0];
+    if (!file) { err.hidden = false; err.textContent = 'Choose the statement file first.'; return; }
+    try {
+      const buf = await file.arrayBuffer();
+      if (/\.xls$/i.test(file.name) && new Uint8Array(buf.slice(0, 2)).join() !== '80,75') throw new Error('This is an old Excel (.xls) file. Open it in Excel and save as .xlsx or CSV, then pick that.');
+      const csv = /\.xlsx$/i.test(file.name) || new Uint8Array(buf.slice(0, 2)).join() === '80,75' ? rowsToCsv(await xlsxRows(buf)) : new TextDecoder().decode(buf);
+      bankLast = { account_id: +f.elements.account_id.value, csv };
+      await run();
+    } catch (x) { err.hidden = false; err.textContent = x.message; }
+  };
+  if ($('#bkagain')) $('#bkagain').onclick = run;
+  if (bankLast) run(); else if (pick) brsShow(pick, ME.today, null).catch(() => {});
+});
+
+/* ======================================================================= fixed assets & depreciation (src/assets.js) */
+route(/^assets$/, async (el, m, q) => {
+  const A = await GET('/api/assets');
+  const live = A.rows.filter((a) => !a.sold_on), sum = (k) => live.reduce((s, a) => s + a[k], 0);
+  const fys = [0, 1, 2, 3].map((k) => { const y = +A.fy_now.slice(0, 4) - k; return `${y}${A.fy_now.slice(4)}`; });
+  const fy = q.get('fy') || (A.runs.some((r) => r.fy === fys[1]) ? fys[0] : fys[1]);
+  el.innerHTML = head('Fixed Assets', '<button class="btn primary" id="new">+ Add asset</button>') + `
+    <p class="muted">Machines, furniture, computers, vehicles, shop fit-out. Depreciation is worked out every year (income-tax WDV or Companies Act SLM) and booked in one tap, so your profit and balance sheet are right. मशीन, फ़र्नीचर, गाड़ी: हर साल घिसाई (depreciation) अपने आप।</p>
+    ${A.rows.length ? `<div class="kpis"><div class="kpi"><div class="l">Cost of assets in use</div><div class="v">${inr0(sum('cost'))}</div><div class="s">${live.length} asset${live.length === 1 ? '' : 's'}</div></div>
+      <div class="kpi"><div class="l">Depreciation so far</div><div class="v">${inr0(sum('depreciation'))}</div></div><div class="kpi"><div class="l">Book value now</div><div class="v pos">${inr0(sum('book_value'))}</div></div></div>` : ''}
+    <div class="panel flush">${table([{ h: 'Asset', f: (a) => `<b>${esc(a.name)}</b><div class="muted small">${esc((A.categories[a.category] || {}).name || '')}</div>` },
+      { h: 'Bought', f: (a) => fdate(a.bought_on) }, { h: 'Cost', num: 1, f: (a) => inr(a.cost) },
+      { h: 'Method', cls: 'hide-sm', f: (a) => (a.method === 'wdv' ? `WDV ${a.rate}%` : `SLM ${a.life_years} yrs`) },
+      { h: 'Depreciation', num: 1, cls: 'hide-sm', f: (a) => inr(a.depreciation) }, { h: 'Book value', num: 1, f: (a) => `<b>${inr(a.book_value)}</b>` },
+      { h: '', f: (a) => a.sold_on ? `<span class="muted small">${a.sold_for ? 'sold' : 'scrapped'} ${fdate(a.sold_on)}</span>` : `<button class="btn sm" data-sell="${a.id}">Sell / scrap</button>` }],
+    A.rows, { empty: emptyCta('No fixed assets yet. Add the machines, furniture, computers and vehicles the business owns.', '<button class="btn primary" data-na>+ Add asset</button>') })}</div>
+    <div class="panel" id="dep"><div class="row"><h3 style="margin:0">Depreciation</h3><span class="spacer"></span><label class="f inline-f">Year<select id="depfy">${fys.map((y) => `<option value="${y}" ${y === fy ? 'selected' : ''}>${y.slice(0, 4)}-${String(+y.slice(2, 4) + 1).padStart(2, '0')}</option>`).join('')}</select></label></div>
+      <div id="depbox"><span class="muted">Working out…</span></div></div>`;
+  const depShow = async (y) => {
+    const box = $('#depbox');
+    try {
+      const p = await GET('/api/assets/depreciation?fy=' + y);
+      box.innerHTML = (p.lines.length ? table([{ h: 'Asset', k: 'name' }, { h: 'Method', f: (l) => (l.method === 'wdv' ? `WDV ${l.rate}%` : `SLM ${l.life_years} yrs`) },
+        { h: 'At start', num: 1, f: (l) => inr(l.opening) }, { h: `Depreciation ${p.label}`, k: 'amount', num: 1, f: (l) => `<b>${inr(l.amount)}</b>` }, { h: 'At end', num: 1, f: (l) => inr(l.closing) }], p.lines,
+        { foot: { name: '<b>Total</b>', amount: `<b>${inr(p.total)}</b>` } }) : '<p class="muted">No assets in this year.</p>')
+        + (p.booked ? `<div class="row" style="margin-top:10px"><span class="okc">✓ Booked for ${p.label}: ${inr(p.booked.total)}</span><span class="spacer"></span><button class="btn sm danger" id="depundo">Undo</button></div>`
+          : p.can_book && p.total > 0 ? `<div class="row" style="margin-top:10px"><span class="muted small">Booked on ${fdate(p.to)}: Depreciation (expense) against Accumulated Depreciation.</span><span class="spacer"></span><button class="btn primary" id="depgo">Book depreciation for ${p.label}</button></div>`
+          : `<p class="muted small" style="margin-top:10px">${p.total > 0 ? `${p.label} has not ended yet: book it at the year end.` : ''}</p>`);
+      if ($('#depgo')) $('#depgo').onclick = async () => { try { const r = await POST('/api/assets/depreciation', { fy: y }); dirty('accounts'); toast(`Depreciation ${r.label}: ${inr(r.total)} booked`); render(); } catch (e) { toast(e.message, 'err'); } };
+      if ($('#depundo')) $('#depundo').onclick = async () => { if (!confirm(`Take back the depreciation booked for ${p.label}?`)) return; try { await POST('/api/assets/depreciation/undo', { fy: y }); dirty('accounts'); toast('Taken back'); render(); } catch (e) { toast(e.message, 'err'); } };
+    } catch (e) { box.innerHTML = `<p class="err">${esc(e.message)}</p>`; }
+  };
+  $('#depfy').onchange = (e) => depShow(e.target.value);
+  depShow(fy);
+  const add = async () => {
+    const [cash, parties] = await Promise.all([cashOpts(), master('parties')]);
+    const f = modal('Add a fixed asset', [
+      { k: 'name', label: 'Asset', required: true, placeholder: 'e.g. Delivery van MH12 AB 1234' },
+      { k: 'category', label: 'Kind', type: 'select', value: 'plant', options: Object.entries(A.categories).map(([v, c]) => ({ v, t: c.name })) },
+      { k: 'bought_on', label: 'Bought / first used on', type: 'date', value: ME.today, required: true },
+      { k: 'cost', label: 'Cost before GST (₹)', type: 'number', required: true }, { k: 'gst', label: 'GST paid (input credit, ₹)', type: 'number', value: 0 },
+      { k: 'paid', label: 'Paid how', type: 'select', value: 'cash', options: [{ v: 'cash', t: 'Paid from cash / bank' }, { v: 'supplier', t: 'Owed to a supplier' }, { v: 'opening', t: 'Already owned (before SmartTrader)' }] },
+      { k: 'account_id', label: 'Paid from', type: 'select', options: cash },
+      { k: 'party_id', label: 'Supplier', type: 'select', options: [{ v: '', t: 'Choose…' }, ...opts(parties.filter((p) => p.kind !== 'customer'))] },
+      { k: 'opening_dep', label: 'Depreciation already charged before (₹)', type: 'number', value: 0 },
+      { k: 'method', label: 'Depreciation', type: 'select', value: 'wdv', options: [{ v: 'wdv', t: 'WDV: income-tax rates' }, { v: 'slm', t: 'SLM: Companies Act, straight line' }] },
+      { k: 'rate', label: 'Rate a year (%)', type: 'number', value: A.categories.plant.rate }, { k: 'life_years', label: 'Useful life (years)', type: 'number', value: A.categories.plant.life },
+      { k: 'salvage', label: 'Residual value at the end (₹)', type: 'number', value: 0, more: true }, { k: 'notes', label: 'Notes', more: true, wide: true }],
+    async (v) => { await POST('/api/assets', { ...v, account_id: +v.account_id, party_id: +v.party_id }); dirty('accounts'); toast('Asset added'); render(); },
+    { submit: 'Add asset', intro: '<p class="muted">WDV takes the rate on what is left each year (half the rate if used less than 180 days in the first year). SLM spreads the cost evenly over its life. Ask your CA which one your books follow.</p>' });
+    const show = (k, on) => { const l = f.elements[k].closest('label'); if (l) l.hidden = !on; };
+    const sync = () => {
+      const pd = f.elements.paid.value, mt = f.elements.method.value;
+      show('account_id', pd === 'cash'); show('party_id', pd === 'supplier'); show('opening_dep', pd === 'opening'); show('rate', mt === 'wdv'); show('life_years', mt === 'slm');
+    };
+    f.elements.category.onchange = () => { const c = A.categories[f.elements.category.value]; f.elements.rate.value = c.rate; f.elements.life_years.value = c.life; };
+    f.addEventListener('change', sync); sync();
+  };
+  $('#new').onclick = add;
+  if ($('[data-na]', el)) $('[data-na]', el).onclick = add;
+  $$('[data-sell]', el).forEach((b) => { b.onclick = async () => {
+    const a = A.rows.find((x) => x.id === +b.dataset.sell);
+    modal(`Sell or scrap ${a.name}`, [{ k: 'date', label: 'Date', type: 'date', value: ME.today }, { k: 'amount', label: 'Sold for (₹, 0 if scrapped)', type: 'number', value: 0 },
+      { k: 'account_id', label: 'Money went into', type: 'select', options: await cashOpts() }],
+    async (v) => { const r = await POST(`/api/assets/${a.id}/dispose`, { ...v, account_id: +v.account_id }); dirty('accounts'); toast(r.gain > 0 ? `Gain on sale ${inr(r.gain)} booked` : r.gain < 0 ? `Loss on sale ${inr(-r.gain)} booked` : 'Done'); render(); },
+    { submit: 'Save', intro: `<p class="muted">Book value now ${inr(a.book_value)}. Book this year's depreciation first if the year has ended.</p>` });
+  }; });
+});
+
+/* ======================================================================= TDS (src/tds.js) */
+route(/^tds$/, async (el, m, q) => {
+  const T = await GET(`/api/tds?from=${q.get('from') || ''}&to=${q.get('to') || ''}`);
+  const sum = (a) => a.reduce((s, x) => s + x.tds, 0);
+  el.innerHTML = head('TDS', '<button class="btn primary" id="chal">Record TDS paid (challan)</button>') + `
+    <p class="muted">To keep TDS back from a supplier: <b>Pay supplier → More details → TDS section</b>. The supplier gets the rest, and the TDS waits here until you pay it to the government (by the 7th of the next month). Customers who deducted TDS from what they paid you are listed too: claim it in your income-tax return.</p>
+    <div class="kpis"><div class="kpi"><div class="l">TDS to pay the government</div><div class="v ${T.payable > 0 ? 'neg' : ''}">${inr(T.payable)}</div><div class="s">due by ${fdate(T.due)}</div></div>
+      <div class="kpi"><div class="l">Deducted ${fdate(T.from)} – ${fdate(T.to)}</div><div class="v">${inr(sum(T.deducted))}</div><div class="s">${T.deducted.length} payments</div></div>
+      <div class="kpi"><div class="l">Paid by challan</div><div class="v">${inr(T.challans.reduce((s, x) => s + x.amount, 0))}</div></div>
+      <div class="kpi"><div class="l">Customers deducted (claim)</div><div class="v">${inr(sum(T.by_customers))}</div></div></div>
+    ${T.by_section.length ? `<div class="panel flush"><div style="padding:14px 16px 0"><h3>By section (for the 26Q return)</h3></div>${table([{ h: 'Section', k: 'section' }, { h: 'Payments', num: 1, k: 'count' }, { h: 'Amount paid', num: 1, f: (s) => inr(s.gross) }, { h: 'TDS', num: 1, f: (s) => `<b>${inr(s.tds)}</b>` }], T.by_section)}</div>` : ''}
+    <div class="panel flush"><div style="padding:14px 16px 0"><h3>TDS kept back from suppliers</h3></div>${table([{ h: 'Date', f: (x) => fdate(x.date) }, { h: 'Supplier', f: (x) => `${esc(x.party)}${x.pan ? `<div class="muted small">PAN ${esc(x.pan)}</div>` : ''}` },
+      { h: 'Section', k: 'section' }, { h: 'Amount', num: 1, cls: 'hide-sm', f: (x) => inr(x.gross) }, { h: 'TDS', num: 1, f: (x) => inr(x.tds) }, { h: 'Payment', cls: 'hide-sm', k: 'number' }], T.deducted, { empty: 'No TDS kept back in this period.' })}</div>
+    ${T.challans.length ? `<div class="panel flush"><div style="padding:14px 16px 0"><h3>Challans paid</h3></div>${table([{ h: 'Date', f: (x) => fdate(x.date) }, { h: 'Challan no.', k: 'challan_no' }, { h: 'Section', k: 'section' }, { h: 'Amount', num: 1, f: (x) => inr(x.amount) }], T.challans)}</div>` : ''}
+    ${T.by_customers.length ? `<div class="panel flush"><div style="padding:14px 16px 0"><h3>TDS customers deducted (claim in your ITR, see Form 26AS)</h3></div>${table([{ h: 'Date', f: (x) => fdate(x.date) }, { h: 'Customer', k: 'party' }, { h: 'Amount', num: 1, f: (x) => inr(x.gross) }, { h: 'TDS', num: 1, f: (x) => inr(x.tds) }], T.by_customers)}</div>` : ''}`;
+  $('#chal').onclick = async () => modal('TDS paid to the government', [{ k: 'date', label: 'Date', type: 'date', value: ME.today }, { k: 'amount', label: 'Amount (₹)', type: 'number', value: T.payable > 0 ? T.payable : '', required: true },
+    { k: 'account_id', label: 'Paid from', type: 'select', options: await cashOpts() }, { k: 'challan_no', label: 'Challan / CIN number' }, { k: 'section', label: 'Section (optional)', placeholder: '194C' }],
+  async (v) => { await POST('/api/tds/challan', { ...v, account_id: +v.account_id }); dirty('accounts'); toast('Challan saved'); render(); });
+});
+
 route(/^accounts$/, async (el) => {
   dirty('accounts');
   const rows = await master('accounts');

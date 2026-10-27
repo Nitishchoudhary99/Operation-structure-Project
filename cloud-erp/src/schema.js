@@ -3,7 +3,7 @@
    Every business table carries org_id: one database serves many businesses (multi-tenant).
    migrate() runs on the first request after each deploy, so no manual migration step is needed. */
 
-export const SCHEMA_VERSION = 31;
+export const SCHEMA_VERSION = 33;
 
 // document types whose monthly totals doc_month keeps (sales and purchase money documents)
 const MONTH_TYPES = `('INV','SRET','CNOTE','BILL','PRET','DNOTE')`;
@@ -585,6 +585,31 @@ export const MIGRATIONS = {
       end_date TEXT, deposit_date TEXT, total INTEGER NOT NULL DEFAULT 0, sales INTEGER NOT NULL DEFAULT 0, fees INTEGER NOT NULL DEFAULT 0, tcs INTEGER NOT NULL DEFAULT 0,
       tds INTEGER NOT NULL DEFAULT 0, other INTEGER NOT NULL DEFAULT 0, orders INTEGER NOT NULL DEFAULT 0, account_id INTEGER, created_by INTEGER, created_at TEXT NOT NULL,
       UNIQUE (org_id, channel, settlement_id))`,
+  ],
+  // bank reconciliation (src/bankrec.js): an entry in the books the bank statement has shown, with the bank's date
+  32: [
+    `CREATE TABLE IF NOT EXISTS bank_clear (line_id INTEGER PRIMARY KEY, org_id INTEGER NOT NULL, account_id INTEGER NOT NULL, bank_date TEXT NOT NULL, stmt_key TEXT,
+      cleared_by INTEGER, cleared_at TEXT NOT NULL)`,
+    `CREATE INDEX IF NOT EXISTS ix_bank_clear ON bank_clear (org_id, account_id, bank_date)`,
+  ],
+  /* fixed assets and their depreciation by year (src/assets.js); TDS kept back on a payment or receipt, and the TDS
+     challans paid to the government (src/tds.js) */
+  33: [
+    `CREATE TABLE IF NOT EXISTS fixed_assets (id INTEGER PRIMARY KEY, org_id INTEGER NOT NULL, name TEXT NOT NULL, category TEXT NOT NULL DEFAULT 'other', bought_on TEXT NOT NULL,
+      cost INTEGER NOT NULL, method TEXT NOT NULL DEFAULT 'wdv', rate REAL, life_years REAL, salvage INTEGER NOT NULL DEFAULT 0, opening_dep INTEGER NOT NULL DEFAULT 0,
+      sold_on TEXT, sold_for INTEGER, notes TEXT DEFAULT '', created_by INTEGER, created_at TEXT NOT NULL)`,
+    `CREATE INDEX IF NOT EXISTS ix_fixed_assets_org ON fixed_assets (org_id)`,
+    `CREATE TABLE IF NOT EXISTS asset_dep (id INTEGER PRIMARY KEY, org_id INTEGER NOT NULL, asset_id INTEGER NOT NULL, fy TEXT NOT NULL, amount INTEGER NOT NULL,
+      created_at TEXT NOT NULL, UNIQUE (asset_id, fy))`,
+    `CREATE INDEX IF NOT EXISTS ix_asset_dep_org ON asset_dep (org_id, fy)`,
+    `CREATE TABLE IF NOT EXISTS dep_runs (id INTEGER PRIMARY KEY, org_id INTEGER NOT NULL, fy TEXT NOT NULL, total INTEGER NOT NULL, created_by INTEGER, created_at TEXT NOT NULL,
+      UNIQUE (org_id, fy))`,
+    `ALTER TABLE payments ADD COLUMN tds INTEGER NOT NULL DEFAULT 0`,
+    `ALTER TABLE payments ADD COLUMN tds_section TEXT NOT NULL DEFAULT ''`,
+    `CREATE TABLE IF NOT EXISTS tds_challans (id INTEGER PRIMARY KEY, org_id INTEGER NOT NULL, date TEXT NOT NULL, amount INTEGER NOT NULL, challan_no TEXT DEFAULT '',
+      section TEXT DEFAULT '', account_id INTEGER, notes TEXT DEFAULT '', created_by INTEGER, created_at TEXT NOT NULL)`,
+    `CREATE INDEX IF NOT EXISTS ix_tds_challans_org ON tds_challans (org_id, date)`,
+    `CREATE INDEX IF NOT EXISTS ix_accounts_sys ON accounts (org_id, sys)`,
   ],
 };
 

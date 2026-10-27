@@ -15,8 +15,9 @@ import { auditStatement } from './engine.js';
 
 const ID_TABLES = ['accounts', 'warehouses', 'roles', 'parties', 'items', 'docs', 'doc_lines', 'payments', 'journals', 'journal_lines', 'khata',
   'stock_moves', 'gate_entries', 'vaade', 'vaada_kisht', 'recurring', 'reminder_log', 'confirmations', 'bins', 'batches', 'batch_moves',
-  'serials', 'serial_moves', 'boms', 'bom_lines', 'productions', 'staff', 'staff_txns', 'write_offs', 'claim_entries', 'mkt_settlements'];
-const OTHER_TABLES = ['payment_allocs', 'stock', 'counters', 'org_files', 'bin_stock', 'channel_orders', 'attendance', 'item_codes', 'write_off_lines', 'role_rules', 'channel_returns'];
+  'serials', 'serial_moves', 'boms', 'bom_lines', 'productions', 'staff', 'staff_txns', 'write_offs', 'claim_entries', 'mkt_settlements', 'fixed_assets', 'asset_dep', 'dep_runs',
+  'tds_challans'];
+const OTHER_TABLES = ['payment_allocs', 'stock', 'counters', 'org_files', 'bin_stock', 'channel_orders', 'attendance', 'item_codes', 'write_off_lines', 'role_rules', 'channel_returns', 'bank_clear'];
 const ORG_FIELDS = ['name', 'gstin', 'state', 'address', 'phone', 'upi_id', 'fy_start', 'city', 'pincode', 'email', 'mode', 'print', 'series', 'fields', 'vaada', 'msg_lang', 'udyam', 'approvals'];
 const JSON_FIELDS = ['print', 'series', 'fields', 'vaada', 'approvals'];
 const PAY_REFS = ['payment', 'receipt', 'payment-X', 'receipt-X'];
@@ -88,7 +89,8 @@ export async function restoreBackup(c, backup) {
 
     const docOrPay = (r) => (PAY_REFS.includes(String(r.ref_type)) ? to('payments', r.ref_id) : /^MFG(-X)?$/.test(String(r.ref_type)) ? to('productions', r.ref_id)
       : /^(ADV|SAL)(-X)?$/.test(String(r.ref_type)) ? to('staff_txns', r.ref_id) : /^TLOSS(-X)?$/.test(String(r.ref_type)) ? to('write_offs', r.ref_id)
-      : /^CLAIM(-X)?$/.test(String(r.ref_type)) ? to('claim_entries', r.ref_id) : to('docs', r.ref_id));
+      : /^CLAIM(-X)?$/.test(String(r.ref_type)) ? to('claim_entries', r.ref_id) : String(r.ref_type) === 'ASSET' ? to('fixed_assets', r.ref_id)
+      : String(r.ref_type) === 'TDSC' ? to('tds_challans', r.ref_id) : /^(DEP|MKT|JV|EXP|OPEN)$/.test(String(r.ref_type)) ? null : to('docs', r.ref_id));
     // a custom role's own rules follow the role to its new id
     const roleKey = (k) => { const m = String(k || '').match(/^c:(\d+)$/); return m ? (to('roles', +m[1]) ? 'c:' + to('roles', +m[1]) : null) : ['admin', 'accountant', 'store', 'sales'].includes(k) ? k : null; };
     // batch / serial history: a document or production run; adjustments, counts and transfers carry no reference
@@ -128,6 +130,11 @@ export async function restoreBackup(c, backup) {
       productions: (r) => ({ item_id: to('items', r.item_id), warehouse_id: to('warehouses', r.warehouse_id), created_by: me, lines: itemsIn(r.lines) }),
       channel_orders: (r) => ({ doc_id: to('docs', r.doc_id) }),
       channel_returns: (r) => ({ doc_id: to('docs', r.doc_id) }),
+      bank_clear: (r) => ({ line_id: to('journal_lines', r.line_id), account_id: to('accounts', r.account_id), cleared_by: me }),
+      fixed_assets: () => ({ created_by: me }),
+      asset_dep: (r) => ({ asset_id: to('fixed_assets', r.asset_id) }),
+      dep_runs: () => ({ created_by: me }),
+      tds_challans: (r) => ({ account_id: to('accounts', r.account_id), created_by: me }),
       mkt_settlements: (r) => ({ account_id: to('accounts', r.account_id), created_by: me }),
       staff: () => ({}),
       staff_txns: (r) => ({ staff_id: to('staff', r.staff_id), account_id: to('accounts', r.account_id), created_by: me }),
@@ -143,7 +150,7 @@ export async function restoreBackup(c, backup) {
     };
     // a row whose own record of the link is gone is left out (it could not be shown or posted anyway)
     const NEED = { doc_lines: ['doc_id'], payment_allocs: ['payment_id', 'doc_id'], journal_lines: ['journal_id', 'account_id'], stock: ['item_id', 'warehouse_id'],
-      vaada_kisht: ['vaada_id'], recurring: ['src_doc_id'], reminder_log: ['party_id'], confirmations: ['party_id'],
+      vaada_kisht: ['vaada_id'], recurring: ['src_doc_id'], bank_clear: ['line_id', 'account_id'], asset_dep: ['asset_id'], reminder_log: ['party_id'], confirmations: ['party_id'],
       bins: ['warehouse_id'], bin_stock: ['item_id', 'bin_id', 'warehouse_id'], batches: ['item_id', 'warehouse_id'], batch_moves: ['batch_id', 'item_id', 'warehouse_id'],
       serials: ['item_id'], serial_moves: ['serial_id', 'item_id'], boms: ['item_id'], bom_lines: ['bom_id', 'item_id'], productions: ['item_id', 'warehouse_id'],
       staff_txns: ['staff_id'], attendance: ['staff_id'], item_codes: ['item_id'], write_offs: ['bill_id'], write_off_lines: ['write_off_id', 'line_id'], claim_entries: ['write_off_id'], role_rules: ['role_key'], stock_moves: ['item_id', 'warehouse_id'], payments: ['party_id', 'account_id'], khata: ['party_id'] };
@@ -201,6 +208,8 @@ export async function restoreBackup(c, backup) {
     counts.channel_orders = insert('channel_orders', T.channel_orders);
     counts.channel_returns = insert('channel_returns', T.channel_returns);
     counts.mkt_settlements = insert('mkt_settlements', T.mkt_settlements);
+    for (const t of ['fixed_assets', 'asset_dep', 'dep_runs', 'tds_challans']) counts[t] = insert(t, T[t]);
+    counts.bank_clear = insert('bank_clear', T.bank_clear);
     counts.attendance = insert('attendance', T.attendance);
     counts.item_codes = insert('item_codes', T.item_codes);
     counts.counters = insert('counters', T.counters, 'INSERT OR REPLACE');

@@ -850,3 +850,7 @@ html.in .app-loading { display: block; }
   .rl-t td:first-child { grid-column: 1 / -1; }
   .rl-t td[data-l]::before { content: attr(data-l); display: block; font-size: 12px; color: var(--muted); margin-bottom: 2px; }
 }
+
+/* Bank Reconciliation Statement */
+.brs td:first-child { white-space: normal; }
+.brs ul { margin: 4px 0 0 18px; padding: 0; color: var(--muted); }
