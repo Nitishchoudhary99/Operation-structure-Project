@@ -2120,6 +2120,12 @@ async function respond(request, env, url) {
     if (counter) res.headers.set('X-Rows', `${counter.read || 0}/${counter.written || 0}`);
     return res;
   } catch (e) {
+    // Google sends the browser itself here: answer with the settings page, never with bare JSON. No session means the
+    // owner was signed out on the way, or Google opened in another browser (an iPhone home-screen app does that).
+    if (url.pathname === '/api/gdrive/callback') {
+      if (!(e instanceof HttpError)) console.error(e && e.stack || e);
+      return new Response(null, { status: 302, headers: { Location: '/#/settings?drive=' + (e instanceof HttpError && e.status === 401 ? 'signin' : 'fail'), 'Cache-Control': 'no-store' } });
+    }
     if (e instanceof HttpError) return json({ error: e.message, ...(e.extra || {}) }, e.status);
     console.error(e && e.stack || e);          // logged for the owner; the caller only ever sees this fixed text
     return json({ error: 'Something went wrong on the server. Please try again.' }, 500);

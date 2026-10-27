@@ -261,6 +261,7 @@ function renderAuth(mode = /^#\/?signup/.test(location.hash) ? 'signup' : 'login
       <div class="brandline show-sm"><i>&#x2197;</i>SmartTrader ERP <span class="muted">· GST billing, stock &amp; khata</span></div>
       <h1>${mode === 'login' ? 'Sign in' : mode === 'forgot' ? 'Forgot your password?' : 'Create your business account'}</h1>
       <div class="err" hidden></div>
+      ${/drive=signin/.test(location.hash) && mode === 'login' ? '<p class="panel warnbox">You were signed out while Google was open. Sign in, then tap <b>Connect Google Drive</b> in Settings again.</p>' : ''}
       ${mode === 'forgot' ? '<p class="muted">Enter the email you sign in with. We will e-mail you a link to set a new password.</p>' : ''}
       ${mode === 'signup' ? `
         <label class="f">Business name<input name="business" required></label>
@@ -948,7 +949,7 @@ function docPaper(d) {
         ${inter ? `<td class="num">${inr(l.igst)}</td>` : `<td class="num">${inr(l.cgst)}</td><td class="num">${inr(l.sgst)}</td>`}<td class="num">${inr(l.total)}</td>`;
   const heads = compact ? '<th>Item</th><th class="num">Amount</th>'
     : `<th>#</th><th>Item</th>${hasHsn ? '<th>HSN</th>' : ''}<th class="num">Qty</th><th class="num">Rate</th>${hasDisc ? '<th class="num">Disc</th>' : ''}<th class="num">Taxable</th><th class="num">GST</th>${inter ? '<th class="num">IGST</th>' : '<th class="num">CGST</th><th class="num">SGST</th>'}<th class="num">Amount</th>`;
-  return `<div class="doc-paper L-${L} F-${P.font === 'serif' ? 'serif' : 'sans'}" style="--ac:${color}">
+  return `<div class="paper-fit"><button type="button" class="fit-btn no-print" hidden>&#128269; Zoom</button><div class="paper-box"><div class="doc-paper fit L-${L} F-${P.font === 'serif' ? 'serif' : 'sans'}" style="--ac:${color}">
       <div class="hdr"><div class="org">${d.logo_url ? `<img class="logo" src="${esc(d.logo_url)}" alt="">` : ''}<div><div class="oname">${esc(o.name)}</div><div>${esc(o.address)}</div>
         <div>${[o.gstin ? 'GSTIN: ' + esc(o.gstin) : '', o.state ? 'State: ' + esc(o.state) : ''].filter(Boolean).join(' &middot; ')}</div><div>${esc(o.phone)}</div></div></div>
         <div class="meta"><div class="title">${esc(title)}</div><div>No: <b>${esc(d.number)}</b></div><div>Date: ${fdate(d.date)}</div>
@@ -968,8 +969,37 @@ function docPaper(d) {
       ${ours && P.terms ? `<div class="terms"><b>Terms &amp; conditions</b><div>${esc(P.terms).replace(/\n/g, '<br>')}</div></div>` : ''}
       <div class="foot"><div id="upiqr"></div><div class="sign">For ${esc(o.name)}<br>${d.sign_url ? `<img class="sig" src="${esc(d.sign_url)}" alt="">` : '<br><br>'}<br>${P.signatory ? esc(P.signatory) + '<br>' : ''}Authorised signatory</div></div>
       ${P.footer ? `<div class="pfoot">${esc(P.footer)}</div>` : ''}
-    </div>`;
+    </div></div></div>`;
 }
+
+let driveRefresh = null;      // set by Settings: re-checks Google Drive when the owner comes back from Google
+document.addEventListener('visibilitychange', () => { if (!document.hidden && driveRefresh && $('#gdrive')) driveRefresh(); });
+
+/* A bill keeps its page width (see .paper-fit in app.css). Where the screen is narrower, the whole page is shown
+   smaller, like a PDF preview, and re-fitted when the phone is turned or the window resized. Zoom shows it full size. */
+const paperSeen = new WeakMap();
+const paperWatch = typeof ResizeObserver === 'function' ? new ResizeObserver((es) => es.forEach((e) => {
+  const w = Math.round(e.contentRect.width);
+  if (paperSeen.get(e.target) !== w) { paperSeen.set(e.target, w); fitPaper(e.target); }
+})) : null;
+function fitPaper(wrap) {
+  const paper = wrap.querySelector('.doc-paper'), btn = wrap.querySelector('.fit-btn');
+  if (!paper) return;
+  paper.style.zoom = '';
+  const avail = wrap.clientWidth, natural = paper.offsetWidth, full = wrap.classList.contains('full');
+  const z = natural > avail + 1 ? Math.max(0.2, avail / natural) : 1;
+  if (z < 1 && !full) paper.style.zoom = z.toFixed(4);
+  if (btn) { btn.hidden = z >= 0.95; btn.innerHTML = full ? 'Fit to screen' : '&#128269; Zoom'; }      // a few pixels short is not worth a button
+}
+function fitPapers(root) {
+  $$('.paper-fit', root || document).forEach((w) => { fitPaper(w); if (paperWatch) paperWatch.observe(w); });
+}
+document.addEventListener('click', (e) => {
+  const b = e.target.closest && e.target.closest('.fit-btn');
+  if (!b) return;
+  const w = b.closest('.paper-fit');
+  w.classList.toggle('full'); fitPaper(w);
+});
 
 /* goods of a bill booked before they came, damaged or lost on the way: our loss, or a claim on the transporter / insurer.
    The supplier is still owed the bill (to have the supplier credit it, use Close short instead). */
@@ -1036,6 +1066,7 @@ route(/^doc\/(\d+)$/, async (el, m) => {
       <label class="f inline-f">Design<select id="design">${designOptions(d.design || '', true)}</select></label>
     </div>${d.settlements.length ? `<div class="muted" style="margin-top:8px">Settled by: ${d.settlements.map((s) => `${esc(s.number)} (${inr(s.amount)})`).join(', ')}</div>` : ''}</div>
     ${docPaper(d)}`;
+  fitPapers(el);
   if (d.type === 'INV' && o.upi_id && d.balance > 0 && o.print.show_upi !== false) upiQr($('#upiqr'), o, d.balance, d.number, 'Scan to pay with any UPI app');
   $('#design').onchange = async (e) => {
     try { await api('PUT', `/api/docs/${d.id}/design`, { design: e.target.value }); toast('Design changed'); render(); } catch (err) { toast(err.message, 'err'); }
@@ -2122,6 +2153,7 @@ async function publicDoc(token) {
       ${due ? `<div class="panel no-print">${pt('balDue', inr(d.balance), d.due_date ? fdate(d.due_date) : '')}${payBox(d.org, d.balance, d.number)}</div>` : ''}
       ${vaadaPub(d.vaada, d.org)}
       ${docPaper(d)}<p class="muted no-print">${pt('sharedBy', d.org.name)}</p></main>`;
+    fitPapers(app);
     // a real PDF file; if this browser cannot make one, its own print dialog ("Save as PDF") still works
     $('#pdfdl').onclick = async (e) => {
       const b = e.currentTarget, t = b.textContent; b.disabled = true; b.textContent = pt('making');
@@ -2744,7 +2776,7 @@ route(/^settings\/print$/, async (el) => {
     return { ...P, layout: $('#lay .on').dataset.l, font: f.font.value, color: f.color.value, title: f.title.value, signatory: f.signatory.value, show_upi: f.show_upi.checked,
       bank_name: f.bank_name.value, bank_account: f.bank_account.value, bank_ifsc: f.bank_ifsc.value.toUpperCase(), bank_branch: f.bank_branch.value, terms: f.terms.value, footer: f.footer.value };
   };
-  const preview = () => { P = read(); $('#pv').innerHTML = docPaper(sample()); };
+  const preview = () => { P = read(); $('#pv').innerHTML = docPaper(sample()); fitPapers($('#pv')); };
   const box = (kind, title, url) => `<div class="imgbox"><b>${title}</b><div class="pv">${url ? `<img src="${esc(url)}" alt="">` : `<span class="muted">No ${title.toLowerCase()}</span>`}</div>
       <label class="btn sm">${url ? 'Change' : 'Upload'}<input type="file" accept="image/*" data-file="${kind}" hidden></label>${url ? `<button type="button" class="btn sm" data-rm="${kind}">Remove</button>` : ''}</div>`;
   const took = (r, msg) => { urls = { logo_url: r.logo_url, sign_url: r.sign_url }; ME.org.print = { ...ME.org.print, logo: r.print.logo, signature: r.print.signature };
@@ -3067,26 +3099,47 @@ route(/^settings$/, async (el, m, q) => {
     };
   };
   restoreUi();
-  /* Google Drive auto-backup, like WhatsApp's chat backup */
+  /* Google Drive auto-backup, like WhatsApp's chat backup. What happened on Google's page stays on screen (not a
+     passing toast) until the owner does something, with what to do next. */
+  const dq = q && q.get('drive');
+  const DRIVE_SAID = {
+    ok: ['ok', 'Google Drive connected. First backup saved.'],
+    okempty: ['ok', 'Google Drive connected. Backups start once you have records; to bring back an old backup, use Restore below.'],
+    fail: ['err', 'Google Drive is connected, but the first backup failed. Tap <b>Back up now</b>; if it fails again, the reason shows below.'],
+    denied: ['err', 'Google says permission was not given. If you pressed <b>Cancel</b>, tap <b>Connect Google Drive</b> again and press <b>Continue</b>. If Google showed <b>“Access blocked”</b>, send us a screenshot on WhatsApp so we can fix it.'],
+    cancel: ['err', 'Google Drive was not connected. Tap <b>Connect Google Drive</b> and finish the steps on Google’s page.'],
+    noscope: ['err', 'Google did not give access to Drive files. Tap <b>Connect Google Drive</b> again; if Google shows a box for Google Drive, tick it before pressing Continue.'],
+    norefresh: ['err', 'Google did not give lasting access. Open <b>myaccount.google.com → Security → Third-party apps</b>, remove SmartTrader (docbrisk.com), then connect again.'],
+    bad: ['err', 'That Google page was open too long or came from another login. Tap <b>Connect Google Drive</b> again.'],
+    signin: ['err', 'You were signed out while Google was open. Tap <b>Connect Google Drive</b> again. On an iPhone home-screen app, open <b>erp.docbrisk.com</b> in Safari to connect.'],
+  };
+  let driveNote = dq && DRIVE_SAID[dq] ? DRIVE_SAID[dq] : null;
   const drive = async () => {
     const box = $('#gdrive'); if (!box) return;
     const g = await GET('/api/gdrive').catch(() => null);
+    const note = () => driveNote ? `<div class="panel ${driveNote[0] === 'ok' ? 'okbox' : 'warnbox'}" style="margin:0 0 10px" role="status">${driveNote[1]}</div>` : '';
     if (!g) { box.innerHTML = '<p class="muted">Could not check Google Drive right now.</p>'; return; }
     const when = (t) => t ? new Date(t).toLocaleString('en-IN', { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' }) : '';
     if (!g.configured) { box.innerHTML = '<p class="muted">Google Drive backup is being switched on for SmartTrader. Until then, use “Download full backup” and keep the file in your Drive.</p>'; return; }
     if (!g.connected) {
-      box.innerHTML = `<p class="muted">Connect your Google Drive once. SmartTrader then saves a full backup there every day by itself, like WhatsApp does. It can see only its own backup files, nothing else in your Drive. On Google’s page, <b>tick the Google Drive box</b>, then Continue. रोज़ अपने आप Google Drive में बैकअप।</p>
+      box.innerHTML = `${note()}<p class="muted">Connect your Google Drive once. SmartTrader then saves a full backup there every day by itself, like WhatsApp does. It can see only its own backup files, nothing else in your Drive. On Google’s page, choose your Google account and press <b>Continue</b>. रोज़ अपने आप Google Drive में बैकअप।</p>
         <div class="row"><button type="button" class="btn primary" id="gconnect">Connect Google Drive</button></div>`;
-      $('#gconnect').onclick = async () => { try { location.href = (await POST('/api/gdrive/connect')).url; } catch (e) { toast(e.message, 'err'); } };
+      $('#gconnect').onclick = async (e) => {
+        e.target.disabled = true; e.target.textContent = 'Opening Google…';
+        try { location.href = (await POST('/api/gdrive/connect')).url; }
+        catch (err) { e.target.disabled = false; e.target.textContent = 'Connect Google Drive'; toast(err.message, 'err'); }
+      };
       return;
     }
-    box.innerHTML = `<p>Backing up to <b>${esc(g.email || 'your Google Drive')}</b>, folder “SmartTrader Backup”.</p>
+    if (driveNote && driveNote[0] !== 'ok' && dq !== 'fail') driveNote = null;    // connected now: an older complaint no longer applies
+    box.innerHTML = `${note()}<p>Backing up to <b>${esc(g.email || 'your Google Drive')}</b>, folder “SmartTrader Backup”.</p>
       <p class="muted">${g.last_backup_at ? `Last backup: <b>${when(g.last_backup_at)}</b>${g.last_size ? ` · ${Math.max(1, Math.round(g.last_size / 1024))} KB` : ''}` : 'No backup yet.'} The newest 30 are kept.</p>
       ${g.last_error ? `<div class="panel err" style="margin:8px 0">${esc(g.last_error)}</div>` : ''}
       <div class="row"><label class="f inline-f">Back up<select id="gevery"><option value="day" ${g.every !== 'week' ? 'selected' : ''}>Every day</option><option value="week" ${g.every === 'week' ? 'selected' : ''}>Every week</option></select></label>
         <button type="button" class="btn" id="gnow">Back up now</button><span class="spacer"></span><button type="button" class="btn danger" id="goff">Disconnect</button></div>`;
     $('#gevery').onchange = async (e) => { try { await api('PUT', '/api/gdrive', { every: e.target.value }); toast('Saved'); } catch (err) { toast(err.message, 'err'); } };
     $('#gnow').onclick = async (e) => {
+      driveNote = null;
       e.target.disabled = true; e.target.textContent = 'Backing up…';
       try { const r = await POST('/api/gdrive/backup'); toast(`Backed up ${r.records} records to Google Drive`); } catch (err) { toast(err.message, 'err'); }
       drive();
@@ -3097,10 +3150,13 @@ route(/^settings$/, async (el, m, q) => {
     };
   };
   drive();
-  const dq = q && q.get('drive');
-  if (dq) toast({ ok: 'Google Drive connected. First backup saved.', okempty: 'Google Drive connected. Backups start once you have records; to bring back an old backup, use Restore below.', fail: 'Google Drive connected, but the backup failed. Try “Back up now”.', cancel: 'Google Drive was not connected.',
-    noscope: 'Google Drive permission was not given. Tap Connect Google Drive again and, on Google’s page, tick the Google Drive box (“See, edit, create and delete only the specific Google Drive files…”).',
-    norefresh: 'Google did not give offline access. Remove SmartTrader in your Google account’s third-party access, then connect again.', bad: 'That link expired. Connect again.' }[dq] || 'Done', dq === 'ok' ? 'ok' : 'err');
+  if (driveNote) {
+    toast(driveNote[0] === 'ok' ? driveNote[1].replace(/<[^>]+>/g, '') : 'Google Drive: see the note in the Google Drive box.', driveNote[0]);
+    history.replaceState(null, '', location.pathname + '#/settings');      // a reload does not repeat the message
+    const gd = $('#gdrive'); if (gd) gd.scrollIntoView({ block: 'center' });
+  }
+  // back from Google in another tab or app window: show the new state when this one is looked at again
+  driveRefresh = drive;
   if ($('#revokeall')) $('#revokeall').onclick = async () => {
     if (!confirm('Turn off ALL invoice and khata links you have shared? Customers who open an old link will see that it is not valid. Sharing again makes a new link.')) return;
     try { const r = await POST('/api/org/revoke-links'); toast(`${r.invoices + r.khata} link(s) turned off`); } catch (e) { toast(e.message, 'err'); }
