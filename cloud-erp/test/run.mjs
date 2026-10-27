@@ -1599,12 +1599,65 @@ else {
   const sfText = await sf.text();
   check('stock file for the marketplace: SKU and quantity', sf.headers.get('content-type').startsWith('text/csv') && /^sku,quantity,price,name/.test(sfText) && /CHOC-1,1,50\.00,Chocolate/.test(sfText), sfText);
 
+  // Amazon's tax report (MTR): its own column names; refunds become sales returns against their invoice, once each
+  await V('POST', '/api/stock/adjust', { item_id: choc.id, qty: 10, rate: 30, reason: 'opening' });
+  const mtr = ['Invoice Number,Invoice Date,Transaction Type,Order Id,Quantity,Item Description,Sku,Ship To State,Invoice Amount,Credit Note No',
+    'IN-AMZ-1,21-10-2026,Shipment,408-001,2,Chocolate,CHOC-1,KARNATAKA,118,',
+    'IN-AMZ-2,21-10-2026,Shipment,408-002,1,Chocolate,CHOC-1,RAJASTHAN,59,',
+    'IN-AMZ-3,22-10-2026,FreeReplacement,408-003,1,Chocolate,CHOC-1,DELHI,0,',
+    ',24-10-2026,Refund,408-001,1,Chocolate,CHOC-1,KARNATAKA,-59,CN-AMZ-1'].join('\n');
+  const m1 = await V('POST', '/api/channels/import', { channel: 'amazon', csv: mtr });
+  check('Amazon MTR: shipments become orders (ship-to state), a free replacement is no sale, a refund waits for its invoice from the same file',
+    m1.ready === 2 && m1.orders.length === 2 && m1.orders[0].party === 'Amazon (Karnataka)' && m1.returns.length === 1 && /make the invoices first/.test(m1.returns[0].problems.join()), JSON.stringify([m1.orders, m1.returns]));
+  const choc0 = (await V('GET', '/api/items')).rows.find((i) => i.id === choc.id).qty_on_hand;
+  const mi = await V('POST', '/api/channels/import', { channel: 'amazon', csv: mtr, only: ['408-001', '408-002'] });
+  const inv1 = await V('GET', `/api/docs/${mi.results[0].doc_id}`);
+  check('...billed, with Amazon\'s own invoice number on the bill', mi.results.every((r) => r.number) && /Amazon invoice IN-AMZ-1/.test(inv1.notes) && inv1.total === 118, JSON.stringify([mi, inv1.notes]));
+  const mret = (await V('POST', '/api/channels/import', { channel: 'amazon', csv: mtr })).returns[0];
+  check('now the refund is ready: one unit back against its invoice', mret && !mret.problems.length && mret.invoice === inv1.number && mret.lines.length === 1 && mret.lines[0].qty === 1 && mret.total === 59, JSON.stringify(mret));
+  const mr = await V('POST', '/api/channels/import', { channel: 'amazon', csv: mtr, only_returns: [mret.key] });
+  const sret = await V('GET', `/api/docs/${mr.results[0].doc_id}`);
+  check('the refund becomes a sales return against the invoice; the unit comes back into stock', sret.type === 'SRET' && sret.ref_id === inv1.id && sret.total === 59
+    && (await V('GET', '/api/items')).rows.find((i) => i.id === choc.id).qty_on_hand === choc0 - 3 + 1, JSON.stringify([mr, sret.type, sret.ref_id, sret.total]));
+  const m3 = await V('POST', '/api/channels/import', { channel: 'amazon', csv: mtr, only_returns: [mret.key] });
+  check('the same refund is never returned twice', m3.results[0].skipped === 'already returned' && (await V('POST', '/api/channels/import', { channel: 'amazon', csv: mtr })).returns[0].done, JSON.stringify(m3));
+
+  // the Amazon payout (settlement flat file V2): matched to the invoices; fees, GST TCS and TDS 194-O booked; posted once
+  const sHead = ['settlement-id', 'settlement-start-date', 'settlement-end-date', 'deposit-date', 'total-amount', 'currency', 'transaction-type', 'order-id', 'merchant-order-id',
+    'adjustment-id', 'shipment-id', 'marketplace-name', 'amount-type', 'amount-description', 'amount', 'fulfillment-id', 'posted-date', 'sku', 'quantity-purchased'];
+  const sRow = (tx, order, at, ad, amt) => ['9001', '', '', '', '', 'INR', tx, order, '', '', '', 'Amazon.in', at, ad, String(amt), 'MFN', '2026-10-25', 'CHOC-1', '1'].join('\t');
+  const sLines = [sRow('Order', '408-001', 'ItemPrice', 'Principal', 100), sRow('Order', '408-001', 'ItemPrice', 'Product Tax', 18), sRow('Order', '408-001', 'ItemFees', 'Commission', -15),
+    sRow('Order', '408-001', 'ItemFees', 'Fixed closing fee', -6), sRow('Order', '408-001', 'ItemWithheldTax', 'TCS-IGST', -0.5), sRow('Order', '408-001', 'ItemWithheldTax', 'TDS (Section 194-O)', -0.1),
+    sRow('Order', '408-002', 'ItemPrice', 'Principal', 50), sRow('Order', '408-002', 'ItemPrice', 'Product Tax', 9), sRow('Order', '408-002', 'ItemFees', 'Commission', -7.5),
+    sRow('Order', '408-999', 'ItemPrice', 'Principal', 200), sRow('other-transaction', '', 'other-transaction', 'Cost of Advertising', -20)];
+  const sCsv = [sHead.join('\t'), ['9001', '2026-10-10 00:00:00 UTC', '2026-10-24 00:00:00 UTC', '2026-10-26 00:00:00 UTC', '327.90', 'INR', '', '', '', '', '', '', '', '', '', '', '', '', ''].join('\t'), ...sLines].join('\n');
+  const s1 = await V('POST', '/api/channels/settlement', { csv: sCsv });
+  const o1 = s1.orders.find((o) => o.order_id === '408-001');
+  check('payout read: deposit, sales, fees (ads too), TCS, TDS; each order with what you really got; an order not billed here flagged', s1.settlement_id === '9001' && s1.adds_up
+    && s1.totals.deposit === 327.9 && s1.totals.sale === 377 && s1.totals.fee === -48.5 && s1.totals.tcs === -0.5 && s1.totals.tds === -0.1 && s1.unbilled === 1
+    && o1.invoice === inv1.number && o1.net === 96.4 && s1.deposit === '2026-10-26', JSON.stringify([s1.totals, o1, s1.unbilled]));
+  const sBank = (await V('GET', '/api/accounts')).rows.find((x) => x.sys === 'bank');
+  const noUnb = await E('POST', '/api/channels/settlement/post', { csv: sCsv, account_id: sBank.id });
+  check('a payout with orders not billed here is not posted without saying how to book them', noUnb.status === 400 && /not billed here/.test(noUnb.data.error), JSON.stringify(noUnb.data));
+  const sp = await V('POST', '/api/channels/settlement/post', { csv: sCsv, account_id: sBank.id, unbilled_ok: true });
+  const acc = (await V('GET', '/api/accounts')).rows, bal = (s) => (acc.find((x) => x.sys === s) || {}).balance;
+  check('posted: both invoices paid through one receipt per Amazon party', sp.receipts === 2 && sp.invoices === 2 && (await V('GET', `/api/docs/${inv1.id}`)).status === 'paid'
+    && (await V('GET', `/api/docs/${mi.results[1].doc_id}`)).status === 'paid', JSON.stringify(sp));
+  check('...the bank got the deposit; fees, TCS and TDS sit in their own accounts; the payout account is clear', Math.abs(bal('bank') - sBank.balance - 327.9) < 0.005 && bal('mkt_fees') === 48.5
+    && bal('tcs_recv') === 0.5 && bal('tds_recv') === 0.1 && Math.abs(bal('mkt_clear')) < 0.005, JSON.stringify(acc.filter((x) => ['bank', 'mkt_fees', 'tcs_recv', 'tds_recv', 'mkt_clear', 'other_income'].includes(x.sys)).map((x) => [x.sys, x.balance])));
+  check('...and the books balance', (await V('GET', '/api/reports/trial-balance')).balanced);
+  const again2 = await E('POST', '/api/channels/settlement/post', { csv: sCsv, account_id: sBank.id, unbilled_ok: true });
+  const spl = await V('GET', '/api/channels/settlements');
+  check('a payout is posted once only, and listed with its TCS and TDS', again2.status === 400 && /already posted/.test(again2.data.error) && (await V('POST', '/api/channels/settlement', { csv: sCsv })).posted
+    && spl.rows.length === 1 && spl.rows[0].tcs === -0.5 && spl.rows[0].tds === -0.1, JSON.stringify([again2.data, spl.rows]));
+  check('a file that is not a settlement report says so', (await E('POST', '/api/channels/settlement', { csv: 'a,b\n1,2\n' })).status === 400);
+
   td = await V('GET', '/api/today');
   check('today lists what needs doing', Array.isArray(td.rows) && td.rows.some((r) => r.key === 'to_receive'), JSON.stringify(td.rows));
   const bk = await (await fetch(BASE + '/api/export/backup', { headers: { Cookie: su.cookie, 'CF-Connecting-IP': ip } })).json();
   check('backups carry serials, recipes, production runs and imported orders', bk.tables.serials.length >= 6 && bk.tables.serial_moves.length >= 10 && bk.tables.boms.length === 1
-    && bk.tables.bom_lines.length === 2 && bk.tables.productions.length === 2 && bk.tables.channel_orders.length === 2,
-    ['serials', 'serial_moves', 'boms', 'bom_lines', 'productions', 'channel_orders'].map((t) => `${t} ${(bk.tables[t] || []).length}`).join(' '));
+    && bk.tables.bom_lines.length === 2 && bk.tables.productions.length === 2 && bk.tables.channel_orders.length === 4 && bk.tables.channel_returns.length === 1 && bk.tables.mkt_settlements.length === 1,
+    ['serials', 'serial_moves', 'boms', 'bom_lines', 'productions', 'channel_orders', 'channel_returns', 'mkt_settlements'].map((t) => `${t} ${(bk.tables[t] || []).length}`).join(' '));
 }
 
 /* staff: attendance, advance, salary with the advance cut, payslip, cancel, and the books */
