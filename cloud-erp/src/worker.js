@@ -4,7 +4,7 @@
 import { migrate, DEFAULT_ACCOUNTS } from './schema.js';
 import {
   HttpError, bad, notFound, forbidden, json, readJson, str, reqStr, num, int, date, nowIso, oneOf, toPaise, Router, GST_RATES, today, counterStatements, counterValueSql,
-  addDays, uid, own,
+  addDays, uid, own, backupHealth,
 } from './lib.js';
 import {
   hashPassword, randomHex, sameText, passwordProblem, issueSession, sessionCookie, clearCookie, sessionFromRequest, sessionValid, USER_SQL, REVOKED_SQL, ROLES, can, requireCan, rateLimit,
@@ -709,9 +709,13 @@ router.add('GET', '/api/today', async (c) => {
   add('disputed', 'finance', `SELECT COUNT(*) AS n, 0 AS v FROM confirmations WHERE org_id = ? AND status = 'disputed' AND answered_at >= ?`, o, addDays(t, -30));
   add('recurring', 'sales', `SELECT COUNT(*) AS n, 0 AS v FROM recurring WHERE org_id = ? AND active = 1 AND COALESCE(last_error, '') != ''`, o);
   if (sees('finance')) want.push(...todayStaffQueries(db, o));
+  // the owner's data is safe somewhere: a download (also to a folder: orgs.backup_at), or Google Drive
+  if (u.role === 'owner') want.push(['backup', db.prepare(`SELECT (SELECT last_backup_at FROM drive_links WHERE org_id = ?) AS d,
+    (SELECT last_error FROM drive_links WHERE org_id = ?) AS e, EXISTS (SELECT 1 FROM docs WHERE org_id = ?) AS docs`).bind(o, o, o)]);
   const rs = want.length ? await db.batch(want.map(([, q]) => q)) : [];
   const costs = seesCosts(u), rows = [];
   want.forEach(([key], i) => {
+    if (key === 'backup') { const b = backupHealth({ ...rs[i].results[0], a: c.org.backup_at, since: c.org.created_at }); if (b) rows.push(b); return; }
     const r = rs[i].results[0] || { n: 0, v: 0 };
     if (!r.n) return;
     const money = ['overdue', 'promises', 'bills_due', 'approve', 'claims'].includes(key) || costs;
@@ -1087,12 +1091,14 @@ router.add('GET', '/api/export/tally', async (c) => {
   return download(`tally-${t.from}-to-${t.to}.xml`, t.xml, 'application/xml');
 });
 
+const toFolder = (c) => c.url.searchParams.get('to') === 'folder';      // the app's automatic backup to a folder (public/app.js folderBackup)
+const backedUp = (c) => c.db.prepare(`UPDATE orgs SET backup_at = ? WHERE id = ?`).bind(nowIso(), c.org.id);   // for the Today reminder
 /* Full backup: every record of this business in one JSON file, so the owner's data is never locked in here (owner only).
    The same file goes to the owner's Google Drive when it is connected (src/gdrive.js). */
 router.add('GET', '/api/export/backup', async (c) => {
   if (c.user.role !== 'owner') throw forbidden('Only the business owner can download a full backup.');
   const b = await buildBackup(c.db, c.org.id);
-  await c.db.batch([auditStatement(c, 'backup', `${b.records} records`)]);
+  await c.db.batch([auditStatement(c, 'backup', `${b.records} records${toFolder(c) ? ', to a folder on a computer' : ''}`), backedUp(c)]);
   return download(`smarttrader-backup-${today()}.json`, b.json);
 });
 driveRoutes(router);
@@ -1101,7 +1107,7 @@ driveRoutes(router);
 router.add('GET', '/api/export/excel', async (c) => {
   if (c.user.role !== 'owner') throw forbidden('Only the business owner can download a full backup.');
   const x = await excelBackup(c.db, c.org);
-  await c.db.batch([auditStatement(c, 'backup excel', `${x.counts.bills} bills`)]);
+  await c.db.batch([auditStatement(c, 'backup excel', `${x.counts.bills} bills${toFolder(c) ? ', to a folder on a computer' : ''}`), backedUp(c)]);
   return new Response(x.bytes, { headers: { 'Content-Type': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
     'Content-Disposition': `attachment; filename="smarttrader-${today()}.xlsx"`, 'Cache-Control': 'no-store' } });
 });

@@ -38,9 +38,9 @@ const idb = (() => {
     r.onsuccess = () => ok(r.result); r.onerror = () => no(r.error);
   }));
 })();
-async function idbDo(store, mode, fn) {
+async function idbDo(store, mode, fn, open = idb) {
   try {
-    const db = await idb();
+    const db = await open();
     return await new Promise((ok, no) => { const tx = db.transaction(store, mode), req = fn(tx.objectStore(store)); tx.oncomplete = () => ok(req ? req.result : undefined); tx.onerror = () => no(tx.error); });
   } catch (e) { return undefined; }      // private mode or no IndexedDB: no offline copy, nothing breaks
 }
@@ -607,6 +607,9 @@ const TODAY = {
   put_away: ['blue', (n) => `${n} item${n > 1 ? 's' : ''} not put away in bins`, '#/bins', 'Put away'],
   attendance: ['blue', (n) => `Mark today's attendance (${n} staff)`, '#/staff', 'Mark'],
   salary_due: ['amber', (n) => `Last month's salary not paid for ${n} staff`, '#/staff?month=last', 'Pay'],
+  drive_failing: ['red', () => 'Google Drive backup is not working', '#/settings?backup=1', 'Fix'],
+  backup_none: ['amber', () => 'Your business data has no backup yet', '#/settings?backup=1', 'Back up'],
+  backup_old: ['amber', (n) => `No backup of your data for ${n} days`, '#/settings?backup=1', 'Back up'],
 };
 function todayCard(t) {
   if (!t) return '';
@@ -3018,10 +3021,11 @@ route(/^settings$/, async (el, m, q) => {
       <p class="muted">Changing your password signs you out on every other device. "Sign out everywhere" does that without changing it.</p></form>
     ${ME.can.settings ? `<div class="panel"><h2>Customer links</h2><p class="muted">Invoice and khata links you sent on WhatsApp or SMS work for anyone who has them. If a link went to the wrong person, turn it off on that invoice or khata page. To turn off every link of this business at once:</p>
       <div class="row"><button type="button" class="btn danger" id="revokeall">Turn off all customer links</button></div></div>` : ''}
-    ${ME.user.role === 'owner' ? `<div class="panel"><h2>Backup</h2><p class="muted">Download every record of your business (invoices, parties, items, stock, khata, payments, accounts) in one file. Keep it safe on your phone, PC or Google Drive. Your data is yours: you can take it with you anytime.<br>अपने पूरे कारोबार का डेटा एक फ़ाइल में डाउनलोड करें।</p>
+    ${ME.user.role === 'owner' ? `<div class="panel" id="backup-panel"><h2>Backup</h2><p class="muted">Download every record of your business (invoices, parties, items, stock, khata, payments, accounts) in one file. Keep it safe on your phone, PC or Google Drive. Your data is yours: you can take it with you anytime.<br>अपने पूरे कारोबार का डेटा एक फ़ाइल में डाउनलोड करें।</p>
       <div class="row"><button type="button" class="btn" id="backup">Download full backup (.json)</button><button type="button" class="btn" id="backupx">Download as Excel</button></div>
       <p class="muted small">The .json file can be restored into SmartTrader. The Excel file is for reading: one sheet each for bills, items, customers, payments, khata and accounts, amounts in rupees.</p>
       <h3 style="margin-top:16px">Google Drive auto-backup</h3><div id="gdrive"><span class="muted">Checking…</span></div>
+      <h3 style="margin-top:16px">Backup to a folder on this computer</h3><div id="fbox"><span class="muted">Checking…</span></div>
       <h3 style="margin-top:16px">Restore from a backup</h3><div id="restorebox"><span class="muted">Checking…</span></div></div>` : ''}
     <p class="muted">Selling SmartTrader to other businesses? <a href="#/admin">Open the admin panel</a> (needs the ADMIN_KEY secret).</p>
     ${canUsers ? `<div class="panel flush"><div style="padding:14px 16px 0"><h3>Audit trail</h3></div>${table([{ h: 'When', f: (a) => new Date(a.at).toLocaleString('en-IN') }, { h: 'User', k: 'user' }, { h: 'Action', k: 'action' }, { h: 'Detail', k: 'detail', cls: 'hide-sm' }], audit.slice(0, 100))}</div>` : ''}`;
@@ -3057,6 +3061,9 @@ route(/^settings$/, async (el, m, q) => {
   };
   if ($('#backup')) $('#backup').onclick = () => fileDownload('/api/export/backup');
   if ($('#backupx')) $('#backupx').onclick = () => fileDownload('/api/export/excel');
+  folderUi(); folderShow();
+  // after render() has put the page at the top
+  if (q && q.get('backup')) setTimeout(() => { const bp = $('#backup-panel'); if (bp) bp.scrollIntoView({ block: 'start' }); }, 0);
   /* Restore: like restoring WhatsApp on a new phone, into an empty business only */
   const restoreUi = async () => {
     const box = $('#restorebox'); if (!box) return;
@@ -3132,16 +3139,27 @@ route(/^settings$/, async (el, m, q) => {
       return;
     }
     if (driveNote && driveNote[0] !== 'ok' && dq !== 'fail') driveNote = null;    // connected now: an older complaint no longer applies
+    // links open in the owner's own Google Drive (on a phone, in the Drive app), where only they can see the files
+    const gid = (s) => encodeURIComponent(String(s || ''));
     box.innerHTML = `${note()}<p>Backing up to <b>${esc(g.email || 'your Google Drive')}</b>, folder “SmartTrader Backup”.</p>
-      <p class="muted">${g.last_backup_at ? `Last backup: <b>${when(g.last_backup_at)}</b>${g.last_size ? ` · ${Math.max(1, Math.round(g.last_size / 1024))} KB` : ''}` : 'No backup yet.'} The newest 30 are kept.</p>
+      <p class="muted">${g.last_backup_at ? `Last backup: <b>${when(g.last_backup_at)}</b>${g.last_size ? ` · ${Math.max(1, Math.round(g.last_size / 1024))} KB` : ''}${g.last_checked ? ' · <span class="okc" title="Google’s checksum of the stored file matches ours">&#10003; checked</span>' : ''}.` : 'No backup yet.'}
+        The newest 30 are kept${g.excel ? ', each with an Excel copy you can open without SmartTrader' : ''}.</p>
       ${g.last_error ? `<div class="panel err" style="margin:8px 0">${esc(g.last_error)}</div>` : ''}
+      ${g.folder_id ? `<div class="row" style="margin:0 0 8px"><a class="btn sm" href="https://drive.google.com/drive/folders/${gid(g.folder_id)}" target="_blank" rel="noopener">Open the folder in Google Drive</a>
+        ${g.excel && g.last_excel_id ? `<a class="btn sm" href="https://drive.google.com/file/d/${gid(g.last_excel_id)}/view" target="_blank" rel="noopener">Open the latest Excel</a>` : ''}</div>` : ''}
+      <label class="check"><input type="checkbox" id="gexcel" ${g.excel ? 'checked' : ''}> Also save an Excel copy (to read on a phone or PC; the .json is the one that restores)</label>
       <div class="row"><label class="f inline-f">Back up<select id="gevery"><option value="day" ${g.every !== 'week' ? 'selected' : ''}>Every day</option><option value="week" ${g.every === 'week' ? 'selected' : ''}>Every week</option></select></label>
-        <button type="button" class="btn" id="gnow">Back up now</button><span class="spacer"></span><button type="button" class="btn danger" id="goff">Disconnect</button></div>`;
+        <button type="button" class="btn" id="gnow">Back up now</button><span class="spacer"></span><button type="button" class="btn danger" id="goff">Disconnect</button></div>
+      <p class="muted small">To keep these files on your computer too, install <b>Google Drive for desktop</b> and mark this folder “Available offline”. On a phone, open a file in the Drive app → ⋮ → <b>Make available offline</b>.</p>`;
     $('#gevery').onchange = async (e) => { try { await api('PUT', '/api/gdrive', { every: e.target.value }); toast('Saved'); } catch (err) { toast(err.message, 'err'); } };
+    $('#gexcel').onchange = async (e) => {
+      try { await api('PUT', '/api/gdrive', { excel: e.target.checked }); toast(e.target.checked ? 'An Excel copy goes with every backup' : 'Only the .json backup will be saved'); drive(); }
+      catch (err) { e.target.checked = !e.target.checked; toast(err.message, 'err'); }
+    };
     $('#gnow').onclick = async (e) => {
       driveNote = null;
       e.target.disabled = true; e.target.textContent = 'Backing up…';
-      try { const r = await POST('/api/gdrive/backup'); toast(`Backed up ${r.records} records to Google Drive`); } catch (err) { toast(err.message, 'err'); }
+      try { const r = await POST('/api/gdrive/backup'); toast(`Backed up ${r.records} records to Google Drive${r.excel ? ', with an Excel copy' : ''}`); } catch (err) { toast(err.message, 'err'); }
       drive();
     };
     $('#goff').onclick = async () => {
@@ -3153,7 +3171,7 @@ route(/^settings$/, async (el, m, q) => {
   if (driveNote) {
     toast(driveNote[0] === 'ok' ? driveNote[1].replace(/<[^>]+>/g, '') : 'Google Drive: see the note in the Google Drive box.', driveNote[0]);
     history.replaceState(null, '', location.pathname + '#/settings');      // a reload does not repeat the message
-    const gd = $('#gdrive'); if (gd) gd.scrollIntoView({ block: 'center' });
+    setTimeout(() => { const gd = $('#gdrive'); if (gd) gd.scrollIntoView({ block: 'center' }); }, 0);
   }
   // back from Google in another tab or app window: show the new state when this one is looked at again
   driveRefresh = drive;
@@ -4000,19 +4018,139 @@ route(/^stock-ageing$/, async (el, m, q) => {
 });
 
 /* ======================================================================= shared: downloads, UPI QR, scripts */
-async function fileDownload(url) {
+async function fetchFile(url) {
   const res = await fetch(url, { credentials: 'same-origin' });
   if (!res.ok) {
     let msg = `Download failed (${res.status})`;
     try { msg = (await res.json()).error || msg; } catch (e) { /* not json */ }
-    if (res.status === 402 && confirm(msg + '\n\nOpen Plan & Billing now?')) go('plan'); else if (res.status !== 402) alert(msg);
+    throw new ApiError(msg, res.status);
+  }
+  return { name: ((res.headers.get('Content-Disposition') || '').match(/filename="([^"]+)"/) || [])[1] || 'download', blob: await res.blob() };
+}
+async function fileDownload(url) {
+  let f;
+  try { f = await fetchFile(url); } catch (e) {
+    if (e.status === 402 && confirm(e.message + '\n\nOpen Plan & Billing now?')) go('plan'); else if (e.status !== 402) alert(e.message);
     return;
   }
-  const name = ((res.headers.get('Content-Disposition') || '').match(/filename="([^"]+)"/) || [])[1] || 'download';
   const a = document.createElement('a');
-  a.href = URL.createObjectURL(await res.blob()); a.download = name; a.click();
+  a.href = URL.createObjectURL(f.blob); a.download = f.name; a.click();
   setTimeout(() => URL.revokeObjectURL(a.href), 2000);
-  toast('Downloaded ' + name);
+  toast('Downloaded ' + f.name);
+}
+
+/* Backup to a folder on this computer (Chrome / Edge on a computer: the File System Access API). The owner picks a
+   folder once; it is remembered on this device, and while SmartTrader is open a backup (.json, plus an Excel copy
+   unless turned off) is written there once a day or week, the newest 30 of each kept. A folder inside Google Drive
+   for desktop, OneDrive or a pen drive carries the copies on from there. After the browser restarts, Chrome asks
+   again before the folder is written (unless "Allow on every visit" was chosen): a note offers that one tap. */
+const FOLDER_OK = typeof window.showDirectoryPicker === 'function';
+const FOLDER_KEEP = 30;
+const folderDb = (() => {
+  let p = null;
+  return () => p || (p = new Promise((ok, no) => {
+    const r = indexedDB.open('smarttrader-folder', 1);
+    r.onupgradeneeded = () => r.result.createObjectStore('dirs');
+    r.onsuccess = () => ok(r.result); r.onerror = () => no(r.error);
+  }));
+})();
+let folderSt = null, folderOf = '', folderLater = false;     // this owner's folder on this device: { dir, name, excel, every, last_at, last_size, error, err_at, ask }
+const folderLoad = async () => { folderOf = offOwner(); return (folderSt = FOLDER_OK && ME ? (await idbDo('dirs', 'readonly', (s) => s.get(folderOf), folderDb)) || null : null); };
+const folderSave = (st) => { folderSt = st; folderOf = offOwner(); return idbDo('dirs', 'readwrite', (s) => (st ? s.put(st, folderOf) : s.delete(folderOf)), folderDb); };
+const folderDue = (st) => !st.last_at || (st.every === 'week' ? Date.now() - st.last_at > 6.5 * 86400e3 : new Date(st.last_at).toDateString() !== new Date().toDateString());
+async function folderPerm(dir, ask) {
+  const o = { mode: 'readwrite' };
+  if (await dir.queryPermission(o) === 'granted') return true;
+  return ask ? (await dir.requestPermission(o)) === 'granted' : false;
+}
+async function folderWrite(dir, name, blob) {
+  const w = await (await dir.getFileHandle(name, { create: true })).createWritable();
+  await w.write(blob); await w.close();
+}
+/* only files with SmartTrader's own backup names are ever removed */
+async function folderPrune(dir) {
+  const names = [];
+  for await (const [n, h] of dir.entries()) if (h.kind === 'file') names.push(n);
+  const old = [/^smarttrader-backup-\d{4}-\d\d-\d\d_\d\d-\d\d\.json$/, /^smarttrader-excel-\d{4}-\d\d-\d\d_\d\d-\d\d\.xlsx$/]
+    .flatMap((re) => names.filter((n) => re.test(n)).sort().reverse().slice(FOLDER_KEEP));
+  for (const n of old) await dir.removeEntry(n).catch(() => {});
+}
+/* by 'tap' (a button: may ask Chrome for the folder, always saves, says what happened) or 'auto' (quiet, only when due) */
+async function folderBackup(by = 'auto') {
+  if (!FOLDER_OK || !ME || ME.user.role !== 'owner' || ME._offline || !navigator.onLine) return;
+  const run = async () => {
+    const st = await folderLoad();
+    if (!st || (by === 'auto' && (!folderDue(st) || (st.err_at && Date.now() - st.err_at < 3600e3)))) return;
+    if (!(await folderPerm(st.dir, by === 'tap').catch(() => false))) { await folderSave({ ...st, ask: true }); folderShow(); return; }
+    const d = new Date(), p = (x) => String(x).padStart(2, '0');
+    const stamp = `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}_${p(d.getHours())}-${p(d.getMinutes())}`;
+    try {
+      const j = await fetchFile('/api/export/backup?to=folder');
+      await folderWrite(st.dir, `smarttrader-backup-${stamp}.json`, j.blob);
+      if (st.excel !== false) await folderWrite(st.dir, `smarttrader-excel-${stamp}.xlsx`, (await fetchFile('/api/export/excel?to=folder')).blob);
+      await folderPrune(st.dir);
+      await folderSave({ ...st, last_at: Date.now(), last_size: j.blob.size, error: '', err_at: 0, ask: false });
+      if (by === 'tap') toast(`Backup saved in the folder “${st.name}”`);
+    } catch (e) {
+      const msg = e.name === 'NotFoundError' ? `The folder “${st.name}” was moved or deleted. Choose a folder again.`
+        : e.name === 'NotAllowedError' || e.name === 'NoModificationAllowedError' ? `SmartTrader may not write in “${st.name}”. Choose another folder.`
+        : e.name === 'QuotaExceededError' ? 'The disk is full. Free some space, then tap Save now.' : e.message || 'The backup could not be saved.';
+      await folderSave({ ...st, error: msg, err_at: Date.now() });
+      if (by === 'tap') toast(msg, 'err');
+    }
+    folderShow();
+  };
+  // two open tabs: one of them writes
+  return navigator.locks ? navigator.locks.request('smarttrader-folder-backup', { ifAvailable: true }, (lock) => (lock ? run() : null)) : run();
+}
+/* the Settings box (if open) and the one-tap note when Chrome wants the OK again */
+function folderShow() {
+  if ($('#fbox')) folderUi();
+  const want = ME && ME.user.role === 'owner' && folderOf === offOwner() && folderSt && folderSt.ask && folderDue(folderSt) && !folderLater && !$('#fbox');
+  const n = $('#fbnote');
+  if (!want) { if (n) n.remove(); return; }
+  if (!n) $('#app').insertAdjacentHTML('beforeend', `<div id="fbnote" class="fbnote no-print" role="status"><span>Save today’s backup in your folder <b>${esc(folderSt.name)}</b>?</span>
+    <button type="button" class="btn sm primary" data-fb="save">Save backup</button><button type="button" class="btn sm" data-fb="later">Not now</button></div>`);
+}
+document.addEventListener('click', (e) => {
+  const b = e.target.closest && e.target.closest('[data-fb]');
+  if (!b) return;
+  if (b.dataset.fb === 'later') folderLater = true; else folderBackup('tap');
+  const n = $('#fbnote'); if (n) n.remove();
+});
+setInterval(() => folderBackup(), 10 * 60e3);
+async function folderUi() {
+  const box = $('#fbox'); if (!box) return;
+  if (!FOLDER_OK) {
+    box.innerHTML = '<p class="muted">This works in <b>Chrome or Edge on a computer</b>. On a phone, turn on Google Drive backup above (the Drive app can keep the files offline), or tap Download.</p>';
+    return;
+  }
+  const st = await folderLoad();
+  const when = (t) => new Date(t).toLocaleString('en-IN', { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' });
+  box.innerHTML = !st ? `<p class="muted">Choose a folder on this computer once. While SmartTrader is open here, it saves a backup in that folder by itself every day: the .json file and an Excel copy, the newest 30 kept. Tip: choose a folder inside <b>Google Drive for desktop</b>, OneDrive or a pen drive, and the backup is copied on from there. इस कंप्यूटर के फ़ोल्डर में रोज़ अपने आप बैकअप।</p>
+      <div class="row"><button type="button" class="btn primary" id="fbpick">Choose a folder</button></div>`
+    : `<p>Saving in the folder <b>${esc(st.name)}</b> on this computer.</p>
+      <p class="muted">${st.last_at ? `Last saved: <b>${when(st.last_at)}</b>${st.last_size ? ` · ${Math.max(1, Math.round(st.last_size / 1024))} KB` : ''}.` : 'Nothing saved yet.'} It runs while SmartTrader is open on this computer; the newest 30 are kept.</p>
+      ${st.ask ? '<div class="panel warnbox" style="margin:8px 0">The browser wants your OK to use this folder again. Tap <b>Save now</b>; if it offers <b>Allow on every visit</b>, choose that so it does not ask again.</div>' : ''}
+      ${st.error ? `<div class="panel err" style="margin:8px 0">${esc(st.error)}</div>` : ''}
+      <label class="check"><input type="checkbox" id="fbexcel" ${st.excel !== false ? 'checked' : ''}> Also save an Excel copy</label>
+      <div class="row"><label class="f inline-f">Save<select id="fbevery"><option value="day" ${st.every !== 'week' ? 'selected' : ''}>Every day</option><option value="week" ${st.every === 'week' ? 'selected' : ''}>Every week</option></select></label>
+        <button type="button" class="btn" id="fbnow">Save now</button><button type="button" class="btn" id="fbpick">Change folder</button><span class="spacer"></span><button type="button" class="btn danger" id="fboff">Stop</button></div>`;
+  $('#fbpick').onclick = async () => {
+    let dir;
+    try { dir = await window.showDirectoryPicker({ id: 'smarttrader-backup', mode: 'readwrite', startIn: 'documents' }); }
+    catch (e) { if (e.name !== 'AbortError') toast(e.message, 'err'); return; }
+    await folderSave({ dir, name: dir.name, excel: st ? st.excel !== false : true, every: st ? st.every || 'day' : 'day', last_at: 0, last_size: 0, error: '', err_at: 0, ask: false });
+    folderUi(); folderBackup('tap');
+  };
+  if (!st) return;
+  $('#fbnow').onclick = async (e) => { e.target.disabled = true; e.target.textContent = 'Saving…'; await folderBackup('tap'); folderUi(); };
+  $('#fbexcel').onchange = async (e) => { await folderSave({ ...st, excel: e.target.checked }); toast(e.target.checked ? 'An Excel copy goes with every backup' : 'Only the .json backup will be saved'); };
+  $('#fbevery').onchange = async (e) => { await folderSave({ ...st, every: e.target.value }); toast('Saved'); };
+  $('#fboff').onclick = async () => {
+    if (!confirm(`Stop saving backups in “${st.name}”? The files already there stay.`)) return;
+    await folderSave(null); folderUi(); folderShow();
+  };
 }
 // '@' stays literal: UPI apps show "name%40bank" for an encoded one and will not let the payer continue.
 const upiLink = (vpa, name, amount, note) => `upi://pay?pa=${encodeURIComponent(vpa).replace(/%40/g, '@')}&pn=${encodeURIComponent(name)}${amount ? `&am=${(+amount).toFixed(2)}` : ''}&cu=INR${note ? `&tn=${encodeURIComponent(note)}` : ''}`;
@@ -4566,6 +4704,7 @@ async function boot() {
   shell();
   wireInstall();
   outboxBadge(); syncOutbox();
+  setTimeout(() => folderBackup(), 15000);
   await render();
 }
 window.addEventListener('hashchange', () => {
