@@ -323,14 +323,17 @@ Customers connect their own Google Drive in **Settings → Backup**; a full back
 `drive.file`, so it sees just the files it made. To switch it on for everyone:
 
 1. Google Cloud Console → create a project → **APIs & Services → Library** → enable **Google Drive API**.
-2. **OAuth consent screen**: External, app name SmartTrader ERP, your support e-mail, scopes `drive.file` and `email`.
-   Publish it (these scopes need no security review).
+2. **Google Auth Platform (OAuth consent screen)**: External, app name SmartTrader ERP, your support e-mail, one scope:
+   `drive.file` (the account e-mail is read from Drive itself). Then **Audience → Publish app** so the status is
+   **In production**: while it says *Testing*, only the listed test users can connect and everyone else sees
+   "Access blocked". `drive.file` is a non-sensitive scope, so publishing needs no security review.
 3. **Credentials → Create credentials → OAuth client ID** → Web application. Authorised redirect URI:
    `https://erp.docbrisk.com/api/gdrive/callback`.
 4. Cloudflare → the ERP worker → Settings → Variables and Secrets → add **GDRIVE_CLIENT_ID** and **GDRIVE_CLIENT_SECRET**
    (type Secret). The hourly cron in wrangler.toml does the backups.
 
-Keep `SESSION_SECRET` fixed: the stored Google tokens are encrypted with a key made from it, so changing it means
+If a customer comes back from Google to Settings with a note, it says what happened (permission not given, signed out
+while Google was open, link too old) and what to do. Keep `SESSION_SECRET` fixed: the stored Google tokens are encrypted with a key made from it, so changing it means
 every business has to connect Drive again.
 
 ## Not built yet (next steps)

@@ -42,7 +42,10 @@ const G = (env) => ({
   api: (env.GDRIVE_API || 'https://www.googleapis.com').replace(/\/$/, ''),
 });
 export const driveConfigured = (env) => !!(env.GDRIVE_CLIENT_ID && env.GDRIVE_CLIENT_SECRET);
-const SCOPE = 'https://www.googleapis.com/auth/drive.file email';
+/* Drive files only. Asking for one permission keeps Google's page simple: with a second one (email) Google lists each
+   with a box to tick, and owners who pressed Continue without ticking the Drive box ended up not connected.
+   The account's address comes from Drive itself (about.user). */
+const SCOPE = 'https://www.googleapis.com/auth/drive.file';
 const KEEP = 30;
 const redirectUri = (url) => url.origin + '/api/gdrive/callback';
 
@@ -152,7 +155,7 @@ export async function backupToDrive(env, orgId, by) {
     return { ok: true, file: f.name, records: b.records, size: b.json.length };
   } catch (e) {
     const msg = e.gone ? 'Google access was removed. Connect Google Drive again.'
-      : e.scope ? 'Google did not give SmartTrader permission for Drive files. Tap Disconnect, then Connect Google Drive again and tick the Google Drive box on Google’s page.'
+      : e.scope ? 'Google did not give SmartTrader permission for Drive files. Tap Disconnect, then Connect Google Drive again and press Continue on Google’s page (if it shows a Google Drive box, tick it).'
       : e.apiOff ? 'The Google Drive API is switched off in SmartTrader’s Google Cloud project, so backups cannot be saved yet. (Operator: Google Cloud → APIs & Services → Google Drive API → Enable.)'
       : String(e && e.message || 'Backup failed.').slice(0, 300);
     await db.prepare(`UPDATE drive_links SET last_error = ?, last_try_at = ? WHERE org_id = ?`).bind(msg, nowIso(), orgId).run();
@@ -211,7 +214,7 @@ export function driveRoutes(router) {
     const back = (q) => new Response(null, { status: 302, headers: { Location: '/#/settings?drive=' + q, 'Cache-Control': 'no-store' } });
     const s = await readState(c.env, c.url.searchParams.get('state'));
     if (!s || s.o !== c.org.id || s.u !== c.user.id || c.user.role !== 'owner') return back('bad');
-    if (c.url.searchParams.get('error') || !c.url.searchParams.get('code')) return back('cancel');
+    if (c.url.searchParams.get('error') || !c.url.searchParams.get('code')) return back(c.url.searchParams.get('error') === 'access_denied' ? 'denied' : 'cancel');
     try {
       const t = await tokenCall(c.env, { grant_type: 'authorization_code', code: c.url.searchParams.get('code'), redirect_uri: redirectUri(c.url) });
       if (!t.refresh_token) return back('norefresh');
@@ -221,7 +224,7 @@ export function driveRoutes(router) {
         return back('noscope');
       }
       let email = '';
-      try { email = (await gjson(await fetch(`${G(c.env).api}/oauth2/v3/userinfo`, { headers: authed(t.access_token) }), 'Google account')).email || ''; } catch (e) { email = ''; }
+      try { email = ((await gjson(await fetch(`${G(c.env).api}/drive/v3/about?fields=user(emailAddress)`, { headers: authed(t.access_token) }), 'Google account')).user || {}).emailAddress || ''; } catch (e) { email = ''; }
       await c.db.batch([
         c.db.prepare(`INSERT INTO drive_links (org_id, user_id, email, refresh_enc, every, connected_at) VALUES (?, ?, ?, ?, 'day', ?)
           ON CONFLICT(org_id) DO UPDATE SET user_id = excluded.user_id, email = excluded.email, refresh_enc = excluded.refresh_enc, connected_at = excluded.connected_at, last_error = NULL`)

@@ -238,12 +238,15 @@ input[type=checkbox] { width: auto; }
   .g2, .g3 { grid-template-columns: minmax(0, 1fr); }
   .auth { grid-template-columns: 1fr; }
   .auth .pitch { padding: 28px 20px; }
-  .doc-paper { padding: 14px; }
-  .doc-paper .parties, .doc-paper .hdr, .doc-paper .foot { grid-template-columns: 1fr; flex-direction: column; }
-  .doc-paper.L-modern .hdr { margin: -14px -14px 12px; padding: 14px; }
-  .doc-paper .meta { text-align: left; }
-  .doc-paper .words { max-width: none; }
   .hide-sm { display: none; }
+}
+/* other papers (pick lists, recovery notices) reflow on a phone screen; never on paper */
+@media screen and (max-width: 860px) {
+  .doc-paper:not(.fit) { padding: 14px; }
+  .doc-paper:not(.fit) .parties, .doc-paper:not(.fit) .hdr, .doc-paper:not(.fit) .foot { grid-template-columns: 1fr; flex-direction: column; }
+  .doc-paper.L-modern:not(.fit) .hdr { margin: -14px -14px 12px; padding: 14px; }
+  .doc-paper:not(.fit) .meta { text-align: left; }
+  .doc-paper:not(.fit) .words { max-width: none; }
 }
 
 /* POS */
@@ -317,11 +320,34 @@ pre.msg { white-space: pre-wrap; word-break: break-word; background: var(--soft)
 .doc-paper { min-width: 0; overflow: hidden; }
 .doc-paper .tbl-wrap { margin: 0 -2px; }
 .pubdoc .doc-paper { box-shadow: var(--shadow); }
-@media (max-width: 860px) {
-  .doc-paper table.dl { min-width: 640px; }
-  .doc-paper th, .doc-paper td { font-size: 12px; padding: 5px 6px; }
-  .doc-paper .totals { width: 100%; }
-  .doc-paper .foot > div[style] { max-width: 100% !important; }
+@media screen and (max-width: 860px) {
+  .doc-paper:not(.fit) table.dl { min-width: 640px; }
+  .doc-paper:not(.fit) th, .doc-paper:not(.fit) td { font-size: 12px; padding: 5px 6px; }
+  .doc-paper:not(.fit) .totals { width: 100%; }
+  .doc-paper:not(.fit) .foot > div[style] { max-width: 100% !important; }
+}
+
+/* An invoice (and every other bill) is always laid out as a page: A4 width, or the thermal roll's width. It is never
+   squeezed to fit a narrow screen; there it is shown smaller as a whole, like a PDF preview (app.js fitPapers), so it
+   looks the same on a phone held upright or sideways, on a computer, on paper and in the PDF sent on WhatsApp.
+   "Zoom" shows it full size, scrolling sideways; pinching works too. */
+.paper-fit { width: 100%; }
+.paper-box > .doc-paper.fit:not(.L-compact):not(.L-compact58) { width: 794px; max-width: none; margin: 0 auto; }
+.paper-box > .doc-paper.L-compact { width: 80mm; }
+.paper-box > .doc-paper.L-compact58 { width: 58mm; }
+.paper-fit.full > .paper-box { overflow-x: auto; -webkit-overflow-scrolling: touch; }
+/* above the page, right-aligned, so it never covers the bill's own heading */
+.fit-btn { display: block; margin: 0 0 8px auto; font: 600 13px/1 system-ui, sans-serif; padding: 8px 12px; border-radius: 999px;
+  border: 1px solid var(--line); background: var(--panel); color: var(--ink); cursor: pointer; }
+.fit-btn[hidden] { display: none; }
+/* A4 bills print on A4 upright, whatever the printer's default is; thermal rolls keep their own page */
+/* (on the whole page: a named page on the bill alone would start a fresh, empty sheet for whatever follows it) */
+body:has(.doc-paper.fit:not(.L-compact):not(.L-compact58)) { page: a4bill; }
+@page a4bill { size: A4 portrait; margin: 10mm; }
+@media print {
+  .paper-box > .doc-paper.fit:not(.L-compact):not(.L-compact58) { width: auto; }
+  .paper-box > .doc-paper { zoom: 1 !important; }
+  .fit-btn { display: none !important; }
 }
 @media print { .doc-paper table.dl { min-width: 0; } .doc-paper .tbl-wrap { overflow: visible; } }
 
