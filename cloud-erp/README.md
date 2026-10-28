@@ -265,6 +265,12 @@ cloud-erp/
   account and party itself. Reads for custom roles go through one table (`READ_AREAS` in `src/worker.js`): anything not listed is refused.
 - Tables keyed by something a user can type (reports, plans, document types, states, units, numbering, custom fields) are read with
   own-key lookups only (`own()` in `src/lib.js`), so names like `constructor` or `__proto__` never resolve.
+- No value is ever written into SQL text. Custom-field filters bind the JSON path too, and a custom-field definition whose key is not
+  lower-case letters, digits and `_` is dropped whenever settings are read (`fieldsOf` in `src/custom.js`). A restored backup's settings
+  go through the same checks as the settings screens (fields, numbering series, print images), so a hand-made file cannot plant SQL or
+  printf codes, and every link token in it is replaced.
+- Passwords: 8 to 200 characters; common Indian choices (`cricket`, `india`, names of gods and cities ...) with digits or symbols around
+  them, all-digit and one-character passwords are refused.
 - The request context keeps `env` (the secrets) non-enumerable, so a handler that serialises the context cannot dump it. Error answers
   carry a fixed message only; details go to the Worker log.
 - Security headers on the app, the API and the `/k/` and `/i/` pages: a strict Content-Security-Policy (no inline or eval scripts, no

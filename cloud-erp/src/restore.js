@@ -12,6 +12,7 @@
 import { bad, nowIso, uid } from './lib.js';
 import { randomHex } from './auth.js';
 import { auditStatement } from './engine.js';
+import { fieldsOf, seriesOf } from './custom.js';
 
 const ID_TABLES = ['accounts', 'warehouses', 'roles', 'parties', 'items', 'docs', 'doc_lines', 'payments', 'journals', 'journal_lines', 'khata',
   'stock_moves', 'gate_entries', 'vaade', 'vaada_kisht', 'recurring', 'reminder_log', 'confirmations', 'bins', 'batches', 'batch_moves',
@@ -31,6 +32,18 @@ const lit = (v) => v === null || v === undefined ? 'NULL'
   : 'NULL';
 
 /* Empty = nothing but what sign-up makes (the chart of accounts, one godown and the "Walk-in Customer") */
+/* numbering series from a file: only the shapes cleanSeries allows (letters, digits, / and -, plus {FY} {YY} {YYYY}; 1 to 8 digits) */
+function cleanSeriesMap(m) {
+  const out = {};
+  for (const [k, S] of Object.entries(m && typeof m === 'object' ? m : {})) {
+    if (!/^[A-Za-z]{2,12}$/.test(k) || !S || typeof S !== 'object' || typeof S.prefix !== 'string') continue;
+    const prefix = S.prefix.slice(0, 20), pad = Math.trunc(Number(S.pad ?? 5));
+    if (!/^[A-Za-z0-9/-]*$/.test(prefix.replace(/\{(FY|YY|YYYY)\}/g, '')) || !(pad >= 1 && pad <= 8)) continue;
+    out[k] = { prefix, pad, fy_reset: S.fy_reset && /\{(FY|YY|YYYY)\}/.test(prefix) ? 1 : 0 };
+  }
+  return out;
+}
+
 export async function isEmptyOrg(db, orgId) {
   const r = await db.prepare(`SELECT (SELECT COUNT(*) FROM docs WHERE org_id = ?1) + (SELECT COUNT(*) FROM parties WHERE org_id = ?1 AND name != 'Walk-in Customer')
       + (SELECT COUNT(*) FROM items WHERE org_id = ?1) + (SELECT COUNT(*) FROM payments WHERE org_id = ?1)
@@ -188,6 +201,9 @@ export async function restoreBackup(c, backup) {
       if (v === undefined || v === null || typeof v === 'object') continue;
       v = String(v);
       if (JSON_FIELDS.includes(k)) { try { JSON.parse(v); } catch (e) { continue; } }
+      // settings go through the same checks the settings screens use, so a hand-made file cannot store what the app never would
+      if (k === 'fields') v = JSON.stringify(fieldsOf({ fields: v }));
+      if (k === 'series') v = JSON.stringify(cleanSeriesMap(seriesOf({ series: v })));
       if (k === 'name' && !v.trim()) continue;
       sets.push(`${k} = ?`); vals.push(k === 'name' ? v.slice(0, 120) : v.slice(0, 20000));
     }

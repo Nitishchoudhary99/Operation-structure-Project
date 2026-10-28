@@ -26,11 +26,16 @@ export function sameText(a, b) {
   return d === 0;
 }
 
+/* the passwords people in India pick first (with digits or symbols around them they are still guessed first) */
+const COMMON_PW = new Set(('password,passw0rd,qwerty,qwertyuiop,welcome,admin,letmein,abc,iloveyou,monkey,dragon,india,sunshine,princess,football,cricket,'
+  + 'master,login,changeme,test,asdfghjkl,zxcvbnm,secret,shadow,smarttrader,docbrisk,nitish,krishna,ganesh,shiva,radhe,sachin,rahul,priya,amit,vikas,'
+  + 'mumbai,delhi,bangalore,namaste,jaishreeram,omnamahshivaya,shop,store,business,company').split(','));
 export function passwordProblem(pw) {
   const s = String(pw || '');
   if (s.length < 8) return 'Password must be at least 8 characters.';
   if (s.length > 200) return 'Password must be at most 200 characters.';
-  if (/^(password|12345678|qwerty|admin|welcome)/i.test(s)) return 'Choose a less guessable password.';
+  const core = s.toLowerCase().replace(/^[^a-z]+|[^a-z]+$/g, '');
+  if (/^(password|12345678|qwerty|admin|welcome)/i.test(s) || COMMON_PW.has(core) || /^\d+$/.test(s) || /^(.)\1+$/.test(s)) return 'Choose a less guessable password.';
   return null;
 }
 

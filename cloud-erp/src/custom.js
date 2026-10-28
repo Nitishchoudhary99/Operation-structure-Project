@@ -20,7 +20,7 @@ export function printOf(org) {
     font: FONTS.includes(p.font) ? p.font : 'sans',
     title: p.title || '', terms: p.terms || '', footer: p.footer || '', signatory: p.signatory || '', show_upi: p.show_upi !== false,
     bank_name: p.bank_name || '', bank_account: p.bank_account || '', bank_ifsc: p.bank_ifsc || '', bank_branch: p.bank_branch || '',
-    logo: p.logo || '', signature: p.signature || '',
+    logo: /^[0-9a-f]{16}$/.test(p.logo || '') ? p.logo : '', signature: /^[0-9a-f]{16}$/.test(p.signature || '') ? p.signature : '',
   };
 }
 
@@ -111,7 +111,16 @@ export function cleanSeries(b, org, d) {
 export const ENTITIES = ['item', 'party', 'doc'];
 export const FIELD_TYPES = ['text', 'number', 'date', 'select'];
 export const MAX_FIELDS = 15;
-export const fieldsOf = (org) => { const a = parse(org && org.fields, []); return Array.isArray(a) ? a : []; };
+/* A key is made from the label (cleanField), so it is always lower-case letters, digits and _. A definition that is not
+   (a restored backup file is written by hand as easily as by the app) is dropped here, before anything uses it. */
+export const FIELD_KEY = /^[a-z][a-z0-9_]{0,39}$/;
+const fieldOk = (f) => f && typeof f === 'object' && typeof f.key === 'string' && FIELD_KEY.test(f.key) && ENTITIES.includes(f.entity)
+  && FIELD_TYPES.includes(f.type) && typeof f.label === 'string' && (f.type !== 'select' || Array.isArray(f.options));
+export const fieldsOf = (org) => {
+  const a = parse(org && org.fields, []);
+  return Array.isArray(a) ? a.filter(fieldOk).map((f) => ({ ...f, label: f.label.slice(0, 40),
+    options: Array.isArray(f.options) ? f.options.map((o) => String(o).slice(0, 40)).slice(0, 30) : [] })) : [];
+};
 export const extraOf = (s) => parse(s, {});
 
 export function cleanField(b, defs, cur) {
@@ -156,15 +165,15 @@ export function cleanExtra(defs, entity, input, side = '') {
   return s;
 }
 
-/* SQL conditions for ?cf.<key>=value filters (keys come from the definitions, so they are safe to inline) */
+/* SQL conditions for ?cf.<key>=value filters. The JSON path is a bound value too, never part of the SQL text. */
 export function extraFilter(defs, entity, params, col) {
   const where = [], args = [];
   for (const [k, raw] of params) {
     const f = k.startsWith('cf.') && raw !== '' && defs.find((x) => x.entity === entity && x.key === k.slice(3));
-    if (!f) continue;
-    const path = `json_extract(${col}, '$.${f.key}')`;
-    if (f.type === 'text') { where.push(`${path} LIKE ?`); args.push(`%${str(raw, 100)}%`); }
-    else { where.push(`${path} = ?`); args.push(f.type === 'number' ? Number(raw) : str(raw, 40)); }
+    if (!f || !FIELD_KEY.test(f.key)) continue;
+    const path = `json_extract(${col}, ?)`;
+    if (f.type === 'text') { where.push(`${path} LIKE ?`); args.push('$.' + f.key, `%${str(raw, 100)}%`); }
+    else { where.push(`${path} = ?`); args.push('$.' + f.key, f.type === 'number' ? Number(raw) : str(raw, 40)); }
   }
   return { sql: where.map((w) => ' AND ' + w).join(''), args };
 }
