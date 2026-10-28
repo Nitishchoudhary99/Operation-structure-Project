@@ -545,6 +545,28 @@ if (process.env.ERP_GDRIVE_MOCK) {
   const after = recs.length ? (await F('GET', '/api/recurring')).data.rows[0] : null;
   check('recurring bills come back paused and start again on Resume (from today, no backlog)', recs.length === 1 && recs[0].active === 0
     && resumed.status === 200 && after.active === 1 && after.next_on === (await F('GET', '/api/me')).data.today, JSON.stringify([recs, resumed && resumed.data, after]).slice(0, 300));
+
+  // settings in a doctored file go through the same checks as the settings screens: a custom-field key that is SQL, or a
+  // numbering prefix with printf codes, is dropped, so a list filter can never read another business's rows
+  const sq = await rq('POST', '/api/auth/signup', { business: 'Sql Co', name: 'S', email: `sqlco${Date.now()}@test.in`, password: 'Sqlco-pass-1', state: 'Rajasthan' }, { ip: '203.0.113.92' });
+  const S = (m, p, b) => rq(m, p, b, { cookie: sq.cookie, ip: '203.0.113.92' });
+  const evilKey = "x') OR 1=1 OR json_extract(extra,'$.x";
+  const sr = await S('POST', '/api/restore', { format: 'smarttrader-backup', version: 1, tables: {}, org: { name: 'Sql Co',
+    fields: JSON.stringify([{ id: 1, entity: 'party', key: evilKey, label: 'Evil', type: 'number' }, { id: 2, entity: 'party', key: 'area', label: 'Area', type: 'text' }]),
+    series: JSON.stringify({ INV: { prefix: '%999999999c', pad: 5 }, receipt: { prefix: 'RC/{FY}/', pad: 4, fy_reset: 1 } }) } });
+  const sqMe = (await S('GET', '/api/me')).data.org;
+  const leak = await S('GET', '/api/parties?cf.' + encodeURIComponent(evilKey) + '=1');
+  check('a doctored backup cannot plant SQL in a custom field or printf codes in a number series', sr.status === 200
+    && sqMe.fields.length === 1 && sqMe.fields[0].key === 'area' && !sqMe.series.INV && sqMe.series.receipt && sqMe.series.receipt.prefix === 'RC/{FY}/'
+    && leak.status === 200 && leak.data.rows.every((p) => p.org_id === sqMe.id),
+    JSON.stringify([sr.status, sqMe.fields, sqMe.series, leak.status, (leak.data.rows || []).length]).slice(0, 300));
+  // the field that survived still filters (the JSON path is a bound value now)
+  await S('POST', '/api/parties', { name: 'Area Party', kind: 'customer', extra: { area: 'Sadar Bazar' } });
+  await S('POST', '/api/parties', { name: 'Other Party', kind: 'customer', extra: { area: 'Civil Lines' } });
+  const byArea = (await S('GET', '/api/parties?cf.area=sadar')).data.rows.map((p) => p.name);
+  check('a custom-field filter still works', byArea.length === 1 && byArea[0] === 'Area Party', JSON.stringify(byArea));
+  const weak = await Promise.all(['Cricket@123', '9876543210', 'aaaaaaaaaa'].map((pw, i) => rq('POST', '/api/auth/signup', { business: 'Weak Co', name: 'W', email: `weak${i}${Date.now()}@test.in`, password: pw, state: 'Rajasthan' }, { ip: '203.0.113.' + (93 + i) })));
+  check('common, all-digit and one-letter passwords are refused', weak.every((r) => r.status === 400 && /guessable/.test(r.data.error)), weak.map((r) => r.status + ' ' + r.data.error).join(' | '));
 }
 await api('POST', '/api/auth/signup', { business: 'Other Co', name: 'X', email: 'x' + email, password: 'Other-pass-1' });
 const peek = await api('GET', `/api/docs/${inv.id}`, null, true);
