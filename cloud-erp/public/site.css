@@ -50,6 +50,8 @@ a.card.link h3 { color: var(--brand); }
 .crumb { font-size: 14px; color: var(--muted); padding-top: 18px; }
 .crumb a { color: var(--muted); }
 @media (max-width: 640px) { .top nav { order: 3; width: 100%; overflow-x: auto; flex-wrap: nowrap; white-space: nowrap; } .hero { padding-top: 32px; } }
+/* phones: logo, Login and Start free stay on one row (Start free used to wrap onto a row of its own) */
+@media (max-width: 420px) { .top { gap: 8px; } .top .logo { font-size: 15px; gap: 6px; } .top .logo img { width: 26px; height: 26px; } .top > .btn { padding: 7px 11px; font-size: 14px; } }
 
 /* privacy page: a link to a section (#whatsapp, #delete) lands below the sticky header */
 section[id] { scroll-margin-top: 90px; }

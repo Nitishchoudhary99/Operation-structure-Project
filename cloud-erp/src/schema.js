@@ -3,7 +3,7 @@
    Every business table carries org_id: one database serves many businesses (multi-tenant).
    migrate() runs on the first request after each deploy, so no manual migration step is needed. */
 
-export const SCHEMA_VERSION = 33;
+export const SCHEMA_VERSION = 34;
 
 // document types whose monthly totals doc_month keeps (sales and purchase money documents)
 const MONTH_TYPES = `('INV','SRET','CNOTE','BILL','PRET','DNOTE')`;
@@ -610,6 +610,10 @@ export const MIGRATIONS = {
       section TEXT DEFAULT '', account_id INTEGER, notes TEXT DEFAULT '', created_by INTEGER, created_at TEXT NOT NULL)`,
     `CREATE INDEX IF NOT EXISTS ix_tds_challans_org ON tds_challans (org_id, date)`,
     `CREATE INDEX IF NOT EXISTS ix_accounts_sys ON accounts (org_id, sys)`,
+  ],
+  /* MRP billing: an item's sale price may be typed with GST in it (kept here without GST, to a hundredth of a paisa) */
+  34: [
+    `ALTER TABLE items ADD COLUMN price_incl INTEGER NOT NULL DEFAULT 0`,
   ],
 };
 

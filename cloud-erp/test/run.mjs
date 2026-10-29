@@ -2537,5 +2537,49 @@ if (process.env.ERP_AI_MOCK) {
     && bk.tables.tds_challans.length === 1 && bk.tables.bank_clear.length === 3, ['fixed_assets', 'asset_dep', 'dep_runs', 'tds_challans', 'bank_clear'].map((t) => `${t} ${(bk.tables[t] || []).length}`).join(' '));
 }
 
+/* --- import from Excel, MRP billing (prices with GST in them) --- */
+{
+  const ip = '203.0.113.150';
+  const su = await rq('POST', '/api/auth/signup', { business: 'Mrp Kirana', name: 'M', email: `mrpk${Date.now()}@test.in`, password: 'Kirana-pass-123', state: 'Rajasthan', gstin: '08ABCDE1234F1Z5' }, { ip });
+  const K = async (m, p, b) => (await rq(m, p, b, { cookie: su.cookie, ip })).data, KE = (m, p, b) => rq(m, p, b, { cookie: su.cookie, ip });
+  const r1 = await K('POST', '/api/import/items', { rows: [
+    { _row: 2, name: 'Rice 25kg', sale_price: '2200', purchase_price: '1800', gst_rate: '5', hsn: '1006', unit: 'Bag', sku: 'R25', opening_qty: '40', opening_rate: '1750' },
+    { _row: 3, name: 'Parle-G 100g', sale_price: '10', price_incl: true, gst_rate: '18', purchase_price: '7', opening_qty: '1000' },
+    { _row: 4, name: 'rice 25KG', sale_price: '1' }, { _row: 5, name: 'Bad GST', gst_rate: 'abc' },
+    { _row: 6, name: 'Delivery', sale_price: '50', gst_rate: '18', is_service: true, opening_qty: '5' }, { _row: 7, name: 'Dup code', sku: 'R25' }] });
+  check('items import: new rows added with opening stock, a repeat and bad rows reported by row number', r1.added === 3 && r1.opening === 2
+    && r1.skipped.length === 1 && r1.skipped[0].row === 4 && r1.errors.map((e) => e.row).join() === '5,7', JSON.stringify(r1));
+  const r2 = await K('POST', '/api/import/items', { update: true, rows: [{ name: 'RICE 25kg', sale_price: '2300' }, { name: 'Sugar', sale_price: '45', purchase_price: '40', opening_qty: '100' }] });
+  const its = (await K('GET', '/api/items')).rows, I = (n) => its.find((i) => i.name === n);
+  check('a second import updates a price (any letter case) and adds the new item', r2.added === 1 && r2.updated === 1 && I('Rice 25kg').sale_price === 2300
+    && I('Rice 25kg').qty_on_hand === 40 && I('Rice 25kg').avg_cost === 1750 && I('Sugar').qty_on_hand === 100 && I('Delivery').qty_on_hand === 0, JSON.stringify(its.map((i) => [i.name, i.sale_price, i.qty_on_hand])));
+  check('an MRP item keeps its price with GST', I('Parle-G 100g').price_incl === 1 && I('Parle-G 100g').sale_price_incl === 10 && I('Parle-G 100g').sale_price === 8.47);
+  const r3 = await K('POST', '/api/import/parties', { rows: [{ name: 'Mehta Stores', kind: 'customer', phone: '9123456780', state: 'Rajasthan', opening_balance: '12500' },
+    { name: 'Gupta Wholesale', kind: 'Supplier', gstin: '08ABCDE1234F1Z5', opening_balance: '-8000' }, { name: 'Odd', kind: 'robot' }, { name: 'Ram ji', kind: 'ग्राहक' }] });
+  const ps = (await K('GET', '/api/parties')).rows, P = (n) => ps.find((x) => x.name === n);
+  check('contacts import: type from words (also Hindi), opening balances both ways, a bad type reported', r3.added === 3 && r3.opening === 2 && r3.errors.length === 1 && r3.errors[0].row === 3
+    && P('Mehta Stores').balance === 12500 && P('Gupta Wholesale').balance === -8000 && P('Gupta Wholesale').kind === 'supplier' && P('Ram ji').kind === 'customer', JSON.stringify(r3));
+  check('the books balance after the import (stock and balances against opening equity)', (await K('GET', '/api/reports/trial-balance')).balanced);
+  check('import limits: at most 200 rows a request, and nobody signed out can import', (await KE('POST', '/api/import/items', { rows: Array.from({ length: 201 }, (_, i) => ({ name: 'x' + i })) })).status === 400
+    && (await rq('POST', '/api/import/items', { rows: [{ name: 'x' }] }, { ip })).status === 401);
+  // MRP billing
+  await K('PUT', '/api/org', { name: 'Mrp Kirana', gstin: '08ABCDE1234F1Z5', state: 'Rajasthan', address: 'Main Road', city: 'Jaipur', pincode: '302001', phone: '9999999999' });
+  const buyer = await K('POST', '/api/parties', { name: 'B2B Buyer', kind: 'customer', state: 'Rajasthan', gstin: '08AAACB1234C1Z5', pincode: '302001', address: 'X' });
+  const pg = I('Parle-G 100g');
+  const a = await K('POST', '/api/docs', { type: 'INV', party_id: buyer.id, lines: [{ item_id: pg.id, qty: 240 }] });
+  const b = await K('POST', '/api/docs', { type: 'INV', party_id: buyer.id, lines: [{ item_id: pg.id, qty: 240, rate: 10, incl: true }, { description: 'Carry bag', qty: 3, rate: 5.9, gst_rate: 18, incl: true }] });
+  const c2 = await K('POST', '/api/docs', { type: 'INV', party_id: buyer.id, lines: [{ item_id: pg.id, qty: 7, rate: 10, discount_pct: 10, incl: true }] });
+  check('MRP billing: 240 at Rs 10 with GST is Rs 2,400 to the paisa, typed or from the item, discounts too', a.total === 2400 && b.total === 2418 && c2.total === 63, JSON.stringify([a.total, b.total, c2.total]));
+  const det = await K('GET', `/api/docs/${b.id}`), l0 = det.lines[0];
+  check('the line keeps the GST out of the price exactly', Math.abs(l0.taxable + l0.cgst + l0.sgst - 2400) < 0.005 && l0.taxable === 2033.9 && det.lines[1].taxable === 15);
+  const cv = await K('GET', `/api/docs/${b.id}/convert?to=SRET`);
+  const ret = await K('POST', '/api/docs', { ...cv, type: 'SRET', lines: cv.lines.slice(0, 1).map((l) => ({ ...l, qty: 24 })) });
+  check('a return of a tenth of the MRP line is a tenth of its price', ret.total === 240, JSON.stringify(ret).slice(0, 200));
+  const ej = await K('GET', `/api/docs/${b.id}/einvoice`), row = (Array.isArray(ej) ? ej[0] : ej).ItemList[0];
+  check('e-invoice of an MRP line: unit price with 3 decimals, no negative discount, assessable value matches', row.UnitPrice === 8.475 && row.Discount >= 0 && row.AssAmt === 2033.9
+    && Math.abs(row.TotAmt - row.Discount - row.AssAmt) < 0.005, JSON.stringify(row));
+  check('the books balance after MRP bills and a return', (await K('GET', '/api/reports/trial-balance')).balanced);
+}
+
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

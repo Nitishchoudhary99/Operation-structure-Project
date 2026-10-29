@@ -141,6 +141,7 @@ page('/gst-billing-software/', 'Free GST Billing Software for Small Business | S
          ('Bill with UPI QR', 'Every invoice prints a UPI QR for the exact amount due, so customers pay on the spot with GPay, PhonePe or Paytm.'),
          ('Share on WhatsApp', 'Send the bill as a link with a preview card, or as a real PDF from the phone. The customer can view it, download it and pay.'),
          ('Quick bill / POS', 'Scan barcodes with a scanner or the phone camera, take cash, UPI or card, and print an 80 mm receipt.'),
+         ('MRP billing', 'Type prices with GST in them: Rs 10 MRP stays Rs 10 on the bill, and the GST is taken out of it to the paisa.'),
          ('Returns & credit notes', 'Sales returns, purchase returns and rate-difference credit/debit notes that settle the original bill.'),
          ('E-invoice & e-way bill', 'Download e-invoice (IRN) and e-way bill JSON in the government format and save the IRN back on the bill.')])),
       ('GST reports for your CA', ul(['GST summary by rate, B2B / B2C, output tax, input credit and net payable',
@@ -530,9 +531,9 @@ landing = f'''<div class="landing">
 {topbar('/', 'en-IN')}
 <main>
 <section class="hero"><h1>Free GST billing, khata and stock software for Indian businesses</h1>
-<p class="lead">SmartTrader ERP: GST bills with UPI QR, a digital khata your customers confirm, stock across godowns, purchase and full accounts. Mobile ya computer, Hindi ya English, ek hi app me.</p>
+<p class="lead">SmartTrader ERP: GST bills with UPI QR, a digital khata your customers confirm, stock across godowns, purchase and full accounts. Mobile ya computer, ek hi app me; bills and reminders reach your customers in English, Hindi or Hinglish.</p>
 <p><a class="btn primary big" href="/#signup">Start free, no card needed</a> <a class="btn big" href="/#login">Sign in</a></p>
-{ul(['Free plan forever: 50 bills a month, unlimited khata', 'Works on Android, iPhone and computer, even offline', 'Bills and reminders on WhatsApp with UPI', 'Your data is yours: full backup any time'])}
+{ul(['Free plan forever: 50 bills a month, unlimited khata', 'Works on Android, iPhone and computer, even offline', 'Bills and reminders on WhatsApp with UPI', 'Bring your items and customers from Excel, Vyapar, myBillBook or Tally in one go', 'Your data is yours: full backup any time'])}
 </section>
 <section><h2>Everything your business runs on</h2>{cards('core')}{cards('feature')}</section>
 <section><h2>Made for your kind of business</h2>{cards('industry')}</section>

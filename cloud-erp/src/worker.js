@@ -4,7 +4,7 @@
 import { migrate, DEFAULT_ACCOUNTS } from './schema.js';
 import {
   HttpError, bad, notFound, forbidden, json, readJson, str, reqStr, num, int, date, nowIso, oneOf, toPaise, Router, GST_RATES, today, counterStatements, counterValueSql,
-  addDays, uid, own, backupHealth,
+  addDays, uid, own, backupHealth, ratePaise, exclOfGst,
 } from './lib.js';
 import {
   hashPassword, randomHex, sameText, passwordProblem, issueSession, sessionCookie, clearCookie, sessionFromRequest, sessionValid, USER_SQL, REVOKED_SQL, ROLES, can, requireCan, rateLimit,
@@ -13,7 +13,7 @@ import {
 } from './auth.js';
 import {
   DOC_TYPES, NOTE_TYPES, stockCount, loadByIds, SYS_SQL, sysMap, createDoc, cancelDoc, createPayment, voidPayment, stockAdjust, stockTransfer, createExpense, createJournal, partyOpening,
-  auditStatement, cashAccount, approveDoc, approvalsOf,
+  auditStatement, cashAccount, approveDoc, approvalsOf, openingStockStatements, partyOpeningStatements, warehouseOf,
 } from './engine.js';
 import { getBom, saveBom, listProductions, createProduction, cancelProduction } from './mfg.js';
 import { importOrders, stockFile, readSettlement, postSettlement, listSettlements } from './channels.js';
@@ -751,17 +751,24 @@ router.add('GET', '/api/today', async (c) => {
 });
 
 /* ======================================================================= items & warehouses */
-const itemFields = (b, c) => ({
+const yes = (v) => v === true || v === 1 || v === '1' || v === 'on' || v === 'true';
+/* price_incl: the sale price is typed with GST in it (MRP); it is kept before GST, to a hundredth of a paisa (lib.js ratePaise) */
+const itemFields = (b, c) => itemPrice(b, {
   extra: b.extra === undefined ? null : cleanExtra(fieldsOf(c.org), 'item', b.extra),
   name: reqStr(b.name, 'Item name', 120), sku: str(b.sku, 40), category: str(b.category, 60), unit: str(b.unit, 12) || 'Pcs', hsn: str(b.hsn, 10),
   gst_rate: num(b.gst_rate, 'GST rate', { min: 0, max: 100, def: 0 }),
-  purchase_price: b.purchase_price === undefined ? null : toPaise(num(b.purchase_price, 'Purchase price', { min: 0, def: 0 })), sale_price: toPaise(num(b.sale_price, 'Sale price', { min: 0, def: 0 })),
+  purchase_price: b.purchase_price === undefined ? null : toPaise(num(b.purchase_price, 'Purchase price', { min: 0, def: 0 })), sale_price: 0, price_incl: yes(b.price_incl) ? 1 : 0,
   reorder_level: num(b.reorder_level, 'Reorder level', { min: 0, def: 0 }), is_service: b.is_service ? 1 : 0,
   barcode: str(b.barcode, 48).replace(/\s+/g, ''), location: str(b.location, 30).toUpperCase(),
   track_batch: b.track_batch === undefined ? null : b.track_batch === true || b.track_batch === 1 || b.track_batch === '1' || b.track_batch === 'on' ? 1 : 0,
   track_serial: b.track_serial === undefined ? null : b.track_serial === true || b.track_serial === 1 || b.track_serial === '1' || b.track_serial === 'on' ? 1 : 0,
   warranty_months: b.warranty_months === undefined ? null : Math.round(num(b.warranty_months, 'Warranty months', { min: 0, max: 240, def: 0 })),
 });
+function itemPrice(b, f) {
+  const typed = ratePaise(num(b.sale_price, 'Sale price', { min: 0, def: 0 }));
+  f.sale_price = f.price_incl ? exclOfGst(typed, f.gst_rate) : Math.round(typed);
+  return f;
+}
 async function barcodeTaken(c, code, exceptId = 0) {
   if (!code) return;
   const hit = await c.db.prepare(`SELECT name FROM items WHERE org_id = ? AND id != ? AND (barcode = ? OR (sku != '' AND sku = ?))
@@ -770,7 +777,9 @@ async function barcodeTaken(c, code, exceptId = 0) {
   if (hit) throw bad(`Barcode ${code} is already used by ${hit.name}.`);
 }
 const itemOut = (i, c) => {
-  const o = { ...i, extra: extraOf(i.extra), purchase_price: R(i.purchase_price), sale_price: R(i.sale_price), avg_cost: R(i.avg_cost), stock_value: R(Math.max(0, i.qty_on_hand) * i.avg_cost) };
+  const o = { ...i, extra: extraOf(i.extra), purchase_price: R(i.purchase_price), sale_price: R(i.sale_price), avg_cost: R(i.avg_cost), stock_value: R(Math.max(0, i.qty_on_hand) * i.avg_cost),
+    // the price with GST (what an MRP item is sold at); bills send it back with incl: true
+    sale_price_incl: R(i.sale_price * (100 + (i.gst_rate || 0)) / 100), price_incl: i.price_incl ? 1 : 0 };
   if (c && !seesCosts(c.user)) { delete o.purchase_price; delete o.avg_cost; delete o.stock_value; }
   return o;
 };
@@ -786,9 +795,9 @@ router.add('POST', '/api/items', async (c) => {
   if (await c.db.prepare(`SELECT 1 FROM items WHERE org_id = ? AND name = ?`).bind(c.org.id, f.name).first()) throw bad(`An item called ${f.name} already exists.`);
   await barcodeTaken(c, f.barcode);
   const r = await c.db.prepare(`INSERT INTO items (org_id, sku, name, category, unit, hsn, gst_rate, purchase_price, sale_price, reorder_level, is_service, avg_cost, barcode, location, extra,
-      track_batch, track_serial, warranty_months, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING *`)
+      track_batch, track_serial, warranty_months, price_incl, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING *`)
     .bind(c.org.id, f.sku, f.name, f.category, f.unit, f.hsn, f.gst_rate, f.purchase_price ?? 0, f.sale_price, f.reorder_level, f.is_service, f.purchase_price ?? 0, f.barcode, f.location,
-      f.extra ?? cleanExtra(fieldsOf(c.org), 'item', {}), f.is_service ? 0 : f.track_batch ?? 0, f.is_service ? 0 : f.track_serial ?? 0, f.warranty_months ?? 0, nowIso()).first();
+      f.extra ?? cleanExtra(fieldsOf(c.org), 'item', {}), f.is_service ? 0 : f.track_batch ?? 0, f.is_service ? 0 : f.track_serial ?? 0, f.warranty_months ?? 0, f.price_incl, nowIso()).first();
   if (c.body.opening_qty && +c.body.opening_qty > 0 && !f.is_service) {
     await stockAdjust(c, { item_id: r.id, qty: c.body.opening_qty, rate: c.body.opening_rate === undefined || c.body.opening_rate === '' ? R(f.purchase_price ?? 0) : c.body.opening_rate, reason: 'opening',
       warehouse_id: c.body.warehouse_id, batch_no: c.body.opening_batch, expiry: c.body.opening_expiry, serials: c.body.opening_serials });
@@ -801,10 +810,10 @@ router.add('PUT', '/api/items/:id', async (c) => {
   const dup = await c.db.prepare(`SELECT id FROM items WHERE org_id = ? AND name = ? AND id != ?`).bind(c.org.id, f.name, +c.params.id).first();
   if (dup) throw bad(`An item called ${f.name} already exists.`);
   await barcodeTaken(c, f.barcode, +c.params.id);
-  const r = await c.db.prepare(`UPDATE items SET sku = ?, name = ?, category = ?, unit = ?, hsn = ?, gst_rate = ?, purchase_price = COALESCE(?, purchase_price), sale_price = ?, reorder_level = ?, barcode = ?, location = ?,
+  const r = await c.db.prepare(`UPDATE items SET sku = ?, name = ?, category = ?, unit = ?, hsn = ?, gst_rate = ?, purchase_price = COALESCE(?, purchase_price), sale_price = ?, price_incl = ?, reorder_level = ?, barcode = ?, location = ?,
       extra = COALESCE(?, extra), track_batch = CASE WHEN is_service = 1 THEN 0 ELSE COALESCE(?, track_batch) END,
       track_serial = CASE WHEN is_service = 1 THEN 0 ELSE COALESCE(?, track_serial) END, warranty_months = COALESCE(?, warranty_months) WHERE id = ? AND org_id = ?`)
-    .bind(f.sku, f.name, f.category, f.unit, f.hsn, f.gst_rate, f.purchase_price, f.sale_price, f.reorder_level, f.barcode, f.location, f.extra, f.track_batch,
+    .bind(f.sku, f.name, f.category, f.unit, f.hsn, f.gst_rate, f.purchase_price, f.sale_price, f.price_incl, f.reorder_level, f.barcode, f.location, f.extra, f.track_batch,
       f.track_serial, f.warranty_months, +c.params.id, c.org.id).run();
   if (!r.meta.changes) throw notFound('Item not found.');
   return json({ ok: true });
@@ -818,6 +827,109 @@ router.add('DELETE', '/api/items/:id', async (c) => {
     c.db.prepare(`DELETE FROM item_codes WHERE item_id = ? AND org_id = ?`).bind(id, c.org.id)]);
   return json({ ok: true });
 });
+/* Bulk import from a spreadsheet (Items → Import, Customers & Suppliers → Import). The app reads the CSV or Excel file and
+   sends up to 200 rows at a time. Each row is checked like the form; a name that is already here (any letter case) is skipped,
+   or, when asked, the columns the file fills are updated on it. New rows, their opening stock and opening balances go in with
+   one database batch, so a request never leaves half a row behind. */
+const IMPORT_MAX = 200;
+function importRows(b) {
+  const rows = Array.isArray(b.rows) ? b.rows.filter((r) => r && typeof r === 'object' && !Array.isArray(r)) : [];
+  if (!rows.length) throw bad('The file has no rows to import.');
+  if (rows.length > IMPORT_MAX) throw bad(`Send at most ${IMPORT_MAX} rows at a time.`);
+  return rows.map((r, i) => ({ r, n: Number.isInteger(r._row) && r._row > 0 ? r._row : i + 1 }));
+}
+const filled = (r, k) => r[k] !== undefined && r[k] !== null && String(r[k]).trim() !== '';
+const rowError = (out, n, e) => { if (!(e instanceof HttpError)) throw e; out.errors.push({ row: n, error: e.message }); };
+router.add('POST', '/api/import/items', async (c) => {
+  requireCan(c.user, 'items');
+  const rows = importRows(c.body), update = c.body.update === true, d = today();
+  const [have, learnt] = await c.db.batch([c.db.prepare(`SELECT id, name, barcode, sku FROM items WHERE org_id = ?`).bind(c.org.id),
+    c.db.prepare(`SELECT code FROM item_codes WHERE org_id = ?`).bind(c.org.id)]);
+  const byName = new Map(have.results.map((i) => [i.name.toLowerCase(), i]));
+  const codes = new Set([...have.results.flatMap((i) => [i.barcode, i.sku]), ...learnt.results.map((x) => x.code)].filter(Boolean));
+  const out = { added: 0, updated: 0, skipped: [], errors: [] }, add = [], upd = [], seen = new Set();
+  for (const { r, n } of rows) {
+    try {
+      const f = itemFields(r, c), key = f.name.toLowerCase();
+      if (seen.has(key)) { out.skipped.push({ row: n, name: f.name, why: 'twice in this file' }); continue; }
+      seen.add(key);
+      const old = byName.get(key);
+      if (old) {
+        if (!update) { out.skipped.push({ row: n, name: f.name, why: 'already in your items' }); continue; }
+        const sets = [], vals = [];
+        for (const k of ['sale_price', 'purchase_price', 'gst_rate', 'hsn', 'unit', 'category', 'reorder_level']) if (filled(r, k)) { sets.push(`${k} = ?`); vals.push(f[k]); }
+        if (filled(r, 'sale_price')) { sets.push('price_incl = ?'); vals.push(f.price_incl); }
+        if (sets.length) upd.push(c.db.prepare(`UPDATE items SET ${sets.join(', ')} WHERE id = ? AND org_id = ?`).bind(...vals, old.id, c.org.id));
+        out.updated++;
+        continue;
+      }
+      for (const code of [f.barcode, f.sku].filter(Boolean)) if (codes.has(code)) throw bad(`Barcode or code ${code} is already used by another item.`);
+      const openQty = f.is_service || !filled(r, 'opening_qty') ? 0 : num(r.opening_qty, 'Opening stock', { min: 0, max: 1e9 });
+      const openRate = filled(r, 'opening_rate') ? toPaise(num(r.opening_rate, 'Opening stock rate', { min: 0 })) : f.purchase_price ?? 0;
+      [f.barcode, f.sku].filter(Boolean).forEach((x) => codes.add(x));
+      add.push({ f, openQty, openRate });
+    } catch (e) { rowError(out, n, e); }
+  }
+  if (add.length) {
+    const ins = await c.db.batch(add.map(({ f }) => c.db.prepare(`INSERT INTO items (org_id, sku, name, category, unit, hsn, gst_rate, purchase_price, sale_price, reorder_level, is_service, avg_cost, barcode,
+        location, extra, track_batch, track_serial, warranty_months, price_incl, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0, 0, ?, ?) RETURNING *`)
+      .bind(c.org.id, f.sku, f.name, f.category, f.unit, f.hsn, f.gst_rate, f.purchase_price ?? 0, f.sale_price, f.reorder_level, f.is_service, f.purchase_price ?? 0, f.barcode, f.location,
+        f.extra ?? cleanExtra(fieldsOf(c.org), 'item', {}), f.price_incl, nowIso())));
+    const opening = add.map((a, i) => ({ item: ins[i].results[0], qty: roundQ(a.openQty), value: Math.round(roundQ(a.openQty) * a.openRate) })).filter((x) => x.qty > 0);
+    const wh = opening.length ? await warehouseOf(c, +c.body.warehouse_id || 0) : null;
+    const st = opening.length ? await openingStockStatements(c, wh, opening, d) : [];
+    await c.db.batch([...st, ...upd, auditStatement(c, 'items imported', `${add.length} new${upd.length ? `, ${upd.length} updated` : ''}`)]);
+    out.added = add.length;
+    out.opening = opening.length;
+  } else if (upd.length) await c.db.batch([...upd, auditStatement(c, 'items imported', `${upd.length} updated`)]);
+  return json(out);
+});
+router.add('POST', '/api/import/parties', async (c) => {
+  requireCan(c.user, 'masters');
+  const rows = importRows(c.body), update = c.body.update === true, d = today(), money = can(c.user, 'finance');
+  const { results: have } = await c.db.prepare(`SELECT id, name FROM parties WHERE org_id = ?`).bind(c.org.id).all();
+  const byName = new Map(have.map((p) => [p.name.toLowerCase(), p]));
+  const out = { added: 0, updated: 0, skipped: [], errors: [] }, add = [], upd = [], seen = new Set();
+  for (const { r, n } of rows) {
+    try {
+      const f = partyFields({ ...r, kind: kindOf(r.kind) }, c), key = f.name.toLowerCase();
+      if (seen.has(key)) { out.skipped.push({ row: n, name: f.name, why: 'twice in this file' }); continue; }
+      seen.add(key);
+      const old = byName.get(key);
+      if (old) {
+        if (!update) { out.skipped.push({ row: n, name: f.name, why: 'already in your contacts' }); continue; }
+        const sets = [], vals = [];
+        for (const k of ['phone', 'email', 'gstin', 'state', 'address', 'city', 'pincode', 'credit_limit', 'credit_days']) if (filled(r, k)) { sets.push(`${k} = ?`); vals.push(f[k]); }
+        if (sets.length) upd.push(c.db.prepare(`UPDATE parties SET ${sets.join(', ')} WHERE id = ? AND org_id = ?`).bind(...vals, old.id, c.org.id));
+        out.updated++;
+        continue;
+      }
+      const bal = filled(r, 'opening_balance') ? toPaise(num(r.opening_balance, 'Opening balance', { min: -1e12, max: 1e12 })) : 0;
+      if (bal && !money) throw bad('Opening balances need the accounts (finance) right. Ask the owner, or leave that column empty.');
+      add.push({ f, bal });
+    } catch (e) { rowError(out, n, e); }
+  }
+  if (add.length) {
+    const ins = await c.db.batch(add.map(({ f }) => c.db.prepare(`INSERT INTO parties (org_id, name, kind, phone, email, gstin, state, address, credit_limit, credit_days, city, pincode, extra, lang, vip, created_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?) RETURNING id, name`).bind(c.org.id, f.name, f.kind, f.phone, f.email, f.gstin, f.state, f.address, f.credit_limit, f.credit_days, f.city, f.pincode,
+      f.extra ?? cleanExtra(fieldsOf(c.org), 'party', {}), f.lang ?? '', nowIso())));
+    const st = add.flatMap((a, i) => (a.bal ? partyOpeningStatements(c, ins[i].results[0], a.bal, d) : []));
+    await c.db.batch([...st, ...upd, auditStatement(c, 'contacts imported', `${add.length} new${upd.length ? `, ${upd.length} updated` : ''}`)]);
+    out.added = add.length;
+    out.opening = add.filter((a) => a.bal).length;
+  } else if (upd.length) await c.db.batch([...upd, auditStatement(c, 'contacts imported', `${upd.length} updated`)]);
+  return json(out);
+});
+/* customer / supplier / both from what people write in that column (also Hindi words); empty = customer */
+function kindOf(v) {
+  const t = String(v ?? '').trim().toLowerCase();
+  if (!t) return 'customer';
+  if (/both|dono|दोनों/.test(t)) return 'both';
+  if (/supp|vendor|seller|creditor|party.*purchase|विक्रेता|सप्लायर/.test(t)) return 'supplier';
+  if (/cust|buyer|client|debtor|grahak|ग्राहक/.test(t)) return 'customer';
+  return t;
+}
+const roundQ = (q) => Math.round((+q || 0) * 1000) / 1000;
 router.add('POST', '/api/items/:id/codes', async (c) => json(await learnCode(c, +c.params.id, c.body)));
 /* Scanner lookup: barcode, SKU, the printed label code ST<id>, or a code learnt while receiving */
 router.add('GET', '/api/items/lookup', async (c) => {
@@ -917,7 +1029,7 @@ async function docDetail(c, id) {
     total: money(d.total), paid: money(d.paid), balance: money(d.total - d.paid), label: DOC_TYPES[d.type].label, side: DOC_TYPES[d.type].side,
     party: party && { ...party, extra: extraOf(party.extra) }, parent, children: children.results.map((x) => ({ ...x, total: money(x.total) })),
     settlements: pays.results.map((p) => ({ ...p, amount: money(p.amount), number: p.number || p.note_number })), write_offs: wos.results.map(writeOffOut),
-    lines: lines.results.map(({ item_extra, ...l }) => ({ ...l, print_extra: printExtra(defs, 'item', item_extra).map((x) => `${x.label}: ${x.value}`).join(' · '), rate: money(l.rate), taxable: money(l.taxable), cgst: money(l.cgst), sgst: money(l.sgst), igst: money(l.igst),
+    lines: lines.results.map(({ item_extra, ...l }) => ({ ...l, print_extra: printExtra(defs, 'item', item_extra).map((x) => `${x.label}: ${x.value}`).join(' · '), rate: l.rate / 100, taxable: money(l.taxable), cgst: money(l.cgst), sgst: money(l.sgst), igst: money(l.igst),
       total: money(l.total), cost: c.user && !seesCosts(c.user) ? undefined : money(l.cost),
       // a bill booked before its goods came: returns only from what came, receipts from what has not
       remaining: Math.round((d.transit && d.type === 'BILL' ? l.recv_qty - l.done_qty : l.qty - l.done_qty) * 1000) / 1000,

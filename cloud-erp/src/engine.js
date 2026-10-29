@@ -3,7 +3,7 @@
    D1 batch, which runs as a single transaction: it all happens or none of it does.
    Rows created inside a batch are found again through their unique `txk` key. */
 import {
-  HttpError, bad, notFound, str, reqStr, num, date, addDays, nowIso, uid, lineCalc, toPaise, roundQty, today, loadByIds,
+  HttpError, bad, notFound, str, reqStr, num, date, addDays, nowIso, uid, lineCalc, toPaise, roundQty, today, loadByIds, ratePaise, exclOfGst,
   counterStatements, counterValueSql, own,
 } from './lib.js';
 import { requireCan, can, requireCancel, checkBackdate, rulesOf } from './auth.js';
@@ -233,9 +233,11 @@ export async function createDoc(ctx, body) {
     if (raw.item_id && !item) throw bad(`Line ${n}: unknown item.`);
     const qty = roundQty(num(raw.qty, `Line ${n} quantity`, { min: 0.001, max: 1e9 }));
     const fallbackRate = item && !T.note ? (T.side === 'sales' ? item.sale_price : item.purchase_price) : 0;   // notes: the user types the difference
-    let rate = raw.rate === undefined || raw.rate === '' || raw.rate === null ? fallbackRate : toPaise(num(raw.rate, `Line ${n} rate`, { min: 0 }));
+    let rate = raw.rate === undefined || raw.rate === '' || raw.rate === null ? fallbackRate : ratePaise(num(raw.rate, `Line ${n} rate`, { min: 0 }));
     let disc = num(raw.discount_pct, `Line ${n} discount`, { min: 0, max: 100, def: 0 });
     let gst = num(raw.gst_rate, `Line ${n} GST rate`, { min: 0, max: 100, def: item ? item.gst_rate : 0 });
+    // a rate typed with GST in it (MRP billing): the line keeps the rate before GST, so the line total is that price again
+    if ((raw.incl === true || raw.incl === 1) && raw.rate !== undefined && raw.rate !== '' && raw.rate !== null) rate = exclOfGst(rate, gst);
     const desc = str(raw.description, 300) || (item ? item.name : '');
     if (!item && !desc) throw bad(`Line ${n}: choose an item or type a description.`);
     // a role with a discount limit: the price after rate cut and discount stays at or above the item's price less that %
@@ -731,6 +733,28 @@ export async function stockAdjust(ctx, body) {
   st.push(auditStatement(ctx, 'stock adjust', `${item.name} ${qty}`));
   await db.batch(st);
   return { item_id: item.id, qty, value: value / 100 };
+}
+
+/* Opening stock of many new items at once (spreadsheet import): their stock rows and one journal for all of them.
+   list: [{ item, qty, value }], value = total cost in paise. Returns statements for the caller's batch. */
+export async function openingStockStatements(ctx, wh, list, d) {
+  const { db } = ctx;
+  if (!list.length) return [];
+  const S = await lotState(db, ctx.org.id, wh.id, list.map((x) => x.item));
+  const st = [];
+  let total = 0;
+  for (const { item, qty, value } of list) {
+    st.push(...stockStatements(db, ctx, { item: item.id, warehouse: wh.id, qty, value, date: d, refType: 'OPEN', refId: null, note: 'Opening stock (imported)', lots: putIn(S, item, qty) }));
+    total += value;
+  }
+  st.push(...journalStatements(db, ctx, { date: d, narration: `Opening stock: ${list.length} item(s) imported into ${wh.name}`, refType: 'OPEN', refId: null,
+    lines: [D(ctx.sys.inventory, total), C(ctx.sys.opening, total)] }));
+  return st;
+}
+/* Opening balance of a party as statements (amount in paise: > 0 they owe us, < 0 we owe them) */
+export function partyOpeningStatements(ctx, p, amt, d) {
+  const lines = amt > 0 ? [D(ctx.sys.ar, amt, p.id), C(ctx.sys.opening, amt)] : [D(ctx.sys.opening, -amt), C(ctx.sys.ap, -amt, p.id)];
+  return journalStatements(ctx.db, ctx, { date: d, narration: `Opening balance ${p.name}`, refType: 'OPEN', refId: null, lines });
 }
 
 /* Physical stock count (cycle count): the counted quantity of many items in one godown, posted as one
