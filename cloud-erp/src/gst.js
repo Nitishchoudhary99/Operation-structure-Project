@@ -57,10 +57,11 @@ export function einvoiceJson(d) {
   if (problems.length) throw bad('To make the e-invoice, first fill in: ' + problems.join(', ') + '.');
   const sellerSt = stateCode(o.state, o.gstin), buyerSt = stateCode(p.state, p.gstin);
   const items = d.lines.map((l, i) => {
-    const gross = r2(l.qty * l.rate);
+    // NIC takes a unit price with at most 3 decimals; an MRP line's rate has more (lib.js ratePaise)
+    const unit = Math.round(l.rate * 1000) / 1000, gross = r2(l.qty * unit);
     return {
       SlNo: String(i + 1), PrdDesc: cut(l.item || l.description, 300) || 'Item', IsServc: l.is_service ? 'Y' : 'N', HsnCd: String(l.hsn || '').replace(/\D/g, '') || '9999',
-      Qty: l.qty, Unit: uqc(l.unit), UnitPrice: l.rate, TotAmt: gross, Discount: r2(gross - l.taxable), AssAmt: l.taxable, GstRt: l.gst_rate,
+      Qty: l.qty, Unit: uqc(l.unit), UnitPrice: unit, TotAmt: gross, Discount: Math.max(0, r2(gross - l.taxable)), AssAmt: l.taxable, GstRt: l.gst_rate,
       IgstAmt: l.igst, CgstAmt: l.cgst, SgstAmt: l.sgst, CesRt: 0, CesAmt: 0, CesNonAdvlAmt: 0, StateCesRt: 0, StateCesAmt: 0, StateCesNonAdvlAmt: 0,
       OthChrg: 0, TotItemVal: l.total,
     };

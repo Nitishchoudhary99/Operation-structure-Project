@@ -785,6 +785,7 @@ html.in .app-loading { display: block; }
 .landing .logo img { border-radius: 8px; }
 .landing .top nav { display: flex; gap: 16px; flex-wrap: wrap; }
 .landing .top nav a { color: var(--muted); font-weight: 600; font-size: 15px; }
+@media (max-width: 420px) { .landing .top { gap: 8px; } .landing .logo { font-size: 15px; gap: 6px; } .landing .logo img { width: 26px; height: 26px; } .landing .top > .btn { padding: 7px 11px; font-size: 14px; } }
 .landing main { max-width: 1080px; margin: 0 auto; padding: 0 20px 40px; }
 .landing h1 { font-size: clamp(30px, 5vw, 46px); line-height: 1.15; margin: 0 0 14px; }
 .landing h2 { font-size: 26px; margin: 44px 0 16px; }
@@ -854,3 +855,14 @@ html.in .app-loading { display: block; }
 /* Bank Reconciliation Statement */
 .brs td:first-child { white-space: normal; }
 .brs ul { margin: 4px 0 0 18px; padding: 0; color: var(--muted); }
+/* MRP billing box above the bill lines, and the import page's update box */
+label.check.incl-all, #prev label.check { display: inline-flex; align-items: center; gap: 8px; min-height: 40px; font-weight: 500; cursor: pointer; }
+label.check.incl-all { margin: 2px 0 8px; }
+/* Simple mode: the specialist screens under one fold at the end of the menu */
+.nav-more { margin-top: 10px; border-top: 1px solid rgba(255,255,255,.08); padding-top: 6px; }
+.nav-more > summary { list-style: none; cursor: pointer; padding: 9px 10px; border-radius: 8px; color: var(--side-ink); font-size: 14px; display: flex; align-items: center; gap: 8px; }
+.nav-more > summary::-webkit-details-marker { display: none; }
+.nav-more > summary::after { content: "\25BE"; margin-left: auto; transition: transform .15s; }
+.nav-more[open] > summary::after { transform: rotate(180deg); }
+.nav-more > summary span { font-size: 11px; background: rgba(255,255,255,.1); border-radius: 999px; padding: 1px 7px; }
+.nav-more > summary:hover { background: rgba(255,255,255,.06); }

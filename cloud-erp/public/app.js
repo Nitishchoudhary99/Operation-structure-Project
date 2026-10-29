@@ -423,13 +423,30 @@ const NEW_MENU = [['new/INV', 'Sales invoice', 'sales', 'sales/INV'], ['pos', 'Q
   ['receive', 'Receive goods', 'purchase', 'receive'], ['gate/in?new=1', 'Gate entry', 'gate', 'gate/in'], ['receipts?new=1', 'Receive payment', 'finance', 'receipts'],
   ['expenses?new=1', 'Expense', 'finance', 'expenses'], ['khata?new=1', 'Khata entry', 'khata', 'khata'], ['items?new=1', 'Item', 'items', 'items'], ['parties?new=1', 'Customer / supplier', 'masters', 'parties']];
 
+/* Simple mode (the default) keeps the everyday screens in the menu and puts the specialist ones under "More features",
+   one tap away and remembered open. Advanced mode, or a menu the owner made for a user, shows its screens as they are. */
+const EXTRA = new Set(['channels', 'recurring', 'sales/CNOTE', 'purchase/DNOTE', 'claims', 'receive', 'stock-ageing', 'bins', 'expiry', 'serials', 'production', 'putaway',
+  'vaade', 'wa-inbox', 'staff', 'bankrec', 'assets', 'tds', 'accounts', 'journal', 'daybook', 'reports/balance-sheet', 'reports/trial-balance', 'reports/register', 'cash', 'tally']);
+function navHtml() {
+  const groups = NAV.map(([g, all]) => [g, all.filter(([h]) => onMenu(h) && seen(h))]);
+  const fold = simple() && !myUi().screens && jobOf() === 'all';
+  const block = (list) => list.filter(([, it]) => it.length).map(([g, it]) => `${g ? `<div class="nav-group">${g}</div>` : ''}${it.map(([h, t]) => `<a href="#/${h}" data-h="${h}">${t}</a>`).join('')}`).join('');
+  if (!fold) return block(groups);
+  const main = groups.map(([g, it]) => [g, it.filter(([h]) => !EXTRA.has(h))]), more = groups.map(([g, it]) => [g, it.filter(([h]) => EXTRA.has(h))]);
+  const n = more.reduce((k, [, it]) => k + it.length, 0);
+  if (!n) return block(groups);
+  const here = location.hash.replace(/^#\/?/, '').split('?')[0];
+  let open = EXTRA.has(here);
+  try { open = open || localStorage.getItem('st:navmore') === '1'; } catch (e) { /* storage off */ }
+  return block(main) + `<details class="nav-more" id="navmore" ${open ? 'open' : ''}><summary>More features <span>${n}</span></summary>${block(more)}</details>`;
+}
 function shell() {
   // the gate entry is a quick action only for those who do not make bills (guard, godown)
   const news = NEW_MENU.filter(([, , a, h]) => ME.can[a] && onMenu(h) && (h !== 'gate/in' || !onMenu('purchase/BILL')));
   $('#app').innerHTML = `<div class="shell">
     <nav class="side" id="side">
       <div class="brand"><i>&#x2197;</i><span>SmartTrader<small>${esc(ME.org.name)}</small></span></div>
-      ${NAV.map(([g, all]) => { const items = all.filter(([h]) => onMenu(h) && seen(h)); return items.length ? `${g ? `<div class="nav-group">${g}</div>` : ''}${items.map(([h, t]) => `<a href="#/${h}" data-h="${h}">${t}</a>`).join('')}` : ''; }).join('')}
+      ${navHtml()}
       <div class="side-foot"><div class="muted">${esc(ME.user.name)} &middot; ${esc(ME.user.role)}${onMenu('settings') ? '' : ' &middot; <a href="#/settings">My account</a>'}</div>
         <button class="btn sm" id="install" hidden>Install app</button><a class="btn sm" href="https://wa.me/919068446139?text=${encodeURIComponent('Hi, I need help with SmartTrader ERP')}" target="_blank" rel="noopener" title="WhatsApp support: +91 90684 46139">Help</a><button class="btn sm" id="logout">Sign out</button></div>
     </nav>
@@ -446,6 +463,7 @@ function shell() {
       <main class="page" id="page"></main>
     </div></div><div class="scrim" id="scrim"></div>`;
   $('#burger').onclick = () => menu(!$('#side').classList.contains('open'));
+  if ($('#navmore')) $('#navmore').addEventListener('toggle', (e) => { try { localStorage.setItem('st:navmore', e.target.open ? '1' : '0'); } catch (err) { /* storage off */ } });
   $('#scrim').onclick = () => menu(false);
   // a tap on a menu entry closes the menu at once (the slide runs on the GPU while the page loads)
   $('#side').addEventListener('click', (e) => { if (e.target.closest('a[href^="#/"]')) menu(false); });
@@ -481,7 +499,7 @@ function wireSearch() {
   const show = (r, text) => {
     const doc = (d) => `<a href="#/doc/${d.id}"><b>${esc(d.number)}</b> <span class="muted">${esc(d.label)} &middot; ${esc(d.party || '')} &middot; ${inr(d.total)}</span></a>`;
     const party = (p) => `<a href="#/${ME.view && ME.view.masters === false ? 'khata' : 'party'}/${p.id}"><b>${esc(p.name)}</b> <span class="muted">${esc(p.kind)}${p.phone ? ' &middot; ' + esc(p.phone) : ''}</span></a>`;
-    const item = (i) => `<a href="#/item/${i.id}"><b>${esc(i.name)}</b> <span class="muted">${inr(i.sale_price)}${i.is_service ? '' : ` &middot; ${qtyf(i.qty_on_hand)} ${esc(i.unit)} in stock`}</span></a>`;
+    const item = (i) => `<a href="#/item/${i.id}"><b>${esc(i.name)}</b> <span class="muted">${inr(shownPrice(i))}${i.is_service ? '' : ` &middot; ${qtyf(i.qty_on_hand)} ${esc(i.unit)} in stock`}</span></a>`;
     const grp = (t, rows, f) => rows.length ? `<div class="g">${t}</div>${rows.map(f).join('')}` : '';
     const html = grp('Bills & documents', r.docs, doc) + grp('Customers & suppliers', r.parties, party) + grp('Items', r.items, item);
     box.innerHTML = html || `<div class="none">Nothing found for “${esc(text)}”.</div>`;
@@ -770,6 +788,7 @@ route(/^new\/([A-Z]+)$/, async (el, m, q) => {
         : `<input type="hidden" name="warehouse_id" value="${whs[0] ? whs[0].id : ''}">`}
       ${cfInputs('doc', draft.extra || {}, T.side)}
     </div></div>
+    ${isNote ? '' : `<label class="check incl-all"><input type="checkbox" id="inclall" ${(draft.incl ?? (isSale && !draft.lines.some((l) => l.rate) && (inclPref() || items.some((x) => x.price_incl)))) ? 'checked' : ''}> Rates include GST (MRP)</label>`}
     <div class="panel flush"><div class="tbl-wrap"><table class="t lines"><thead><tr><th>Item</th><th>Qty</th><th>${isNote ? 'Rate diff (₹/unit)' : 'Rate (₹)'}</th><th>Disc %</th><th>GST</th><th class="num">Amount</th><th></th></tr></thead>
       <tbody id="lines">${draft.lines.map(lineRow).join('')}</tbody></table></div>
       ${fromDoc ? '' : '<div style="padding:10px"><button type="button" class="btn sm" id="addline">+ Add line</button></div>'}</div>
@@ -800,12 +819,14 @@ route(/^new\/([A-Z]+)$/, async (el, m, q) => {
     if (riskFor === pid) creditBanner();
   };
   if (type === 'INV') { form.elements.party_id.addEventListener('change', loadRisk); if (form.elements.pay_amount) form.elements.pay_amount.addEventListener('input', creditBanner); }
+  const incl = () => !!($('#inclall') && $('#inclall').checked);
   const recalc = () => {
     const p = partyOf(), inter = !!(p && p.state && ME.org.state && p.state.toLowerCase() !== ME.org.state.toLowerCase());
     let taxable = 0, tax = 0;
     $$('tr', tbody).forEach((tr) => {
-      const g = (n) => +($(`[name=${n}]`, tr).value || 0);
-      const t = r2(g('qty') * g('rate') * (1 - g('discount_pct') / 100)), x = r2(t * g('gst_rate') / 100);
+      const g = (n) => +($(`[name=${n}]`, tr).value || 0), base = g('qty') * g('rate') * (1 - g('discount_pct') / 100);
+      // with GST in the rate the line total is the rate itself and the tax is taken out of it
+      const t = incl() ? r2(base * 100 / (100 + g('gst_rate'))) : r2(base), x = incl() ? r2(r2(base) - t) : r2(t * g('gst_rate') / 100);
       taxable += t; tax += x; $('[data-amt]', tr).textContent = inr(t + x);
     });
     const exact = r2(taxable + tax), total = money || isNote || ['SRET', 'PRET'].includes(type) ? Math.round(exact) : exact;
@@ -844,7 +865,7 @@ route(/^new\/([A-Z]+)$/, async (el, m, q) => {
     if (sel) sel.onchange = () => {
       const it = items.find((i) => i.id === +sel.value);
       if (it) {
-        if (!isNote) $('[name=rate]', tr).value = isSale ? it.sale_price : (it.purchase_price || it.avg_cost);
+        if (!isNote) $('[name=rate]', tr).value = isSale ? (incl() ? it.sale_price_incl : it.sale_price) : (it.purchase_price || it.avg_cost);
         $('[name=gst_rate]', tr).value = it.gst_rate;
         $('[name=description]', tr).value = '';
       }
@@ -878,6 +899,17 @@ route(/^new\/([A-Z]+)$/, async (el, m, q) => {
     parties.push(p); const s = form.elements.party_id;
     s.insertAdjacentHTML('beforeend', `<option value="${p.id}">${esc(p.name)}</option>`); s.value = p.id; recalc();
   });
+  // switching the box re-reads each rate the other way (an item's own price, else the typed rate with or without its GST)
+  if ($('#inclall')) $('#inclall').onchange = () => {
+    const on = incl();
+    if (isSale) inclPref(on);
+    $$('tr', tbody).forEach((tr) => {
+      const r = $('[name=rate]', tr); if (!r || r.value === '') return;
+      const it = items.find((i) => i.id === +(($('[name=item_id]', tr) || {}).value || 0)), g = +(($('[name=gst_rate]', tr) || {}).value || 0);
+      r.value = it && isSale ? (on ? it.sale_price_incl : it.sale_price) : r2(on ? +r.value * (100 + g) / 100 : +r.value * 100 / (100 + g));
+    });
+    recalc();
+  };
   recalc(); loadRisk();
   form.onsubmit = async (e) => {
     e.preventDefault();
@@ -885,7 +917,7 @@ route(/^new\/([A-Z]+)$/, async (el, m, q) => {
     const lines = $$('tr', tbody).map((tr) => {
       const g = (n) => { const x = $(`[name=${n}]`, tr); return x ? x.value : ''; };
       return { item_id: +g('item_id') || null, description: g('description'), qty: g('qty'), rate: g('rate'), discount_pct: g('discount_pct'), gst_rate: g('gst_rate'), src_line_id: +g('src_line_id') || undefined,
-        batch_no: g('batch_no'), expiry: g('expiry'), serials: g('serials') };
+        batch_no: g('batch_no'), expiry: g('expiry'), serials: g('serials'), incl: incl() || undefined };
     }).filter((l) => +l.qty > 0 && (!isNote || +l.rate > 0));
     const body = { type, party_id: +f.party_id.value, date: f.date.value, warehouse_id: +f.warehouse_id.value, notes: f.notes.value, lines, ref_id: draft.ref_id, extra: cfRead(form), design: f.design ? f.design.value : '' };
     if (ge) body.gate_entry_id = ge.id;
@@ -1227,7 +1259,7 @@ function partyForm(p = {}, after) {
 route(/^parties$/, async (el, m, q) => {
   const kind = q.get('kind') || '';
   const { rows } = await GET('/api/parties' + (kind ? '?kind=' + kind : ''));
-  el.innerHTML = head('Customers & Suppliers', `<button class="btn primary" id="new">+ New contact</button>`) + `
+  el.innerHTML = head('Customers & Suppliers', `${ME.can.masters ? '<a class="btn" href="#/import/parties">Import from Excel</a>' : ''}<button class="btn primary" id="new">+ New contact</button>`) + `
     <div class="tabs">${[['', 'All'], ['customer', 'Customers'], ['supplier', 'Suppliers']].map(([k, t]) => `<a href="#/parties${k ? '?kind=' + k : ''}" class="${kind === k ? 'on' : ''}">${t}</a>`).join('')}</div>
     ${rows.length > 5 ? '<div class="panel"><input id="search" type="search" placeholder="Search name, mobile, GSTIN…" style="max-width:320px"></div>' : ''}<div class="panel flush" id="list"></div>
     <p class="muted">Dr = they owe you. Cr = you owe them.</p>`;
@@ -1264,10 +1296,19 @@ route(/^party\/(\d+)$/, async (el, m, q) => {
 });
 
 /* ======================================================================= items & stock */
+/* the price a person sees for an item: with GST for an MRP item, else before GST (as on the bill) */
+const shownPrice = (i) => (i.price_incl ? i.sale_price_incl : i.sale_price);
+/* MRP billing: does this shop type prices with GST in them? Remembered from the last new item, else yes when its items do */
+function inclPref(set) {
+  const k = 'st:incl:' + (ME && ME.org ? ME.org.id : '');
+  try { if (set !== undefined) { localStorage.setItem(k, set ? '1' : '0'); return set; } const v = localStorage.getItem(k); if (v !== null) return v === '1'; } catch (e) { /* storage off */ }
+  return !!(cache.items && cache.items.some && cache.items.some((x) => x.price_incl));
+}
 function itemForm(i = {}) {
   modal(i.id ? 'Edit ' + i.name : 'New item', [
     { k: 'name', label: 'Item name', value: i.name, required: true, placeholder: 'e.g. Tata Salt 1kg', wide: true },
-    { k: 'sale_price', label: 'Selling price (₹)', type: 'number', value: i.sale_price, help: 'Price before GST.' },
+    { k: 'sale_price', label: 'Selling price (₹)', type: 'number', value: (i.id ? i.price_incl : inclPref()) ? i.sale_price_incl : i.sale_price, help: 'Tick the box below if this price has GST in it.' },
+    { k: 'price_incl', label: 'Selling price includes GST (MRP)', type: 'checkbox', value: i.id ? !!i.price_incl : inclPref() },
     ...(ME.costs === false ? [] : [{ k: 'purchase_price', label: 'Buying price (₹)', type: 'number', value: i.purchase_price, help: 'Used for profit.' }]),
     { k: 'gst_rate', label: 'GST rate', type: 'select', options: ME.gst_rates.map((g) => ({ v: g, t: g + '%' })), value: i.gst_rate ?? 18 },
     { k: 'unit', label: 'Unit', value: i.unit || 'Pcs', list: 'units', help: 'Pcs, Kg, Box, Litre…' },
@@ -1288,6 +1329,7 @@ function itemForm(i = {}) {
     ...cfModal('item', i.extra),
   ], async (v) => {
     v = splitCf(v);
+    if (!i.id) inclPref(!!v.price_incl);
     if (i.id) await api('PUT', '/api/items/' + i.id, v); else await POST('/api/items', v);
     dirty('items', 'accounts'); toast(i.id ? 'Item saved' : `${v.name} added`); render();
   }, { submit: i.id ? 'Save' : 'Add item' });
@@ -1296,18 +1338,146 @@ route(/^items$/, async (el, m, q) => {
   dirty('items');
   const rows = await master('items');
   const cols = [{ h: 'Item', k: 'name' }, { h: 'SKU', k: 'sku', cls: 'hide-sm' }, { h: 'Category', k: 'category', cls: 'hide-sm' }, { h: 'GST', k: 'gst_rate', f: (r) => r.gst_rate + '%', cls: 'hide-sm' },
-    { h: 'Sale price', k: 'sale_price', num: 1, f: (r) => inr(r.sale_price) }, ...(ME.costs === false ? [] : [{ h: 'Avg cost', k: 'avg_cost', num: 1, f: (r) => inr(r.avg_cost), cls: 'hide-sm' }]),
+    { h: 'Sale price', k: 'sale_price', num: 1, f: (r) => inr(shownPrice(r)) + (r.price_incl ? ' <span class="muted small">incl. GST</span>' : '') }, ...(ME.costs === false ? [] : [{ h: 'Avg cost', k: 'avg_cost', num: 1, f: (r) => inr(r.avg_cost), cls: 'hide-sm' }]),
     { h: 'In stock', k: 'qty_on_hand', num: 1, f: (r) => r.is_service ? '<span class="muted">service</span>' : `${qtyf(r.qty_on_hand)} ${esc(r.unit)}` }, ...(ME.costs === false ? [] : [{ h: 'Value', k: 'stock_value', num: 1, f: (r) => inr(r.stock_value) }]), ...cfCols('item')];
-  el.innerHTML = head('Items', `<button class="btn" id="csv">Export CSV</button><button class="btn primary" id="new">+ New item</button>`) +
+  el.innerHTML = head('Items', `${ME.can.items ? '<a class="btn" href="#/import/items">Import from Excel</a>' : ''}<button class="btn" id="csv">Export CSV</button><button class="btn primary" id="new">+ New item</button>`) +
     `<div class="panel"><input id="search" placeholder="Search items…" style="max-width:320px"></div><div class="panel flush" id="list"></div>`;
   const draw = (f) => { const r = rows.filter((x) => !f || (x.name + ' ' + x.sku + ' ' + x.category + ' ' + Object.values(x.extra || {}).join(' ')).toLowerCase().includes(f));
-    $('#list').innerHTML = table(cols, r, { onRow: true, empty: f ? 'No item matches your search.' : emptyCta('Add the products you sell. Then they come up in bills with price and GST filled in.', ME.can.items ? '<button class="btn primary" data-newitem>+ Add your first item</button>' : '') });
+    $('#list').innerHTML = table(cols, r, { onRow: true, empty: f ? 'No item matches your search.' : emptyCta('Add the products you sell. Then they come up in bills with price and GST filled in.', ME.can.items ? '<button class="btn primary" data-newitem>+ Add your first item</button> <a class="btn" href="#/import/items">Import from Excel</a>' : '') });
     bindRows($('#list'), r, (x) => go('item/' + x.id)); const b = $('[data-newitem]', el); if (b) b.onclick = () => itemForm(); };
   draw('');
   $('#search').oninput = (e) => draw(e.target.value.toLowerCase());
   $('#new').onclick = () => itemForm();
   if (takeNew(q)) itemForm();
   $('#csv').onclick = () => download('items.csv', toCsv(cols.map((c) => ({ ...c })), rows));
+});
+/* ======================================================================= import items / contacts from Excel or CSV
+   The file is read here (CSV, or the first sheet of an .xlsx), its columns matched by name (our template, or the usual headings
+   of Vyapar, myBillBook, Tally and Khatabook exports), and the rows sent 100 at a time. Nothing is saved until Import is tapped. */
+const IMPORT_COLS = {
+  items: [['name', 'Item name', [/^(item|product)\s*name$/, /^name$|^(item|product)$|^particulars?$|^description of goods$/]],
+    ['sale_price', 'Sale price', [/^sales?\s*(price|rate)|^selling\s*(price|rate)/, /mrp/, /^rate$|^price$/]], ['purchase_price', 'Purchase price', [/^purchase\s*(price|rate)/, /cost|buying/]],
+    ['gst_rate', 'GST %', [/^(gst|tax|igst)(\s*rate)?$/, /tax\s*rate|gst\s*rate/]], ['hsn', 'HSN / SAC', [/hsn|sac/]], ['unit', 'Unit', [/^(primary\s*)?unit|uom/]],
+    ['sku', 'Item code', [/^(item\s*)?code$|^sku$/]], ['barcode', 'Barcode', [/barcode|ean|upc/]], ['category', 'Category', [/category|group|brand/]],
+    ['opening_qty', 'Opening stock', [/opening\s*(stock|qty|quantity)/, /^(stock|qty|quantity|closing stock|current stock)( quantity)?$/]],
+    ['opening_rate', 'Opening stock rate', [/opening\s*(stock\s*)?(rate|price|value per)|stock rate|at price/]],
+    ['reorder_level', 'Reorder level', [/reorder|min(imum)?\s*(stock|qty)|low stock/]], ['is_service', 'Service (yes/no)', [/service/]],
+    ['price_incl', 'Price includes GST (yes/no)', [/inclusive|incl(\.|uding)?\s*(of\s*)?(gst|tax)|with tax/]]],
+  parties: [['name', 'Name', [/^(party|customer|supplier|ledger|business)\s*name$/, /^name$|^party$|^customer$|^supplier$|^name of ledger$/]],
+    ['kind', 'Type (customer / supplier / both)', [/^(party\s*)?(type|kind)$/, /group|category/]],
+    ['phone', 'Mobile', [/mobile|phone/, /contact|whatsapp/]], ['email', 'Email', [/e-?mail/]], ['gstin', 'GSTIN', [/gstin|gst\s*(no|number|in)/]],
+    ['state', 'State', [/^state|place of supply/]], ['address', 'Address', [/address/]], ['city', 'City', [/^city|town/]], ['pincode', 'Pincode', [/pin\s*code|^pin$|zip/]],
+    ['credit_limit', 'Credit limit', [/credit\s*limit/]], ['credit_days', 'Credit days', [/credit\s*(days|period)|payment terms/]],
+    ['opening_balance', 'Opening balance (+ they owe you, - you owe them)', [/opening/, /balance|due|outstanding|receivable/]]],
+};
+const IMPORT_SAMPLE = {
+  items: [['Basmati Rice 25kg', 2200, 1800, 5, '1006', 'Bag', 'RICE25', '', 'Grocery', 40, 1800, 10, 'no', 'no'], ['Mustard Oil 15L', 2450, 2100, 5, '1514', 'Tin', '', '8901234567890', 'Grocery', 12, '', 5, 'no', 'yes'],
+    ['Home delivery', 50, '', 18, '9968', 'Nos', '', '', 'Services', '', '', '', 'yes', 'no']],
+  parties: [['Mehta Stores', 'customer', '9123456780', '', '', 'Rajasthan', 'Station Road', 'Jaipur', '302001', 50000, 15, 12500], ['Gupta Wholesale', 'supplier', '9876543210', '', '08ABCDE1234F1Z5', 'Rajasthan', '', 'Jaipur', '', '', 30, -8000]],
+};
+/* CSV text -> rows (quotes, commas or tabs or semicolons inside fields, Windows line ends) */
+function csvParse(text) {
+  const t = text.replace(/^﻿/, ''), first = t.split(/\r?\n/, 1)[0] || '';
+  const sep = [',', '\t', ';'].sort((a, b) => first.split(b).length - first.split(a).length)[0];
+  const rows = []; let row = [], cell = '', q = false;
+  for (let i = 0; i < t.length; i++) {
+    const ch = t[i];
+    if (q) { if (ch === '"') { if (t[i + 1] === '"') { cell += '"'; i++; } else q = false; } else cell += ch; continue; }
+    if (ch === '"' && cell === '') q = true;
+    else if (ch === sep) { row.push(cell); cell = ''; }
+    else if (ch === '\n' || ch === '\r') { if (ch === '\r' && t[i + 1] === '\n') i++; row.push(cell); rows.push(row); row = []; cell = ''; }
+    else cell += ch;
+  }
+  if (cell !== '' || row.length) { row.push(cell); rows.push(row); }
+  return rows;
+}
+/* the heading row is the first row that names at least two known columns; each known column takes the first heading it matches */
+function importMap(kind, rows) {
+  const defs = IMPORT_COLS[kind], norm = (h) => String(h || '').toLowerCase().replace(/[*_.:#()₹%]/g, ' ').replace(/\s+/g, ' ').trim();
+  for (let r = 0; r < Math.min(rows.length, 10); r++) {
+    const heads = rows[r].map(norm), map = {}, used = new Set();
+    for (const [k, , res] of defs) {
+      for (const re of res) { const i = heads.findIndex((h, j) => h && !used.has(j) && re.test(h)); if (i >= 0) { map[k] = i; used.add(i); break; } }
+    }
+    // a price column called MRP has the GST in it, unless the file says otherwise
+    const mrp = kind === 'items' && map.sale_price !== undefined && map.price_incl === undefined && /mrp/.test(heads[map.sale_price]);
+    if (map.name !== undefined && Object.keys(map).length >= 2) return { headRow: r, map, mrp, unused: rows[r].filter((h, j) => String(h).trim() && !used.has(j)) };
+  }
+  return null;
+}
+const money = (v) => String(v ?? '').replace(/[₹,\s]/g, '').replace(/^rs\.?/i, '');
+function importObjects(kind, rows, m) {
+  const out = [];
+  for (let r = m.headRow + 1; r < rows.length; r++) {
+    const o = { _row: r + 1 };
+    // a cell our own exports wrote as text ('=..., '-...) comes back without the apostrophe
+    for (const [k, i] of Object.entries(m.map)) o[k] = String(rows[r][i] ?? '').trim().replace(/^'(?=[=+\-@])/, '');
+    if (!o.name) continue;
+    for (const k of ['sale_price', 'purchase_price', 'opening_rate', 'credit_limit', 'opening_balance']) if (o[k] !== undefined) o[k] = money(o[k]);
+    if (o.gst_rate !== undefined) o.gst_rate = o.gst_rate.replace(/%|gst@?/gi, '').trim();
+    if (o.opening_balance !== undefined && /cr$/i.test(o.opening_balance)) o.opening_balance = '-' + o.opening_balance.replace(/\s*cr$/i, '');
+    if (o.opening_balance !== undefined) o.opening_balance = o.opening_balance.replace(/\s*dr$/i, '');
+    for (const k of ['is_service', 'price_incl']) if (o[k] !== undefined) o[k] = /^(y|yes|1|true|service|inclusive|incl|haan|हाँ)$/i.test(o[k]);
+    if (m.mrp && o.sale_price !== undefined) o.price_incl = true;
+    for (const k of Object.keys(o)) if (o[k] === '') delete o[k];
+    out.push(o);
+  }
+  return out;
+}
+route(/^import\/(items|parties)$/, async (el, m) => {
+  const kind = m[1], items = kind === 'items', defs = IMPORT_COLS[kind];
+  if (!ME.can[items ? 'items' : 'masters']) throw new Error('Your role cannot add ' + (items ? 'items.' : 'contacts.'));
+  const back = items ? '#/items' : '#/parties';
+  el.innerHTML = head(items ? 'Import items from Excel' : 'Import customers & suppliers', `<a class="btn" href="${back}">Back</a>`) + `
+    <div class="panel"><ol class="steps"><li><button class="btn sm" id="tpl">Download the template</button> (CSV, opens in Excel), or use the file you already have: an export from
+      Vyapar, myBillBook, Tally, Khatabook or your own sheet works if it has a <b>${items ? 'Item name' : 'Name'}</b> column.</li>
+      <li>Pick the file below. Nothing is saved until you tap <b>Import</b>.</li></ol>
+      <label class="f wide">Excel or CSV file<input type="file" id="file" accept=".csv,.txt,.tsv,.xlsx,text/csv"></label>
+      <p class="muted small">Columns read: ${defs.map(([, t]) => esc(t)).join(' · ')}.${items ? ' Prices in rupees; GST like 5 or 18.' : ' Opening balance: what they owe you (or write Cr / a minus sign when you owe them).'}</p></div>
+    <div id="prev"></div>`;
+  $('#tpl').onclick = () => download(items ? 'smarttrader-items-template.csv' : 'smarttrader-contacts-template.csv',
+    [defs.map(([, t]) => t), ...IMPORT_SAMPLE[kind]].map((r) => r.map((x) => { const t = String(x); return /[",\r\n]/.test(t) ? `"${t.replace(/"/g, '""')}"` : t; }).join(',')).join('\r\n'));
+  $('#file').onchange = async (e) => {
+    const file = e.target.files[0]; if (!file) return;
+    const box = $('#prev');
+    try {
+      const buf = await file.arrayBuffer();
+      if (/\.xls$/i.test(file.name) && new Uint8Array(buf.slice(0, 2)).join() !== '80,75') throw new Error('This is an old Excel (.xls) file. Open it in Excel and save as .xlsx or CSV, then pick that.');
+      const rows = /\.xlsx$/i.test(file.name) || new Uint8Array(buf.slice(0, 2)).join() === '80,75' ? await xlsxRows(buf) : csvParse(new TextDecoder().decode(buf));
+      const map = importMap(kind, rows);
+      if (!map) throw new Error(`No "${items ? 'Item name' : 'Name'}" column found. Use the template, or name the column with the ${items ? 'item' : 'customer'} names "${items ? 'Item name' : 'Name'}".`);
+      const list = importObjects(kind, rows, map);
+      if (!list.length) throw new Error('The file has headings but no rows under them.');
+      if (list.length > 5000) throw new Error('At most 5,000 rows at a time. Split the file and import it in parts.');
+      const shown = defs.filter(([k]) => map.map[k] !== undefined);
+      box.innerHTML = `<div class="panel"><h3>${list.length} row(s) found</h3>
+          <p class="muted small">Matched: ${shown.map(([, t]) => `<b>${esc(t)}</b>`).join(', ')}${map.unused.length ? ` · not used: ${map.unused.slice(0, 8).map(esc).join(', ')}` : ''}</p>
+          <label class="check"><input type="checkbox" id="upd"> ${items ? 'Items already here: update their price, GST, HSN and unit from the file' : 'Contacts already here: update their mobile, address and GSTIN from the file'}</label>
+          <div class="row" style="margin-top:12px"><button class="btn primary" id="go">Import ${list.length} ${items ? 'item' : 'contact'}${list.length === 1 ? '' : 's'}</button><span class="muted small" id="st"></span></div></div>
+        <div class="panel flush">${table(shown.map(([k, t]) => ({ h: esc(t), f: (r) => esc(r[k] === true ? 'yes' : r[k] === false ? '' : r[k] ?? '') })), list.slice(0, 20))}</div>
+        ${list.length > 20 ? `<p class="muted small">First 20 of ${list.length} rows shown.</p>` : ''}`;
+      $('#go').onclick = async () => {
+        const btn = $('#go'), st = $('#st'), update = $('#upd').checked, tot = { added: 0, updated: 0, opening: 0, skipped: [], errors: [] };
+        btn.disabled = true;
+        try {
+          for (let i = 0; i < list.length; i += 100) {
+            st.textContent = `Saving ${Math.min(i + 100, list.length)} of ${list.length}…`;
+            const r = await POST(`/api/import/${kind}`, { rows: list.slice(i, i + 100), update });
+            tot.added += r.added; tot.updated += r.updated; tot.opening += r.opening || 0; tot.skipped.push(...r.skipped); tot.errors.push(...r.errors);
+          }
+        } catch (err) { tot.errors.push({ row: '-', error: err.message }); }
+        dirty('items', 'parties', 'accounts');
+        const what = items ? 'item' : 'contact';
+        box.innerHTML = `<div class="panel ${tot.errors.length ? 'warnbox' : ''}"><h3>${tot.added} ${what}${tot.added === 1 ? '' : 's'} added${tot.updated ? `, ${tot.updated} updated` : ''}</h3>
+          ${tot.opening ? `<p>${items ? `Opening stock was put in for ${tot.opening} item(s).` : `Opening balance was entered for ${tot.opening} contact(s).`}</p>` : ''}
+          ${tot.skipped.length ? `<p class="muted">${tot.skipped.length} skipped: ${tot.skipped.slice(0, 12).map((x) => `row ${x.row} ${esc(x.name)} (${esc(x.why)})`).join('; ')}${tot.skipped.length > 12 ? '…' : ''}</p>` : ''}
+          ${tot.errors.length ? `<p><b>${tot.errors.length} row(s) not imported</b>, fix them in the file and import it again (rows already added are skipped):</p>
+            <ul>${tot.errors.slice(0, 30).map((x) => `<li>Row ${esc(x.row)}: ${esc(x.error)}</li>`).join('')}</ul>` : ''}
+          <div class="row"><a class="btn primary" href="${back}">Open ${items ? 'items' : 'contacts'}</a></div></div>`;
+        toast(`${tot.added} ${what}(s) added`);
+      };
+    } catch (err) { box.innerHTML = `<div class="err">${esc(err.message)}</div>`; }
+  };
 });
 route(/^item\/(\d+)$/, async (el, m) => {
   dirty('items');
@@ -1318,7 +1488,7 @@ route(/^item\/(\d+)$/, async (el, m) => {
   el.innerHTML = head(esc(it.name), `${it.is_service ? '' : `<a class="btn" href="#/labels/${it.id}">Print barcode labels</a>`}<button class="btn" id="edit">Edit</button><button class="btn danger" id="del">Delete</button>`) + `
     <div class="kpis"><div class="kpi"><div class="l">In stock</div><div class="v">${qtyf(it.qty_on_hand)} ${esc(it.unit)}</div></div>
       <div class="kpi"><div class="l">Average cost</div><div class="v">${inr(it.avg_cost)}</div></div><div class="kpi"><div class="l">Stock value</div><div class="v">${inr(it.stock_value)}</div></div>
-      <div class="kpi"><div class="l">Sale price</div><div class="v">${inr(it.sale_price)}</div><div class="s">GST ${it.gst_rate}% &middot; HSN ${esc(it.hsn)}</div></div></div>
+      <div class="kpi"><div class="l">Sale price${it.price_incl ? ' (incl. GST)' : ''}</div><div class="v">${inr(shownPrice(it))}</div><div class="s">GST ${it.gst_rate}% &middot; HSN ${esc(it.hsn)}</div></div></div>
     ${lots && (lots.bins.length || lots.batches.length) ? `<div class="grid g2">
       ${lots.bins.length ? `<div class="panel flush"><div style="padding:14px 16px 0"><h3>Bins</h3></div>${table([{ h: 'Bin', f: (r) => `<b>${esc(r.code)}</b>${r.code === it.location ? ' <span class="badge">default</span>' : ''}` }, { h: 'Godown', k: 'warehouse' }, { h: 'Qty', num: 1, f: (r) => qtyf(r.qty) }], lots.bins)}</div>` : ''}
       ${lots.batches.length ? `<div class="panel flush"><div style="padding:14px 16px 0"><h3>Batches</h3></div>${table([{ h: 'Batch', k: 'batch_no' }, { h: 'Expiry', f: (r) => (r.expiry ? fdate(r.expiry) : '') },
@@ -4580,7 +4750,7 @@ route(/^pos$/, async (el) => {
           <label class="f">Godown<select id="wh">${whs.map((w) => `<option value="${w.id}">${esc(w.name)}</option>`).join('')}</select></label></div>
           <div class="row" style="margin-top:10px"><input id="scan" class="grow scan" list="pos-items" placeholder="Scan barcode or type item name, then Enter" autocomplete="off" autofocus>
             ${'BarcodeDetector' in window ? '<button class="btn" id="cam" title="Scan with camera">📷 Camera</button>' : ''}</div>
-          <datalist id="pos-items">${items.map((i) => `<option value="${esc(i.name)}">${esc(labelCode(i))} · ${inr(i.sale_price)}</option>`).join('')}</datalist></div>
+          <datalist id="pos-items">${items.map((i) => `<option value="${esc(i.name)}">${esc(labelCode(i))} · ${inr(shownPrice(i))}</option>`).join('')}</datalist></div>
         <div class="panel flush" id="cart"></div>
       </div>
       <div class="panel pos-pay">
@@ -4596,7 +4766,8 @@ route(/^pos$/, async (el) => {
 `;
   const totals = () => {
     let taxable = 0, tax = 0;
-    for (const l of cart) { const t = r2(l.qty * l.rate); taxable += t; tax += r2(t * l.gst_rate / 100); }
+    // an MRP item's rate has its GST in it: the line costs qty x rate, and the tax is taken out of that
+    for (const l of cart) { const g = r2(l.qty * l.rate), t = l.incl ? r2(g * 100 / (100 + l.gst_rate)) : g; taxable += t; tax += l.incl ? r2(g - t) : r2(t * l.gst_rate / 100); }
     return { taxable, tax, total: Math.round(taxable + tax) };
   };
   const draw = () => {
@@ -4625,7 +4796,7 @@ route(/^pos$/, async (el) => {
     if (!it) { try { it = await GET('/api/items/lookup?code=' + encodeURIComponent(code)); } catch (e) { toast(e.message); beep(false); return; } }
     const line = cart.find((l) => l.item_id === it.id), n = it.pack_qty || 1;     // a carton code counts its pieces
     if (line) line.qty = r2(line.qty + n);
-    else cart.push({ item_id: it.id, name: it.name, code: labelCode(it), qty: n, rate: it.sale_price, gst_rate: it.gst_rate, stock: it.qty_on_hand, unit: it.unit });
+    else cart.push({ item_id: it.id, name: it.name, code: labelCode(it), qty: n, rate: it.price_incl ? it.sale_price_incl : it.sale_price, incl: !!it.price_incl, gst_rate: it.gst_rate, stock: it.qty_on_hand, unit: it.unit });
     beep(true); draw();
   };
   const scan = $('#scan');
@@ -4658,7 +4829,7 @@ route(/^pos$/, async (el) => {
     if (!lines.length) return toast('The bill is empty.');
     const t = totals(), btn = $('#done'); btn.disabled = true; $('#perr').hidden = true;
     const body = { type: 'INV', party_id: +$('#cust').value, warehouse_id: +$('#wh').value, date: ME.today, notes: 'POS sale', extra: cfRead($('.pos-pay')),
-      lines: lines.map((l) => ({ item_id: l.item_id, qty: l.qty, rate: l.rate, gst_rate: l.gst_rate })) };
+      lines: lines.map((l) => ({ item_id: l.item_id, qty: l.qty, rate: l.rate, gst_rate: l.gst_rate, incl: l.incl || undefined })) };
     if (method !== 'credit') body.payment = { amount: Math.min(+$('#recv').value || t.total, t.total), account_id: acc(method === 'upi' ? 'upi' : method === 'bank' ? 'bank' : 'cash') };
     body.credit_ok = false;
     const save = async () => {
@@ -4737,7 +4908,7 @@ route(/^labels\/(\d+)$/, async (el, m, q) => {
   const n = Math.min(200, Math.max(1, +q.get('n') || 24)), code = labelCode(it);
   el.innerHTML = head(`Labels: ${esc(it.name)}`, `<form class="row" id="lf"><input name="n" type="number" min="1" max="200" value="${n}" aria-label="Number of labels" style="width:90px"><button class="btn">Update</button></form><button class="btn primary" data-act="print">Print labels</button>`) +
     `<p class="muted no-print">Code <b>${esc(code)}</b>. ${it.barcode || it.sku ? '' : 'This item has no barcode, so the label uses its built-in code; the POS screen recognises it.'} Use A4 label sheets or a label printer.</p>
-    <div class="labels">${Array.from({ length: n }, () => `<div class="label"><div class="ln">${esc(it.name)}</div><svg class="bc"></svg><div class="lp">MRP ${inr(it.sale_price)}</div></div>`).join('')}</div>`;
+    <div class="labels">${Array.from({ length: n }, () => `<div class="label"><div class="ln">${esc(it.name)}</div><svg class="bc"></svg><div class="lp">MRP ${inr(it.sale_price_incl ?? it.sale_price)}</div></div>`).join('')}</div>`;
   $('#lf').onsubmit = (e) => { e.preventDefault(); go(`labels/${it.id}?n=${e.target.n.value}`); };
   await loadScript('/vendor/JsBarcode.all.min.js');
   window.JsBarcode('.labels .bc', code, { format: 'CODE128', width: 1.3, height: 34, fontSize: 11, margin: 0, textMargin: 1 });

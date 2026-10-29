@@ -67,6 +67,10 @@ export function round2(x) {               // Excel-style ROUND(x, 2): exact halv
 export const toPaise = (rupees) => Math.round(round2(Number(rupees) || 0) * 100);
 export const toRupees = (p) => Math.round(p) / 100;
 export const roundQty = (q) => Math.round(q * 1000) / 1000;
+/* A rate in paise kept to a hundredth of a paisa, so a price with GST in it (MRP) comes back exactly: Rs 10 with 18% GST is
+   847.4576 paise before tax, and 240 of them are Rs 2,400.00 again, not Rs 2,399.88. */
+export const ratePaise = (rupees) => Math.round(Number(rupees) * 1e6) / 1e4;
+export const exclOfGst = (paise, gst) => (gst > 0 ? Math.round(paise * 100 / (100 + gst) * 1e4) / 1e4 : paise);
 
 /* GST on one line. rate in paise per unit, discount and gst in percent.
    CGST + SGST always add up exactly to the line tax (no paisa lost to rounding). */
