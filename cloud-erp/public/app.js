@@ -153,9 +153,10 @@ function table(cols, rows, { onRow, foot, empty = 'Nothing here yet.' } = {}) {
 function bindRows(el, rows, fn) {
   $$('tr.click', el).forEach((tr) => tr.addEventListener('click', (e) => { if (!e.target.closest('a,button')) fn(rows[+tr.dataset.i]); }));
 }
-function download(name, text) {
+function download(name, text, type = 'text/csv') {
   const a = document.createElement('a');
-  a.href = URL.createObjectURL(new Blob(['﻿' + text], { type: 'text/csv' }));
+  // the BOM tells Excel the CSV is UTF-8; other files (the GSTR-1 JSON) must go out exactly as they are
+  a.href = URL.createObjectURL(new Blob([type === 'text/csv' ? '﻿' + text : text], { type }));
   a.download = name; a.click(); setTimeout(() => URL.revokeObjectURL(a.href), 1000);
 }
 
@@ -360,7 +361,7 @@ const simple = () => !ME || (ME.org.mode || 'simple') !== 'advanced';
 const navArea = (h) => /^(receipts|payments|expenses|accounts|journal|staff|bankrec|assets|tds)$/.test(h) ? 'finance' : /^(sales\/|pos$|recurring$|channels$)/.test(h) ? 'sales' : /^(purchase\/|receive$)/.test(h) ? 'purchase'
   : /^gate\/in$/.test(h) ? ['purchase', 'gate'] : /^gate\/out$/.test(h) ? ['items', 'gate'] : h === 'claims' ? ['purchase', 'finance'] : h === 'wa-inbox' ? ['sales', 'khata', 'finance']
   : /^(items|stock|stockcount|pending|bins|expiry|stock-ageing|serials|production|wave|putaway)$/.test(h) ? 'items' : /^(parties|reminders)$/.test(h) ? 'masters' : /^(khata|vaade)$/.test(h) ? 'khata'
-  : /^(reports\/|tally$|daybook$)/.test(h) ? 'reports' : h === 'plan' ? 'settings' : '';
+  : /^(reports\/|tally$|daybook$|gstr$)/.test(h) ? 'reports' : h === 'plan' ? 'settings' : '';
 const seen = (h) => {
   if (h === 'cash') return !ME.view || ME.view.finance !== false || ME.view.reports !== false;
   if (h === 'wa-inbox' && !(ME.wa_bot && ME.org.wa_bot)) return false;      // only once the shop turned the bot on
@@ -376,7 +377,7 @@ const JOBS = {
     'production', 'stockcount', 'wave', 'pending', 'gate/out', 'stock-ageing', 'claims'] },
   gate: { t: 'Gate / security guard', home: 'gate/in', screens: ['gate/in', 'gate/out'] },
   accounts: { t: 'Accountant', home: 'dashboard', screens: ['dashboard', 'sales/INV', 'sales/SRET', 'sales/CNOTE', 'receipts', 'purchase/BILL', 'purchase/PRET', 'purchase/DNOTE', 'payments',
-    'parties', 'khata', 'reminders', 'vaade', 'staff', 'expenses', 'bankrec', 'assets', 'tds', 'accounts', 'journal', 'daybook', 'reports/pnl', 'reports/balance-sheet', 'reports/trial-balance', 'reports/gst', 'reports/ageing',
+    'parties', 'khata', 'reminders', 'vaade', 'staff', 'expenses', 'bankrec', 'assets', 'tds', 'accounts', 'journal', 'daybook', 'reports/pnl', 'reports/balance-sheet', 'reports/trial-balance', 'reports/gst', 'gstr', 'reports/ageing',
     'reports/register', 'cash', 'tally', 'claims', 'wa-inbox'] },
   sales: { t: 'Salesman', home: 'sales/INV', screens: ['dashboard', 'pos', 'sales/INV', 'sales/QUOTE', 'sales/SO', 'sales/DN', 'sales/SRET', 'receipts', 'channels', 'recurring', 'parties', 'khata',
     'reminders', 'vaade', 'items', 'stock', 'wa-inbox'] },
@@ -414,7 +415,7 @@ const NAV = [
   ['Inventory', [['items', 'Items'], ['stock', 'Stock & Godowns'], ['stock-ageing', 'Stock Ageing'], ['bins', 'Bins & Racks'], ['expiry', 'Batch & Expiry'], ['serials', 'Serial / IMEI'], ['production', 'Production (BOM)'], ['wave', 'Wave Pick List'], ['stockcount', 'Stock Count'], ['gate/out', 'Gate Pass (outward)'], ['pending', 'Pending Orders']]],
   ['Contacts', [['parties', 'Customers & Suppliers'], ['khata', 'Khata Book'], ['reminders', 'Vasooli (Collections)'], ['vaade', 'Vaade (Promises)'], ['wa-inbox', 'WhatsApp Inbox']]],
   ['Accounts', [['staff', 'Staff & Salary'], ['expenses', 'Expenses'], ['bankrec', 'Bank Reconciliation'], ['assets', 'Fixed Assets'], ['tds', 'TDS'], ['accounts', 'Chart of Accounts'], ['journal', 'Journal Voucher'], ['daybook', 'Day Book']]],
-  ['Reports', [['reports/pnl', 'Profit & Loss'], ['reports/balance-sheet', 'Balance Sheet'], ['reports/trial-balance', 'Trial Balance'], ['reports/gst', 'GST Summary'], ['reports/ageing', 'Outstanding (Ageing)'], ['reports/register', 'Registers'], ['cash', 'Kal ka Cash'], ['tally', 'Tally Export']]],
+  ['Reports', [['reports/pnl', 'Profit & Loss'], ['reports/balance-sheet', 'Balance Sheet'], ['reports/trial-balance', 'Trial Balance'], ['reports/gst', 'GST Summary'], ['gstr', 'GST Returns (GSTR-1, 2B)'], ['reports/ageing', 'Outstanding (Ageing)'], ['reports/register', 'Registers'], ['cash', 'Kal ka Cash'], ['tally', 'Tally Export']]],
   ['Settings', [['settings', 'Settings'], ['plan', 'Plan & Billing']]],
 ];
 
@@ -1433,7 +1434,10 @@ route(/^import\/(items|parties)$/, async (el, m) => {
       Vyapar, myBillBook, Tally, Khatabook or your own sheet works if it has a <b>${items ? 'Item name' : 'Name'}</b> column.</li>
       <li>Pick the file below. Nothing is saved until you tap <b>Import</b>.</li></ol>
       <label class="f wide">Excel or CSV file<input type="file" id="file" accept=".csv,.txt,.tsv,.xlsx,text/csv"></label>
-      <p class="muted small">Columns read: ${defs.map(([, t]) => esc(t)).join(' · ')}.${items ? ' Prices in rupees; GST like 5 or 18.' : ' Opening balance: what they owe you (or write Cr / a minus sign when you owe them).'}</p></div>
+      <p class="small"><b>Columns can be in any order.</b> Keep the headings in one row at the top: each column is found by its heading, not its place.
+        Only <b>${esc(defs[0][1])}</b> is needed; every other column is optional.<br>
+        <span lang="hi">कॉलम किसी भी क्रम में रखें। सबसे ऊपर एक लाइन में हेडिंग हो, हर कॉलम उसकी हेडिंग से पहचाना जाता है। सिर्फ़ <b>${esc(defs[0][1])}</b> ज़रूरी है, बाकी कॉलम न हों तो भी चलेगा।</span></p>
+      <p class="muted small">Headings we read: <b>${esc(defs[0][1])}</b> (needed) · ${defs.slice(1).map(([, t]) => esc(t)).join(' · ')}.${items ? ' Prices in rupees; GST like 5 or 18.' : ' Opening balance: what they owe you (or write Cr / a minus sign when you owe them).'}</p></div>
     <div id="prev"></div>`;
   $('#tpl').onclick = () => download(items ? 'smarttrader-items-template.csv' : 'smarttrader-contacts-template.csv',
     [defs.map(([, t]) => t), ...IMPORT_SAMPLE[kind]].map((r) => r.map((x) => { const t = String(x); return /[",\r\n]/.test(t) ? `"${t.replace(/"/g, '""')}"` : t; }).join(',')).join('\r\n'));
@@ -1449,9 +1453,11 @@ route(/^import\/(items|parties)$/, async (el, m) => {
       const list = importObjects(kind, rows, map);
       if (!list.length) throw new Error('The file has headings but no rows under them.');
       if (list.length > 5000) throw new Error('At most 5,000 rows at a time. Split the file and import it in parts.');
-      const shown = defs.filter(([k]) => map.map[k] !== undefined);
+      const shown = defs.filter(([k]) => map.map[k] !== undefined), absent = defs.filter(([k]) => map.map[k] === undefined && !(k === 'price_incl' && map.mrp));
       box.innerHTML = `<div class="panel"><h3>${list.length} row(s) found</h3>
           <p class="muted small">Matched: ${shown.map(([, t]) => `<b>${esc(t)}</b>`).join(', ')}${map.unused.length ? ` · not used: ${map.unused.slice(0, 8).map(esc).join(', ')}` : ''}</p>
+          ${absent.length ? `<p class="muted small">Not in your file: ${absent.map(([, t]) => esc(t)).join(', ')}. New ${items ? 'items' : 'contacts'} get these blank, ${items ? 'items' : 'contacts'} already here keep theirs.
+            If one of them is in your file under another heading, rename that heading to the one shown and pick the file again.</p>` : ''}
           <label class="check"><input type="checkbox" id="upd"> ${items ? 'Items already here: update their price, GST, HSN and unit from the file' : 'Contacts already here: update their mobile, address and GSTIN from the file'}</label>
           <div class="row" style="margin-top:12px"><button class="btn primary" id="go">Import ${list.length} ${items ? 'item' : 'contact'}${list.length === 1 ? '' : 's'}</button><span class="muted small" id="st"></span></div></div>
         <div class="panel flush">${table(shown.map(([k, t]) => ({ h: esc(t), f: (r) => esc(r[k] === true ? 'yes' : r[k] === false ? '' : r[k] ?? '') })), list.slice(0, 20))}</div>
@@ -1625,8 +1631,8 @@ route(/^production$/, async (el) => {
 /* ======================================================================= online orders: Amazon, Flipkart, Meesho */
 /* .xlsx in the browser: unzip (the browser's own inflate) and read the first sheet, so a seller can pick the Excel
    file the marketplace gives them without converting it first */
-async function xlsxRows(buf) {
-  if (typeof DecompressionStream === 'undefined') throw new Error('This browser cannot open Excel files. Save the report as CSV in Excel and pick that file.');
+async function unzipFiles(buf) {
+  if (typeof DecompressionStream === 'undefined') throw new Error('This browser cannot open Excel or zip files. Save the report as CSV in Excel and pick that file.');
   const u8 = new Uint8Array(buf), dv = new DataView(buf);
   let eocd = -1;
   for (let i = u8.length - 22; i >= Math.max(0, u8.length - 66000); i--) if (dv.getUint32(i, true) === 0x06054b50) { eocd = i; break; }
@@ -1645,9 +1651,22 @@ async function xlsxRows(buf) {
     const out = await new Response(new Blob([raw]).stream().pipeThrough(new DecompressionStream('deflate-raw'))).arrayBuffer();
     return new TextDecoder().decode(out);
   };
+  return { names: [...files.keys()], read };
+}
+/* rows of the first sheet, or of the sheet whose name matches `named` (null when there is none) */
+async function xlsxRows(buf, named) {
+  const { names, read } = await unzipFiles(buf);
   const X = (t) => new DOMParser().parseFromString(t, 'application/xml');
   const ss = [...X(await read('xl/sharedStrings.xml')).getElementsByTagName('si')].map((si) => [...si.getElementsByTagName('t')].map((t) => t.textContent).join(''));
-  const sheet = [...files.keys()].filter((k) => /^xl\/worksheets\/sheet\d+\.xml$/.test(k)).sort((a, b) => parseInt(a.match(/\d+/)[0], 10) - parseInt(b.match(/\d+/)[0], 10))[0];
+  let sheet = names.filter((k) => /^xl\/worksheets\/sheet\d+\.xml$/.test(k)).sort((a, b) => parseInt(a.match(/\d+/)[0], 10) - parseInt(b.match(/\d+/)[0], 10))[0];
+  if (named) {
+    const s = [...X(await read('xl/workbook.xml')).getElementsByTagName('sheet')].find((x) => named.test((x.getAttribute('name') || '').trim()));
+    const id = s && (s.getAttribute('r:id') || s.getAttributeNS('http://schemas.openxmlformats.org/officeDocument/2006/relationships', 'id'));
+    const rel = id && [...X(await read('xl/_rels/workbook.xml.rels')).getElementsByTagName('Relationship')].find((r) => r.getAttribute('Id') === id);
+    if (!rel) return null;
+    const t = rel.getAttribute('Target');
+    sheet = t.startsWith('/') ? t.slice(1) : 'xl/' + t.replace(/^\.\//, '');
+  }
   if (!sheet) throw new Error('No sheet found in this Excel file.');
   const col = (ref) => [...ref.replace(/\d+/g, '')].reduce((n, ch) => n * 26 + ch.charCodeAt(0) - 64, 0) - 1;
   return [...X(await read(sheet)).getElementsByTagName('row')].map((r) => {
@@ -3107,6 +3126,158 @@ route(/^daybook$/, async (el, m, q) => {
 const periodBar = (d, extra = '') => `<div class="panel no-print"><form class="row" id="per">${d.from ? `<label class="f">From<input type="date" name="from" value="${d.from}"></label>` : ''}
   <label class="f">${d.from ? 'To' : 'As on'}<input type="date" name="to" aria-label="To date" value="${d.to || d.as_of || ME.today}"></label>${extra}<label class="f">&nbsp;<button class="btn">Show</button></label>
   <span class="spacer"></span><label class="f">&nbsp;<span class="row"><button type="button" class="btn" id="csv">CSV</button><button type="button" class="btn" data-act="print">Print</button></span></label></form></div>`;
+/* ======================================================================= GST returns (src/gstr.js)
+   GSTR-1: the file the GST portal takes (Returns → GSTR-1 → Prepare offline → Upload), and the GSTR-3B figures.
+   GSTR-2B: the file the user downloads from the portal is read on this device and matched with the purchase bills.
+   Nothing is filed from the app. */
+const monthBefore = (t) => new Date(Date.UTC(+t.slice(0, 4), +t.slice(5, 7) - 2, 1)).toISOString().slice(0, 7);
+const ymdOf = (s) => { const m = String(s || '').trim().match(/^(\d{1,2})[-/.](\d{1,2})[-/.](\d{4})$/); return m ? `${m[3]}-${m[2].padStart(2, '0')}-${m[1].padStart(2, '0')}` : ''; };
+const excelDay = (v) => { const s = String(v ?? '').trim(); return /^\d{5}(\.\d+)?$/.test(s) ? new Date(Date.UTC(1899, 11, 30) + Math.floor(+s) * 864e5).toISOString().slice(0, 10) : ymdOf(s); };
+/* GSTR-2B JSON: data.docdata.b2b[].inv[] and cdnr[].nt[], amounts per rate in items[] (older 2A-style files: itms[].itm_det) */
+function twoBFromJson(j) {
+  const d = (j && j.data) || j || {}, dd = d.docdata || {}, rows = [];
+  const tot = (v, k, old) => (v.items ? v.items.reduce((t, x) => t + (+x[k] || 0), 0) : v.itms ? v.itms.reduce((t, x) => t + (+(x.itm_det || {})[old] || 0), 0) : +v[k] || 0);
+  const take = (s, v, kind, num) => rows.push({ kind, gstin: s.ctin, name: s.trdnm || '', num: String(num || ''), date: ymdOf(v.dt || v.idt || v.nt_dt), val: +v.val || 0,
+    txval: tot(v, 'txval', 'txval'), igst: tot(v, 'igst', 'iamt'), cgst: tot(v, 'cgst', 'camt'), sgst: tot(v, 'sgst', 'samt'), cess: tot(v, 'cess', 'csamt'),
+    itc: v.itcavl !== 'N', rcm: v.rev === 'Y' || v.rchrg === 'Y', rsn: v.rsn || '' });
+  for (const k of ['b2b', 'b2ba']) for (const s of dd[k] || []) for (const v of s.inv || []) take(s, v, 'inv', v.inum);
+  for (const k of ['cdnr', 'cdnra']) for (const s of dd[k] || []) for (const v of s.nt || []) take(s, v, (v.typ || v.ntty) === 'D' ? 'dn' : 'cn', v.ntnum || v.nt_num);
+  if (!rows.length && !d.docdata) throw new Error('This is not a GSTR-2B file. On the GST portal open GSTR-2B for the month and tap Download.');
+  const rp = String(d.rtnprd || '');
+  return { rows, month: /^\d{6}$/.test(rp) ? `${rp.slice(2)}-${rp.slice(0, 2)}` : '' };
+}
+/* GSTR-2B Excel: sheets B2B and B2B-CDNR; the headings take two rows (a group such as "Invoice details" over the column names) */
+async function twoBFromExcel(buf) {
+  const rows = [];
+  for (const [named, cn] of [[/^b2b$/i, false], [/^b2b[\s-]*cdnr$/i, true]]) {
+    const grid = await xlsxRows(buf, named);
+    if (!grid) continue;
+    const h = grid.findIndex((r) => r.some((c) => /gstin of supplier/i.test(c)));
+    if (h < 0) continue;
+    const top = grid[h], sub = grid[h + 1] || [], label = (i) => `${top[i] || ''} ${sub[i] || ''}`.toLowerCase(), col = {};
+    const want = { gstin: /gstin of supplier/, name: /trade\/legal name/, num: /(invoice|note) number/, type: /note type/, date: /(invoice|note) date/, val: /(invoice|note) value/,
+      txval: /taxable value/, igst: /integrated tax/, cgst: /central tax/, sgst: /state\/ut tax/, cess: /cess/, itc: /itc availability/, rcm: /reverse charge/, rsn: /reason/ };
+    for (const [k, re] of Object.entries(want)) for (let i = 0; i < Math.max(top.length, sub.length); i++) if (col[k] === undefined && re.test(label(i))) col[k] = i;
+    if (col.gstin === undefined || col.num === undefined) continue;
+    const by = new Map(), cell = (r, k) => (col[k] === undefined ? '' : String(r[col[k]] ?? '').trim()), amt = (r, k) => +cell(r, k).replace(/[,₹\s]/g, '') || 0;
+    for (const r of grid.slice(h + 2)) {
+      const g = cell(r, 'gstin').toUpperCase();
+      if (!/^\d{2}[A-Z0-9]{13}$/.test(g)) continue;
+      const k = g + '|' + cell(r, 'num');
+      if (!by.has(k)) by.set(k, { kind: cn ? (/debit/i.test(cell(r, 'type')) ? 'dn' : 'cn') : 'inv', gstin: g, name: cell(r, 'name'), num: cell(r, 'num'), date: excelDay(cell(r, 'date')),
+        val: amt(r, 'val'), txval: 0, igst: 0, cgst: 0, sgst: 0, cess: 0, itc: !/^n/i.test(cell(r, 'itc')), rcm: /^y/i.test(cell(r, 'rcm')), rsn: cell(r, 'rsn') });
+      const x = by.get(k);
+      for (const f of ['txval', 'igst', 'cgst', 'sgst', 'cess']) x[f] += amt(r, f);       // one row per rate: add them up
+    }
+    rows.push(...by.values());
+  }
+  if (!rows.length) throw new Error('No supplier bills found in this Excel file. Pick the GSTR-2B Excel from the GST portal (it has a sheet named B2B).');
+  return { rows, month: '' };
+}
+async function read2b(file) {
+  const buf = await file.arrayBuffer(), u8 = new Uint8Array(buf);
+  if (u8[0] === 0x50 && u8[1] === 0x4b) {                    // a zip: the Excel workbook, or the JSON zipped by the portal
+    const z = await unzipFiles(buf), name = z.names.find((n) => /\.json$/i.test(n));
+    if (!name) return twoBFromExcel(buf);
+    return twoBFromJson(JSON.parse((await z.read(name)).replace(/^﻿/, '')));
+  }
+  let j;
+  try { j = JSON.parse(new TextDecoder().decode(buf).replace(/^﻿/, '')); } catch (e) { throw new Error('This is not a GSTR-2B file. Pick the JSON or Excel you downloaded from the GST portal.'); }
+  return twoBFromJson(j);
+}
+let gstr2bLast = null;          // the 2B read last, so changing tabs or months does not ask for the file again
+const G2B_STATUS = { diff: ['Amount differs', 'b-overdue'], missing_books: ['Not in your bills', 'b-unpaid'], missing_2b: ['Not in 2B', 'b-pending'], number: ['Bill no. differs', 'b-partial'], ok: ['Matched', 'b-paid'] };
+route(/^gstr$/, async (el, m, q) => {
+  const tab = q.get('tab') === '2b' ? '2b' : '1', month = /^\d{4}-(0[1-9]|1[0-2])$/.test(q.get('month') || '') ? q.get('month') : monthBefore(ME.today);
+  const quarterly = tab === '1' && q.get('quarterly') === '1', qs = `month=${month}${quarterly ? '&quarterly=1' : ''}`;
+  el.innerHTML = head('GST Returns') + `<div class="tabs"><a href="#/gstr?tab=1&month=${month}" class="${tab === '1' ? 'on' : ''}">GSTR-1 (sales)</a>
+      <a href="#/gstr?tab=2b&month=${month}" class="${tab === '2b' ? 'on' : ''}">GSTR-2B match (purchase credit)</a></div>
+    <form class="panel row" id="gpf"><label class="f">Month<input type="month" name="month" value="${month}" max="${ME.today.slice(0, 7)}"></label>
+      ${tab === '1' ? `<label class="check"><input type="checkbox" name="quarterly" ${quarterly ? 'checked' : ''}> Quarterly filer (QRMP): the 3 months ending here</label>` : ''}
+      <button class="btn">Show</button></form><div id="gbox"></div>`;
+  $('#gpf').onsubmit = (e) => { e.preventDefault(); const f = e.target; go(`gstr?tab=${tab}&month=${f.month.value}${f.quarterly && f.quarterly.checked ? '&quarterly=1' : ''}`); };
+  const box = $('#gbox');
+  if (tab === '1') {
+    const g = await GET(`/api/gst/gstr1?${qs}`), T = g.tables, b = g.b3, stop = g.problems.some((x) => x.stop);
+    const sumRow = (t, x) => ({ t, n: x.n, txval: x.txval, tax: x.tax });
+    box.innerHTML = `${g.problems.length ? `<div class="panel warnbox"><h3 style="margin-top:0">Fix before filing</h3><ul>${g.problems.map((x) => `<li>${esc(x.text)}</li>`).join('')}</ul></div>` : ''}
+      <div class="panel flush"><div style="padding:14px 16px 0"><h3 style="margin:0">GSTR-1 · ${quarterly ? 'quarter ending ' : ''}${monthName(month)}</h3><p class="muted small">${fdate(g.from)} – ${fdate(g.to)} · GSTIN ${esc(g.gstin || 'not set')}</p></div>
+        ${table([{ h: 'Table', k: 't' }, { h: 'Count', num: 1, k: 'n' }, { h: 'Taxable value', num: 1, f: (r) => inr(r.txval) }, { h: 'Tax', num: 1, f: (r) => inr(r.tax) }], [
+          sumRow('4A · B2B: customers with a GSTIN', T.b2b), sumRow('5 · B2C large: other state, above ₹1 lakh', T.b2cl), sumRow('7 · B2C others (one row per state and rate)', T.b2cs),
+          sumRow('9B · Credit notes to registered customers', T.cdnr), sumRow('9B · Credit notes, unregistered (B2C large)', T.cdnur)])}
+        <p class="small" style="padding:0 16px">8 · Nil rated: <b>${inr(T.nil)}</b> &middot; 12 · HSN summary: <b>${T.hsn}</b> row(s) &middot; 13 · Documents: <b>${T.docs.issued}</b> issued, ${T.docs.cancelled} cancelled</p>
+        <div class="row" style="padding:0 16px 14px"><button class="btn primary" id="g1json" ${stop ? 'disabled' : ''}>Download GSTR-1 file (.json)</button><button class="btn" id="g1xls">Excel for your CA</button></div></div>
+      <div class="panel"><h3 style="margin-top:0">How to file</h3><ol class="steps small"><li>On <b>gst.gov.in</b>: Returns → Returns Dashboard → pick the month → GSTR-1 → <b>Prepare offline</b> → Upload → choose this file.</li>
+        <li>After a few minutes the portal shows "Processed": check the summary there, then <b>File</b> with OTP or DSC.</li></ol>
+        <p class="small" lang="hi">GST पोर्टल पर Returns → GSTR-1 → Prepare offline → Upload में यह फ़ाइल चुनें। कुछ मिनट बाद पोर्टल पर सारांश जाँचें और OTP से फ़ाइल करें।</p>
+        <p class="muted small">Invoices with an e-invoice (IRN) are already filled in on the portal; uploading them again is fine.</p></div>
+      <div class="panel flush"><div style="padding:14px 16px 0"><h3 style="margin:0">For GSTR-3B (same period)</h3><p class="muted small">Type these in GSTR-3B. Take only the input credit your GSTR-2B shows: <a href="#/gstr?tab=2b&month=${month}">match it</a>.</p></div>
+        ${table([{ h: 'Table', k: 't' }, { h: 'Taxable value', num: 1, f: (r) => (r.v === '' ? '' : inr(r.v)) }, { h: 'IGST', num: 1, f: (r) => (r.i === '' ? '' : inr(r.i)) }, { h: 'CGST', num: 1, f: (r) => (r.c === '' ? '' : inr(r.c)) }, { h: 'SGST', num: 1, f: (r) => (r.s === '' ? '' : inr(r.s)) }], [
+          { t: '3.1(a) Outward taxable supplies', v: b.outward.txval, i: b.outward.igst, c: b.outward.cgst, s: b.outward.sgst }, { t: '3.1(c) Nil rated', v: b.nil, i: '', c: '', s: '' },
+          ...b.unregistered_inter.map((u) => ({ t: `3.2 To unregistered persons, state ${u.pos}`, v: u.txval, i: '', c: '', s: '' })),
+          { t: '4(A)(5) Input tax credit, from your purchase bills', v: '', i: b.itc.igst, c: b.itc.cgst, s: b.itc.sgst }, { t: '4(B)(2) Credit reversed (goods lost)', v: '', i: b.reversed.igst, c: b.reversed.cgst, s: b.reversed.sgst }])}
+        <p style="padding:0 16px 14px">${b.payable >= 0 ? `Tax to pay after credit: <b>${inr(b.payable)}</b>` : `No tax to pay: <b>${inr(-b.payable)}</b> credit is left over for next month`}</p></div>`;
+    $('#g1json').onclick = () => download(`GSTR1_${g.gstin}_${g.fp}.json`, JSON.stringify(g.json), 'application/json');
+    $('#g1xls').onclick = () => fileDownload(`/api/gst/gstr1/excel?${qs}`);
+    return;
+  }
+  box.innerHTML = `<div class="panel"><ol class="steps small"><li>On <b>gst.gov.in</b>: Returns → Returns Dashboard → pick the month → <b>GSTR-2B</b> → View → Download (JSON or Excel).</li>
+      <li>Pick that file here. It is read on this device and every supplier bill in it is matched with your purchase bills.</li></ol>
+      <p class="small" lang="hi">GST पोर्टल से उस महीने की GSTR-2B (JSON या Excel) डाउनलोड करें और यहाँ चुनें। हर सप्लायर बिल आपकी खरीद से मिलाया जाएगा।</p>
+      <label class="f wide">GSTR-2B file (JSON, zip or Excel)<input type="file" id="g2file" accept=".json,.zip,.xlsx,application/json"></label><div class="err" hidden></div></div><div id="g2res"></div>`;
+  const err = $('.err', box), res = $('#g2res');
+  const show = (r) => {
+    const S = r.summary, counts = Object.fromEntries(Object.keys(G2B_STATUS).map((k) => [k, r.rows.filter((x) => x.status === k).length]));
+    const nameOf = new Map(gstr2bLast.rows.map((x) => [String(x.gstin).toUpperCase(), x.name]));
+    const side = (x) => (x ? `${esc(x.num || x.party_ref || x.number || '')} · ${fdate(x.date)}<div class="muted small">tax ${inr(x.tax)}${x.itc === false ? ' · <b>no credit</b>' : ''}${x.rcm ? ' · reverse charge' : ''}</div>` : '<span class="muted">—</span>');
+    const wa = (x) => {
+      if (x.status !== 'missing_2b' || !x.phone) return '';
+      const ph = String(x.phone).replace(/\D/g, ''), b = x.book;
+      const text = `Namaste ${x.supplier}, aapka bill ${b.party_ref || b.number} (${fdate(b.date)}, ${inr(b.total)}) hamare GSTR-2B (${monthName(r.month)}) me nahi aaya hai. Kripya ise apne GSTR-1 me daal dein, taaki hume input credit mil sake. - ${ME.org.name}`;
+      return `<a class="btn sm" target="_blank" rel="noopener" href="https://wa.me/${ph.length === 10 ? '91' + ph : ph}?text=${encodeURIComponent(text)}">Remind on WhatsApp</a>`;
+    };
+    let only = 'all';
+    const draw = () => {
+      const rows = only === 'all' ? r.rows : r.rows.filter((x) => x.status === only);
+      const badgeOf = (x) => `<span class="badge ${G2B_STATUS[x.status][1]}">${G2B_STATUS[x.status][0]}</span>`, bookOf = (x) => (x.book ? `<a href="#/doc/${x.book.id}">${side(x.book)}</a>` : side(null));
+      // on a phone the 2B and your-bill columns fold into the last one, so nothing hides off to the side
+      $('#g2list').innerHTML = table([
+        { h: 'Supplier', f: (x) => `<b>${esc(x.supplier || nameOf.get(x.gstin) || x.gstin)}</b><div class="muted small mono">${esc(x.gstin)}</div><span class="show-sm" style="margin-top:4px">${badgeOf(x)}</span>` },
+        { h: 'Status', cls: 'hide-sm', f: badgeOf }, { h: 'In GSTR-2B', cls: 'hide-sm', f: (x) => side(x.b2b) }, { h: 'Your bill', cls: 'hide-sm', f: bookOf },
+        { h: 'What to do', f: (x) => `<div class="show-sm small" style="flex-direction:column;gap:4px;margin-bottom:6px"><div><b>2B:</b> ${side(x.b2b)}</div><div><b>Your bill:</b> ${bookOf(x)}</div></div>
+          <div class="small">${esc(x.note)}</div>${wa(x) ? `<div style="margin-top:6px">${wa(x)}</div>` : ''}` }], rows, { empty: 'Nothing here.' });
+    };
+    res.innerHTML = `<div class="kpis"><div class="kpi"><div class="l">Credit in GSTR-2B</div><div class="v">${inr0(S.in_2b.tax)}</div><div class="s">${S.in_2b.n} supplier document(s) · ${monthName(r.month)}</div></div>
+        <div class="kpi"><div class="l">Credit in your bills</div><div class="v">${inr0(S.books.tax)}</div><div class="s">${S.books.n} bill(s) this month</div></div>
+        <div class="kpi"><div class="l">Amounts agree</div><div class="v pos">${S.ok.n}</div><div class="s">${inr0(S.ok.tax)} credit</div></div>
+        <div class="kpi"><div class="l">To look into</div><div class="v ${S.diff.n + S.missing_books.n + S.missing_2b.n ? 'neg' : ''}">${S.diff.n + S.missing_books.n + S.missing_2b.n}</div>
+          <div class="s">credit at risk ${inr0(S.missing_2b.tax)}</div></div></div>
+      ${S.no_itc.n ? `<div class="panel warnbox small">${S.no_itc.n} document(s) in the 2B carry no credit (ITC availability: No). Do not claim them.</div>` : ''}
+      <div class="chips" id="g2chips"><button type="button" class="chip on" data-s="all">All ${r.rows.length}</button>${Object.keys(G2B_STATUS).filter((k) => counts[k])
+        .map((k) => `<button type="button" class="chip" data-s="${k}">${G2B_STATUS[k][0]} ${counts[k]}</button>`).join('')}<button type="button" class="chip" id="g2csv">Download CSV</button></div>
+      <div class="panel flush" id="g2list"></div>`;
+    draw();
+    $$('#g2chips [data-s]').forEach((b) => { b.onclick = () => { only = b.dataset.s; $$('#g2chips [data-s]').forEach((x) => x.classList.toggle('on', x === b)); draw(); }; });
+    $('#g2csv').onclick = () => download(`gstr2b-match-${r.month}.csv`, rowsToCsv([['Status', 'Supplier', 'GSTIN', '2B number', '2B date', '2B taxable', '2B tax', 'Your bill', 'Supplier bill no.', 'Bill date', 'Bill taxable', 'Bill tax', 'Note'],
+      ...r.rows.map((x) => [G2B_STATUS[x.status][0], x.supplier || nameOf.get(x.gstin) || '', x.gstin, x.b2b ? x.b2b.num : '', x.b2b ? x.b2b.date : '', x.b2b ? x.b2b.taxable : '', x.b2b ? x.b2b.tax : '',
+        x.book ? x.book.number : '', x.book ? x.book.party_ref : '', x.book ? x.book.date : '', x.book ? x.book.taxable : '', x.book ? x.book.tax : '', x.note])]));
+  };
+  const run = async (read) => {
+    err.hidden = true;
+    res.innerHTML = '<div class="panel muted">Matching…</div>';
+    try { show(await POST('/api/gst/2b-match', { month: read.month || month, rows: read.rows })); } catch (e) { res.innerHTML = ''; err.textContent = e.message; err.hidden = false; }
+  };
+  $('#g2file').onchange = async (e) => {
+    const file = e.target.files[0]; if (!file) return;
+    try {
+      gstr2bLast = await read2b(file);
+      if (gstr2bLast.month && gstr2bLast.month !== month) { toast(`This GSTR-2B is for ${monthName(gstr2bLast.month)}`); go(`gstr?tab=2b&month=${gstr2bLast.month}`); return; }
+      gstr2bLast.month = gstr2bLast.month || month;
+      run(gstr2bLast);
+    } catch (x) { err.textContent = x.message; err.hidden = false; }
+  };
+  if (gstr2bLast && gstr2bLast.month === month) run(gstr2bLast);
+});
 route(/^reports\/([a-z-]+)$/, async (el, m, q) => {
   const name = m[1], qs = q.toString();
   const d = await GET(`/api/reports/${name}?${qs}`);
@@ -3137,7 +3308,7 @@ route(/^reports\/([a-z-]+)$/, async (el, m, q) => {
       <div class="panel flush"><div style="padding:14px 16px 0"><h3>Inward supplies (input tax credit)</h3></div>${table(cols, d.inward.rows.concat(d.inward.rows.length ? [{ ...d.inward.total, rate: '', kind: 'Total' }] : []), { empty: 'No purchases in this period.' })}</div>
       ${d.itc_reversed && d.itc_reversed.n ? `<div class="panel"><h3>Input credit reversed: goods lost or damaged on the way (GSTR-3B 4(B)(2))</h3>
         <p>${d.itc_reversed.n} write-off(s), goods worth ${inr(d.itc_reversed.value)}: CGST ${inr(d.itc_reversed.cgst)} · SGST ${inr(d.itc_reversed.sgst)} · IGST ${inr(d.itc_reversed.igst)} = <b>${inr(d.itc_reversed.tax)}</b> added to the GST payable.</p></div>` : ''}
-      <p class="muted">Returns and credit notes are netted. Tally these with your GSTR-2B before filing.</p>`;
+      <p class="muted">Returns and credit notes are netted. <a href="#/gstr">GST Returns</a>: download the GSTR-1 file and match your GSTR-2B.</p>`;
     csv = [['Section', 'Rate', 'Type', 'Taxable', 'CGST', 'SGST', 'IGST'], ...d.outward.rows.map((r) => ['Outward', r.rate, r.kind, r.taxable, r.cgst, r.sgst, r.igst]), ...d.inward.rows.map((r) => ['Inward', r.rate, r.kind, r.taxable, r.cgst, r.sgst, r.igst]),
       ...(d.itc_reversed && d.itc_reversed.n ? [['ITC reversed (goods lost)', '', '', d.itc_reversed.value, d.itc_reversed.cgst, d.itc_reversed.sgst, d.itc_reversed.igst]] : [])];
   } else if (name === 'ageing') {
