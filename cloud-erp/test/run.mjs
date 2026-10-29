@@ -2581,5 +2581,96 @@ if (process.env.ERP_AI_MOCK) {
   check('the books balance after MRP bills and a return', (await K('GET', '/api/reports/trial-balance')).balanced);
 }
 
+/* --- GST returns: the GSTR-1 file for the portal, GSTR-3B figures, and GSTR-2B matched with the purchase bills --- */
+{
+  const ip = '203.0.113.151', M = '2026-09', D = (d) => `${M}-${d}`;
+  const su = await rq('POST', '/api/auth/signup', { business: 'Gst Traders', name: 'G', email: `gstr${Date.now()}@test.in`, password: 'Gst-pass-12345', state: 'Rajasthan', gstin: '08ABCDE1234F1Z5' }, { ip });
+  const G = async (m, p, b) => (await rq(m, p, b, { cookie: su.cookie, ip })).data, GE = (m, p, b) => rq(m, p, b, { cookie: su.cookie, ip });
+  await G('PUT', '/api/org', { name: 'Gst Traders', gstin: '08ABCDE1234F1Z5', state: 'Rajasthan', address: 'Main Road', city: 'Jaipur', pincode: '302001', phone: '9999999999' });
+  const party = (name, state, gstin, kind = 'customer', phone = '') => G('POST', '/api/parties', { name, kind, state, gstin, phone });
+  const [ji, de, mu, lo] = [await party('Jaipur Traders', 'Rajasthan', '08AAACJ1234C1Z5'), await party('Delhi Mart', 'Delhi', '07AAACD1234D1Z5'),
+    await party('Walkin Mumbai', 'Maharashtra', ''), await party('Walkin Local', 'Rajasthan', '')];
+  const item = (name, hsn, unit, gst_rate, extra = {}) => G('POST', '/api/items', { name, hsn, unit, gst_rate, sale_price: 1000, purchase_price: 800, ...extra });
+  const [fan, rice, nohsn] = [await item('Fan', '8414', 'Pcs', 18), await item('Rice', '1006', 'Kg', 0), await item('Loose bag', '', 'Nos', 12)];
+  const sup = await G('POST', '/api/docs', { type: 'BILL', party_id: (await party('Opening Supplier', 'Rajasthan', '', 'supplier')).id, date: D('01'), lines: [{ item_id: fan.id, qty: 200, rate: 700 }, { item_id: rice.id, qty: 50, rate: 40 }, { item_id: nohsn.id, qty: 5, rate: 80 }] });
+  const inv = (party_id, lines, d) => G('POST', '/api/docs', { type: 'INV', party_id, date: D(d), lines });
+  const i1 = await inv(ji.id, [{ item_id: fan.id, qty: 2, rate: 1000 }, { item_id: rice.id, qty: 10, rate: 50 }], '05');
+  await inv(de.id, [{ item_id: fan.id, qty: 1, rate: 1000 }], '06');
+  const i3 = await inv(mu.id, [{ item_id: fan.id, qty: 100, rate: 1000 }], '07');
+  const i4 = await inv(lo.id, [{ item_id: fan.id, qty: 1, rate: 500 }, { item_id: nohsn.id, qty: 1, rate: 100 }], '08');
+  const i5 = await inv(lo.id, [{ item_id: fan.id, qty: 1, rate: 100 }], '09');
+  await G('POST', `/api/docs/${i5.id}/cancel`);
+  const cv = await G('GET', `/api/docs/${i1.id}/convert?to=SRET`);
+  await G('POST', '/api/docs', { ...cv, type: 'SRET', date: D('20'), lines: cv.lines.filter((l) => l.item_id === fan.id).map((l) => ({ ...l, qty: 1 })) });
+  await G('POST', '/api/docs', { type: 'CNOTE', party_id: lo.id, ref_id: i4.id, date: D('21'), lines: [{ item_id: fan.id, qty: 1, rate: 50, gst_rate: 18 }] });
+  check('GSTR-1 test bills are in place', i3.total === 118000 && sup.id > 0, JSON.stringify([i3.total, sup.id]));
+
+  const g = await G('GET', `/api/gst/gstr1?month=${M}`), j = g.json;
+  const sm = await G('GET', `/api/reports/gst?from=2026-09-01&to=2026-09-30`);
+  const b2b = (c) => (j.b2b || []).find((x) => x.ctin === c);
+  check('GSTR-1: the file is for our GSTIN and the month, MMYYYY', j.gstin === '08ABCDE1234F1Z5' && j.fp === '092026' && g.from === '2026-09-01' && g.to === '2026-09-30', JSON.stringify([j.gstin, j.fp, g.from, g.to]));
+  const a = b2b('08AAACJ1234C1Z5'), bD = b2b('07AAACD1234D1Z5');
+  check('B2B: grouped by buyer GSTIN; same state CGST + SGST, other state IGST; 0% lines left out of table 4', a && a.inv.length === 1 && a.inv[0].pos === '08' && a.inv[0].val === 2860
+    && a.inv[0].idt === '05-09-2026' && a.inv[0].inv_typ === 'R' && a.inv[0].rchrg === 'N' && a.inv[0].itms.length === 1
+    && JSON.stringify(a.inv[0].itms[0]) === JSON.stringify({ num: 1, itm_det: { txval: 2000, rt: 18, iamt: 0, camt: 180, samt: 180, csamt: 0 } })
+    && bD && bD.inv[0].pos === '07' && bD.inv[0].itms[0].itm_det.iamt === 180 && bD.inv[0].itms[0].itm_det.camt === 0, JSON.stringify(j.b2b));
+  check('B2C large: an other-state sale to an unregistered buyer above Rs 1 lakh, by place of supply, IGST only', (j.b2cl || []).length === 1 && j.b2cl[0].pos === '27'
+    && j.b2cl[0].inv[0].val === 118000 && JSON.stringify(j.b2cl[0].inv[0].itms[0].itm_det) === JSON.stringify({ txval: 100000, rt: 18, iamt: 18000, csamt: 0 }), JSON.stringify(j.b2cl));
+  const cs = (pos, rt) => (j.b2cs || []).find((x) => x.pos === pos && x.rt === rt);
+  check('B2C others: one row per state and rate, the credit note netted off, the cancelled bill left out', (j.b2cs || []).length === 2
+    && cs('08', 18) && cs('08', 18).txval === 450 && cs('08', 18).camt === 40.5 && cs('08', 18).samt === 40.5 && cs('08', 18).sply_ty === 'INTRA' && cs('08', 18).typ === 'OE'
+    && cs('08', 12) && cs('08', 12).txval === 100 && cs('08', 12).camt === 6, JSON.stringify(j.b2cs));
+  check('credit note to a registered buyer in cdnr, unsigned with note type C', (j.cdnr || []).length === 1 && j.cdnr[0].ctin === '08AAACJ1234C1Z5' && j.cdnr[0].nt[0].ntty === 'C'
+    && j.cdnr[0].nt[0].val === 1180 && j.cdnr[0].nt[0].itms[0].itm_det.txval === 1000 && j.cdnr[0].nt[0].itms[0].itm_det.camt === 90 && !j.cdnur, JSON.stringify(j.cdnr));
+  check('0% sales in the nil table, by intra/inter-state and registered or not', JSON.stringify(j.nil) === JSON.stringify({ inv: [{ sply_ty: 'INTRAB2B', nil_amt: 500, expt_amt: 0, ngsup_amt: 0 }] }), JSON.stringify(j.nil));
+  const hb = (j.hsn || {}).hsn_b2b || [], hc = (j.hsn || {}).hsn_b2c || [], H = (rows, code) => rows.find((x) => x.hsn_sc === code);
+  check('HSN summary split B2B / B2C: unit codes, returns take quantity off, a rate credit note only value', H(hb, '8414') && H(hb, '8414').uqc === 'PCS' && H(hb, '8414').qty === 2
+    && H(hb, '8414').txval === 2000 && H(hb, '8414').iamt === 180 && H(hb, '8414').camt === 90 && H(hb, '1006') && H(hb, '1006').uqc === 'KGS' && H(hb, '1006').qty === 10 && H(hb, '1006').rt === 0
+    && H(hc, '8414') && H(hc, '8414').qty === 101 && H(hc, '8414').txval === 100450 && H(hc, '8414').iamt === 18000 && hc.length === 1 && hb.every((x, i) => x.num === i + 1), JSON.stringify(j.hsn));
+  check('a line without an HSN code is named as a problem, and the file can still be made', g.problems.some((x) => /HSN/.test(x.text) && /Loose bag/.test(x.text)) && !g.problems.some((x) => x.stop), JSON.stringify(g.problems));
+  const dd = (j.doc_issue || {}).doc_det || [], d1 = dd.find((x) => x.doc_num === 1), d5 = dd.find((x) => x.doc_num === 5);
+  check('documents issued: invoices with the cancelled one counted, credit notes per series', d1 && d1.docs.length === 1 && d1.docs[0].totnum === 5 && d1.docs[0].cancel === 1
+    && d1.docs[0].net_issue === 4 && d5 && d5.docs.length === 2 && d5.docs.every((x) => x.totnum === 1), JSON.stringify(dd));
+  check('GSTR-3B figures from the same books: 3.1(a), nil, unregistered other-state sales, input credit', g.b3.outward.txval === 102550 && g.b3.outward.igst === 18180
+    && g.b3.outward.cgst === 136.5 && g.b3.outward.sgst === 136.5 && g.b3.nil === 500 && JSON.stringify(g.b3.unregistered_inter) === JSON.stringify([{ pos: '27', txval: 100000 }])
+    && g.b3.itc.cgst === sm.inward.total.cgst && g.b3.itc.sgst === sm.inward.total.sgst && g.b3.itc.cgst > 0, JSON.stringify([g.b3, sm.inward.total]));
+  const r18 = sm.outward.rows.filter((r) => r.rate > 0).reduce((t, r) => t + r.taxable, 0);
+  check('the taxable value in GSTR-1 equals the taxable sales of the GST summary', Math.abs(r18 - g.b3.outward.txval) < 0.005, JSON.stringify([r18, g.b3.outward.txval]));
+  const x = await GE('GET', `/api/gst/gstr1/excel?month=${M}`);
+  check('the same return as an Excel workbook for the accountant', x.status === 200 && /spreadsheetml/.test(x.headers.get('content-type')) && /GSTR1-08ABCDE1234F1Z5-092026\.xlsx/.test(x.headers.get('content-disposition')));
+  const qt = await G('GET', `/api/gst/gstr1?month=${M}&quarterly=1`);
+  check('a quarterly return covers the three months ending in the month picked; a month that ends no quarter is refused', qt.from === '2026-07-01' && qt.to === '2026-09-30' && qt.fp === '092026'
+    && (await GE('GET', '/api/gst/gstr1?month=2026-08&quarterly=1')).status === 400 && (await GE('GET', '/api/gst/gstr1?month=2026-13')).status === 400);
+  check('GST returns need a signed-in user', (await rq('GET', `/api/gst/gstr1?month=${M}`, undefined, { ip })).status === 401 && (await rq('POST', '/api/gst/2b-match', { month: M, rows: [] }, { ip })).status === 401);
+
+  // GSTR-2B against the purchase bills
+  const sA = await party('Supplier A', 'Rajasthan', '08AAACS1111A1Z5', 'supplier', '9876500001'), sB = await party('Supplier B', 'Maharashtra', '27AAACS2222B1Z5', 'supplier');
+  const sC = await party('Supplier C', 'Rajasthan', '08AAACS3333C1Z5', 'supplier', '9876500003');
+  const bill = (p, ref, qty, d) => G('POST', '/api/docs', { type: 'BILL', party_id: p.id, party_ref: ref, date: D(d), lines: [{ item_id: fan.id, qty, rate: 800 }] });
+  const a1 = await bill(sA, 'SA/0012', 10, '04'), a2 = await bill(sA, 'SA-15', 5, '10'), bB = await bill(sB, '', 2, '11'), bC = await bill(sC, 'C-9', 1, '12');
+  const rows2b = [
+    { kind: 'inv', gstin: '08AAACS1111A1Z5', name: 'SUPPLIER A', num: 'SA/12', date: D('04'), val: 9440, txval: 8000, cgst: 720, sgst: 720 },
+    { kind: 'inv', gstin: '08AAACS1111A1Z5', name: 'SUPPLIER A', num: 'SA-15', date: D('10'), val: 4838, txval: 4100, cgst: 369, sgst: 369 },
+    { kind: 'inv', gstin: '27AAACS2222B1Z5', name: 'SUPPLIER B', num: 'MB/77', date: D('11'), val: 1888, txval: 1600, igst: 288 },
+    { kind: 'inv', gstin: '29AAACZ9999Z1Z5', name: 'NEW SUPPLIER', num: 'Z1', date: D('12'), val: 1180, txval: 1000, igst: 180 },
+    { kind: 'cn', gstin: '08AAACS1111A1Z5', name: 'SUPPLIER A', num: 'CN1', date: D('15'), val: 118, txval: 100, cgst: 9, sgst: 9 },
+    { kind: 'inv', gstin: '08AAACS1111A1Z5', name: 'SUPPLIER A', num: 'SA/99', date: D('16'), val: 59, txval: 50, cgst: 4.5, sgst: 4.5, itc: false, rsn: 'POS' },
+  ];
+  const mr = await G('POST', '/api/gst/2b-match', { month: M, rows: rows2b }), st = (num) => (mr.rows.find((r) => r.b2b && r.b2b.num === num) || {}).status;
+  check('2B: same bill number written another way matches (SA/12 = SA/0012)', st('SA/12') === 'ok' && mr.rows.find((r) => r.b2b && r.b2b.num === 'SA/12').book.id === a1.id, JSON.stringify(mr.rows.map((r) => [r.status, r.b2b && r.b2b.num])));
+  check('2B: amounts that differ are shown with what differs', st('SA-15') === 'diff' && /taxable value ₹4,100 in 2B, ₹4,000 in your bill; tax ₹738 in 2B, ₹720 in your bill/.test(mr.rows.find((r) => r.b2b && r.b2b.num === 'SA-15').note) && a2.id > 0);
+  check('2B: a bill without the supplier number is found by amount and date, and the number is asked for', st('MB/77') === 'number' && mr.rows.find((r) => r.b2b && r.b2b.num === 'MB/77').book.id === bB.id
+    && /MB\/77/.test(mr.rows.find((r) => r.b2b && r.b2b.num === 'MB/77').note));
+  check('2B: a supplier bill not in the books, and a supplier credit note with no return entered', st('Z1') === 'missing_books' && st('CN1') === 'missing_books' && st('SA/99') === 'missing_books');
+  const miss = mr.rows.find((r) => r.status === 'missing_2b');
+  check('2B: your bill the supplier has not filed is listed with their phone to remind them', mr.rows.filter((r) => r.status === 'missing_2b').length === 1 && miss.book.id === bC.id
+    && miss.phone === '9876500003' && miss.supplier === 'Supplier C', JSON.stringify(miss));
+  check('2B summary: credit in 2B without the no-credit line and less the credit note; matched, differing, missing', mr.summary.in_2b.n === 6 && mr.summary.in_2b.tax === 2628
+    && mr.summary.ok.n === 2 && mr.summary.diff.n === 1 && mr.summary.missing_books.n === 3 && mr.summary.missing_2b.n === 1 && mr.summary.missing_2b.tax === 144 && mr.summary.no_itc.n === 1
+    && mr.rows[0].status === 'diff', JSON.stringify(mr.summary));
+  check('2B match writes nothing: the books still balance and the bills are unchanged', (await G('GET', '/api/reports/trial-balance')).balanced && (await G('GET', `/api/docs/${bB.id}`)).party_ref === '');
+  check('2B match: an empty file is refused', (await GE('POST', '/api/gst/2b-match', { month: M, rows: [] })).status === 400);
+}
+
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

@@ -41,6 +41,8 @@ import { cleanVaada, splitPlan, planOptions, minPart, risk, riskStatements, risk
 import { STATES, einvoiceJson, ewaybillJson } from './gst.js';
 import { listBins, addBins, deleteBin, binContents, moveInBins, itemLots, expiryReport, serialLookup, putawayPlan, wavePick } from './lots.js';
 import { tallyXml } from './tally.js';
+import { gstr1, gstr1Sheets, match2b } from './gstr.js';
+import { workbook } from './xlsx.js';
 import { printOf, cleanPrint, imageFromDataUrl, shortHash, imageResponse, FILE_KINDS, seriesOf, numberSpec, formatNumber, cleanSeries, fyParts,
   fieldsOf, extraOf, cleanField, cleanExtra, extraFilter, printExtra, LAYOUTS } from './custom.js';
 import { billingMode, razorpayMode, grossPaise, billingStart, billingVerify, billingWebhook, billingStatus, billingHistory, hubFetch, hubOn,
@@ -2045,6 +2047,18 @@ router.add('GET', '/api/reports/:name', async (c) => {
   if (!fn) throw notFound('Unknown report.');
   return json(await fn(c));
 });
+/* GST returns (src/gstr.js): the GSTR-1 file for the GST portal, the same as a workbook, and GSTR-2B matched against the purchase bills.
+   Nothing is filed from here; the user uploads the file on the portal. */
+router.add('GET', '/api/gst/gstr1', async (c) => json(await gstr1(c.db, c.org, c.url.searchParams)));
+router.add('GET', '/api/gst/gstr1/excel', async (c) => {
+  const g = await gstr1(c.db, c.org, c.url.searchParams);
+  return new Response(await workbook(gstr1Sheets(g)), { headers: { 'Content-Type': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+    'Content-Disposition': `attachment; filename="GSTR1-${g.gstin || 'business'}-${g.fp}.xlsx"`, 'Cache-Control': 'no-store' } });
+});
+router.add('POST', '/api/gst/2b-match', async (c) => {
+  if (!canView(c.user, 'reports')) throw forbidden('Your role cannot see this. Ask the owner.');
+  return json(await match2b(c.db, c.org, c.body));
+}, { bodyMax: 6000000 });
 /* Search box in the top bar: items, contacts and documents in one D1 call (only what the user's role may see) */
 router.add('GET', '/api/search', async (c) => {
   const q = str(c.url.searchParams.get('q'), 60);
@@ -2121,6 +2135,7 @@ const READ_AREAS = [
   [/^\/api\/productions\/?$/, 'items'],
   [/^\/api\/channels\/stock\/?$/, 'items'],
   [/^\/api\/reports\//, 'reports'],
+  [/^\/api\/gst\//, 'reports'],
   [/^\/api\/export\//, 'reports'],
   [/^\/api\/(payments|accounts\/\d+\/ledger)(\/|$)/, 'finance'],
   [/^\/api\/parties\/\d+\/(ledger|reminder)\/?$/, 'masters'],
