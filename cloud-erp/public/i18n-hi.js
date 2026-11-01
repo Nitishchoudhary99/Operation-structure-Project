@@ -206,6 +206,12 @@ export const HI = {
   'Bolkar bill': 'बोलकर बिल', 'Bolkar': 'बोलकर', 'Tap and speak': 'दबाएँ और बोलें', 'Heard': 'सुना', 'Find items': 'आइटम ढूँढें', 'Close matches': 'मिलते-जुलते',
   'All items': 'सभी आइटम', 'Speaking needs Chrome or Edge. Type the order below instead.': 'बोलने के लिए Chrome या Edge चाहिए। नीचे ऑर्डर लिख दें।',
   'Your browser turns the voice into text (Chrome does it through Google). SmartTrader keeps no recording.': 'आवाज़ को लिखने का काम आपका ब्राउज़र करता है (Chrome, Google से)। SmartTrader कोई रिकॉर्डिंग नहीं रखता।',
+  'Tables (Restaurant)': 'टेबल (रेस्टोरेंट)', 'KOT log': 'KOT रिकॉर्ड', '+ Tables': '+ टेबल', 'Running': 'चालू', 'tables with an open order': 'खुले ऑर्डर वाली टेबल',
+  'On the tables now': 'टेबल पर अभी', 'not billed yet': 'बिल बाक़ी', 'All tables': 'सभी टेबल', 'Search the menu': 'मेन्यू में खोजें', 'With the kitchen': 'रसोई में',
+  'Move table': 'टेबल बदलें', 'Cancel order': 'ऑर्डर रद्द करें', 'Tap items on the menu to start the order.': 'ऑर्डर शुरू करने के लिए मेन्यू से आइटम चुनें।',
+  'of which not sent': 'जिसमें से भेजा नहीं', 'Paid by': 'भुगतान', 'Discount %': 'छूट %', 'Bill and print': 'बिल बनाएँ और प्रिंट करें', 'How many tables': 'कितनी टेबल',
+  'Name starts with': 'नाम की शुरुआत', 'Area (optional)': 'जगह (ज़रूरी नहीं)', 'Add tables': 'टेबल जोड़ें', 'To table': 'किस टेबल पर', 'Move': 'बदलें',
+  'No KOT on this day.': 'इस दिन कोई KOT नहीं।', 'Waiter / captain (restaurant)': 'वेटर / कैप्टन (रेस्टोरेंट)',
   // months
   'Jan': 'जन॰', 'Feb': 'फ़र॰', 'Mar': 'मार्च', 'Apr': 'अप्रै॰', 'May': 'मई', 'Jun': 'जून', 'Jul': 'जुला॰', 'Aug': 'अग॰', 'Sept': 'सित॰', 'Sep': 'सित॰', 'Oct': 'अक्टू॰', 'Nov': 'नव॰', 'Dec': 'दिस॰',
 };

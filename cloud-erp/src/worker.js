@@ -43,6 +43,7 @@ import { listBins, addBins, deleteBin, binContents, moveInBins, itemLots, expiry
 import { tallyXml } from './tally.js';
 import { gstr1, gstr1Sheets, match2b } from './gstr.js';
 import { loyaltyOf, cleanLoyalty, partyPoints, members as loyaltyMembers, adjustPoints } from './loyalty.js';
+import { dineBoard, addTables, removeTable, tableDetail, sendKot, voidLine, moveOrder, billOrder, voidOrder, kotLog } from './dine.js';
 import { secondStep, twoStepStart, twoStepEnable, twoStepDisable, newBackupCodes, twoStepReset, requireTwoStep, loginStatement, signInHistory,
   closeBusiness, cancelClose, purgeClosed, notOwnerWhileClosing } from './security.js';
 import { workbook } from './xlsx.js';
@@ -904,6 +905,17 @@ router.add('POST', '/api/loyalty/adjust', async (c) => {
   await c.db.batch([a.statement, auditStatement(c, 'loyalty points', `${a.party.name} ${a.points > 0 ? '+' : ''}${a.points}`)]);
   return json(await partyPoints(c, a.party.id));
 });
+/* Restaurant tables and KOT: src/dine.js */
+router.add('GET', '/api/dine', async (c) => json(await dineBoard(c)));
+router.add('POST', '/api/dine/tables', async (c) => json(await addTables(c, c.body)));
+router.add('DELETE', '/api/dine/tables/:id', async (c) => json(await removeTable(c, +c.params.id)));
+router.add('GET', '/api/dine/tables/:id', async (c) => json(await tableDetail(c, +c.params.id)));
+router.add('POST', '/api/dine/tables/:id/kot', async (c) => json(await sendKot(c, +c.params.id, c.body)));
+router.add('POST', '/api/dine/tables/:id/move', async (c) => json(await moveOrder(c, +c.params.id, c.body)));
+router.add('POST', '/api/dine/tables/:id/bill', async (c) => json(await docDetail(c, (await billOrder(c, +c.params.id, c.body)).doc_id)));
+router.add('POST', '/api/dine/tables/:id/void', async (c) => json(await voidOrder(c, +c.params.id, c.body)));
+router.add('POST', '/api/dine/lines/:id/void', async (c) => json(await voidLine(c, +c.params.id, c.body)));
+router.add('GET', '/api/dine/kots', async (c) => json(await kotLog(c, c.url.searchParams.get('day'))));
 /* What this customer paid last for each item (their bills of the last year): the bill editor offers it next to the rate */
 router.add('GET', '/api/rates', async (c) => {
   const pid = +c.url.searchParams.get('party_id') || 0;
@@ -2265,6 +2277,7 @@ const READ_AREAS = [
   [/^\/api\/items(\/lookup)?\/?$/, ['items', 'sales', 'purchase']],
   [/^\/api\/rates\/?$/, 'sales'],
   [/^\/api\/(loyalty(\/\d+)?|settings\/loyalty)\/?$/, 'sales'],
+  [/^\/api\/dine(\/|$)/, 'sales'],
   [/^\/api\/settings\/shop\/?$/, ['sales', 'items', 'settings']],
   [/^\/api\/items\/\d+\/moves\/?$/, 'items'],
   [/^\/api\/reports\/(stock|stock-ageing|expiry)\/?$/, 'items'],

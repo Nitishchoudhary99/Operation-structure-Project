@@ -18,7 +18,7 @@ const ID_TABLES = ['accounts', 'warehouses', 'roles', 'parties', 'items', 'docs'
   'stock_moves', 'gate_entries', 'vaade', 'vaada_kisht', 'recurring', 'reminder_log', 'confirmations', 'bins', 'batches', 'batch_moves',
   'serials', 'serial_moves', 'boms', 'bom_lines', 'productions', 'staff', 'staff_txns', 'write_offs', 'claim_entries', 'mkt_settlements', 'fixed_assets', 'asset_dep', 'dep_runs',
   'tds_challans'];
-const OTHER_TABLES = ['payment_allocs', 'stock', 'counters', 'org_files', 'bin_stock', 'channel_orders', 'attendance', 'item_codes', 'write_off_lines', 'role_rules', 'channel_returns', 'bank_clear', 'loyalty_points'];
+const OTHER_TABLES = ['payment_allocs', 'stock', 'counters', 'org_files', 'bin_stock', 'channel_orders', 'attendance', 'item_codes', 'write_off_lines', 'role_rules', 'channel_returns', 'bank_clear', 'loyalty_points', 'dine_tables'];
 const ORG_FIELDS = ['name', 'gstin', 'state', 'address', 'phone', 'upi_id', 'fy_start', 'city', 'pincode', 'email', 'mode', 'print', 'series', 'fields', 'vaada', 'msg_lang', 'udyam', 'approvals', 'loyalty'];
 const JSON_FIELDS = ['print', 'series', 'fields', 'vaada', 'approvals', 'loyalty'];
 const PAY_REFS = ['payment', 'receipt', 'payment-X', 'receipt-X'];
@@ -160,6 +160,7 @@ export async function restoreBackup(c, backup) {
       confirmations: (r) => ({ party_id: to('parties', r.party_id), created_by: me, token: randomHex(12) }),   // old links stay dead
       counters: () => ({}),
       org_files: () => ({}),
+      dine_tables: () => ({ id: null }),
       loyalty_points: (r) => ({ id: null, party_id: to('parties', r.party_id), doc_id: to('docs', r.doc_id), created_by: me }),
     };
     // a row whose own record of the link is gone is left out (it could not be shown or posted anyway)
@@ -228,6 +229,7 @@ export async function restoreBackup(c, backup) {
     for (const t of ['fixed_assets', 'asset_dep', 'dep_runs', 'tds_challans']) counts[t] = insert(t, T[t]);
     counts.bank_clear = insert('bank_clear', T.bank_clear);
     counts.loyalty_points = insert('loyalty_points', T.loyalty_points);
+    counts.dine_tables = insert('dine_tables', T.dine_tables);
     counts.attendance = insert('attendance', T.attendance);
     counts.item_codes = insert('item_codes', T.item_codes);
     counts.counters = insert('counters', T.counters, 'INSERT OR REPLACE');

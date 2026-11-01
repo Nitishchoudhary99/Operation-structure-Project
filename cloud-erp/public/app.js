@@ -380,7 +380,7 @@ const ADVANCED = new Set(['sales/SO', 'sales/DN', 'sales/QUOTE', 'purchase/PO', 
 const ADV_DOCS = ['QUOTE', 'SO', 'DN', 'PO', 'GRN'];
 const simple = () => !ME || (ME.org.mode || 'simple') !== 'advanced';
 /* which permission area a menu entry needs (custom roles may not see every area); the gate register also opens with 'gate' */
-const navArea = (h) => /^(receipts|payments|expenses|accounts|journal|staff|bankrec|assets|tds)$/.test(h) ? 'finance' : /^(sales\/|pos$|recurring$|channels$|shop$|loyalty$)/.test(h) ? 'sales' : /^(purchase\/|receive$)/.test(h) ? 'purchase'
+const navArea = (h) => /^(receipts|payments|expenses|accounts|journal|staff|bankrec|assets|tds)$/.test(h) ? 'finance' : /^(sales\/|pos$|recurring$|channels$|shop$|loyalty$|tables$|table\/|kots$)/.test(h) ? 'sales' : /^(purchase\/|receive$)/.test(h) ? 'purchase'
   : /^gate\/in$/.test(h) ? ['purchase', 'gate'] : /^gate\/out$/.test(h) ? ['items', 'gate'] : h === 'claims' ? ['purchase', 'finance'] : h === 'wa-inbox' ? ['sales', 'khata', 'finance']
   : /^(items|stock|stockcount|pending|bins|expiry|stock-ageing|serials|production|wave|putaway)$/.test(h) ? 'items' : /^(parties|reminders)$/.test(h) ? 'masters' : /^(khata|vaade)$/.test(h) ? 'khata'
   : /^(reports\/|tally$|daybook$|gstr$)/.test(h) ? 'reports' : h === 'plan' ? 'settings' : '';
@@ -398,10 +398,11 @@ const JOBS = {
   store: { t: 'Godown / store keeper', home: 'receive', screens: ['receive', 'gate/in', 'purchase/GRN', 'purchase/PO', 'purchase/PRET', 'putaway', 'bins', 'items', 'stock', 'expiry', 'serials',
     'production', 'stockcount', 'wave', 'pending', 'gate/out', 'stock-ageing', 'claims'] },
   gate: { t: 'Gate / security guard', home: 'gate/in', screens: ['gate/in', 'gate/out'] },
+  waiter: { t: 'Waiter / captain (restaurant)', home: 'tables', screens: ['tables', 'kots', 'pos'] },
   accounts: { t: 'Accountant', home: 'dashboard', screens: ['dashboard', 'sales/INV', 'sales/SRET', 'sales/CNOTE', 'receipts', 'purchase/BILL', 'purchase/PRET', 'purchase/DNOTE', 'payments',
     'parties', 'khata', 'reminders', 'vaade', 'staff', 'expenses', 'bankrec', 'assets', 'tds', 'accounts', 'journal', 'daybook', 'reports/pnl', 'reports/balance-sheet', 'reports/trial-balance', 'reports/gst', 'gstr', 'reports/ageing',
     'reports/register', 'cash', 'tally', 'claims', 'wa-inbox'] },
-  sales: { t: 'Salesman', home: 'sales/INV', screens: ['dashboard', 'pos', 'sales/INV', 'shop', 'loyalty', 'sales/QUOTE', 'sales/SO', 'sales/DN', 'sales/SRET', 'receipts', 'channels', 'recurring', 'parties', 'khata',
+  sales: { t: 'Salesman', home: 'sales/INV', screens: ['dashboard', 'pos', 'tables', 'sales/INV', 'shop', 'loyalty', 'sales/QUOTE', 'sales/SO', 'sales/DN', 'sales/SRET', 'receipts', 'channels', 'recurring', 'parties', 'khata',
     'reminders', 'vaade', 'items', 'stock', 'wa-inbox'] },
 };
 const ROLE_JOB = { owner: 'all', admin: 'all', accountant: 'accounts', store: 'store', sales: 'sales' };
@@ -432,7 +433,7 @@ const minDate = () => {
 };
 const NAV = [
   ['', [['dashboard', 'Dashboard']]],
-  ['Sales', [['pos', 'Quick Bill (POS)'], ['sales/INV', 'Invoices'], ['shop', 'Online Catalogue'], ['loyalty', 'Loyalty Points'], ['channels', 'Online Orders (Amazon…)'], ['recurring', 'Recurring Bills'], ['sales/SO', 'Sales Orders'], ['sales/DN', 'Delivery Notes'], ['sales/QUOTE', 'Quotations'], ['sales/SRET', 'Sales Returns'], ['sales/CNOTE', 'Credit Notes (rate diff)'], ['receipts', 'Receipts']]],
+  ['Sales', [['pos', 'Quick Bill (POS)'], ['tables', 'Tables (Restaurant)'], ['sales/INV', 'Invoices'], ['shop', 'Online Catalogue'], ['loyalty', 'Loyalty Points'], ['channels', 'Online Orders (Amazon…)'], ['recurring', 'Recurring Bills'], ['sales/SO', 'Sales Orders'], ['sales/DN', 'Delivery Notes'], ['sales/QUOTE', 'Quotations'], ['sales/SRET', 'Sales Returns'], ['sales/CNOTE', 'Credit Notes (rate diff)'], ['receipts', 'Receipts']]],
   ['Purchase', [['receive', 'Receive Goods (scan)'], ['purchase/PO', 'Purchase Orders'], ['gate/in', 'Gate Entry (inward)'], ['purchase/GRN', 'Goods Receipts (GRN)'], ['purchase/BILL', 'Purchase Bills'], ['purchase/PRET', 'Purchase Returns'], ['purchase/DNOTE', 'Debit Notes (rate diff)'], ['claims', 'Transit Claims'], ['payments', 'Payments']]],
   ['Inventory', [['items', 'Items'], ['stock', 'Stock & Godowns'], ['stock-ageing', 'Stock Ageing'], ['bins', 'Bins & Racks'], ['expiry', 'Batch & Expiry'], ['serials', 'Serial / IMEI'], ['production', 'Production (BOM)'], ['wave', 'Wave Pick List'], ['stockcount', 'Stock Count'], ['gate/out', 'Gate Pass (outward)'], ['pending', 'Pending Orders']]],
   ['Contacts', [['parties', 'Customers & Suppliers'], ['khata', 'Khata Book'], ['reminders', 'Vasooli (Collections)'], ['vaade', 'Vaade (Promises)'], ['wa-inbox', 'WhatsApp Inbox']]],
@@ -5372,6 +5373,147 @@ const loadScript = (src) => scripts[src] || (scripts[src] = new Promise((ok, fai
 const labelCode = (it) => it.barcode || it.sku || 'ST' + it.id;
 
 /* ======================================================================= POS / quick bill with barcode scanning */
+/* ======================================================================= restaurant: tables and KOT */
+/* Tables: each free or running (amount, time, items). A table's order: tap menu items (or speak them), "Send KOT" prints the
+   kitchen ticket (no prices) and keeps them on the order; "Bill" makes one invoice and frees the table. Items not yet sent
+   stay on this phone until they are (a draft per table). */
+const kotDraftKey = (tid) => `st:kot:${ME.org.id}:${tid}`;
+const kotDraft = (tid, set) => {
+  if (set !== undefined) { storeSet(kotDraftKey(tid), JSON.stringify(set)); return set; }
+  try { return JSON.parse(storeGet(kotDraftKey(tid)) || '[]') || []; } catch (e) { return []; }
+};
+const since = (iso) => { const m = Math.max(0, Math.round((Date.now() - Date.parse(iso)) / 60000)); return m < 60 ? `${m} min` : `${Math.floor(m / 60)} h ${m % 60} min`; };
+function printKot(k) {
+  let r = $('#receipt');
+  if (!r) { r = document.createElement('div'); r.id = 'receipt'; r.className = 'receipt'; document.body.appendChild(r); }
+  const t = new Date(k.at).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' });
+  r.innerHTML = `<div class="c">${esc(ME.org.name)}</div><div class="c kot-h">${k.kind === 'cancel' ? '*** CANCEL ***<br>' : ''}KOT ${k.number}<br>Table ${esc(k.table)}</div>
+    <div class="c">${fdate(k.at.slice(0, 10))} ${t}${k.user ? ` &middot; ${esc(k.user)}` : ''}</div>
+    <table>${k.lines.map((l) => `<tr><td class="kq">${qtyf(l.qty)}</td><td><b>${esc(l.name)}</b>${l.note ? `<div class="kn">${esc(l.note)}</div>` : ''}</td></tr>`).join('')}</table>`;
+  document.body.classList.add('print-receipt');
+  setTimeout(() => { print(); document.body.classList.remove('print-receipt'); }, 50);
+}
+route(/^tables$/, async (el) => {
+  const b = await GET('/api/dine'), canSet = ME.can.settings;
+  if (!b.tables.length) {
+    el.innerHTML = head('Tables (Restaurant)') + `<div class="panel"><p>For a restaurant, dhaba, cafe or sweet shop with seating: each table keeps its order open while people eat. Send the items to the kitchen as a KOT (kitchen ticket, no prices), add more any time, and make one bill at the end.</p>
+      <p class="muted small" lang="hi">हर टेबल का ऑर्डर खुला रहता है; रसोई को KOT भेजें, बाद में और जोड़ें, आख़िर में एक बिल।</p>
+      ${canSet ? `<form id="tadd" class="form"><label class="f">How many tables<input name="count" type="number" min="1" max="200" value="10"></label><label class="f">Name starts with<input name="prefix" value="T" maxlength="10"></label>
+        <label class="f">Area (optional)<input name="area" placeholder="Hall, AC, Terrace" maxlength="30"></label><label class="f">&nbsp;<button class="btn primary">Add tables</button></label></form>` : '<p class="muted">Ask the owner to add the tables.</p>'}</div>`;
+    if ($('#tadd')) $('#tadd').onsubmit = async (e) => { e.preventDefault(); const f = e.target; try { await POST('/api/dine/tables', { count: +f.count.value, prefix: f.prefix.value, area: f.area.value }); render(); } catch (x) { toast(x.message, 'err'); } };
+    return;
+  }
+  const areas = [...new Set(b.tables.map((t) => t.area || ''))];
+  const running = b.tables.filter((t) => t.order);
+  el.innerHTML = head('Tables (Restaurant)', `<a class="btn" href="#/kots">KOT log</a>${canSet ? '<button class="btn" id="tmore">+ Tables</button>' : ''}`) + `
+    <div class="kpis"><div class="kpi"><div class="l">Running</div><div class="v">${running.length} / ${b.tables.length}</div><div class="s">tables with an open order</div></div>
+      <div class="kpi"><div class="l">On the tables now</div><div class="v">${inr(running.reduce((x, t) => x + t.order.amount, 0))}</div><div class="s">not billed yet</div></div></div>
+    ${areas.map((a) => `${a ? `<h3 class="tarea">${esc(a)}</h3>` : ''}<div class="tgrid">${b.tables.filter((t) => (t.area || '') === a).map((t) => `<a class="ttile ${t.order ? 'busy' : ''}" href="#/table/${t.id}">
+      <b>${esc(t.name)}</b>${t.order ? `<span class="tamt">${inr(t.order.amount)}</span><span class="muted small">${since(t.order.opened_at)} &middot; ${t.order.items} item${t.order.items === 1 ? '' : 's'}</span>`
+        : `<span class="muted small">Free${t.seats ? ` &middot; ${t.seats} seats` : ''}</span>`}${kotDraft(t.id).length ? '<span class="tnew">not sent</span>' : ''}</a>`).join('')}</div>`).join('')}`;
+  if ($('#tmore')) $('#tmore').onclick = () => modal('Add tables', [{ k: 'names', label: 'Names (comma or one per line), or leave empty and give a number', type: 'textarea', wide: true },
+    { k: 'count', label: 'Or how many', type: 'number' }, { k: 'prefix', label: 'Name starts with', value: 'T' }, { k: 'area', label: 'Area (optional)' }, { k: 'seats', label: 'Seats', type: 'number', value: 4 }],
+  async (v) => { await POST('/api/dine/tables', { ...v, count: +v.count || 0, seats: +v.seats || 0 }); render(); });
+  const tick = setInterval(() => { if (location.hash === '#/tables') render(); else clearInterval(tick); }, 30000);
+});
+route(/^table\/(\d+)$/, async (el, m) => {
+  const tid = +m[1];
+  const [items, x, parties, accts] = await Promise.all([master('items'), GET('/api/dine/tables/' + tid), master('parties'), master('accounts')]);
+  const menu = items.filter((i) => i.sale_price > 0);
+  const cats = [...new Set(menu.map((i) => i.category || '').filter(Boolean))].sort();
+  let draft = kotDraft(tid), cat = '', q = '';
+  const price = (it) => it.sale_price_incl || it.sale_price;      // what the guest pays, with GST
+  const save = () => kotDraft(tid, draft);
+  const addItem = (id, qty = 1) => { const ex = draft.find((d) => d.item_id === id && !d.note); if (ex) ex.qty = r2(ex.qty + qty); else draft.push({ item_id: id, qty, note: '' }); save(); drawOrder(); };
+  el.innerHTML = head(`Table ${esc(x.table.name)}`, `<a class="btn" href="#/tables">All tables</a>`) + `
+    <div class="posgrid">
+      <div><div class="panel"><div class="row"><input id="mq" class="grow" placeholder="Search the menu" autocomplete="off"><button class="btn" id="tvoice" title="Speak the order">&#127908; Bolkar</button></div>
+        ${cats.length ? `<div class="chips" id="mcats"><button type="button" class="chip on" data-c="">All</button>${cats.map((c) => `<button type="button" class="chip" data-c="${esc(c)}">${esc(c)}</button>`).join('')}</div>` : ''}</div>
+        <div class="mgrid" id="mgrid"></div></div>
+      <div class="panel pos-pay" id="order"></div>
+    </div>`;
+  const drawMenu = () => {
+    const list = menu.filter((i) => (!cat || i.category === cat) && (!q || i.name.toLowerCase().includes(q)));
+    $('#mgrid').innerHTML = list.length ? list.slice(0, 300).map((i) => `<button type="button" class="mitem" data-add="${i.id}"><b>${esc(i.name)}</b><span>${inr(price(i))}</span></button>`).join('')
+      : `<div class="empty">${menu.length ? 'Nothing matches.' : 'Add your menu as items with a selling price (Inventory → Items).'}</div>`;
+  };
+  const drawOrder = () => {
+    const sent = x.lines.filter((l) => l.status === 'ok'), cut = x.lines.filter((l) => l.status === 'void');
+    const newAmt = draft.reduce((s, d) => { const it = items.find((i) => i.id === d.item_id); return s + (it ? d.qty * price(it) : 0); }, 0);
+    const total = (x.order ? x.order.amount : 0) + newAmt;
+    $('#order').innerHTML = `<div class="row"><b>Table ${esc(x.table.name)}</b><span class="spacer"></span>${x.order ? `<span class="muted small">open ${since(x.order.opened_at)}</span>` : '<span class="muted small">free</span>'}</div>
+      ${draft.length ? `<h4 class="kh">New <span class="muted small">(not sent to the kitchen)</span></h4><div class="klines">${draft.map((d, i) => { const it = items.find((z) => z.id === d.item_id) || { name: '?' }; return `<div class="kline new">
+          <div class="kname"><b>${esc(it.name)}</b><input data-note="${i}" value="${esc(d.note)}" placeholder="note: less spicy, no onion" maxlength="80"></div>
+          <div class="kqty"><button type="button" class="btn sm" data-minus="${i}" aria-label="One less">&minus;</button><span>${qtyf(d.qty)}</span><button type="button" class="btn sm" data-plus="${i}" aria-label="One more">+</button></div></div>`; }).join('')}</div>
+        <button class="btn primary big" id="sendkot">Send KOT (${draft.length} item${draft.length === 1 ? '' : 's'})</button>` : ''}
+      ${sent.length ? `<h4 class="kh">With the kitchen</h4><div class="klines">${sent.map((l) => `<div class="kline"><div class="kname">${qtyf(l.qty)} &times; ${esc(l.name)}${l.note ? `<div class="muted small">${esc(l.note)}</div>` : ''}<div class="muted small">KOT ${l.kot_no}</div></div>
+          <div class="kqty"><span>${inr(l.amount)}</span><button type="button" class="btn sm danger" data-cut="${l.id}" aria-label="Cancel ${esc(l.name)}">&times;</button></div></div>`).join('')}</div>` : ''}
+      ${cut.length ? `<details class="small"><summary class="muted">${cut.length} cancelled</summary>${cut.map((l) => `<div class="muted">${qtyf(l.qty)} &times; ${esc(l.name)}${l.void_reason ? ` (${esc(l.void_reason)})` : ''}</div>`).join('')}</details>` : ''}
+      ${!draft.length && !sent.length ? '<div class="empty">Tap items on the menu to start the order.</div>' : ''}
+      <div class="totals" style="width:100%"><div class="grand"><span>Total</span><span>${inr(total)}</span></div>${newAmt ? `<div class="muted small"><span>of which not sent</span><span>${inr(newAmt)}</span></div>` : ''}</div>
+      ${x.order ? `<button class="btn big" id="tbill" ${draft.length ? 'disabled title="Send the new items first"' : ''}>Bill ${inr(x.order.amount)}</button>
+        <div class="row"><button type="button" class="btn sm" id="tmove">Move table</button><span class="spacer"></span><button type="button" class="btn sm danger" id="tvoid">Cancel order</button></div>` : ''}`;
+  };
+  drawMenu(); drawOrder();
+  $('#mq').oninput = (e) => { q = e.target.value.trim().toLowerCase(); drawMenu(); };
+  if ($('#mcats')) $('#mcats').onclick = (e) => { const b = e.target.closest('[data-c]'); if (!b) return; cat = b.dataset.c; $$('#mcats .chip').forEach((c) => c.classList.toggle('on', c === b)); drawMenu(); };
+  $('#mgrid').onclick = (e) => { const b = e.target.closest('[data-add]'); if (b) { addItem(+b.dataset.add); beep(true); } };
+  $('#tvoice').onclick = () => voiceOrder(menu, (got) => { got.forEach((g) => addItem(g.item_id, g.qty)); });
+  $('#order').addEventListener('input', (e) => { const i = e.target.dataset.note; if (i !== undefined) { draft[+i].note = e.target.value; save(); } });
+  $('#order').addEventListener('click', async (e) => {
+    const t = e.target.closest('button'); if (!t) return;
+    if (t.dataset.plus !== undefined) { draft[+t.dataset.plus].qty += 1; save(); drawOrder(); }
+    if (t.dataset.minus !== undefined) { const d = draft[+t.dataset.minus]; d.qty -= 1; if (d.qty <= 0) draft.splice(+t.dataset.minus, 1); save(); drawOrder(); }
+    if (t.id === 'sendkot') {
+      t.disabled = true;
+      try { const r = await POST(`/api/dine/tables/${tid}/kot`, { lines: draft }); draft = []; save(); Object.assign(x, r); printKot(r.kot); toast(`KOT ${r.kot.number} sent`); drawOrder(); }
+      catch (er) { toast(er.message, 'err'); t.disabled = false; }
+    }
+    if (t.dataset.cut) {
+      const l = x.lines.find((z) => z.id === +t.dataset.cut);
+      const reason = prompt(`Cancel ${l.name}? The kitchen gets a CANCEL ticket. Why (optional):`, '');
+      if (reason === null) return;
+      try { const r = await POST(`/api/dine/lines/${l.id}/void`, { reason }); Object.assign(x, r); printKot(r.kot); drawOrder(); } catch (er) { toast(er.message, 'err'); }
+    }
+    if (t.id === 'tmove') {
+      const free = (await GET('/api/dine')).tables.filter((z) => !z.order && z.id !== tid);
+      if (!free.length) return toast('No free table to move to.');
+      modal(`Move table ${x.table.name}`, [{ k: 'to', label: 'To table', type: 'select', options: free.map((z) => ({ v: z.id, t: z.name + (z.area ? ` (${z.area})` : '') })) }],
+        async (v) => { await POST(`/api/dine/tables/${tid}/move`, { to: +v.to }); const old = kotDraft(tid); if (old.length) { kotDraft(+v.to, old); kotDraft(tid, []); } go('table/' + v.to); }, { submit: 'Move' });
+    }
+    if (t.id === 'tvoid') {
+      const reason = prompt(`Cancel the whole order of ${x.table.name}? Nothing is billed. Why:`, '');
+      if (reason === null) return;
+      try { await POST(`/api/dine/tables/${tid}/void`, { reason }); kotDraft(tid, []); go('tables'); } catch (er) { toast(er.message, 'err'); }
+    }
+    if (t.id === 'tbill') {
+      const customers = parties.filter((p) => p.kind !== 'supplier');
+      const walk = customers.find((p) => p.name === 'Walk-in Customer') || customers[0] || {};
+      const acc = (sys) => (accts.find((a) => a.sys === sys) || accts.find((a) => a.is_cash) || {}).id;
+      modal(`Bill table ${x.table.name}: ${inr(x.order.amount)}`, [
+        { k: 'method', label: 'Paid by', type: 'select', value: 'cash', options: [{ v: 'cash', t: 'Cash' }, { v: 'upi', t: 'UPI' }, { v: 'bank', t: 'Card / Bank' }, ...(limits().no_credit ? [] : [{ v: 'credit', t: 'Credit (udhaar)' }])] },
+        { k: 'party_id', label: 'Customer', type: 'select', value: walk.id, options: customers.map((p) => ({ v: p.id, t: p.name })) },
+        { k: 'discount_pct', label: 'Discount %', type: 'number', value: 0 }],
+      async (v) => {
+        const body = { party_id: +v.party_id, discount_pct: +v.discount_pct || 0, credit_ok: false };
+        if (v.method !== 'credit') body.payment = { full: true, account_id: acc(v.method === 'upi' ? 'upi' : v.method === 'bank' ? 'bank' : 'cash') };
+        const d = await POST(`/api/dine/tables/${tid}/bill`, body);
+        dirty('items', 'accounts', 'parties');
+        printReceipt(d, v.method, 0); toast(`${d.number} saved, table ${x.table.name} is free`); go('tables');
+      }, { submit: 'Bill and print' });
+    }
+  });
+});
+route(/^kots$/, async (el, m, q) => {
+  const x = await GET('/api/dine/kots?day=' + (q.get('day') || ''));
+  el.innerHTML = head('KOT log', '<a class="btn" href="#/tables">Tables</a>') + `
+    <div class="panel"><form class="row" id="kday"><input type="date" name="day" value="${x.day}" style="max-width:170px" aria-label="Day"><button class="btn">Show</button></form>
+      <p class="muted small">Every kitchen ticket of the day. Items cancelled after the kitchen had them are marked: ${x.cancels ? `<b>${x.cancels} today</b>` : 'none today'}.</p></div>
+    <div class="panel flush">${table([{ h: 'Time', f: (r) => new Date(r.created_at).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' }) },
+      { h: 'KOT', f: (r) => `<b>${r.number}</b>${r.kind === 'cancel' ? ' ' + badge('cancelled') : ''}` }, { h: 'Table', k: 'table_name' }, { h: 'Items', f: (r) => esc(r.items || '') },
+      { h: 'By', cls: 'hide-sm', f: (r) => esc(r.user || '') }], x.rows, { empty: 'No KOT on this day.' })}</div>`;
+  $('#kday').onsubmit = (e) => { e.preventDefault(); go('kots?day=' + e.target.day.value); };
+});
 /* ======================================================================= bolkar bill (voice) */
 /* The order spoken in Hindi, Hinglish or English (public/voice.js reads it): what was heard, the item found for each part and
    its quantity, all of which the user can fix before the lines go on the bill. Without speech in the browser the order is typed. */

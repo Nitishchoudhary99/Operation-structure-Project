@@ -914,3 +914,26 @@ a.kpi:hover { border-color: var(--accent, #0f766e); }
 .vlines td:first-child { width: 100%; }
 .vlines tr.vmiss td { background: rgba(234, 179, 8, .12); }
 @media (prefers-reduced-motion: reduce) { #vmic.listening { animation: none; } }
+/* restaurant: tables, the menu grid and a table's order */
+.tarea { margin: 14px 0 8px; font-size: 13px; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); }
+.tgrid { display: grid; grid-template-columns: repeat(auto-fill, minmax(130px, 1fr)); gap: 10px; }
+.ttile { display: flex; flex-direction: column; gap: 4px; min-height: 92px; padding: 12px; border: 1px solid var(--line); border-radius: var(--radius); background: var(--panel);
+  color: var(--ink); text-decoration: none; box-shadow: var(--shadow); position: relative; }
+.ttile b { font-size: 18px; }
+.ttile.busy { border-color: var(--brand); background: var(--brand-soft); }
+.ttile .tamt { font-weight: 700; color: var(--brand); }
+.ttile .tnew { position: absolute; top: 8px; right: 8px; font-size: 11px; padding: 1px 6px; border-radius: 99px; background: #fde68a; color: #713f12; }
+.mgrid { display: grid; grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); gap: 8px; }
+.mitem { font: inherit; display: flex; flex-direction: column; align-items: flex-start; gap: 4px; min-height: 64px; padding: 10px; border: 1px solid var(--line);
+  border-radius: var(--radius); background: var(--panel); color: var(--ink); cursor: pointer; text-align: left; }
+.mitem:active { transform: scale(.98); background: var(--brand-soft); }
+.mitem span { color: var(--muted); font-size: 13px; }
+.kh { margin: 12px 0 6px; font-size: 14px; }
+.klines { display: flex; flex-direction: column; gap: 6px; margin-bottom: 10px; }
+.kline { display: flex; gap: 8px; align-items: center; justify-content: space-between; padding: 8px; border: 1px solid var(--line); border-radius: 8px; }
+.kline.new { border-style: dashed; border-color: var(--brand); }
+.kline .kname { flex: 1; min-width: 0; }
+.kline .kname input { width: 100%; margin-top: 4px; font-size: 13px; padding: 4px 6px; }
+.kline .kqty { display: flex; gap: 6px; align-items: center; white-space: nowrap; }
+.kline .kqty span { min-width: 28px; text-align: center; font-weight: 700; }
+@media print { .receipt .kot-h { font-size: 18px; font-weight: 700; } .receipt .kq { width: 28px; font-size: 16px; font-weight: 700; vertical-align: top; } .receipt .kn { font-style: italic; } .receipt table td { font-size: 14px; } }

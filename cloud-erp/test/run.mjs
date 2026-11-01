@@ -2961,5 +2961,55 @@ if (process.env.ERP_AI_MOCK) {
   check('every line offers other likely items to pick from', parseOrder('ek litre tel', items)[0].options.map((o) => o.id).sort().join() === '3,9');
 }
 
+/* --- restaurant: tables, KOT and one bill per table --- */
+{
+  const ip = '203.0.113.159';
+  const su = await rq('POST', '/api/auth/signup', { business: 'Sharma Dhaba', name: 'S', email: `dhaba${Date.now()}@test.in`, password: 'Dhaba-pass-12345', state: 'Rajasthan' }, { ip });
+  const D = async (m, p, b) => (await rq(m, p, b, { cookie: su.cookie, ip })).data, DE = (m, p, b) => rq(m, p, b, { cookie: su.cookie, ip });
+  const paneer = await D('POST', '/api/items', { name: 'Paneer Tikka', sale_price: 250, gst_rate: 5, is_service: true, category: 'Starters' });
+  const roti = await D('POST', '/api/items', { name: 'Tandoori Roti', sale_price: 20, gst_rate: 5, is_service: true, category: 'Breads' });
+  const dal = await D('POST', '/api/items', { name: 'Dal Makhani', sale_price: 210, gst_rate: 5, price_incl: true, is_service: true, category: 'Main' });
+  check('a new business has no tables', (await D('GET', '/api/dine')).tables.length === 0);
+  const b0 = await D('POST', '/api/dine/tables', { count: 4, prefix: 'T', area: 'Hall' });
+  check('the owner adds 4 tables named T1 to T4, all free', b0.tables.map((t) => t.name).join() === 'T1,T2,T3,T4' && b0.tables.every((t) => !t.order), JSON.stringify(b0.tables.map((t) => t.name)));
+  const [t1, t2, t3] = b0.tables;
+  const k1 = await DE('POST', `/api/dine/tables/${t1.id}/kot`, { lines: [{ item_id: paneer.id, qty: 1, note: 'less spicy' }, { item_id: roti.id, qty: 4 }], guests: 2 });
+  check('the first KOT opens the table and is ticket 1, without prices', k1.status === 200 && k1.data.kot.number === 1 && k1.data.kot.table === 'T1' && k1.data.kot.lines.length === 2
+    && k1.data.kot.lines[0].note === 'less spicy' && !('rate' in k1.data.kot.lines[0]) && k1.data.order.guests === 2, JSON.stringify(k1.data));
+  const k2 = await D('POST', `/api/dine/tables/${t1.id}/kot`, { lines: [{ item_id: dal.id, qty: 1 }] });
+  check('more items later go on the same order under the next ticket', k2.kot.number === 2 && k2.order.id === k1.data.order.id && k2.lines.filter((l) => l.status === 'ok').length === 3);
+  // 250 + 5% = 262.50, 4 x 21 = 84, dal 210 with GST in it
+  check('the running amount is what the guest pays, with GST', k2.order.amount === 556.5, JSON.stringify(k2.order));
+  const board = await D('GET', '/api/dine');
+  check('the board shows T1 running with its amount and the others free', board.tables[0].order && board.tables[0].order.amount === 556.5 && board.tables[0].order.items === 3 && !board.tables[1].order);
+  const rotiLine = k2.lines.find((l) => l.item_id === roti.id);
+  const cut = await D('POST', `/api/dine/lines/${rotiLine.id}/void`, { qty: 1, reason: 'extra' });
+  check('taking off part of an item prints a CANCEL ticket and keeps the rest', cut.kot.kind === 'cancel' && cut.kot.number === 3 && cut.kot.lines[0].qty === 1
+    && cut.lines.find((l) => l.id === rotiLine.id).qty === 3 && cut.order.amount === 535.5, JSON.stringify([cut.kot, cut.order]));
+  check('the KOT log has every ticket, with the cancel counted', await (async () => { const g = await D('GET', '/api/dine/kots'); return g.rows.length === 3 && g.cancels === 1 && /4 x Tandoori Roti/.test(g.rows.find((r) => r.number === 1).items); })());
+  check('an order cannot move onto a busy table', (await DE('POST', `/api/dine/tables/${t2.id}/kot`, { lines: [{ item_id: roti.id, qty: 2 }] })).status === 200
+    && /already has an order/.test((await DE('POST', `/api/dine/tables/${t1.id}/move`, { to: t2.id })).data.error || ''));
+  const mv = await D('POST', `/api/dine/tables/${t1.id}/move`, { to: t3.id });
+  check('moving the order takes everything to the new table and frees the old one', mv.table.name === 'T3' && mv.order.amount === 535.5 && (await D('GET', `/api/dine/tables/${t1.id}`)).order === null);
+  const cash = (await D('GET', '/api/accounts')).rows.find((a) => a.sys === 'cash');
+  const bill = await DE('POST', `/api/dine/tables/${t3.id}/bill`, { payment: { full: true, account_id: cash.id } });
+  const inv = bill.data;
+  check('the bill is one invoice of what was eaten, paid, and notes the table and KOTs', bill.status === 200 && inv.type === 'INV' && inv.total === 536 && inv.paid === 536 && inv.status === 'paid'
+    && inv.lines.length === 3 && /Table T3/.test(inv.notes) && /KOT 1, 2/.test(inv.notes) && inv.party.name === 'Walk-in Customer', JSON.stringify([bill.status, inv.error, inv.total, inv.paid, inv.notes, inv.lines && inv.lines.map((l) => [l.item, l.qty, l.total])]));
+  check('the table is free after the bill, and a second bill finds nothing', (await D('GET', `/api/dine/tables/${t3.id}`)).order === null && (await DE('POST', `/api/dine/tables/${t3.id}/bill`, {})).status === 400);
+  check('the KOT numbers carry on for the day', (await D('POST', `/api/dine/tables/${t1.id}/kot`, { lines: [{ item_id: paneer.id, qty: 1 }] })).kot.number === 5);
+  check('an unknown item or an empty KOT is refused', (await DE('POST', `/api/dine/tables/${t1.id}/kot`, { lines: [{ item_id: 999999, qty: 1 }] })).status === 400
+    && (await DE('POST', `/api/dine/tables/${t1.id}/kot`, { lines: [] })).status === 400);
+  const stEm = `waiter${Date.now()}@test.in`;
+  await D('POST', '/api/users', { name: 'Waiter Raju', email: stEm, password: 'Waiter-pass-123', role: 'sales' });
+  const wl = await rq('POST', '/api/auth/login', { email: stEm, password: 'Waiter-pass-123' }, { ip });
+  const W = (m, p, b) => rq(m, p, b, { cookie: wl.cookie, ip });
+  const wk = await W('POST', `/api/dine/tables/${b0.tables[3].id}/kot`, { lines: [{ item_id: roti.id, qty: 2 }] });
+  check('a waiter sends KOTs, but cannot add tables', wk.status === 200 && wk.data.kot.user === 'Waiter Raju' && (await W('POST', '/api/dine/tables', { count: 2 })).status === 403);
+  const vo = await DE('POST', `/api/dine/tables/${t2.id}/void`, { reason: 'left' });
+  check('the owner can cancel a whole order; nothing is billed and the table is free', vo.status === 200 && !vo.data.tables.find((t) => t.id === t2.id).order);
+  check('a table with an open order cannot be removed', (await DE('DELETE', `/api/dine/tables/${t1.id}`)).status === 400 && (await DE('DELETE', `/api/dine/tables/${t2.id}`)).status === 200);
+}
+
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

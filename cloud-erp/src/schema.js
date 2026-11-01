@@ -3,7 +3,7 @@
    Every business table carries org_id: one database serves many businesses (multi-tenant).
    migrate() runs on the first request after each deploy, so no manual migration step is needed. */
 
-export const SCHEMA_VERSION = 38;
+export const SCHEMA_VERSION = 39;
 
 // document types whose monthly totals doc_month keeps (sales and purchase money documents)
 const MONTH_TYPES = `('INV','SRET','CNOTE','BILL','PRET','DNOTE')`;
@@ -647,6 +647,25 @@ export const MIGRATIONS = {
       date TEXT NOT NULL, points INTEGER NOT NULL, kind TEXT NOT NULL, note TEXT NOT NULL DEFAULT '', created_by INTEGER, created_at TEXT NOT NULL)`,
     `CREATE INDEX IF NOT EXISTS ix_loyalty_party ON loyalty_points (org_id, party_id)`,
     `CREATE INDEX IF NOT EXISTS ix_loyalty_doc ON loyalty_points (doc_id)`,
+  ],
+  /* restaurant tables and KOT (src/dine.js): one open order per table, its items under numbered kitchen tickets */
+  39: [
+    `CREATE TABLE IF NOT EXISTS dine_tables (id INTEGER PRIMARY KEY, org_id INTEGER NOT NULL, name TEXT NOT NULL, area TEXT NOT NULL DEFAULT '',
+      seats INTEGER NOT NULL DEFAULT 0, sort INTEGER NOT NULL DEFAULT 0, active INTEGER NOT NULL DEFAULT 1)`,
+    `CREATE UNIQUE INDEX IF NOT EXISTS ux_dine_tables ON dine_tables (org_id, name)`,
+    `CREATE TABLE IF NOT EXISTS dine_orders (id INTEGER PRIMARY KEY, org_id INTEGER NOT NULL, table_id INTEGER NOT NULL, status TEXT NOT NULL,
+      opened_at TEXT NOT NULL, opened_by INTEGER, guests INTEGER NOT NULL DEFAULT 0, note TEXT NOT NULL DEFAULT '', doc_id INTEGER, closed_at TEXT)`,
+    `CREATE UNIQUE INDEX IF NOT EXISTS ux_dine_open ON dine_orders (table_id) WHERE status IN ('open', 'billing')`,
+    `CREATE INDEX IF NOT EXISTS ix_dine_orders ON dine_orders (org_id, status)`,
+    `CREATE TABLE IF NOT EXISTS kots (id INTEGER PRIMARY KEY, org_id INTEGER NOT NULL, order_id INTEGER NOT NULL, number INTEGER NOT NULL, day TEXT NOT NULL,
+      kind TEXT NOT NULL DEFAULT 'kot', created_at TEXT NOT NULL, created_by INTEGER, txk TEXT)`,
+    `CREATE UNIQUE INDEX IF NOT EXISTS ux_kots_day ON kots (org_id, day, number)`,
+    `CREATE UNIQUE INDEX IF NOT EXISTS ux_kots_txk ON kots (txk)`,
+    `CREATE INDEX IF NOT EXISTS ix_kots_order ON kots (order_id)`,
+    `CREATE TABLE IF NOT EXISTS dine_lines (id INTEGER PRIMARY KEY, order_id INTEGER NOT NULL, item_id INTEGER, name TEXT NOT NULL, qty REAL NOT NULL,
+      rate INTEGER NOT NULL, incl INTEGER NOT NULL DEFAULT 0, gst_rate REAL NOT NULL DEFAULT 0, note TEXT NOT NULL DEFAULT '', kot_id INTEGER,
+      status TEXT NOT NULL DEFAULT 'ok', void_kot_id INTEGER, void_reason TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL, created_by INTEGER)`,
+    `CREATE INDEX IF NOT EXISTS ix_dine_lines ON dine_lines (order_id)`,
   ],
 };
 
