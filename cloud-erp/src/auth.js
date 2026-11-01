@@ -103,7 +103,7 @@ export async function endAllSessions(env, userId) {
 }
 
 /* seat = how many older active staff the business has: when a plan lapses only the owner and the oldest staff keep a seat */
-export const USER_SQL = `SELECT u.id, u.org_id, u.email, u.name, u.role, u.active, u.pw_changed_at, u.role_id, u.ui, r.name AS role_name, r.perms,
+export const USER_SQL = `SELECT u.id, u.org_id, u.email, u.name, u.role, u.active, u.pw_changed_at, u.role_id, u.ui, u.totp_on, r.name AS role_name, r.perms,
   rr.perms AS role_perms, rr.rules AS role_rules, rr.ui AS role_ui,
   (SELECT COUNT(*) FROM users x WHERE x.org_id = u.org_id AND x.active = 1 AND x.role != 'owner' AND x.id < u.id) AS seat
   FROM users u LEFT JOIN roles r ON r.id = u.role_id AND r.org_id = u.org_id

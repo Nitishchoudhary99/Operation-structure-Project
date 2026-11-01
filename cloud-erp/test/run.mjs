@@ -3,6 +3,7 @@
    Runs a full procure-to-pay and order-to-cash cycle for a fresh business, then checks that
    the books balance, stock value equals the inventory ledger, and every total is exact. */
 import { backupHealth } from '../src/lib.js';
+import { totpCode } from '../src/security.js';
 const BASE = process.argv[2] || process.env.ERP_URL || 'http://localhost:8787';
 let cookie = '', pass = 0, fail = 0;
 
@@ -1044,7 +1045,8 @@ const setPlan = (orgName, plan, months = 12) => adm('GET', '/api/admin/orgs').th
   const ok1 = await login(V.email, 'Tenant-pass-1', '203.0.113.20');
   const ok2 = await login(V.email, 'Tenant-pass-1', '203.0.113.20');
   const written = (r) => +(r.headers.get('X-Rows') || '0/0').split('/')[1];
-  check('a successful login writes nothing to the database', ok1.status === 200 && ok2.status === 200 && (r => r === 0 || Number.isNaN(r))(written(ok2)), ok2.headers.get('X-Rows'));
+  // the only write is the sign-in history row (and its index entry)
+  check('a successful login writes only its sign-in history row', ok1.status === 200 && ok2.status === 200 && (r => r <= 2 || Number.isNaN(r))(written(ok2)), ok2.headers.get('X-Rows'));
   let last;
   for (let i = 0; i < 10; i++) last = await login(V.email, 'wrong-' + i, '203.0.113.21');
   check('ten wrong passwords from one address are answered 401', last.status === 401);
@@ -2670,6 +2672,85 @@ if (process.env.ERP_AI_MOCK) {
     && mr.rows[0].status === 'diff', JSON.stringify(mr.summary));
   check('2B match writes nothing: the books still balance and the bills are unchanged', (await G('GET', '/api/reports/trial-balance')).balanced && (await G('GET', `/api/docs/${bB.id}`)).party_ref === '');
   check('2B match: an empty file is refused', (await GE('POST', '/api/gst/2b-match', { month: M, rows: [] })).status === 400);
+}
+
+/* --- security & privacy: two-step sign-in, sign-in history, everyone-must rule, closing a business --- */
+{
+  const ip = '203.0.113.152', em = `sec${Date.now()}@test.in`, pw = 'Secure-pass-12345';
+  const su = await rq('POST', '/api/auth/signup', { business: 'Safe Store', name: 'Owner', email: em, password: pw, state: 'Rajasthan' }, { ip });
+  let ck = su.cookie;
+  const S = async (m, p, b) => (await rq(m, p, b, { cookie: ck, ip })).data, SE = (m, p, b) => rq(m, p, b, { cookie: ck, ip });
+  const step = () => Math.floor(Date.now() / 30000);
+  check('two-step sign-in starts off', (await S('GET', '/api/me')).user.two_step === false);
+  const st = await S('POST', '/api/me/2fa/start');
+  check('turning it on gives a key and an authenticator link, not yet on', /^[A-Z2-7]{32}$/.test(st.secret) && st.uri.startsWith('otpauth://totp/SmartTrader') && (await S('GET', '/api/me')).user.two_step === false, JSON.stringify(st));
+  check('a wrong code does not turn it on', (await SE('POST', '/api/me/2fa/enable', { code: '000000' })).status === 400);
+  const on = await S('POST', '/api/me/2fa/enable', { code: await totpCode(st.secret, step()) });
+  check('the right code turns it on and gives 8 one-time backup codes', on.ok && on.backup_codes.length === 8 && on.backup_codes.every((c) => /^\d{5}-\d{5}$/.test(c)), JSON.stringify(on));
+  const l1 = await rq('POST', '/api/auth/login', { email: em, password: pw }, { ip });
+  check('sign-in with the password alone asks for the code and gives no session', l1.status === 200 && l1.data.need_code === true && !l1.cookie);
+  const l2 = await rq('POST', '/api/auth/login', { email: em, password: pw, code: await totpCode(st.secret, step()) }, { ip });
+  check('a code already used cannot sign in again', l2.status === 401 && l2.data.need_code === true && !l2.cookie, JSON.stringify(l2.data));
+  const l3 = await rq('POST', '/api/auth/login', { email: em, password: pw, code: on.backup_codes[0] }, { ip });
+  const l4 = await rq('POST', '/api/auth/login', { email: em, password: pw, code: on.backup_codes[0].replace('-', '') }, { ip });
+  check('a backup code signs in once', l3.status === 200 && !!l3.cookie && l4.status === 401);
+  const l5 = await rq('POST', '/api/auth/login', { email: em, password: pw, code: await totpCode(st.secret, step() + 1) }, { ip });
+  check('the next code from the app signs in', l5.status === 200 && !!l5.cookie, JSON.stringify(l5.data));
+  ck = l5.cookie;
+  const hist = await S('GET', '/api/security');
+  const hows = hist.rows.map((r) => `${r.ok}:${r.how}`);
+  check('the sign-in history shows right and wrong sign-ins with how', hist.all && hows.includes('0:wrong code') && hows.includes('1:password + backup code') && hows.includes('1:password + code')
+    && hist.rows.every((r) => r.device && r.at), JSON.stringify(hows));
+  // the owner asks everyone for it
+  const sEm = `secstaff${Date.now()}@test.in`;
+  await S('POST', '/api/users', { name: 'Counter Boy', email: sEm, password: 'Staff-pass-12345', role: 'sales' });
+  check('only after turning it on for yourself, and only the owner, can it be asked of everyone', (await S('PUT', '/api/settings/require-2fa', { on: true })).ok);
+  const sl = await rq('POST', '/api/auth/login', { email: sEm, password: 'Staff-pass-12345' }, { ip });
+  const T = (m, p, b) => rq(m, p, b, { cookie: sl.cookie, ip });
+  const sme = (await T('GET', '/api/me')).data, blocked = await T('GET', '/api/items');
+  check('staff without it can sign in but must set it up before anything opens', sl.status === 200 && sme.must_2fa === true && blocked.status === 403 && blocked.data.code === 'need_2fa', JSON.stringify([sme.must_2fa, blocked.status]));
+  const sst = (await T('POST', '/api/me/2fa/start')).data;
+  await T('POST', '/api/me/2fa/enable', { code: await totpCode(sst.secret, step()) });
+  check('once set up, the staff member works normally', (await T('GET', '/api/items')).status === 200 && (await T('GET', '/api/me')).data.must_2fa === false);
+  const staffId = (await S('GET', '/api/security')).users.find((u) => u.email === sEm).id, ownerId = (await S('GET', '/api/me')).user.id;
+  check('a staff member cannot turn it off while the business asks for it, nor reset others', (await T('POST', '/api/me/2fa/disable', { password: 'Staff-pass-12345', code: await totpCode(sst.secret, step() + 1) })).status === 400
+    && (await T('POST', `/api/users/${ownerId}/2fa-reset`)).status === 403);
+  check('the owner resets a staff member who lost the phone', (await S('POST', `/api/users/${staffId}/2fa-reset`)).ok && (await S('GET', '/api/security')).users.find((u) => u.id === staffId).totp_on === 0);
+  await S('PUT', '/api/settings/require-2fa', { on: false });
+  check('the owner turns it off with password and a code', (await SE('POST', '/api/me/2fa/disable', { password: pw, code: '111111' })).status === 400
+    && (await S('POST', '/api/me/2fa/disable', { password: pw, code: on.backup_codes[1] })).ok && (await S('GET', '/api/me')).user.two_step === false);
+  // closing the business
+  const item = await S('POST', '/api/items', { name: 'Soap', sale_price: 40, gst_rate: 18 });
+  const cust = await S('POST', '/api/parties', { name: 'Close Cust', kind: 'customer', state: 'Rajasthan' });
+  await S('POST', '/api/docs', { type: 'INV', party_id: cust.id, lines: [{ description: 'Service', qty: 1, rate: 100, gst_rate: 18 }] });
+  const ctl = await rq('POST', '/api/auth/signup', { business: 'Control Shop', name: 'C', email: `ctl${Date.now()}@test.in`, password: 'Control-pass-123', state: 'Rajasthan' }, { ip: '203.0.113.153' });
+  const C = async (m, p, b) => (await rq(m, p, b, { cookie: ctl.cookie, ip: '203.0.113.153' })).data;
+  await C('POST', '/api/items', { name: 'Control item', sale_price: 10 });
+  const cc = await C('POST', '/api/parties', { name: 'Control cust', kind: 'customer', state: 'Rajasthan' });
+  await C('POST', '/api/docs', { type: 'INV', party_id: cc.id, lines: [{ description: 'X', qty: 1, rate: 50, gst_rate: 0 }] });
+  check('closing needs the business name typed and the password', (await SE('POST', '/api/org/close', { password: pw, name: 'wrong name' })).status === 400
+    && (await SE('POST', '/api/org/close', { password: 'nope-nope-nope', name: 'Safe Store' })).status === 400 && (await T('POST', '/api/org/close', { password: 'Staff-pass-12345', name: 'Safe Store' })).status === 403);
+  const cl = await S('POST', '/api/org/close', { password: pw, name: 'safe store' });
+  check('the owner sets the business to close in 7 days', cl.ok && Math.round((Date.parse(cl.close_after) - Date.now()) / 864e5) === 7);
+  const sl2 = await rq('POST', '/api/auth/login', { email: sEm, password: 'Staff-pass-12345' }, { ip });
+  check('while it waits, staff cannot sign in or work; the owner still can', sl2.status === 403 && (await T('GET', '/api/items')).status === 403 && (await SE('GET', '/api/items')).status === 200);
+  check('the owner can change their mind', (await S('POST', '/api/org/close/cancel')).ok && (await T('GET', '/api/items')).status === 200);
+  // the purge runs from the daily job, or from the admin (needs ADMIN_KEY, as the admin tests above)
+  if ((await adm('POST', '/api/admin/purge', {})).status === 404) console.log('SKIP  closing purge (no ADMIN_KEY configured)');
+  else {
+    check('the daily run deletes nothing before the 7 days are over', (await (await adm('POST', '/api/admin/purge', {})).json()).purged.every((x) => x.org_id !== su.data.org_id)
+      && (await (await adm('POST', '/api/admin/purge', { org_id: (await S('GET', '/api/me')).org.id })).json()).purged.length === 0);
+    await S('POST', '/api/org/close', { password: pw, name: 'Safe Store' });
+    const orgId = (await S('GET', '/api/me')).org.id;
+    const pg = await (await adm('POST', '/api/admin/purge', { org_id: orgId })).json();
+    const p1 = pg.purged[0] || { deleted: {} };
+    check('when it runs, every record of that business goes', p1.done === true && p1.deleted.docs >= 1 && p1.deleted.doc_lines >= 1 && p1.deleted.items >= 1 && p1.deleted.parties >= 1
+      && p1.deleted.users === 2 && p1.deleted.logins >= 1 && p1.deleted.journal_lines >= 1, JSON.stringify(pg));
+    check('nobody of the closed business can sign in any more', (await rq('POST', '/api/auth/login', { email: em, password: pw, code: '' }, { ip })).status === 401
+      && (await SE('GET', '/api/me')).status === 401 && item.id > 0);
+    const ci = await C('GET', '/api/items'), ctb = await C('GET', '/api/reports/trial-balance');
+    check('another business is untouched', ci.rows.length === 1 && ci.rows[0].name === 'Control item' && ctb.balanced && ctb.total_debit > 0, JSON.stringify([ci.rows.length, ctb.balanced]));
+  }
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);
