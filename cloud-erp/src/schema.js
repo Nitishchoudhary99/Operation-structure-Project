@@ -3,7 +3,7 @@
    Every business table carries org_id: one database serves many businesses (multi-tenant).
    migrate() runs on the first request after each deploy, so no manual migration step is needed. */
 
-export const SCHEMA_VERSION = 36;
+export const SCHEMA_VERSION = 37;
 
 // document types whose monthly totals doc_month keeps (sales and purchase money documents)
 const MONTH_TYPES = `('INV','SRET','CNOTE','BILL','PRET','DNOTE')`;
@@ -632,6 +632,13 @@ export const MIGRATIONS = {
     `ALTER TABLE items ADD COLUMN wholesale_price INTEGER NOT NULL DEFAULT 0`,
     `ALTER TABLE items ADD COLUMN wholesale_min REAL NOT NULL DEFAULT 0`,
     `ALTER TABLE parties ADD COLUMN price_level TEXT NOT NULL DEFAULT ''`,
+  ],
+  /* online catalogue: a public rate list per business (opt-in, its own link), and items left out of it */
+  37: [
+    `ALTER TABLE orgs ADD COLUMN shop_token TEXT`,
+    `ALTER TABLE orgs ADD COLUMN shop TEXT NOT NULL DEFAULT '{}'`,
+    `CREATE UNIQUE INDEX IF NOT EXISTS ix_orgs_shop ON orgs (shop_token)`,
+    `ALTER TABLE items ADD COLUMN shop_hide INTEGER NOT NULL DEFAULT 0`,
   ],
 };
 

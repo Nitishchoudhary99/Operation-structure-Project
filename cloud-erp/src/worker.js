@@ -809,6 +809,7 @@ function itemPrice(b, f) {
   if (b.wholesale_price === undefined || b.wholesale_price === null) f.wholesale_price = null;
   else { const w = ratePaise(num(b.wholesale_price, 'Wholesale price', { min: 0, def: 0 })); f.wholesale_price = f.price_incl ? exclOfGst(w, f.gst_rate) : Math.round(w); }
   f.wholesale_min = b.wholesale_min === undefined || b.wholesale_min === null ? null : num(b.wholesale_min, 'Wholesale from quantity', { min: 0, max: 1e9, def: 0 });
+  f.shop_hide = b.shop_show === undefined ? null : yes(b.shop_show) ? 0 : 1;
   return f;
 }
 async function barcodeTaken(c, code, exceptId = 0) {
@@ -826,6 +827,50 @@ const itemOut = (i, c) => {
   if (c && !seesCosts(c.user)) { delete o.purchase_price; delete o.avg_cost; delete o.stock_value; }
   return o;
 };
+/* Online catalogue: the business's rate list on a public link of its own (opt-in). Customers pick items and the order goes to
+   the shop's WhatsApp as a message; nothing is written from the public page. It shows names, units and prices with GST, and, if the
+   shop wants, in stock or not; never quantities, costs, wholesale prices or anything about other customers. */
+const shopOf = (o) => { let s = {}; try { s = JSON.parse(o.shop || '{}') || {}; } catch (e) { s = {}; } return { on: !!s.on, stock: s.stock !== false, wa: String(s.wa || ''), note: String(s.note || '') }; };
+const shopOut = (c, o) => ({ ...shopOf(o), link: o.shop_token ? `${new URL(c.request.url).origin}/s/${o.shop_token}` : '' });
+router.add('GET', '/api/settings/shop', async (c) => {
+  const n = await c.db.prepare(`SELECT COUNT(*) AS n FROM items WHERE org_id = ? AND shop_hide = 0 AND sale_price > 0`).bind(c.org.id).first();
+  return json({ ...shopOut(c, c.org), items: n.n });
+});
+router.add('PUT', '/api/settings/shop', async (c) => {
+  requireCan(c.user, 'settings');
+  const wa = str(c.body.wa, 15).replace(/\D/g, '');
+  if (wa && !/^(91)?\d{10}$/.test(wa)) throw bad('The WhatsApp number for orders must be a 10-digit mobile number.');
+  const s = { on: c.body.on === true, stock: c.body.stock !== false, wa, note: str(c.body.note, 200) };
+  const token = c.org.shop_token || (s.on ? randomHex(12) : null);
+  await c.db.batch([c.db.prepare(`UPDATE orgs SET shop = ?, shop_token = ? WHERE id = ?`).bind(JSON.stringify(s), token, c.org.id), auditStatement(c, 'online catalogue', s.on ? 'on' : 'off')]);
+  return json(shopOut(c, { ...c.org, shop: JSON.stringify(s), shop_token: token }));
+});
+/* a new link: the old one stops working at once */
+router.add('POST', '/api/settings/shop/new-link', async (c) => {
+  requireCan(c.user, 'settings');
+  const token = randomHex(12);
+  await c.db.batch([c.db.prepare(`UPDATE orgs SET shop_token = ? WHERE id = ?`).bind(token, c.org.id), auditStatement(c, 'online catalogue', 'new link')]);
+  return json(shopOut(c, { ...c.org, shop_token: token }));
+});
+router.add('PUT', '/api/items/:id/shop', async (c) => {
+  requireCan(c.user, 'items');
+  const r = await c.db.prepare(`UPDATE items SET shop_hide = ? WHERE id = ? AND org_id = ?`).bind(c.body.show === false ? 1 : 0, +c.params.id, c.org.id).run();
+  if (!r.meta.changes) throw notFound('Item not found.');
+  return json({ ok: true });
+});
+router.add('GET', '/api/public/shop/:token', async (c) => {
+  await rateLimit(c.env, 'shop:' + clientIp(c), 120, 600);
+  const token = str(c.params.token, 40);
+  const o = /^[0-9a-f]{24}$/.test(token) && await c.db.prepare(`SELECT id, name, city, phone, address, upi_id, shop FROM orgs WHERE shop_token = ?`).bind(token).first();
+  const s = o ? shopOf(o) : null;
+  if (!o || !s.on) throw notFound('This rate list is not available. Ask the shop for a new link.');
+  const { results } = await c.db.prepare(`SELECT id, name, unit, category, sale_price, gst_rate, qty_on_hand, is_service FROM items
+      WHERE org_id = ? AND shop_hide = 0 AND sale_price > 0 ORDER BY category, name LIMIT 1000`).bind(o.id).all();
+  const wa = (s.wa || String(o.phone || '').replace(/\D/g, '')).replace(/^(\d{10})$/, '91$1');
+  return json({ shop: { name: o.name, city: o.city || '', note: s.note, wa: /^91\d{10}$/.test(wa) ? wa : '' },
+    items: results.map((i) => ({ id: i.id, name: i.name, unit: i.unit, category: i.category || '', price: R(i.sale_price * (100 + (i.gst_rate || 0)) / 100),
+      ...(s.stock ? { in_stock: !!i.is_service || i.qty_on_hand > 0 } : {}) })) }, 200, { 'X-Robots-Tag': 'noindex', 'Cache-Control': 'no-store' });
+}, { public: true });
 /* What this customer paid last for each item (their bills of the last year): the bill editor offers it next to the rate */
 router.add('GET', '/api/rates', async (c) => {
   const pid = +c.url.searchParams.get('party_id') || 0;
@@ -848,10 +893,10 @@ router.add('POST', '/api/items', async (c) => {
   if (await c.db.prepare(`SELECT 1 FROM items WHERE org_id = ? AND name = ?`).bind(c.org.id, f.name).first()) throw bad(`An item called ${f.name} already exists.`);
   await barcodeTaken(c, f.barcode);
   const r = await c.db.prepare(`INSERT INTO items (org_id, sku, name, category, unit, hsn, gst_rate, purchase_price, sale_price, reorder_level, is_service, avg_cost, barcode, location, extra,
-      track_batch, track_serial, warranty_months, price_incl, wholesale_price, wholesale_min, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING *`)
+      track_batch, track_serial, warranty_months, price_incl, wholesale_price, wholesale_min, shop_hide, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING *`)
     .bind(c.org.id, f.sku, f.name, f.category, f.unit, f.hsn, f.gst_rate, f.purchase_price ?? 0, f.sale_price, f.reorder_level, f.is_service, f.purchase_price ?? 0, f.barcode, f.location,
       f.extra ?? cleanExtra(fieldsOf(c.org), 'item', {}), f.is_service ? 0 : f.track_batch ?? 0, f.is_service ? 0 : f.track_serial ?? 0, f.warranty_months ?? 0, f.price_incl,
-      f.wholesale_price ?? 0, f.wholesale_min ?? 0, nowIso()).first();
+      f.wholesale_price ?? 0, f.wholesale_min ?? 0, f.shop_hide ?? 0, nowIso()).first();
   if (c.body.opening_qty && +c.body.opening_qty > 0 && !f.is_service) {
     await stockAdjust(c, { item_id: r.id, qty: c.body.opening_qty, rate: c.body.opening_rate === undefined || c.body.opening_rate === '' ? R(f.purchase_price ?? 0) : c.body.opening_rate, reason: 'opening',
       warehouse_id: c.body.warehouse_id, batch_no: c.body.opening_batch, expiry: c.body.opening_expiry, serials: c.body.opening_serials });
@@ -867,9 +912,9 @@ router.add('PUT', '/api/items/:id', async (c) => {
   const r = await c.db.prepare(`UPDATE items SET sku = ?, name = ?, category = ?, unit = ?, hsn = ?, gst_rate = ?, purchase_price = COALESCE(?, purchase_price), sale_price = ?, price_incl = ?, reorder_level = ?, barcode = ?, location = ?,
       extra = COALESCE(?, extra), track_batch = CASE WHEN is_service = 1 THEN 0 ELSE COALESCE(?, track_batch) END,
       track_serial = CASE WHEN is_service = 1 THEN 0 ELSE COALESCE(?, track_serial) END, warranty_months = COALESCE(?, warranty_months),
-      wholesale_price = COALESCE(?, wholesale_price), wholesale_min = COALESCE(?, wholesale_min) WHERE id = ? AND org_id = ?`)
+      wholesale_price = COALESCE(?, wholesale_price), wholesale_min = COALESCE(?, wholesale_min), shop_hide = COALESCE(?, shop_hide) WHERE id = ? AND org_id = ?`)
     .bind(f.sku, f.name, f.category, f.unit, f.hsn, f.gst_rate, f.purchase_price, f.sale_price, f.price_incl, f.reorder_level, f.barcode, f.location, f.extra, f.track_batch,
-      f.track_serial, f.warranty_months, f.wholesale_price, f.wholesale_min, +c.params.id, c.org.id).run();
+      f.track_serial, f.warranty_months, f.wholesale_price, f.wholesale_min, f.shop_hide, +c.params.id, c.org.id).run();
   if (!r.meta.changes) throw notFound('Item not found.');
   return json({ ok: true });
 });
@@ -2180,6 +2225,7 @@ const READ_AREAS = [
   [/^\/api\/vaade\/(cash|check)\/?$/, OPEN],
   [/^\/api\/items(\/lookup)?\/?$/, ['items', 'sales', 'purchase']],
   [/^\/api\/rates\/?$/, 'sales'],
+  [/^\/api\/settings\/shop\/?$/, ['sales', 'items', 'settings']],
   [/^\/api\/items\/\d+\/moves\/?$/, 'items'],
   [/^\/api\/reports\/(stock|stock-ageing|expiry)\/?$/, 'items'],
   [/^\/api\/items\/\d+\/lots\/?$/, ['items', 'sales', 'purchase']],
@@ -2306,6 +2352,9 @@ async function sharePage(request, env, kind, token) {
       desc = b > 0 ? T.khDue(inrW(b), !!p.upi_id) : b < 0 ? T.khAdv(inrW(-b)) : T.khClear;
       image = `/og-khata${sfx}.png`;
     }
+  } else if (kind === 's') {
+    const o = await env.DB.prepare(`SELECT name, city FROM orgs WHERE shop_token = ?`).bind(token).first();
+    if (o) { title = `${o.name}${o.city ? ', ' + o.city : ''}: rate list`; desc = 'Dekhiye rate, chuniye saaman, aur order WhatsApp par bhejiye.'; }
   } else if (kind === 'c') {
     const f = await env.DB.prepare(`SELECT f.balance, o.name AS org FROM confirmations f JOIN orgs o ON o.id = f.org_id WHERE f.token = ?`).bind(token).first();
     if (f) { title = T.cf(f.org); desc = T.cfDesc(inrW(f.balance)); image = `/og-confirm${sfx}.png`; }
@@ -2336,7 +2385,7 @@ const SECURITY_TXT = 'Contact: https://wa.me/919068446139\nContact: https://docb
   'Preferred-Languages: en, hi\nCanonical: https://erp.docbrisk.com/.well-known/security.txt\nPolicy: https://docbrisk.com/security\n';
 async function respond(request, env, url) {
   if (url.pathname === '/.well-known/security.txt') return new Response(SECURITY_TXT, { headers: { 'Content-Type': 'text/plain; charset=utf-8', 'Cache-Control': 'public, max-age=86400' } });
-  const share = url.pathname.match(/^\/(k|i|c)\/([0-9a-f]{24})\/?$/);
+  const share = url.pathname.match(/^\/(k|i|c|s)\/([0-9a-f]{24})\/?$/);
   if (share && env.ASSETS) return sharePage(request, env, share[1], share[2]).catch(() => env.ASSETS.fetch(new Request(url.origin + '/', request)));
   if (!url.pathname.startsWith('/api/')) {
     return env.ASSETS ? env.ASSETS.fetch(request) : new Response('Not found', { status: 404 });
