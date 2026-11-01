@@ -696,13 +696,34 @@ const TODAY = {
   backup_none: ['amber', () => 'Your business data has no backup yet', '#/settings?backup=1', 'Back up'],
   backup_old: ['amber', (n) => `No backup of your data for ${n} days`, '#/settings?backup=1', 'Back up'],
   tds_due: ['amber', () => 'TDS kept back from suppliers, to pay to the government by the 7th', '#/tds', 'Pay'],
+  // Munim ji: from the business's own records
+  cash_short: ['red', () => 'Cash and bank are short of the supplier bills due this week', '#/cash', 'Plan'],
+  sales_drop: ['amber', (n) => `Sales this week are ${n}% below your usual week`, '#/reports/register?type=INV', 'See'],
+  below_cost: ['amber', (n) => `${n} bill${n > 1 ? 's' : ''} this week sold items below their cost`, '#/sales/INV', 'Check'],
+  big_discount: ['amber', (n) => `${n} bill${n > 1 ? 's' : ''} this week gave 20% or more discount`, '#/sales/INV', 'Check'],
+  lost_customers: ['blue', (n, r) => `${n} regular customer${n > 1 ? 's have' : ' has'} not bought in 30 days${r && r.names ? ': ' + r.names.join(', ') + (n > r.names.length ? '…' : '') : ''}`, '#/parties', 'Call'],
+};
+/* the same lines in Hindi (Hindi screens): the text and the button; the link stays */
+const TODAY_HI = {
+  overdue: [(n) => `${n} बिल की तारीख निकल गई`, 'याद दिलाएँ'], promises: [(n) => `${n} वादे का भुगतान आज तक`, 'देखें'], disputed: [(n) => `${n} ग्राहकों ने बाकी पर आपत्ति की`, 'देखें'],
+  expired: [(n) => `${n} बैच एक्सपायर, फिर भी स्टॉक में`, 'देखें'], recurring: [(n) => `${n} दोहराने वाले बिल नहीं बन सके`, 'ठीक करें'], recurring_send: [(n) => `${n} नए दोहराने वाले बिल ग्राहकों को भेजने हैं`, 'भेजें'],
+  approve: [(n) => `${n} खरीद ऑर्डर आपकी मंज़ूरी के लिए`, 'मंज़ूर करें'], bills_due: [(n) => `${n} सप्लायर बिल 7 दिन में देय`, 'चुकाएँ'], expiring: [(n) => `${n} बैच 30 दिन में एक्सपायर`, 'पहले बेचें'],
+  low_stock: [(n) => `${n} आइटम कम स्टॉक पर`, 'मँगाएँ'], to_deliver: [(n) => `${n} सेल्स ऑर्डर डिलीवर करने हैं`, 'खोलें'], to_receive: [(n) => `${n} खरीद ऑर्डर का माल आना है`, 'खोलें'],
+  at_gate: [(n) => `${n} गाड़ी गेट पर, माल नहीं लिया`, 'माल लें'], in_transit: [(n) => `${n} बिल दर्ज, माल रास्ते में`, 'माल लें'], claims: [(n) => `${n} रास्ते के क्लेम बाकी`, 'पीछा करें'],
+  wa_asks: [(n) => `${n} ग्राहकों ने WhatsApp पर लिखा, जवाब बाकी`, 'जवाब दें'], put_away: [(n) => `${n} आइटम रैक में नहीं रखे`, 'रखें'], attendance: [(n) => `आज की हाज़िरी लगाएँ (${n} स्टाफ)`, 'लगाएँ'],
+  salary_due: [(n) => `${n} स्टाफ की पिछले महीने की तनख्वाह बाकी`, 'चुकाएँ'], drive_failing: [() => 'Google Drive बैकअप नहीं चल रहा', 'ठीक करें'], backup_none: [() => 'आपके डेटा का अभी कोई बैकअप नहीं', 'बैकअप लें'],
+  backup_old: [(n) => `${n} दिन से डेटा का बैकअप नहीं`, 'बैकअप लें'], tds_due: [() => 'सप्लायर से काटा TDS, 7 तारीख तक सरकार को जमा करें', 'जमा करें'],
+  cash_short: [() => 'इस हफ़्ते के सप्लायर बिलों के लिए नकद और बैंक में पैसे कम हैं', 'योजना देखें'], sales_drop: [(n) => `इस हफ़्ते बिक्री आम हफ़्ते से ${n}% कम`, 'देखें'],
+  below_cost: [(n) => `इस हफ़्ते ${n} बिल में सामान लागत से कम में बिका`, 'जाँचें'], big_discount: [(n) => `इस हफ़्ते ${n} बिल में 20% या ज़्यादा छूट दी गई`, 'जाँचें'],
+  lost_customers: [(n, r) => `${n} पुराने ग्राहकों ने 30 दिन से कुछ नहीं खरीदा${r && r.names ? ': ' + r.names.join(', ') + (n > r.names.length ? '…' : '') : ''}`, 'फ़ोन करें'],
 };
 function todayCard(t) {
   if (!t) return '';
   const rows = t.rows.filter((r) => TODAY[r.key]);
   if (!rows.length) return `<div class="panel today ok"><b>Aaj ke kaam</b> <span class="muted">· Nothing pending today. Sab theek hai ✓</span></div>`;
-  return `<div class="panel today"><div class="row"><h3 style="margin:0">Aaj ke kaam <span class="muted">· Today</span></h3><span class="spacer"></span><span class="muted">${rows.length} to do</span></div>
-    <div class="todo">${rows.map((r) => { const [tone, text, href, cta] = TODAY[r.key]; return `<a class="t-${tone}" href="${href}"><i></i><span>${esc(text(r.n))}${r.value ? ` <b>${inr0(r.value)}</b>` : ''}</span><em>${cta} &rsaquo;</em></a>`; }).join('')}</div></div>`;
+  return `<div class="panel today"><div class="row"><h3 style="margin:0">Aaj ke kaam <span class="muted">· Today</span></h3><span class="spacer"></span><span class="muted">${rows.length} ${LANG === 'hi' ? 'काम' : 'to do'}</span></div>
+    <div class="todo">${rows.map((r) => { let [tone, text, href, cta] = TODAY[r.key]; if (LANG === 'hi' && TODAY_HI[r.key]) [text, cta] = TODAY_HI[r.key];
+      return `<a class="t-${tone}" href="${href}"><i></i><span>${esc(text(r.n, r))}${r.value ? ` <b>${inr0(r.value)}</b>` : ''}</span><em>${cta} &rsaquo;</em></a>`; }).join('')}</div></div>`;
 }
 
 /* First-run checklist on the dashboard. Each step ticks itself from real data; it hides once all are done
@@ -3302,6 +3323,7 @@ async function read2b(file) {
   return twoBFromJson(j);
 }
 let gstr2bLast = null;          // the 2B read last, so changing tabs or months does not ask for the file again
+const IMS_LABEL = { accept: ['Accept', 'b-paid'], pending: ['Keep pending', 'b-pending'], check: ['Check first', 'b-partial'] };
 const G2B_STATUS = { diff: ['Amount differs', 'b-overdue'], missing_books: ['Not in your bills', 'b-unpaid'], missing_2b: ['Not in 2B', 'b-pending'], number: ['Bill no. differs', 'b-partial'], ok: ['Matched', 'b-paid'] };
 route(/^gstr$/, async (el, m, q) => {
   const tab = q.get('tab') === '2b' ? '2b' : '1', month = /^\d{4}-(0[1-9]|1[0-2])$/.test(q.get('month') || '') ? q.get('month') : monthBefore(ME.today);
@@ -3360,6 +3382,7 @@ route(/^gstr$/, async (el, m, q) => {
       $('#g2list').innerHTML = table([
         { h: 'Supplier', f: (x) => `<b>${esc(x.supplier || nameOf.get(x.gstin) || x.gstin)}</b><div class="muted small mono">${esc(x.gstin)}</div><span class="show-sm" style="margin-top:4px">${badgeOf(x)}</span>` },
         { h: 'Status', cls: 'hide-sm', f: badgeOf }, { h: 'In GSTR-2B', cls: 'hide-sm', f: (x) => side(x.b2b) }, { h: 'Your bill', cls: 'hide-sm', f: bookOf },
+        { h: 'IMS', f: (x) => (x.ims ? `<span class="badge ${IMS_LABEL[x.ims][1]}">${IMS_LABEL[x.ims][0]}</span>` : '<span class="muted">—</span>') },
         { h: 'What to do', f: (x) => `<div class="show-sm small" style="flex-direction:column;gap:4px;margin-bottom:6px"><div><b>2B:</b> ${side(x.b2b)}</div><div><b>Your bill:</b> ${bookOf(x)}</div></div>
           <div class="small">${esc(x.note)}</div>${wa(x) ? `<div style="margin-top:6px">${wa(x)}</div>` : ''}` }], rows, { empty: 'Nothing here.' });
     };
@@ -3369,6 +3392,8 @@ route(/^gstr$/, async (el, m, q) => {
         <div class="kpi"><div class="l">To look into</div><div class="v ${S.diff.n + S.missing_books.n + S.missing_2b.n ? 'neg' : ''}">${S.diff.n + S.missing_books.n + S.missing_2b.n}</div>
           <div class="s">credit at risk ${inr0(S.missing_2b.tax)}</div></div></div>
       ${S.no_itc.n ? `<div class="panel warnbox small">${S.no_itc.n} document(s) in the 2B carry no credit (ITC availability: No). Do not claim them.</div>` : ''}
+      <div class="panel small"><b>On the GST portal's IMS dashboard</b> (Returns → Invoice Management System): accept <b>${S.ims.accept}</b>, keep <b>${S.ims.pending}</b> pending
+        until the supplier corrects them, and check <b>${S.ims.check}</b> against your purchases before accepting or rejecting. Untouched ones count as accepted.</div>
       <div class="chips" id="g2chips"><button type="button" class="chip on" data-s="all">All ${r.rows.length}</button>${Object.keys(G2B_STATUS).filter((k) => counts[k])
         .map((k) => `<button type="button" class="chip" data-s="${k}">${G2B_STATUS[k][0]} ${counts[k]}</button>`).join('')}<button type="button" class="chip" id="g2csv">Download CSV</button></div>
       <div class="panel flush" id="g2list"></div>`;
