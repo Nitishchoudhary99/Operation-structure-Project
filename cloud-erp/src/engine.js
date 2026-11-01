@@ -30,6 +30,10 @@ export const DOC_TYPES = {
 };
 /* Documents that reduce what the party owes / what we owe, and settle the original invoice or bill. */
 export const NOTE_TYPES = ['SRET', 'PRET', 'CNOTE', 'DNOTE'];
+/* The price a sale starts from: the item's wholesale price for a wholesale customer, or from the item's wholesale quantity up;
+   else its sale price. Both are kept before GST. */
+export const listPrice = (item, party, qty) => (item.wholesale_price > 0 && ((party && party.price_level === 'wholesale') || (item.wholesale_min > 0 && qty >= item.wholesale_min))
+  ? item.wholesale_price : item.sale_price);
 
 /* ---------------------------------------------------------------- context */
 export const SYS_SQL = `SELECT id, sys FROM accounts WHERE org_id = ? AND sys IS NOT NULL`;
@@ -232,7 +236,8 @@ export async function createDoc(ctx, body) {
     const item = raw.item_id ? await getItem(+raw.item_id) : null;
     if (raw.item_id && !item) throw bad(`Line ${n}: unknown item.`);
     const qty = roundQty(num(raw.qty, `Line ${n} quantity`, { min: 0.001, max: 1e9 }));
-    const fallbackRate = item && !T.note ? (T.side === 'sales' ? item.sale_price : item.purchase_price) : 0;   // notes: the user types the difference
+    const list = item && T.side === 'sales' ? listPrice(item, party, qty) : 0;
+    const fallbackRate = item && !T.note ? (T.side === 'sales' ? list : item.purchase_price) : 0;   // notes: the user types the difference
     let rate = raw.rate === undefined || raw.rate === '' || raw.rate === null ? fallbackRate : ratePaise(num(raw.rate, `Line ${n} rate`, { min: 0 }));
     let disc = num(raw.discount_pct, `Line ${n} discount`, { min: 0, max: 100, def: 0 });
     let gst = num(raw.gst_rate, `Line ${n} GST rate`, { min: 0, max: 100, def: item ? item.gst_rate : 0 });
@@ -241,9 +246,9 @@ export async function createDoc(ctx, body) {
     const desc = str(raw.description, 300) || (item ? item.name : '');
     if (!item && !desc) throw bad(`Line ${n}: choose an item or type a description.`);
     // a role with a discount limit: the price after rate cut and discount stays at or above the item's price less that %
-    if (limits.max_discount !== null && item && item.sale_price > 0 && T.side === 'sales' && !T.note && type !== 'SRET') {
-      const floor = Math.round(item.sale_price * (1 - limits.max_discount / 100));
-      if (Math.round(rate * (1 - disc / 100)) < floor) throw new HttpError(403, `Line ${n}: the lowest price your role may give for ${item.name} is ₹${(floor / 100).toFixed(2)} (${limits.max_discount}% off ₹${(item.sale_price / 100).toFixed(2)}).`);
+    if (limits.max_discount !== null && item && list > 0 && T.side === 'sales' && !T.note && type !== 'SRET') {
+      const floor = Math.round(list * (1 - limits.max_discount / 100));
+      if (Math.round(rate * (1 - disc / 100)) < floor) throw new HttpError(403, `Line ${n}: the lowest price your role may give for ${item.name} is ₹${(floor / 100).toFixed(2)} (${limits.max_discount}% off ₹${(list / 100).toFixed(2)}).`);
     }
     let srcLine = null, git = 0;
     if (raw.src_line_id) {

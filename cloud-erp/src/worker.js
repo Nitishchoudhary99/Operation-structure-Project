@@ -596,6 +596,7 @@ const partyFields = (b, c) => ({
   phone: str(b.phone, 20), email: str(b.email, 120), gstin: str(b.gstin, 15).toUpperCase(), state: str(b.state, 60), address: str(b.address, 300),
   credit_limit: toPaise(num(b.credit_limit, 'Credit limit', { min: 0, def: 0 })), credit_days: int(b.credit_days, 'Credit days', { min: 0, max: 365, def: 0 }),
   city: str(b.city, 60), pincode: str(b.pincode, 6).replace(/\D/g, ''),
+  price_level: b.price_level === undefined ? null : b.price_level === 'wholesale' ? 'wholesale' : '',
   lang: b.lang === undefined ? null : LANGS.includes(b.lang) ? b.lang : '', vip: b.vip === undefined ? null : b.vip === true || b.vip === 1 || b.vip === '1' || b.vip === 'on' ? 1 : 0,
 });
 router.add('GET', '/api/parties', async (c) => {
@@ -618,9 +619,9 @@ router.add('POST', '/api/parties', async (c) => {
   requireCan(c.user, 'masters');
   const f = partyFields(c.body, c);
   if (await c.db.prepare(`SELECT 1 FROM parties WHERE org_id = ? AND name = ?`).bind(c.org.id, f.name).first()) throw bad(`A party called ${f.name} already exists.`);
-  const r = await c.db.prepare(`INSERT INTO parties (org_id, name, kind, phone, email, gstin, state, address, credit_limit, credit_days, city, pincode, extra, lang, vip, created_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING *`).bind(c.org.id, f.name, f.kind, f.phone, f.email, f.gstin, f.state, f.address, f.credit_limit, f.credit_days, f.city, f.pincode,
-    f.extra ?? cleanExtra(fieldsOf(c.org), 'party', {}), f.lang ?? '', f.vip ?? 0, nowIso()).first();
+  const r = await c.db.prepare(`INSERT INTO parties (org_id, name, kind, phone, email, gstin, state, address, credit_limit, credit_days, city, pincode, extra, lang, vip, price_level, created_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING *`).bind(c.org.id, f.name, f.kind, f.phone, f.email, f.gstin, f.state, f.address, f.credit_limit, f.credit_days, f.city, f.pincode,
+    f.extra ?? cleanExtra(fieldsOf(c.org), 'party', {}), f.lang ?? '', f.vip ?? 0, f.price_level ?? '', nowIso()).first();
   return json({ ...r, extra: extraOf(r.extra), credit_limit: R(r.credit_limit) });
 });
 router.add('PUT', '/api/parties/:id', async (c) => {
@@ -629,8 +630,8 @@ router.add('PUT', '/api/parties/:id', async (c) => {
   const dup = await c.db.prepare(`SELECT id FROM parties WHERE org_id = ? AND name = ? AND id != ?`).bind(c.org.id, f.name, +c.params.id).first();
   if (dup) throw bad(`A party called ${f.name} already exists.`);
   const r = await c.db.prepare(`UPDATE parties SET name = ?, kind = ?, phone = ?, email = ?, gstin = ?, state = ?, address = ?, credit_limit = ?, credit_days = ?, city = ?, pincode = ?,
-      extra = COALESCE(?, extra), lang = COALESCE(?, lang), vip = COALESCE(?, vip) WHERE id = ? AND org_id = ?`)
-    .bind(f.name, f.kind, f.phone, f.email, f.gstin, f.state, f.address, f.credit_limit, f.credit_days, f.city, f.pincode, f.extra, f.lang, f.vip, +c.params.id, c.org.id).run();
+      extra = COALESCE(?, extra), lang = COALESCE(?, lang), vip = COALESCE(?, vip), price_level = COALESCE(?, price_level) WHERE id = ? AND org_id = ?`)
+    .bind(f.name, f.kind, f.phone, f.email, f.gstin, f.state, f.address, f.credit_limit, f.credit_days, f.city, f.pincode, f.extra, f.lang, f.vip, f.price_level, +c.params.id, c.org.id).run();
   if (!r.meta.changes) throw notFound('Party not found.');
   return json({ ok: true });
 });
@@ -804,6 +805,10 @@ const itemFields = (b, c) => itemPrice(b, {
 function itemPrice(b, f) {
   const typed = ratePaise(num(b.sale_price, 'Sale price', { min: 0, def: 0 }));
   f.sale_price = f.price_incl ? exclOfGst(typed, f.gst_rate) : Math.round(typed);
+  // the wholesale price, typed the same way as the sale price (with GST in it for an MRP item); left out = unchanged
+  if (b.wholesale_price === undefined || b.wholesale_price === null) f.wholesale_price = null;
+  else { const w = ratePaise(num(b.wholesale_price, 'Wholesale price', { min: 0, def: 0 })); f.wholesale_price = f.price_incl ? exclOfGst(w, f.gst_rate) : Math.round(w); }
+  f.wholesale_min = b.wholesale_min === undefined || b.wholesale_min === null ? null : num(b.wholesale_min, 'Wholesale from quantity', { min: 0, max: 1e9, def: 0 });
   return f;
 }
 async function barcodeTaken(c, code, exceptId = 0) {
@@ -816,10 +821,21 @@ async function barcodeTaken(c, code, exceptId = 0) {
 const itemOut = (i, c) => {
   const o = { ...i, extra: extraOf(i.extra), purchase_price: R(i.purchase_price), sale_price: R(i.sale_price), avg_cost: R(i.avg_cost), stock_value: R(Math.max(0, i.qty_on_hand) * i.avg_cost),
     // the price with GST (what an MRP item is sold at); bills send it back with incl: true
-    sale_price_incl: R(i.sale_price * (100 + (i.gst_rate || 0)) / 100), price_incl: i.price_incl ? 1 : 0 };
+    sale_price_incl: R(i.sale_price * (100 + (i.gst_rate || 0)) / 100), price_incl: i.price_incl ? 1 : 0,
+    wholesale_price: R(i.wholesale_price || 0), wholesale_price_incl: R((i.wholesale_price || 0) * (100 + (i.gst_rate || 0)) / 100), wholesale_min: i.wholesale_min || 0 };
   if (c && !seesCosts(c.user)) { delete o.purchase_price; delete o.avg_cost; delete o.stock_value; }
   return o;
 };
+/* What this customer paid last for each item (their bills of the last year): the bill editor offers it next to the rate */
+router.add('GET', '/api/rates', async (c) => {
+  const pid = +c.url.searchParams.get('party_id') || 0;
+  const { results } = await c.db.prepare(`SELECT l.item_id, l.rate, l.discount_pct, d.date, d.number FROM doc_lines l JOIN docs d ON d.id = l.doc_id
+      WHERE d.org_id = ? AND d.party_id = ? AND d.type = 'INV' AND d.status != 'cancelled' AND l.item_id IS NOT NULL AND d.date >= ?
+      ORDER BY d.date DESC, d.id DESC LIMIT 1000`).bind(c.org.id, pid, addDays(today(), -365)).all();
+  const rates = {};
+  for (const r of results) if (!rates[r.item_id]) rates[r.item_id] = { rate: r.rate / 100, discount_pct: r.discount_pct, date: r.date, number: r.number };
+  return json({ rates });
+});
 router.add('GET', '/api/items', async (c) => {
   const q = c.url.searchParams.get('q') || '', cf = extraFilter(fieldsOf(c.org), 'item', c.url.searchParams, 'extra');
   const { results } = await c.db.prepare(`SELECT * FROM items WHERE org_id = ? AND (? = '' OR name LIKE ? OR sku LIKE ?)${cf.sql} ORDER BY name LIMIT 2000`)
@@ -832,9 +848,10 @@ router.add('POST', '/api/items', async (c) => {
   if (await c.db.prepare(`SELECT 1 FROM items WHERE org_id = ? AND name = ?`).bind(c.org.id, f.name).first()) throw bad(`An item called ${f.name} already exists.`);
   await barcodeTaken(c, f.barcode);
   const r = await c.db.prepare(`INSERT INTO items (org_id, sku, name, category, unit, hsn, gst_rate, purchase_price, sale_price, reorder_level, is_service, avg_cost, barcode, location, extra,
-      track_batch, track_serial, warranty_months, price_incl, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING *`)
+      track_batch, track_serial, warranty_months, price_incl, wholesale_price, wholesale_min, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING *`)
     .bind(c.org.id, f.sku, f.name, f.category, f.unit, f.hsn, f.gst_rate, f.purchase_price ?? 0, f.sale_price, f.reorder_level, f.is_service, f.purchase_price ?? 0, f.barcode, f.location,
-      f.extra ?? cleanExtra(fieldsOf(c.org), 'item', {}), f.is_service ? 0 : f.track_batch ?? 0, f.is_service ? 0 : f.track_serial ?? 0, f.warranty_months ?? 0, f.price_incl, nowIso()).first();
+      f.extra ?? cleanExtra(fieldsOf(c.org), 'item', {}), f.is_service ? 0 : f.track_batch ?? 0, f.is_service ? 0 : f.track_serial ?? 0, f.warranty_months ?? 0, f.price_incl,
+      f.wholesale_price ?? 0, f.wholesale_min ?? 0, nowIso()).first();
   if (c.body.opening_qty && +c.body.opening_qty > 0 && !f.is_service) {
     await stockAdjust(c, { item_id: r.id, qty: c.body.opening_qty, rate: c.body.opening_rate === undefined || c.body.opening_rate === '' ? R(f.purchase_price ?? 0) : c.body.opening_rate, reason: 'opening',
       warehouse_id: c.body.warehouse_id, batch_no: c.body.opening_batch, expiry: c.body.opening_expiry, serials: c.body.opening_serials });
@@ -849,9 +866,10 @@ router.add('PUT', '/api/items/:id', async (c) => {
   await barcodeTaken(c, f.barcode, +c.params.id);
   const r = await c.db.prepare(`UPDATE items SET sku = ?, name = ?, category = ?, unit = ?, hsn = ?, gst_rate = ?, purchase_price = COALESCE(?, purchase_price), sale_price = ?, price_incl = ?, reorder_level = ?, barcode = ?, location = ?,
       extra = COALESCE(?, extra), track_batch = CASE WHEN is_service = 1 THEN 0 ELSE COALESCE(?, track_batch) END,
-      track_serial = CASE WHEN is_service = 1 THEN 0 ELSE COALESCE(?, track_serial) END, warranty_months = COALESCE(?, warranty_months) WHERE id = ? AND org_id = ?`)
+      track_serial = CASE WHEN is_service = 1 THEN 0 ELSE COALESCE(?, track_serial) END, warranty_months = COALESCE(?, warranty_months),
+      wholesale_price = COALESCE(?, wholesale_price), wholesale_min = COALESCE(?, wholesale_min) WHERE id = ? AND org_id = ?`)
     .bind(f.sku, f.name, f.category, f.unit, f.hsn, f.gst_rate, f.purchase_price, f.sale_price, f.price_incl, f.reorder_level, f.barcode, f.location, f.extra, f.track_batch,
-      f.track_serial, f.warranty_months, +c.params.id, c.org.id).run();
+      f.track_serial, f.warranty_months, f.wholesale_price, f.wholesale_min, +c.params.id, c.org.id).run();
   if (!r.meta.changes) throw notFound('Item not found.');
   return json({ ok: true });
 });
@@ -894,7 +912,7 @@ router.add('POST', '/api/import/items', async (c) => {
       if (old) {
         if (!update) { out.skipped.push({ row: n, name: f.name, why: 'already in your items' }); continue; }
         const sets = [], vals = [];
-        for (const k of ['sale_price', 'purchase_price', 'gst_rate', 'hsn', 'unit', 'category', 'reorder_level']) if (filled(r, k)) { sets.push(`${k} = ?`); vals.push(f[k]); }
+        for (const k of ['sale_price', 'purchase_price', 'gst_rate', 'hsn', 'unit', 'category', 'reorder_level', 'wholesale_price', 'wholesale_min']) if (filled(r, k)) { sets.push(`${k} = ?`); vals.push(f[k]); }
         if (filled(r, 'sale_price')) { sets.push('price_incl = ?'); vals.push(f.price_incl); }
         if (sets.length) upd.push(c.db.prepare(`UPDATE items SET ${sets.join(', ')} WHERE id = ? AND org_id = ?`).bind(...vals, old.id, c.org.id));
         out.updated++;
@@ -909,9 +927,9 @@ router.add('POST', '/api/import/items', async (c) => {
   }
   if (add.length) {
     const ins = await c.db.batch(add.map(({ f }) => c.db.prepare(`INSERT INTO items (org_id, sku, name, category, unit, hsn, gst_rate, purchase_price, sale_price, reorder_level, is_service, avg_cost, barcode,
-        location, extra, track_batch, track_serial, warranty_months, price_incl, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0, 0, ?, ?) RETURNING *`)
+        location, extra, track_batch, track_serial, warranty_months, price_incl, wholesale_price, wholesale_min, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0, 0, ?, ?, ?, ?) RETURNING *`)
       .bind(c.org.id, f.sku, f.name, f.category, f.unit, f.hsn, f.gst_rate, f.purchase_price ?? 0, f.sale_price, f.reorder_level, f.is_service, f.purchase_price ?? 0, f.barcode, f.location,
-        f.extra ?? cleanExtra(fieldsOf(c.org), 'item', {}), f.price_incl, nowIso())));
+        f.extra ?? cleanExtra(fieldsOf(c.org), 'item', {}), f.price_incl, f.wholesale_price ?? 0, f.wholesale_min ?? 0, nowIso())));
     const opening = add.map((a, i) => ({ item: ins[i].results[0], qty: roundQ(a.openQty), value: Math.round(roundQ(a.openQty) * a.openRate) })).filter((x) => x.qty > 0);
     const wh = opening.length ? await warehouseOf(c, +c.body.warehouse_id || 0) : null;
     const st = opening.length ? await openingStockStatements(c, wh, opening, d) : [];
@@ -2161,6 +2179,7 @@ const READ_AREAS = [
   [/^\/api\/docs\/\d+(\/(convert|einvoice|ewaybill|share))?\/?$/, OPEN],
   [/^\/api\/vaade\/(cash|check)\/?$/, OPEN],
   [/^\/api\/items(\/lookup)?\/?$/, ['items', 'sales', 'purchase']],
+  [/^\/api\/rates\/?$/, 'sales'],
   [/^\/api\/items\/\d+\/moves\/?$/, 'items'],
   [/^\/api\/reports\/(stock|stock-ageing|expiry)\/?$/, 'items'],
   [/^\/api\/items\/\d+\/lots\/?$/, ['items', 'sales', 'purchase']],
