@@ -298,6 +298,13 @@ export async function createDoc(ctx, body) {
   }
 
   if (T.note && !L.some((l) => l.calc.taxable > 0)) throw bad('Enter the rate difference (amount per unit) on at least one line.');
+  // an item billed at ₹0, mostly one whose sale price was never set: the app asks first (it sends zero_ok: false);
+  // a free item stays possible once confirmed. API clients that do not send zero_ok keep working as before.
+  if (T.side === 'sales' && !T.note && type !== 'SRET' && Object.prototype.hasOwnProperty.call(body, 'zero_ok') && body.zero_ok !== true) {
+    const zero = L.map((l, i) => ({ l, n: i + 1 })).filter(({ l }) => l.item && l.rate <= 0);
+    if (zero.length) throw new HttpError(409, `${zero.map(({ l, n }) => `Line ${n}: ${l.item.name}`).join(', ')} ${zero.length === 1 ? 'has' : 'have'} no rate (₹0). Type the rate, or save as a free item.`,
+      { zero_rate: zero.map(({ l, n }) => ({ line: n, item_id: l.item.id, name: l.item.name })) });
+  }
 
   // stock must be available for anything leaving the warehouse
   const onHand = await stockIn(db, orgId, wh.id, [...need.keys()]);

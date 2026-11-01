@@ -3116,5 +3116,28 @@ if (process.env.ERP_AI_MOCK) {
   check('the owner deletes the dashboard and nobody keeps it as their first', !del.dashboards.some((d) => d.id === mine.id) && (await S('GET', '/api/dashboards')).default_id === null);
 }
 
+/* --- an item with no sale price is not billed at ₹0 without asking (the app sends zero_ok: false) --- */
+{
+  const ip = '203.0.113.165';
+  const su = await rq('POST', '/api/auth/signup', { business: 'Zero Rate Co', name: 'Z', email: `zero${Date.now()}@test.in`, password: 'Zero-pass-12345', state: 'Bihar' }, { ip });
+  const Z = async (m, p, b) => (await rq(m, p, b, { cookie: su.cookie, ip })).data, ZE = (m, p, b) => rq(m, p, b, { cookie: su.cookie, ip });
+  const box = await Z('POST', '/api/items', { name: 'Plastic box', hsn: '39231090', gst_rate: 18, purchase_price: 20, opening_qty: 10 });
+  const cup = await Z('POST', '/api/items', { name: 'Cup', sale_price: 25, gst_rate: 18, opening_qty: 10 });
+  const cus = await Z('POST', '/api/parties', { name: 'Ravi', kind: 'customer', state: 'Bihar' });
+  const asked = await ZE('POST', '/api/docs', { type: 'INV', party_id: cus.id, zero_ok: false, lines: [{ item_id: cup.id, qty: 1 }, { item_id: box.id, qty: 1, rate: '' }] });
+  check('an invoice with an item at ₹0 is stopped and names the line', asked.status === 409 && asked.data.zero_rate.length === 1 && asked.data.zero_rate[0].line === 2
+    && asked.data.zero_rate[0].name === 'Plastic box' && /no rate/.test(asked.data.error || asked.data.message || ''), JSON.stringify(asked.data));
+  const none = (await Z('GET', '/api/docs?type=INV')).rows || [];
+  check('nothing was saved and the stock did not move', none.length === 0 && (await Z('GET', '/api/items')).rows.find((i) => i.id === box.id).qty_on_hand === 10, JSON.stringify(none));
+  const typed = await Z('POST', '/api/docs', { type: 'INV', party_id: cus.id, zero_ok: false, lines: [{ item_id: box.id, qty: 2, rate: 40 }] });
+  check('with the rate typed it saves at that rate', typed.number && typed.taxable === 80 && typed.total === 94, JSON.stringify(typed));
+  const free = await Z('POST', '/api/docs', { type: 'INV', party_id: cus.id, zero_ok: true, lines: [{ item_id: box.id, qty: 1 }] });
+  check('a free item saves once confirmed', free.number && free.total === 0, JSON.stringify(free));
+  const quote = await ZE('POST', '/api/docs', { type: 'QUOTE', party_id: cus.id, zero_ok: false, lines: [{ item_id: box.id, qty: 1 }] });
+  check('a quotation asks the same', quote.status === 409 && quote.data.zero_rate.length === 1);
+  const api = await ZE('POST', '/api/docs', { type: 'INV', party_id: cus.id, lines: [{ item_id: box.id, qty: 1 }] });
+  check('API clients that do not send zero_ok work as before', api.status === 200 && api.data.total === 0, JSON.stringify(api.data));
+}
+
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

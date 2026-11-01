@@ -705,7 +705,7 @@ function shell() {
   };
   const nb = $('#newbtn'), nm = $('#newmenu');
   if (nb) {
-    nb.onclick = (e) => { e.stopPropagation(); nm.hidden = !nm.hidden; nb.setAttribute('aria-expanded', String(!nm.hidden)); };
+    nb.onclick = (e) => { e.stopPropagation(); nm.hidden = !nm.hidden; nb.setAttribute('aria-expanded', String(!nm.hidden)); fitMenu(nm); };
     nm.onclick = () => { nm.hidden = true; };
   }
   wireSearch();
@@ -748,9 +748,26 @@ async function refreshBell() {
   }).join('') : '<p class="muted small" style="padding:8px 12px">Nothing pending. Sab theek hai ✓</p>');
   bellAt = Date.now();
 }
+/* A dropdown hangs from its button's right edge; on a phone the bell and "More" sit far from the right, so a
+   menu opened there ran off the left side of the screen. It is moved back onto the screen, and kept above
+   the bottom bar (scrolling inside when it is taller than the room left). */
+function fitMenu(m) {
+  if (!m || m.hidden || !m.isConnected) return;
+  m.style.transform = ''; m.style.maxHeight = ''; m.style.overflowY = '';
+  const r = m.getBoundingClientRect();
+  if (!r.width) return;
+  const vw = document.documentElement.clientWidth, pad = 8;
+  const dx = r.left < pad ? pad - r.left : r.right > vw - pad ? Math.max(pad - r.left, vw - pad - r.right) : 0;
+  if (dx) m.style.transform = `translateX(${Math.round(dx)}px)`;
+  const bar = $('.bnav'), barH = bar && getComputedStyle(bar).display !== 'none' ? bar.getBoundingClientRect().height : 0;
+  const room = window.innerHeight - barH - r.top - pad;
+  if (r.height > room && room > 120) { m.style.maxHeight = Math.floor(room) + 'px'; m.style.overflowY = 'auto'; }
+}
+document.addEventListener('toggle', (e) => { const d = e.target; if (d && d.matches && d.matches('details.more-menu') && d.open) fitMenu($(':scope > .menu', d)); }, true);
+window.addEventListener('resize', () => { $$('details.more-menu[open] > .menu, #bellmenu:not([hidden]), #newmenu:not([hidden])').forEach(fitMenu); });
 function wireBell() {
   const btn = $('#bell'), box = $('#bellmenu');
-  btn.onclick = (e) => { e.stopPropagation(); box.hidden = !box.hidden; btn.setAttribute('aria-expanded', String(!box.hidden)); if (!box.hidden && Date.now() - bellAt > 60000) refreshBell(); };
+  btn.onclick = (e) => { e.stopPropagation(); box.hidden = !box.hidden; btn.setAttribute('aria-expanded', String(!box.hidden)); fitMenu(box); if (!box.hidden && Date.now() - bellAt > 60000) refreshBell().then(() => fitMenu(box)); };
   box.onclick = (e) => { if (e.target.closest('a')) box.hidden = true; };
   refreshBell();
   setInterval(() => { if (document.visibilityState === 'visible' && ME) refreshBell(); }, 5 * 60000);
@@ -1508,8 +1525,11 @@ route(/^new\/([A-Z]+)$/, async (el, m, q) => {
   const showLast = (tr) => {
     const box = $('.lastrate', tr); if (!box) return;
     const id = +(($('[name=item_id]', tr) || {}).value || 0), last = lastRates[id];
-    box.hidden = !last;
-    if (last) box.innerHTML = `<span class="muted">Last to this customer</span> <b>${inr(last.rate)}${last.discount_pct ? ` −${last.discount_pct}%` : ''}</b> <span class="muted">${fdate(last.date)}</span> <button type="button" class="btn sm" data-uselast>Use</button>`;
+    const it = isSale && !isNote && id ? items.find((i) => i.id === id) : null;
+    const noPrice = !!(it && !(listRate(it, +(($('[name=qty]', tr) || {}).value) || 0) > 0) && !(+(($('[name=rate]', tr) || {}).value) > 0));
+    box.hidden = !last && !noPrice;
+    box.innerHTML = (noPrice ? `<span class="norate">No sale price saved for this item: type the rate.</span> ` : '')
+      + (last ? `<span class="muted">Last to this customer</span> <b>${inr(last.rate)}${last.discount_pct ? ` −${last.discount_pct}%` : ''}</b> <span class="muted">${fdate(last.date)}</span> <button type="button" class="btn sm" data-uselast>Use</button>` : '');
   };
   const loadLast = async () => {
     lastRates = {};
@@ -1577,7 +1597,11 @@ route(/^new\/([A-Z]+)$/, async (el, m, q) => {
     if (sel) sel.onchange = () => {
       const it = items.find((i) => i.id === +sel.value);
       if (it) {
-        if (!isNote) $('[name=rate]', tr).value = isSale ? shown(listRate(it, +$('[name=qty]', tr).value || 0)) : (it.purchase_price || it.avg_cost);
+        if (!isNote) {
+          const lr = isSale ? listRate(it, +$('[name=qty]', tr).value || 0) : (it.purchase_price || it.avg_cost);
+          // an item with no sale price saved gets an empty rate to type, not a silent ₹0
+          $('[name=rate]', tr).value = lr > 0 ? (isSale ? shown(lr) : lr) : '';
+        }
         tr.dataset.auto = '1';
         $('[name=gst_rate]', tr).value = it.gst_rate;
         $('[name=description]', tr).value = '';
@@ -1591,7 +1615,7 @@ route(/^new\/([A-Z]+)$/, async (el, m, q) => {
     };
     // a rate the user typed stays; one the app filled follows the quantity across the wholesale step
     const rateIn = $('[name=rate]', tr), qtyIn = $('[name=qty]', tr);
-    if (rateIn) rateIn.addEventListener('input', () => { tr.dataset.auto = ''; });
+    if (rateIn) rateIn.addEventListener('input', () => { tr.dataset.auto = ''; rateIn.classList.remove('need'); showLast(tr); });
     if (qtyIn && isSale && !isNote) qtyIn.addEventListener('input', () => {
       const it = items.find((i) => i.id === +((sel || {}).value || 0));
       if (it && tr.dataset.auto === '1') rateIn.value = shown(listRate(it, +qtyIn.value || 0));
@@ -1660,11 +1684,12 @@ route(/^new\/([A-Z]+)$/, async (el, m, q) => {
     e.preventDefault();
     const f = form.elements;
     if (isExp() && expCur() && expFx() > 0 && expCur() !== basis.cur) { rebase(); recalc(); }
+    const sent = [];
     const lines = $$('tr', tbody).map((tr) => {
       const g = (n) => { const x = $(`[name=${n}]`, tr); return x ? x.value : ''; };
-      return { item_id: +g('item_id') || null, description: g('description'), qty: g('qty'), rate: g('rate'), discount_pct: g('discount_pct'), gst_rate: g('gst_rate'), src_line_id: +g('src_line_id') || undefined,
+      return { tr, item_id: +g('item_id') || null, description: g('description'), qty: g('qty'), rate: g('rate'), discount_pct: g('discount_pct'), gst_rate: g('gst_rate'), src_line_id: +g('src_line_id') || undefined,
         batch_no: g('batch_no'), expiry: g('expiry'), serials: g('serials'), incl: incl() || undefined };
-    }).filter((l) => +l.qty > 0 && (!isNote || +l.rate > 0));
+    }).filter((l) => +l.qty > 0 && (!isNote || +l.rate > 0)).map(({ tr, ...l }) => { sent.push(tr); return l; });
     const body = { type, party_id: +f.party_id.value, date: f.date.value, warehouse_id: +f.warehouse_id.value, notes: f.notes.value, lines, ref_id: draft.ref_id, extra: cfRead(form), design: f.design ? f.design.value : '' };
     if (ge) body.gate_entry_id = ge.id;
     if (f.party_ref) body.party_ref = f.party_ref.value.trim();
@@ -1680,6 +1705,7 @@ route(/^new\/([A-Z]+)$/, async (el, m, q) => {
         port_code: f.port_code.value, sb_no: f.sb_no.value, sb_date: f.sb_date.value || undefined });
     }
     if (type === 'INV') body.credit_ok = false;
+    if (isSale && !isNote && type !== 'SRET') body.zero_ok = false;
     const btn = $('#save'); btn.disabled = true;
     const save = async () => {
       try {
@@ -1697,6 +1723,10 @@ route(/^new\/([A-Z]+)$/, async (el, m, q) => {
         if (err.status === 409 && err.data.credit_warning) {
           return creditSheet(err.data.credit_warning, { yes: () => { body.credit_ok = true; save(); },
             cash: () => { if (f.pay_amount) { f.pay_amount.value = form.dataset.total || ''; f.pay_amount.focus(); f.pay_amount.scrollIntoView({ block: 'center' }); creditBanner(); } } });
+        }
+        if (err.status === 409 && err.data.zero_rate) {
+          return zeroSheet(err.data.zero_rate, { yes: () => { body.zero_ok = true; save(); },
+            fix: (z) => { const tr = sent[z.line - 1], r = tr && $('[name=rate]', tr); if (r) { r.classList.add('need'); r.scrollIntoView({ block: 'center' }); r.focus(); } } });
         }
         const b = $('.err', form); b.hidden = false; b.textContent = err.message; window.scrollTo(0, 0);
       }
@@ -3594,6 +3624,16 @@ async function creditCheck(pid) {
   try { return await GET('/api/vaade/check?party_id=' + pid); } catch (e) { return null; }
 }
 const creditText = (r) => `⚠ <b>${esc(r.name || '')}</b>: ${esc(r.reasons.join(', '))}. <b>Phir bhi udhaar?</b>`;
+/* An item on a sale at ₹0 (its sale price was never saved): type the rate, or save it as a free item. */
+function zeroSheet(list, { yes, fix }) {
+  const S = sheet(`<h2>Rate is ₹0</h2><p>${list.length === 1 ? 'This item has' : 'These items have'} no rate on the bill${list.length === 1 ? '' : 's'}, so ${list.length === 1 ? 'it would be' : 'they would be'} billed at ₹0:</p>
+    <ul class="vreasons">${list.map((z) => `<li>Line ${z.line}: ${esc(z.name)}</li>`).join('')}</ul>
+    <p class="muted small">Tip: save a sale price on the item (Items → edit) and it is filled in by itself next time. Rate nahi bhara hai: rate likhein, ya free item ki tarah save karein.</p>
+    <div class="actions"><button type="button" class="btn primary" id="zfix">Type the rate</button><button type="button" class="btn" id="zyes">Save as free item</button></div>`);
+  $('#zfix', S.el).onclick = () => { S.close(); fix(list[0]); };
+  $('#zyes', S.el).onclick = () => { S.close(); yes(); };
+  if (matchMedia('(pointer: fine)').matches) $('#zfix', S.el).focus();
+}
 function creditSheet(cw, { yes, cash }) {
   const S = sheet(`<h2>Udhaar dena hai?</h2><ul class="vreasons">${(cw.reasons || []).map((x) => `<li>${esc(x)}</li>`).join('')}</ul>
     ${cw.can_override ? '' : '<p class="err">Is grahak ka udhaar abhi band hai. Owner ya admin se approve karayein.</p>'}
@@ -6295,7 +6335,7 @@ route(/^pos$/, async (el) => {
     const used = ptsMost(t.total), toPay = r2(t.total - used * (LOY.point_value || 0));
     if (used) body.redeem_points = used;
     if (method !== 'credit' && toPay > 0) body.payment = { amount: Math.min(+$('#recv').value || toPay, toPay), account_id: acc(method === 'upi' ? 'upi' : method === 'bank' ? 'bank' : 'cash') };
-    body.credit_ok = false;
+    body.credit_ok = false; body.zero_ok = false;
     const save = async () => {
       try {
         const d = await POST('/api/docs', body);
@@ -6306,6 +6346,7 @@ route(/^pos$/, async (el) => {
         if (pts) loadPts();
       } catch (err) {
         if (err.status === 409 && err.data.credit_warning) return creditSheet(err.data.credit_warning, { yes: () => { body.credit_ok = true; save(); }, cash: () => setMethod('cash') });
+        if (err.status === 409 && err.data.zero_rate) return zeroSheet(err.data.zero_rate, { yes: () => { body.zero_ok = true; save(); }, fix: () => scan.focus() });
         $('#perr').hidden = false; $('#perr').textContent = err.message;
       }
     };
