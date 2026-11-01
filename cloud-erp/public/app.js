@@ -260,6 +260,7 @@ function renderAuth(mode = /^#\/?signup/.test(location.hash) ? 'signup' : 'login
     </div>
     <div class="box"><form id="auth-form">
       <div class="brandline show-sm"><i>&#x2197;</i>SmartTrader ERP <span class="muted">· GST billing, stock &amp; khata</span></div>
+      <p class="langlink"><a href="#" id="authlang" lang="${LANG === 'hi' ? 'en' : 'hi'}">${LANG === 'hi' ? 'Show in English' : 'हिंदी में देखें'}</a></p>
       <h1>${mode === 'login' ? 'Sign in' : mode === 'forgot' ? 'Forgot your password?' : 'Create your business account'}</h1>
       <div class="err" hidden></div>
       ${/drive=signin/.test(location.hash) && mode === 'login' ? '<p class="panel warnbox">You were signed out while Google was open. Sign in, then tap <b>Connect Google Drive</b> in Settings again.</p>' : ''}
@@ -276,6 +277,7 @@ function renderAuth(mode = /^#\/?signup/.test(location.hash) ? 'signup' : 'login
       <p class="muted">${mode === 'login' ? `New here? <a href="#" data-m="signup">Create a free account</a>` : mode === 'forgot' ? `Remembered it? <a href="#" data-m="login">Sign in</a>` : `Already have an account? <a href="#" data-m="login">Sign in</a>`}</p>
     </form></div></div>`;
   $$('[data-m]').forEach((a) => a.onclick = (e) => { e.preventDefault(); renderAuth(e.target.dataset.m); });
+  $('#authlang').onclick = (e) => { e.preventDefault(); switchLang(); };
   $('#auth-form').onsubmit = async (e) => {
     e.preventDefault();
     const body = Object.fromEntries(new FormData(e.target));
@@ -468,6 +470,36 @@ function hideAmounts(on) {
 }
 const storeGet = (k) => { try { return localStorage.getItem(k); } catch (e) { return null; } };
 const storeSet = (k, v) => { try { localStorage.setItem(k, v); } catch (e) { /* storage off */ } };
+/* Hindi screens (public/i18n-hi.js): whole English labels are swapped for Hindi as they are drawn, by one observer on the page.
+   Names, numbers and what people type never match a label, so they stay as they are; printed bills and codes are left alone. */
+const LANG = storeGet('st:lang') === 'hi' ? 'hi' : 'en';
+let HI = null;
+const KEEP_SEL = 'script,style,textarea,.doc-paper,.labels,.codes,.mono,[data-keep]';
+function swapText(n) {
+  const t = n.nodeValue, k = t.trim();
+  if (!k || !Object.hasOwn(HI, k) || !n.parentElement || n.parentElement.closest(KEEP_SEL)) return;
+  n.nodeValue = t.replace(k, HI[k]);
+}
+function hindi(root) {
+  if (!HI || !root) return;
+  if (root.nodeType === 3) { swapText(root); return; }
+  if (root.nodeType !== 1 || root.closest(KEEP_SEL)) return;
+  const w = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+  for (let n; (n = w.nextNode());) swapText(n);
+  for (const el of [root, ...root.querySelectorAll('[placeholder],[title],[aria-label]')]) {
+    for (const a of ['placeholder', 'title', 'aria-label']) { const v = (el.getAttribute(a) || '').trim(); if (v && Object.hasOwn(HI, v)) el.setAttribute(a, HI[v]); }
+  }
+}
+let hindiOn = false;
+async function startHindi() {
+  if (LANG !== 'hi' || hindiOn) return;
+  hindiOn = true;
+  try { ({ HI } = await import('/i18n-hi.js')); } catch (e) { return; }
+  document.documentElement.lang = 'hi';
+  hindi(document.body);
+  new MutationObserver((ms) => { for (const m of ms) for (const n of m.addedNodes) hindi(n); }).observe(document.body, { childList: true, subtree: true });
+}
+const switchLang = () => { storeSet('st:lang', LANG === 'hi' ? 'en' : 'hi'); location.reload(); };
 function shell() {
   // the gate entry is a quick action only for those who do not make bills (guard, godown)
   const news = NEW_MENU.filter(([, , a, h]) => ME.can[a] && onMenu(h) && (h !== 'gate/in' || !onMenu('purchase/BILL')));
@@ -484,6 +516,7 @@ function shell() {
         <strong class="orgname">${esc(ME.org.name)}</strong>
         <a class="btn sm outbox" id="outbox" href="#/outbox" hidden title="Saved without internet, waiting to be sent"></a>
         <button class="btn sm hideamt" id="hideamt" type="button" title="Hide amounts on screen (for when customers can see it)" aria-pressed="false">₹<span>Hide</span></button>
+        <button class="btn sm" id="langbtn" type="button" title="${LANG === 'hi' ? 'Show the app in English' : 'ऐप हिंदी में देखें'}" lang="${LANG === 'hi' ? 'en' : 'hi'}">${LANG === 'hi' ? 'EN' : 'हिं'}</button>
         <div class="gsearch"><input id="gq" type="search" placeholder="Search items, customers, bills…" autocomplete="off" aria-label="Search" enterkeyhint="search">
           <div class="gres" id="gres" hidden></div></div>
         ${news.length ? `<div class="newmenu"><button class="btn primary" id="newbtn" aria-haspopup="true" aria-expanded="false">+ <span>New</span></button>
@@ -493,6 +526,7 @@ function shell() {
       <main class="page" id="page"></main>
     </div></div><div class="scrim" id="scrim"></div>`;
   hideAmounts(storeGet('st:hideamt') === '1');
+  $('#langbtn').onclick = switchLang;
   $('#hideamt').onclick = () => { const on = !document.body.classList.contains('hide-amt'); hideAmounts(on); storeSet('st:hideamt', on ? '1' : '0'); };
   $('#burger').onclick = () => menu(!$('#side').classList.contains('open'));
   if ($('#navmore')) $('#navmore').addEventListener('toggle', (e) => { try { localStorage.setItem('st:navmore', e.target.open ? '1' : '0'); } catch (err) { /* storage off */ } });
@@ -5555,6 +5589,7 @@ setInterval(() => { if (navigator.onLine) syncOutbox(); }, 60000);
 
 /* ======================================================================= boot */
 async function boot() {
+  await startHindi();
   // customer links, no login: /k/<token> khata statement, /i/<token> invoice (old #/k/ links still work)
   const pk = location.pathname.match(/^\/k\/([0-9a-f]{24})\/?$/) || location.hash.match(/^#\/k\/([0-9a-f]{24})$/);
   if (pk) return publicKhata(pk[1]);
