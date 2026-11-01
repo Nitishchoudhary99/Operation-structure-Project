@@ -2672,6 +2672,10 @@ if (process.env.ERP_AI_MOCK) {
     && mr.rows[0].status === 'diff', JSON.stringify(mr.summary));
   check('2B match writes nothing: the books still balance and the bills are unchanged', (await G('GET', '/api/reports/trial-balance')).balanced && (await G('GET', `/api/docs/${bB.id}`)).party_ref === '');
   check('2B match: an empty file is refused', (await GE('POST', '/api/gst/2b-match', { month: M, rows: [] })).status === 400);
+  const ims = (num) => (mr.rows.find((r) => r.b2b && r.b2b.num === num) || {}).ims;
+  check('2B: what to do on the IMS dashboard: accept what matches, keep pending what differs, check what is not in the books', ims('SA/12') === 'accept' && ims('MB/77') === 'accept'
+    && ims('SA-15') === 'pending' && ims('Z1') === 'check' && mr.rows.find((r) => r.status === 'missing_2b').ims === '' && JSON.stringify(mr.summary.ims) === JSON.stringify({ accept: 2, pending: 1, check: 3 }),
+    JSON.stringify(mr.summary.ims));
 }
 
 /* --- security & privacy: two-step sign-in, sign-in history, everyone-must rule, closing a business --- */
@@ -2836,6 +2840,30 @@ if (process.env.ERP_AI_MOCK) {
   const sl = await rq('POST', '/api/auth/login', { email: stEm, password: 'Shopboy-pass-123' }, { ip });
   check('staff see the catalogue settings but only the owner side changes them; nobody signed out does', (await rq('GET', '/api/settings/shop', undefined, { cookie: sl.cookie, ip })).status === 200
     && (await rq('PUT', '/api/settings/shop', { on: true }, { cookie: sl.cookie, ip })).status === 403 && (await rq('GET', '/api/settings/shop', undefined, { ip })).status === 401 && secret.shop_hide === 1);
+}
+
+/* --- Munim ji: what the books say needs a look (Today card) --- */
+{
+  const ip = '203.0.113.157', day = (n) => { const d = new Date(Date.now() + 5.5 * 3600e3 - n * 864e5); return d.toISOString().slice(0, 10); };
+  const su = await rq('POST', '/api/auth/signup', { business: 'Munim Test Store', name: 'M', email: `munim${Date.now()}@test.in`, password: 'Munim-pass-12345', state: 'Rajasthan' }, { ip });
+  const U = async (m, p, b) => (await rq(m, p, b, { cookie: su.cookie, ip })).data;
+  const t0 = await U('GET', '/api/today');
+  check('a new business gets no Munim ji alerts', !t0.rows.some((r) => ['sales_drop', 'lost_customers', 'below_cost', 'cash_short', 'big_discount'].includes(r.key)), JSON.stringify(t0.rows));
+  const it = await U('POST', '/api/items', { name: 'Widget', sale_price: 100, gst_rate: 0 });
+  const sup = await U('POST', '/api/parties', { name: 'Widget Supplier', kind: 'supplier', state: 'Rajasthan' });
+  await U('POST', '/api/docs', { type: 'BILL', party_id: sup.id, date: day(60), lines: [{ item_id: it.id, qty: 500, rate: 100 }] });
+  const regular = await U('POST', '/api/parties', { name: 'Regular Rakesh', kind: 'customer', state: 'Rajasthan' });
+  const other = await U('POST', '/api/parties', { name: 'Other Om', kind: 'customer', state: 'Rajasthan' });
+  for (const d of [40, 50, 60]) await U('POST', '/api/docs', { type: 'INV', party_id: regular.id, date: day(d), lines: [{ item_id: it.id, qty: 1, rate: 120 }] });
+  for (const d of [10, 15, 20, 25]) await U('POST', '/api/docs', { type: 'INV', party_id: other.id, date: day(d), lines: [{ item_id: it.id, qty: 100, rate: 100 }] });
+  await U('POST', '/api/docs', { type: 'INV', party_id: other.id, date: day(1), lines: [{ item_id: it.id, qty: 10, rate: 80, discount_pct: 25 }] });
+  await U('POST', '/api/docs', { type: 'BILL', party_id: sup.id, date: day(0), lines: [{ description: 'Repair', qty: 1, rate: 1000000, gst_rate: 0 }] });
+  const t = await U('GET', '/api/today'), R1 = (k) => t.rows.find((r) => r.key === k);
+  check('sales falling below the usual week are flagged with how much', R1('sales_drop') && R1('sales_drop').n >= 90 && R1('sales_drop').value === 600, JSON.stringify(R1('sales_drop')));
+  check('a regular customer who stopped buying is named', R1('lost_customers') && R1('lost_customers').n === 1 && R1('lost_customers').names[0] === 'Regular Rakesh', JSON.stringify(R1('lost_customers')));
+  check('a bill that sold below cost is flagged with the loss', R1('below_cost') && R1('below_cost').n === 1 && R1('below_cost').value === 400, JSON.stringify(R1('below_cost')));
+  check('a big discount is flagged for the owner', R1('big_discount') && R1('big_discount').n === 1, JSON.stringify(R1('big_discount')));
+  check('cash short of the bills due this week is flagged with the gap', R1('cash_short') && R1('cash_short').n === 1 && R1('cash_short').value > 0, JSON.stringify(R1('cash_short')));
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);

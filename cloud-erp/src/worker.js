@@ -772,6 +772,21 @@ router.add('GET', '/api/today', async (c) => {
   // TDS kept back from suppliers and not yet paid to the government (due by the 7th); only a business that uses TDS has the account
   add('tds_due', 'finance', `SELECT CASE WHEN SUM(cr - dr) > 0 THEN 1 ELSE 0 END AS n, COALESCE(SUM(cr - dr), 0) AS v FROM acct_month
     WHERE org_id = ? AND account_id = (SELECT id FROM accounts WHERE org_id = ? AND sys = 'tds_payable')`, o, o);
+  // Munim ji: what the books say needs a look, worked out from the business's own records (no AI, nothing leaves the business)
+  const wk = addDays(t, -7), m5 = addDays(t, -35);
+  add('sales_drop', 'sales', `SELECT CASE WHEN avg >= 500000 AND cur < avg * 0.7 THEN CAST(ROUND((1 - cur * 1.0 / avg) * 100) AS INTEGER) ELSE 0 END AS n, cur AS v
+    FROM (SELECT COALESCE(SUM(CASE WHEN date > ?2 THEN total ELSE 0 END), 0) AS cur, COALESCE(SUM(CASE WHEN date <= ?2 THEN total ELSE 0 END), 0) / 4.0 AS avg
+      FROM docs WHERE org_id = ?1 AND type = 'INV' AND status != 'cancelled' AND date > ?3 AND date <= ?4)`, o, wk, m5, t);
+  add('lost_customers', 'sales', `SELECT COUNT(*) AS n, 0 AS v, GROUP_CONCAT(name, '|') AS names FROM (SELECT p.name FROM docs d JOIN parties p ON p.id = d.party_id
+    WHERE d.org_id = ?1 AND d.type = 'INV' AND d.status != 'cancelled' AND d.date > ?2 AND p.name != 'Walk-in Customer' GROUP BY d.party_id
+    HAVING SUM(CASE WHEN d.date <= ?3 THEN 1 ELSE 0 END) >= 3 AND SUM(CASE WHEN d.date > ?3 THEN 1 ELSE 0 END) = 0 LIMIT 50)`, o, addDays(t, -120), addDays(t, -30));
+  if (seesCosts(u)) add('below_cost', 'sales', `SELECT COUNT(DISTINCT d.id) AS n, COALESCE(SUM(l.cost - l.taxable), 0) AS v FROM doc_lines l JOIN docs d ON d.id = l.doc_id
+    WHERE d.org_id = ? AND d.type = 'INV' AND d.status != 'cancelled' AND d.date > ? AND l.item_id IS NOT NULL AND l.cost > l.taxable`, o, wk);
+  add('cash_short', 'finance', `SELECT CASE WHEN due > 0 AND due > cash THEN 1 ELSE 0 END AS n, due - cash AS v FROM (
+    SELECT (SELECT COALESCE(SUM(total - paid), 0) FROM docs WHERE org_id = ?1 AND type = 'BILL' AND status IN ('unpaid','partial') AND due_date <= ?2) AS due,
+      (SELECT COALESCE(SUM(dr - cr), 0) FROM acct_month WHERE org_id = ?1 AND account_id IN (SELECT id FROM accounts WHERE org_id = ?1 AND is_cash = 1)) AS cash)`, o, addDays(t, 7));
+  if (['owner', 'admin'].includes(u.role)) add('big_discount', 'sales', `SELECT COUNT(DISTINCT d.id) AS n, 0 AS v FROM doc_lines l JOIN docs d ON d.id = l.doc_id
+    WHERE d.org_id = ? AND d.type = 'INV' AND d.status != 'cancelled' AND d.date > ? AND l.discount_pct >= 20`, o, wk);
   if (sees('finance')) want.push(...todayStaffQueries(db, o));
   // the owner's data is safe somewhere: a download (also to a folder: orgs.backup_at), or Google Drive
   if (u.role === 'owner') want.push(['backup', db.prepare(`SELECT (SELECT last_backup_at FROM drive_links WHERE org_id = ?) AS d,
@@ -782,8 +797,8 @@ router.add('GET', '/api/today', async (c) => {
     if (key === 'backup') { const b = backupHealth({ ...rs[i].results[0], a: c.org.backup_at, since: c.org.created_at }); if (b) rows.push(b); return; }
     const r = rs[i].results[0] || { n: 0, v: 0 };
     if (!r.n) return;
-    const money = ['overdue', 'promises', 'bills_due', 'approve', 'claims', 'tds_due'].includes(key) || costs;
-    rows.push({ key, n: r.n, value: money ? R(r.v) : null });
+    const money = ['overdue', 'promises', 'bills_due', 'approve', 'claims', 'tds_due', 'sales_drop', 'cash_short'].includes(key) || costs;
+    rows.push({ key, n: r.n, value: money ? R(r.v) : null, ...(r.names ? { names: String(r.names).split('|').slice(0, 3) } : {}) });
   });
   return json({ date: t, rows });
 });

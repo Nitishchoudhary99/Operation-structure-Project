@@ -193,6 +193,8 @@ export const HI = {
   'Your catalogue link': 'आपका कैटलॉग लिंक', 'Copy link': 'लिंक कॉपी करें', 'Share on WhatsApp': 'WhatsApp पर शेयर करें', 'Print QR poster': 'QR पोस्टर प्रिंट करें',
   'New link (the old one stops)': 'नया लिंक (पुराना बंद)', 'Items in the catalogue': 'कैटलॉग के आइटम', 'In catalogue': 'कैटलॉग में', 'shown': 'दिखेगा', 'Price': 'रेट',
   'Show in the online catalogue': 'ऑनलाइन कैटलॉग में दिखाएँ', 'Empty = your business phone.': 'खाली = बिज़नेस का फ़ोन।', 'Catalogue QR poster': 'कैटलॉग QR पोस्टर',
+  'Accept': 'स्वीकार करें', 'Keep pending': 'रोक कर रखें', 'Check first': 'पहले जाँचें', 'IMS': 'IMS',
+  'Cash and bank are short of the supplier bills due this week': 'इस हफ़्ते के सप्लायर बिलों के लिए नकद और बैंक में पैसे कम हैं', 'Plan': 'योजना', 'Call': 'फ़ोन करें',
   // months
   'Jan': 'जन॰', 'Feb': 'फ़र॰', 'Mar': 'मार्च', 'Apr': 'अप्रै॰', 'May': 'मई', 'Jun': 'जून', 'Jul': 'जुला॰', 'Aug': 'अग॰', 'Sept': 'सित॰', 'Sep': 'सित॰', 'Oct': 'अक्टू॰', 'Nov': 'नव॰', 'Dec': 'दिस॰',
 };

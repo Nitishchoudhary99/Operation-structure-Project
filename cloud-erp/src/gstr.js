@@ -281,6 +281,9 @@ export async function match2b(db, org, body) {
     rows.push({ status: 'missing_2b', gstin: b.gstin, supplier: b.party, party_id: b.party_id, phone: b.phone || '', b2b: null, book: sideBook(b),
       note: 'Not in your GSTR-2B: the supplier has not filed it yet, so you cannot take this credit. Remind them.' });
   }
+  /* what to do with each supplier document on the portal's IMS dashboard (Invoice Management System) before the next 2B:
+     accept what matches, keep pending what differs (the supplier corrects it), and look at what is not in the books before accepting or rejecting */
+  for (const r of rows) r.ims = !r.b2b ? '' : r.status === 'ok' || r.status === 'number' ? 'accept' : r.status === 'diff' ? 'pending' : 'check';
   const ORDER = { diff: 0, missing_books: 1, missing_2b: 2, number: 3, ok: 4 };
   rows.sort((a, b) => ORDER[a.status] - ORDER[b.status] || a.supplier.localeCompare(b.supplier));
   const sgn = (r) => (r.b2b ? (r.b2b.kind === 'cn' ? -1 : 1) : r.book && r.book.type !== 'BILL' ? -1 : 1);
@@ -291,5 +294,6 @@ export async function match2b(db, org, body) {
     books: { n: inPeriod.length, tax: q2(inPeriod.reduce((t, b) => t + (b.side === 'cn' ? -1 : 1) * R(b.tax), 0)) },
     ok: tot(['ok', 'number'], 'b2b'), diff: tot(['diff'], 'b2b'), missing_books: tot(['missing_books'], 'b2b'), missing_2b: tot(['missing_2b'], 'book'),
     no_itc: { n: b2.filter((r) => !r.itc).length }, skipped: raw.length - b2.length,
+    ims: { accept: rows.filter((r) => r.ims === 'accept').length, pending: rows.filter((r) => r.ims === 'pending').length, check: rows.filter((r) => r.ims === 'check').length },
   } };
 }
