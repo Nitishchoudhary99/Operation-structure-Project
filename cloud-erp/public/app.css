@@ -1078,6 +1078,11 @@ th[hidden], td[hidden] { display: none; }
 .bellmenu a i { width: 8px; height: 8px; border-radius: 50%; background: var(--muted); }
 .bellmenu a.t-red i { background: var(--danger); } .bellmenu a.t-amber i { background: var(--warn); } .bellmenu a.t-blue i { background: var(--brand); }
 .bellmenu a em { font-style: normal; color: var(--brand); font-size: 12.5px; white-space: nowrap; }
+/* a menu never wider than the screen (fitMenu in app.js moves it back onto the screen) */
+.menu { max-width: calc(100vw - 16px); }
+/* a picked item with no sale price: the rate to type */
+.lastrate .norate { color: var(--danger); font-weight: 600; }
+input.need { border-color: var(--danger); box-shadow: 0 0 0 2px color-mix(in srgb, var(--danger) 25%, transparent); }
 /* ---------- phone bottom bar ---------- */
 .bnav { display: none; }
 @media (max-width: 860px) {
