@@ -216,6 +216,12 @@ export const HI = {
   'Currency': 'मुद्रा', 'INR (rupees)': 'INR (रुपये)', 'Port code': 'पोर्ट कोड', 'Shipping bill no.': 'शिपिंग बिल नंबर', 'Shipping bill date': 'शिपिंग बिल तारीख़',
   'LUT ARN (exports without IGST)': 'LUT ARN (बिना IGST एक्सपोर्ट)', 'Country (customers abroad)': 'देश (विदेशी ग्राहक)',
   'The rate on the invoice date (customs notified, or your bank\'s).': 'बिल की तारीख़ का रेट (कस्टम या बैंक का)।',
+  'Home': 'होम', 'Bill': 'बिल', 'New': 'नया', 'Khata': 'खाता', 'Menu': 'मेन्यू', 'Parties': 'पार्टी', 'Quick actions': 'जल्दी के काम', 'What needs doing': 'क्या करना है',
+  'Columns': 'कॉलम', 'Reset this list': 'यह लिस्ट पहले जैसी करें', 'Download (CSV)': 'डाउनलोड (CSV)', 'Nothing matches': 'कुछ नहीं मिला',
+  'What kind of business do you run?': 'आपका कारोबार किस तरह का है?', 'Kirana / retail shop': 'किराना / रिटेल दुकान', 'Wholesale / distributor': 'होलसेल / डिस्ट्रीब्यूटर',
+  'Restaurant / cafe / dhaba': 'रेस्टोरेंट / कैफ़े / ढाबा', 'Medical / pharmacy': 'मेडिकल / फ़ार्मेसी', 'Manufacturer': 'मैन्युफ़ैक्चरर', 'Exporter / services': 'एक्सपोर्टर / सर्विस',
+  'Skip': 'छोड़ें', 'Customize': 'बदलें', 'Recommended': 'सुझाया गया', 'Last 30 days': 'पिछले 30 दिन', 'Last 7 days': 'पिछले 7 दिन', 'This month': 'इस महीने', 'Last month': 'पिछले महीने',
+  'This quarter': 'इस तिमाही', 'This financial year': 'इस वित्त वर्ष', 'Today': 'आज', '+ Add widget': '+ विजेट जोड़ें', 'Templates': 'टेम्पलेट', 'Undo': 'वापस', 'Redo': 'फिर करें', 'Reset': 'रीसेट',
   // months
   'Jan': 'जन॰', 'Feb': 'फ़र॰', 'Mar': 'मार्च', 'Apr': 'अप्रै॰', 'May': 'मई', 'Jun': 'जून', 'Jul': 'जुला॰', 'Aug': 'अग॰', 'Sept': 'सित॰', 'Sep': 'सित॰', 'Oct': 'अक्टू॰', 'Nov': 'नव॰', 'Dec': 'दिस॰',
 };
