@@ -155,6 +155,58 @@ function table(cols, rows, { onRow, foot, empty = 'Nothing here yet.' } = {}) {
 /* Every list made with table() gets, without each screen doing anything: a click on a heading sorts by it (again: the other
    way), and from 8 rows a filter box, the count, "Download as Excel (CSV)" of what is shown, and from 100 rows "Show all".
    Rows are moved, never redrawn, so whatever a screen wired to them keeps working. */
+/* ---- searchable dropdowns: a long list (customers, suppliers, items, accounts) gets a type-to-find box. The <select>
+   stays the source of the value (forms read it, screens set it and listen to it), so nothing that uses it changes. ---- */
+const COMBO_MIN = 12;
+function enhanceSelects(root) {
+  for (const sel of $$('select:not([data-combo]):not([multiple])', root)) {
+    if (sel.options.length < COMBO_MIN || sel.closest('.no-combo, .dtools, .wed, .voice, .cmdk')) continue;
+    sel.dataset.combo = '1';
+    const box = document.createElement('div'); box.className = 'combo';
+    const inp = document.createElement('input');
+    Object.assign(inp, { type: 'text', className: 'combo-in', autocomplete: 'off', spellcheck: false });
+    inp.setAttribute('role', 'combobox'); inp.setAttribute('aria-expanded', 'false'); inp.setAttribute('aria-autocomplete', 'list');
+    const lab = sel.closest('label');
+    inp.setAttribute('aria-label', sel.getAttribute('aria-label') || (lab ? lab.childNodes[0].textContent.trim() : '') || 'Choose');
+    if (sel.style.cssText) box.style.cssText = sel.style.cssText;
+    const list = document.createElement('div'); list.className = 'combo-list'; list.setAttribute('role', 'listbox'); list.hidden = true;
+    sel.before(box); box.append(inp, list, sel);
+    sel.classList.add('combo-src'); sel.tabIndex = -1;
+    let items = [], at = 0, typed = false;
+    const opts = () => [...sel.options].filter((o) => !o.disabled);
+    const sync = () => { const o = sel.options[sel.selectedIndex]; inp.value = o && o.value !== '' ? o.text : ''; inp.placeholder = sel.options[0] && sel.options[0].value === '' ? sel.options[0].text : 'Type to find…'; };
+    const close = () => { list.hidden = true; inp.setAttribute('aria-expanded', 'false'); if (typed) { typed = false; sync(); } };
+    const draw = () => {
+      const q = typed ? inp.value.trim().toLowerCase().split(/\s+/).filter(Boolean) : [];
+      const all = opts().filter((o) => o.value !== '' || !q.length);
+      const hit = q.length ? all.filter((o) => q.every((w) => o.text.toLowerCase().includes(w))) : all;
+      items = hit.slice(0, 60); at = Math.min(at, Math.max(0, items.length - 1));
+      list.innerHTML = items.length ? items.map((o, i) => `<div role="option" class="combo-opt${i === at ? ' on' : ''}${o.value === sel.value ? ' sel' : ''}" data-i="${i}" aria-selected="${i === at}">${esc(o.text)}</div>`).join('')
+        + (hit.length > items.length ? `<div class="combo-more">${hit.length - items.length} more: keep typing</div>` : '') : '<div class="combo-more">Nothing matches</div>';
+      list.hidden = false; inp.setAttribute('aria-expanded', 'true');
+      const on = $('.combo-opt.on', list); if (on) on.scrollIntoView({ block: 'nearest' });
+    };
+    const choose = (o) => { typed = false; if (o && sel.value !== o.value) { sel.value = o.value; sel.dispatchEvent(new Event('change', { bubbles: true })); } sync(); list.hidden = true; inp.setAttribute('aria-expanded', 'false'); };
+    inp.addEventListener('focus', () => { inp.select(); at = Math.max(0, opts().findIndex((o) => o.value === sel.value)); draw(); });
+    inp.addEventListener('input', () => { typed = true; at = 0; draw(); });
+    inp.addEventListener('blur', () => setTimeout(close, 120));
+    inp.addEventListener('keydown', (e) => {
+      if (e.key === 'ArrowDown' || e.key === 'ArrowUp') { e.preventDefault(); if (list.hidden) draw(); else if (items.length) { at = (at + (e.key === 'ArrowDown' ? 1 : items.length - 1)) % items.length; draw(); } }
+      else if (e.key === 'Enter') { if (!list.hidden && items[at]) { e.preventDefault(); e.stopPropagation(); choose(items[at]); } }
+      else if (e.key === 'Escape') { if (!list.hidden) { e.preventDefault(); e.stopPropagation(); close(); } }
+      else if (e.key === 'Tab' && typed && items[at]) choose(items[at]);
+    });
+    list.addEventListener('mousedown', (e) => { const d = e.target.closest('[data-i]'); if (d) { e.preventDefault(); choose(items[+d.dataset.i]); } });
+    sel.addEventListener('change', sync);
+    sel.addEventListener('invalid', () => { box.classList.add('bad'); inp.focus(); });
+    sel.addEventListener('change', () => box.classList.remove('bad'));
+    new MutationObserver(sync).observe(sel, { childList: true, subtree: true });
+    sync();
+  }
+}
+/* remembered list views: sort, filter and hidden columns of each list, per screen, on this device */
+const viewKey = (tb) => `st:view:${ME ? ME.org.id : 0}:${location.hash.replace(/^#\/?/, '').split('?')[0]}:${[...tb.tHead.rows[0].cells].map((c) => c.textContent.trim()).join('|').slice(0, 200)}`;
+const loadView = (k) => { try { return JSON.parse(storeGet(k) || 'null') || {}; } catch (e) { return {}; } };
 const SHOW_FIRST = 100;
 const cellValue = (td) => {
   const t = (td ? td.innerText || td.textContent : '').trim();
@@ -169,7 +221,9 @@ function enhanceTables(root) {
     if (tb.closest('.doc-paper, .modal, .receipt, .lines, .no-tools')) continue;
     const body = tb.tBodies[0], rows = [...body.rows], n = rows.length;
     if (n < 2) continue;
-    const heads = [...tb.tHead.rows[0].cells];
+    const heads = [...tb.tHead.rows[0].cells], vk = viewKey(tb), saved = loadView(vk);
+    const keep = (patch) => { const v = { ...loadView(vk), ...patch }; storeSet(vk, JSON.stringify(v)); };
+    const showCol = (i, on) => { for (const r of [tb.tHead.rows[0], ...body.rows, ...(tb.tFoot ? tb.tFoot.rows : [])]) if (r.cells[i]) r.cells[i].hidden = !on; };
     heads.forEach((th, i) => {
       if (!th.textContent.trim()) return;
       const b = document.createElement('button');
@@ -186,22 +240,33 @@ function enhanceTables(root) {
           return d * dir || a.k - c.k;
         });
         keyed.forEach(({ r }) => body.appendChild(r));
+        if (!b.dataset.silent) keep({ sort: [i, dir] });
         paint();
       };
     });
-    let q = '', all = n <= SHOW_FIRST;
+    (saved.hide || []).forEach((i) => { if (heads[i] && heads[i].textContent.trim()) showCol(i, false); });
+    let q = n >= 8 ? (saved.q || '').toLowerCase() : '', all = n <= SHOW_FIRST;
     const bar = document.createElement('div');
     bar.className = 'ttools';
+    const named = heads.map((h, i) => [h.textContent.trim(), i]).filter(([h]) => h);
     if (n >= 8) {
-      bar.innerHTML = `<input type="search" placeholder="Filter these ${n} rows" aria-label="Filter rows" autocomplete="off"><span class="muted small" data-count></span>
+      bar.innerHTML = `<input type="search" placeholder="Filter these ${n} rows" aria-label="Filter rows" autocomplete="off" value="${esc(saved.q || '')}"><span class="muted small" data-count></span>
+        ${named.length >= 4 ? `<details class="more-menu colmenu"><summary class="btn sm">Columns</summary><div class="menu">${named.map(([h, i]) => `<label class="check"><input type="checkbox" data-col="${i}" ${heads[i].hidden ? '' : 'checked'}> ${esc(h)}</label>`).join('')}
+          <button type="button" class="btn sm" data-reset>Reset this list</button></div></details>` : ''}
         <button type="button" class="btn sm" data-csv>Download (CSV)</button>`;
       tb.closest('.tbl-wrap').before(bar);
-      $('input', bar).oninput = (e) => { q = e.target.value.trim().toLowerCase(); paint(); };
+      $('input', bar).oninput = (e) => { q = e.target.value.trim().toLowerCase(); keep({ q: e.target.value.trim() }); paint(); };
+      bar.addEventListener('change', (e) => {
+        const c = e.target.closest('[data-col]'); if (!c) return;
+        showCol(+c.dataset.col, c.checked);
+        keep({ hide: heads.map((h, i) => (h.hidden ? i : -1)).filter((i) => i >= 0) });
+      });
+      bar.addEventListener('click', (e) => { if (e.target.closest('[data-reset]')) { storeSet(vk, '{}'); render(); } });
       $('[data-csv]', bar).onclick = () => {
-        const keep = heads.map((h, i) => [h.textContent.trim(), i]).filter(([h]) => h);
+        const cols = heads.map((h, i) => [h.textContent.trim(), i]).filter(([h]) => h && !h.hidden);
         const csvCell = (v) => (/[",\n]/.test(v) ? `"${v.replace(/"/g, '""')}"` : v);
-        const lines = [keep.map(([h]) => csvCell(h)).join(',')];
-        for (const r of body.rows) if (!r.dataset.out) lines.push(keep.map(([, i]) => csvCell(((r.cells[i] || {}).innerText || '').replace(/\s+/g, ' ').trim())).join(','));
+        const lines = [cols.map(([h]) => csvCell(h)).join(',')];
+        for (const r of body.rows) if (!r.dataset.out) lines.push(cols.map(([, i]) => csvCell(((r.cells[i] || {}).textContent || '').replace(/\s+/g, ' ').trim())).join(','));
         const name = (($('.page-head h1') || {}).textContent || 'list').trim().replace(/[^\w\u0900-\u097F]+/g, '-').toLowerCase();
         download(`${name}-${ME ? ME.today : ''}.csv`, lines.join('\n'));
       };
@@ -224,7 +289,12 @@ function enhanceTables(root) {
       more.hidden = all || match <= SHOW_FIRST;
       more.textContent = `Show all ${match} rows`;
     }
-    paint();
+    // the last sort of this list comes back (the click sorts and paints)
+    if (saved.sort && heads[saved.sort[0]] && $('.sortbtn', heads[saved.sort[0]])) {
+      const b = $('.sortbtn', heads[saved.sort[0]]); b.dataset.silent = '1';
+      if (saved.sort[1] === -1) heads[saved.sort[0]].setAttribute('aria-sort', 'ascending');
+      b.click(); delete b.dataset.silent;
+    } else paint();
   }
 }
 function bindRows(el, rows, fn) {
@@ -258,7 +328,8 @@ function modal(title, fields, onSubmit, { submit = 'Save', intro = '' } = {}) {
   const form = $('form', root), close = () => { root.innerHTML = ''; };
   $('[data-x]', root).onclick = close;
   $('.modal-bg', root).addEventListener('mousedown', (e) => { if (e.target.classList.contains('modal-bg')) close(); });
-  const first = $('input,select,textarea', form); if (first && matchMedia('(pointer: fine)').matches) first.focus();
+  enhanceSelects(form);
+  const first = $('input,select:not(.combo-src),textarea', form); if (first && matchMedia('(pointer: fine)').matches) first.focus();
   const esc1 = (e) => { if (e.key === 'Escape') { close(); document.removeEventListener('keydown', esc1); } };
   document.addEventListener('keydown', esc1);
   form.onsubmit = async (e) => {
@@ -531,7 +602,8 @@ const ICONS = {
   in: '<path d="M12 3v12m0 0-4-4m4 4 4-4"/><path d="M4 17v3h16v-3"/>', out: '<path d="M12 15V3m0 0L8 7m4-4 4 4"/><path d="M4 17v3h16v-3"/>', wallet: '<path d="M3 7h16a2 2 0 0 1 2 2v9H3z"/><path d="M3 7V5h13v2M16 13h2"/>',
   book: '<path d="M5 4h11a3 3 0 0 1 3 3v13H8a3 3 0 0 1-3-3z"/><path d="M5 17a3 3 0 0 1 3-3h11"/>', tag: '<path d="M3 12V3h9l9 9-9 9z"/><circle cx="7.5" cy="7.5" r="1.5"/>',
   user: '<circle cx="12" cy="8" r="4"/><path d="M4 21a8 8 0 0 1 16 0"/>', layers: '<path d="m12 3 9 5-9 5-9-5z"/><path d="m3 13 9 5 9-5"/>',
-  search: '<circle cx="11" cy="11" r="7"/><path d="m20 20-4-4"/>', grid: '<path d="M4 4h7v7H4zM13 4h7v7h-7zM4 13h7v7H4zM13 13h7v7h-7z"/>',
+  search: '<circle cx="11" cy="11" r="7"/><path d="m20 20-4-4"/>', home: '<path d="m3 11 9-7 9 7v9a1 1 0 0 1-1 1h-5v-6H9v6H4a1 1 0 0 1-1-1z"/>',
+  plus: '<path d="M12 5v14M5 12h14"/>', menu: '<path d="M4 7h16M4 12h16M4 17h16"/>', bell: '<path d="M6 16V11a6 6 0 1 1 12 0v5l2 2H4z"/><path d="M10 20a2 2 0 0 0 4 0"/>', grid: '<path d="M4 4h7v7H4zM13 4h7v7h-7zM4 13h7v7H4zM13 13h7v7h-7z"/>',
 };
 const icon = (k) => `<svg class="ico" viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">${ICONS[k] || ''}</svg>`;
 
@@ -609,12 +681,15 @@ function shell() {
         <div class="gsearch"><input id="gq" type="search" placeholder="Search items, customers, bills…" autocomplete="off" aria-label="Search" enterkeyhint="search">
           <div class="gres" id="gres" hidden></div></div>
         <button class="btn sm cmdbtn hide-sm" id="cmdbtn" type="button" title="Go to or do anything (Ctrl K)">${icon('grid')}<kbd>Ctrl K</kbd></button>
+        <div class="bellbox"><button class="btn sm bell" id="bell" type="button" aria-haspopup="true" aria-expanded="false" title="What needs doing">${icon('bell')}<span class="bcount" id="bcount" hidden></span></button>
+          <div class="menu bellmenu" id="bellmenu" hidden></div></div>
         ${news.length ? `<div class="newmenu"><button class="btn primary" id="newbtn" aria-haspopup="true" aria-expanded="false">+ <span>New</span></button>
           <div class="menu qmenu" id="newmenu" hidden>${news.map(([h, t, , , ic]) => `<a href="#/${h}">${icon(ic)}<span>${t}</span></a>`).join('')}</div></div>` : ''}
       </header>
       ${ME.org.close_after && ME.user.role_key === 'owner' ? `<div class="closing">This business will be deleted on <b>${fdate(ME.org.close_after.slice(0, 10))}</b>. <a href="#/settings/security">Keep it (cancel)</a> · <a href="#/settings?backup=1">Download a backup</a></div>` : ''}
       <main class="page" id="page"></main>
-    </div></div><div class="scrim" id="scrim"></div>`;
+    </div></div><div class="scrim" id="scrim"></div>
+    <nav class="bnav" id="bnav" aria-label="Main">${bnavItems().map(([h, t, ic, act]) => `<a href="${h ? '#/' + h : '#'}" ${act ? `data-bn="${act}"` : `data-h="${h}"`}>${icon(ic)}<span>${t}</span></a>`).join('')}</nav>`;
   hideAmounts(storeGet('st:hideamt') === '1');
   $('#langbtn').onclick = switchLang;
   $('#hideamt').onclick = () => { const on = !document.body.classList.contains('hide-amt'); hideAmounts(on); storeSet('st:hideamt', on ? '1' : '0'); };
@@ -635,9 +710,50 @@ function shell() {
   }
   wireSearch();
   $('#cmdbtn').onclick = palette;
+  wireBell();
+  $('#bnav').addEventListener('click', (e) => {
+    const a = e.target.closest('[data-bn]'); if (!a) return;
+    e.preventDefault();
+    if (a.dataset.bn === 'menu') menu(true);
+    if (a.dataset.bn === 'new') quickSheet();
+  });
   // lists that arrive after a screen has drawn (a report tab, a search) get the same sort / filter / download
   let pend = 0;
-  new MutationObserver(() => { if (!pend) pend = requestAnimationFrame(() => { pend = 0; enhanceTables($('#page')); }); }).observe($('#page'), { childList: true, subtree: true });
+  new MutationObserver(() => { if (!pend) pend = requestAnimationFrame(() => { pend = 0; enhanceTables($('#page')); enhanceSelects($('#page')); }); }).observe($('#page'), { childList: true, subtree: true });
+}
+/* the phone's bottom bar: home, the billing screen this user has, quick actions, money owed, the full menu */
+function bnavItems() {
+  const ok = (h) => onMenu(h) && seen(h);
+  const bill = ok('pos') ? ['pos', 'Bill', 'bolt'] : ok('sales/INV') ? ['new/INV', 'Bill', 'doc'] : ok('receive') ? ['receive', 'Receive', 'box'] : null;
+  const owe = ok('khata') ? ['khata', 'Khata', 'book'] : ok('parties') ? ['parties', 'Parties', 'user'] : ok('stock') ? ['stock', 'Stock', 'layers'] : null;
+  return [['dashboard', 'Home', 'home'], bill, ['', 'New', 'plus', 'new'], owe, ['', 'Menu', 'menu', 'menu']].filter(Boolean);
+}
+function quickSheet() {
+  const acts = NEW_MENU.filter(([, , a, h]) => ME.can[a] && onMenu(h));
+  modal('Quick actions', [], async () => {}, { submit: 'Close', intro: `<div class="qmenu qsheet">${acts.map(([h, t, , , ic]) => `<a href="#/${h}">${icon(ic)}<span>${t}</span></a>`).join('')}</div>` });
+  $('.qsheet').addEventListener('click', (e) => { if (e.target.closest('a')) $('#modal-root').innerHTML = ''; });
+}
+/* the bell: the Today list (what needs doing), counted on the button and one tap each from the menu */
+let bellAt = 0;
+async function refreshBell() {
+  const btn = $('#bell'); if (!btn) return;
+  let t = null;
+  try { t = await GET('/api/today'); } catch (e) { return; }
+  const rows = (t && t.rows || []).filter((r) => TODAY[r.key]);
+  const c = $('#bcount'); c.hidden = !rows.length; c.textContent = rows.length > 9 ? '9+' : String(rows.length);
+  btn.title = rows.length ? `${rows.length} thing${rows.length === 1 ? '' : 's'} need doing` : 'Nothing needs doing';
+  $('#bellmenu').innerHTML = `<div class="bellh"><b>What needs doing</b><a href="#/dashboard">Dashboard</a></div>` + (rows.length ? rows.map((r) => {
+    let [tone, text, href, cta] = TODAY[r.key]; if (LANG === 'hi' && TODAY_HI[r.key]) [text, cta] = TODAY_HI[r.key];
+    return `<a class="t-${tone}" href="${href}"><i></i><span>${esc(text(r.n, r))}${r.value ? ` <b>${inr0(r.value)}</b>` : ''}</span><em>${cta} ›</em></a>`;
+  }).join('') : '<p class="muted small" style="padding:8px 12px">Nothing pending. Sab theek hai ✓</p>');
+  bellAt = Date.now();
+}
+function wireBell() {
+  const btn = $('#bell'), box = $('#bellmenu');
+  btn.onclick = (e) => { e.stopPropagation(); box.hidden = !box.hidden; btn.setAttribute('aria-expanded', String(!box.hidden)); if (!box.hidden && Date.now() - bellAt > 60000) refreshBell(); };
+  box.onclick = (e) => { if (e.target.closest('a')) box.hidden = true; };
+  refreshBell();
+  setInterval(() => { if (document.visibilityState === 'visible' && ME) refreshBell(); }, 5 * 60000);
 }
 /* buttons marked data-act (the page has no inline scripts, so a strict Content-Security-Policy can be used) */
 const ACTS = { print: () => window.print(), back: () => history.back(), reload: () => location.reload() };
@@ -646,6 +762,7 @@ document.addEventListener('click', (e) => {
   if (act && Object.hasOwn(ACTS, act.dataset.act)) { e.preventDefault(); ACTS[act.dataset.act](); return; }
   const nm = $('#newmenu'); if (nm && !e.target.closest('.newmenu')) nm.hidden = true;
   const gr = $('#gres'); if (gr && !e.target.closest('.gsearch')) gr.hidden = true;
+  const bm = $('#bellmenu'); if (bm && !e.target.closest('.bellbox')) bm.hidden = true;
   $$('.more-menu[open]').forEach((d) => { if (!d.contains(e.target) || e.target.closest('.menu')) d.removeAttribute('open'); });
 });
 document.addEventListener('keydown', (e) => {
@@ -690,7 +807,7 @@ async function render() {
   const hash = location.hash.replace(/^#\/?/, '') || 'dashboard';
   const [path, qs] = hash.split('?');
   const q = new URLSearchParams(qs || '');
-  $$('.side a').forEach((a) => a.classList.toggle('on', path === a.dataset.h || (path.startsWith(a.dataset.h + '/') && a.dataset.h !== '')));
+  $$('.side a, .bnav a[data-h]').forEach((a) => a.classList.toggle('on', path === a.dataset.h || (path.startsWith(a.dataset.h + '/') && a.dataset.h !== '')));
   menu(false);
   const page = $('#page');
   for (const [re, fn] of ROUTES) {
@@ -699,7 +816,8 @@ async function render() {
     page.innerHTML = '<div class="muted">Loading&hellip;</div>';
     page.onclick = page.onkeydown = page.onchange = null;     // a page's own handlers must not outlive it
     rendering = true;
-    try { await fn(page, m, q); enhanceTables(page); rememberPage(hash); const tab = $('.tabs a.on', page); if (tab && tab.parentNode.scrollWidth > tab.parentNode.clientWidth) tab.parentNode.scrollLeft = tab.offsetLeft - tab.parentNode.offsetLeft - 16; } catch (e) {
+    document.body.classList.toggle('no-bnav', /^(new\/|pos$|table\/|receive$|stockcount$)/.test(path));
+    try { await fn(page, m, q); enhanceTables(page); enhanceSelects(page); rememberPage(hash); const tab = $('.tabs a.on', page); if (tab && tab.parentNode.scrollWidth > tab.parentNode.clientWidth) tab.parentNode.scrollLeft = tab.offsetLeft - tab.parentNode.offsetLeft - 16; } catch (e) {
       if (e.status === 0) offlinePage(page);
       else if (e.status !== 401) page.innerHTML = `<div class="err">${esc(e.message)}</div>`;
     } finally { rendering = false; }
@@ -845,6 +963,15 @@ const DASH_TEMPLATES = {
   inventory: ['Inventory', [['today_tasks', 4], ['stock_value', 1], ['out_of_stock', 1], ['pending_orders', 1], ['purchase_period', 1], ['low_stock', 2], ['godown_stock', 2], ['fast_moving', 2], ['slow_moving', 2]]],
   blank: ['Blank', []],
 };
+/* first run: the kind of business picks the dashboard and the screens worth knowing about first */
+const BIZ = [
+  ['retail', 'Kirana / retail shop', 'retail', [['pos', 'Quick Bill with barcode and Bolkar'], ['loyalty', 'Loyalty points'], ['shop', 'Online catalogue on WhatsApp']]],
+  ['wholesale', 'Wholesale / distributor', 'wholesale', [['parties', 'Wholesale price lists for customers'], ['reminders', 'Vasooli (collections)'], ['receive', 'Receive goods by scanning']]],
+  ['restaurant', 'Restaurant / cafe / dhaba', 'retail', [['tables', 'Tables and KOT'], ['pos', 'Quick Bill'], ['loyalty', 'Loyalty points']]],
+  ['pharmacy', 'Medical / pharmacy', 'inventory', [['expiry', 'Batch and expiry'], ['pos', 'Quick Bill'], ['reminders', 'Vasooli (collections)']]],
+  ['maker', 'Manufacturer', 'inventory', [['production', 'Production (recipe / BOM)'], ['purchase/PO', 'Purchase orders'], ['stock-ageing', 'Stock ageing']]],
+  ['export', 'Exporter / services', 'finance', [['parties', 'Customers abroad: state "Other Country"'], ['gstr', 'GST returns'], ['cash', 'Kal ka Cash']]],
+];
 const JOB_TEMPLATE = { all: 'owner', counter: 'retail', store: 'inventory', accounts: 'finance', sales: 'sales', gate: 'inventory', waiter: 'retail' };
 const greet = () => { const h = new Date(Date.now() + 5.5 * 3600e3).getUTCHours(); return h < 12 ? 'Good morning' : h < 17 ? 'Good afternoon' : 'Good evening'; };
 const pct = (a, b) => (b ? Math.round((a - b) / Math.abs(b) * 1000) / 10 : null);
@@ -918,6 +1045,30 @@ route(/^dashboard$/, async (el, m, q) => {
   let cur = boards.find((b) => b.id === +(q.get('d') || 0)) || boards.find((b) => b.id === L.default_id) || boards[0];
   let range = q.get('range') || cur.layout.range || 'month', editing = false, draft = null, hist = [], fut = [], data = {}, extra = {};
   const canEdit = () => cur.id === 0 || cur.mine || L.can_share;
+  const bizKey = `st:biz:${ME.org.id}`;
+  const bizCard = () => {
+    const got = BIZ.find((b) => b[0] === storeGet(bizKey));
+    if (got) {
+      const tips = got[3].filter(([h]) => onMenu(h.split('?')[0]) && seen(h.split('?')[0]));
+      return storeGet(bizKey + ':tips') === 'off' || !tips.length ? '' : `<div class="panel biztips"><b>For your ${esc(got[1].split(' / ')[0].toLowerCase())}:</b>
+        ${tips.map(([h, t]) => `<a class="btn sm" href="#/${h}">${esc(t)}</a>`).join('')}<span class="spacer"></span><button type="button" class="btn sm" data-biz-off aria-label="Hide these suggestions">×</button></div>`;
+    }
+    if (L.dashboards.length || !L.can_share || storeGet(bizKey) === 'skip') return '';
+    return `<div class="panel bizpick"><div><h2>What kind of business do you run?</h2><p class="muted">Your dashboard and the first screens to try are set for it. Change it any time with Customize.</p></div>
+      <div class="bizchips">${BIZ.map(([k, t]) => `<button type="button" class="chip" data-biz="${k}">${esc(t)}</button>`).join('')}<button type="button" class="chip ghost" data-biz="skip">Skip</button></div></div>`;
+  };
+  el.onclick = async (e) => {          // page handlers are cleared on each screen change, so this never doubles up
+    const b = e.target.closest('[data-biz]');
+    if (b) {
+      const k = b.dataset.biz; storeSet(bizKey, k);
+      if (k !== 'skip') {
+        const got = BIZ.find((x) => x[0] === k);
+        try { await POST('/api/dashboards', { name: got[1].split(' / ')[0], layout: { range: '30d', widgets: allowed(DASH_TEMPLATES[got[2]][1]) }, is_default: true }); toast('Dashboard set for your business'); } catch (er) { toast(er.message, 'err'); }
+      }
+      render(); return;
+    }
+    if (e.target.closest('[data-biz-off]')) { storeSet(bizKey + ':tips', 'off'); e.target.closest('.biztips').remove(); }
+  };
   const widgets = () => (editing ? draft.widgets : cur.layout.widgets).filter((x) => meta[x.w]);
   const load = async () => {
     const list = widgets(), ids = [...new Set(list.filter((x) => !meta[x.w].client).map((x) => x.w))];
@@ -957,7 +1108,7 @@ route(/^dashboard$/, async (el, m, q) => {
           <label class="check"><input type="checkbox" id="ddef" ${draft.is_default ? 'checked' : ''}> Open this dashboard first</label>
           ${L.can_share ? `<label class="check"><input type="checkbox" id="dshare" ${draft.shared ? 'checked' : ''}> Share with everyone in the business <small class="muted">(each person sees only what their role allows)</small></label>` : ''}
           ${cur.id && cur.mine ? '<span class="spacer"></span><button type="button" class="btn sm" id="ddup">Duplicate</button><button type="button" class="btn sm danger" id="ddel">Delete</button>' : ''}</div>`
-        : `${getStarted(L.setup)}<nav class="qacts" aria-label="Quick actions">${acts.map(([h, t, , , ic]) => `<a href="#/${h}">${icon(ic)}<span>${t}</span></a>`).join('')}</nav>`}
+        : `${bizCard()}${getStarted(L.setup)}<nav class="qacts" aria-label="Quick actions">${acts.map(([h, t, , , ic]) => `<a href="#/${h}">${icon(ic)}<span>${t}</span></a>`).join('')}</nav>`}
       <div class="dgrid ${editing ? 'editing' : ''}" id="dgrid">${widgets().map(card).join('') || `<div class="wempty big">${editing ? 'Add widgets from the library, or start from a template.' : 'This dashboard is empty. Press Customize to add widgets.'}</div>`}</div>`;
     wire();
   };
@@ -1472,7 +1623,15 @@ route(/^new\/([A-Z]+)$/, async (el, m, q) => {
   $$('tr', tbody).forEach(wireRow);
   form.addEventListener('input', recalc);
   form.addEventListener('change', recalc);
-  if ($('#addline')) $('#addline').onclick = () => { tbody.insertAdjacentHTML('beforeend', lineRow({})); wireRow(tbody.lastElementChild); recalc(); };
+  if ($('#addline')) $('#addline').onclick = () => { tbody.insertAdjacentHTML('beforeend', lineRow({})); wireRow(tbody.lastElementChild); enhanceSelects(tbody.lastElementChild); recalc(); };
+  // Enter in a line moves to the next line's quantity; on the last line it adds a line and puts the cursor on its item
+  tbody.addEventListener('keydown', (e) => {
+    if (e.key !== 'Enter' || !e.target.matches('input[name=qty], input[name=rate], input[name=discount_pct], input[name=description]')) return;
+    e.preventDefault();
+    const tr = e.target.closest('tr'), next = tr.nextElementSibling;
+    if (next) { const f = $(`[name=${e.target.name}]`, next) || $('[name=qty]', next); if (f) { f.focus(); f.select && f.select(); } return; }
+    if ($('#addline')) { $('#addline').click(); const it = $('.combo-in, select[name=item_id]', tbody.lastElementChild); if (it) it.focus(); }
+  });
   if (form.elements.party_id && form.elements.party_id.tagName === 'SELECT' && isSale && !isNote) { form.elements.party_id.addEventListener('change', loadLast); if (form.elements.party_id.value) loadLast(); }
   if (form.elements.warehouse_id && form.elements.warehouse_id.tagName === 'SELECT') form.elements.warehouse_id.addEventListener('change', () => $$('tr', tbody).forEach(fillBatches));
   if ($('#newparty')) $('#newparty').onclick = () => partyForm({ kind: side }, async (p) => {
