@@ -896,3 +896,12 @@ label.check.incl-all { margin: 2px 0 8px; }
 .shop-sheet { margin-top: 14px; }
 .shop-pre { white-space: pre-wrap; font: inherit; background: var(--soft); padding: 10px; border-radius: 8px; }
 .shop-hint { margin-top: 12px; }
+
+/* loyalty points: the box on the bill editor and Quick Bill, the line on a printed bill, a tappable kpi */
+.pts { margin-top: 12px; padding: 10px 12px; border: 1px dashed var(--line); border-radius: var(--radius); background: var(--panel); }
+.pts[hidden] { display: none; }
+.pts .row { gap: 8px; align-items: center; }
+.ptsp { margin: 6px 0 0; font-size: 12px; }
+.receipt .ptsp { text-align: center; margin-top: 6px; }
+a.kpi { color: inherit; text-decoration: none; display: block; }
+a.kpi:hover { border-color: var(--accent, #0f766e); }

@@ -17,6 +17,8 @@ const REPEAT_AFTER_LAST = 7;                       // after the 45-day step, one
 const R = (p) => Math.round(p) / 100;
 const dayNo = (d) => Math.round(Date.parse(d + 'T00:00:00Z') / 864e5);
 const NOT_VOID = `(y.notes IS NULL OR y.notes NOT LIKE '[void]%')`;
+/* loyalty points used on a bill are booked like a receipt, but no money came in: collection totals leave them out */
+const NOT_POINTS = `y.account_id NOT IN (SELECT id FROM accounts WHERE org_id = y.org_id AND sys = 'loyalty')`;
 
 /* the schedule step a bill is at, from how many days late it is (negative = not due yet); null = too early */
 export function stepFor(daysLate) {
@@ -100,8 +102,8 @@ export async function logReminder(c, partyId, body) {
 export async function summary(c) {
   const t = today(), org = c.org.id, w = addDays(t, -6), m = t.slice(0, 8) + '01';
   const [rec, top, promised, out, paid90, paidPrev, watch, staff] = await c.db.batch([
-    c.db.prepare(`SELECT COALESCE(SUM(amount), 0) AS amt, COUNT(DISTINCT party_id) AS n FROM payments y WHERE org_id = ? AND kind = 'receipt' AND date >= ? AND ${NOT_VOID}`).bind(org, w),
-    c.db.prepare(`SELECT p.name, SUM(y.amount) AS amt FROM payments y JOIN parties p ON p.id = y.party_id WHERE y.org_id = ? AND y.kind = 'receipt' AND y.date >= ? AND ${NOT_VOID}
+    c.db.prepare(`SELECT COALESCE(SUM(amount), 0) AS amt, COUNT(DISTINCT party_id) AS n FROM payments y WHERE org_id = ? AND kind = 'receipt' AND date >= ? AND ${NOT_VOID} AND ${NOT_POINTS}`).bind(org, w),
+    c.db.prepare(`SELECT p.name, SUM(y.amount) AS amt FROM payments y JOIN parties p ON p.id = y.party_id WHERE y.org_id = ? AND y.kind = 'receipt' AND y.date >= ? AND ${NOT_VOID} AND ${NOT_POINTS}
       GROUP BY y.party_id ORDER BY amt DESC LIMIT 1`).bind(org, w),
     c.db.prepare(`SELECT COALESCE(SUM(k.amount), 0) AS amt, COUNT(DISTINCT k.party_id) AS n FROM vaada_kisht k JOIN vaade v ON v.id = k.vaada_id
       WHERE k.org_id = ? AND k.outcome IS NULL AND v.status = 'open' AND k.due BETWEEN ? AND ?`).bind(org, t, addDays(t, 6)),
@@ -119,7 +121,7 @@ export async function summary(c) {
         SUM(CASE WHEN y.date >= ?3 THEN y.amount ELSE 0 END) AS week, SUM(CASE WHEN y.date >= ?3 AND a.sys = 'cash' THEN y.amount ELSE 0 END) AS cash_week,
         SUM(CASE WHEN y.date >= ?2 THEN y.amount ELSE 0 END) AS month
       FROM payments y LEFT JOIN users u ON u.id = y.created_by LEFT JOIN accounts a ON a.id = y.account_id
-      WHERE y.org_id = ?1 AND y.kind = 'receipt' AND y.date >= min(?2, ?3) AND ${NOT_VOID} GROUP BY y.created_by ORDER BY week DESC, month DESC`).bind(org, m, w),
+      WHERE y.org_id = ?1 AND y.kind = 'receipt' AND y.date >= min(?2, ?3) AND ${NOT_VOID} AND ${NOT_POINTS} GROUP BY y.created_by ORDER BY week DESC, month DESC`).bind(org, m, w),
   ]);
   const o = out.results[0], avg = (r) => (r.results[0].n ? Math.round(r.results[0].avg) : null);
   return {

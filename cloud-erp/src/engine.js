@@ -13,6 +13,7 @@ import { stateCode } from './gst.js';
 import { checkInvoiceLimit, invoiceCap, invoiceCapError, hasFeature, planOf, upgradeError } from './saas.js';
 import { cleanVaada, risk, riskStatements, riskInput } from './vaada.js';
 import { numberSpec, fieldsOf, cleanExtra, LAYOUTS } from './custom.js';
+import { invoicePoints, invoicePointStatements, returnPointStatement, cancelPointStatement, unredeemStatements, LOYALTY_ACCOUNTS, POINTS_RACE } from './loyalty.js';
 
 export const DOC_TYPES = {
   QUOTE: { side: 'sales', prefix: 'QT', label: 'Quotation', from: [] },
@@ -461,13 +462,24 @@ export async function createDoc(ctx, body) {
     st.push(db.prepare(`UPDATE docs SET status = 'closed', paid = ? WHERE txk = ?`).bind(total, txk));
   }
 
-  // cash sale / cash purchase: settle immediately
+  // loyalty points: part of an invoice paid with points (booked like a receipt), points earned on the rest; a return takes back its share
   let paidNow = 0;
+  const pts = type === 'INV' ? await invoicePoints(ctx, party, total, body) : null;
+  if (pts && pts.value > 0) {
+    await ensureSysAccounts(ctx, LOYALTY_ACCOUNTS);
+    paidNow = pts.value;
+    st.push(...paymentStatements(ctx, { kind: 'receipt', party, account: ctx.sys.loyalty, date: d, amount: pts.value,
+      reference: `${pts.use} loyalty points`, allocs: [{ txk, amount: pts.value, total }] }));
+  }
+  if (pts) st.push(...invoicePointStatements(ctx, party, txk, d, pts));
+  if (type === 'SRET') { const r = returnPointStatement(ctx, src, txk, d, total); if (r) st.push(r); }
+
+  // cash sale / cash purchase: settle immediately
   if (['INV', 'BILL'].includes(type) && body.payment && +body.payment.amount > 0) {
     const acct = await cashAccount(db, orgId, +body.payment.account_id);
-    const amt = Math.min(toPaise(body.payment.amount), total);
-    paidNow = amt;
-    st.push(...paymentStatements(ctx, {
+    const amt = Math.min(toPaise(body.payment.amount), total - paidNow);
+    paidNow += amt;
+    if (amt > 0) st.push(...paymentStatements(ctx, {
       kind: type === 'INV' ? 'receipt' : 'payment', party, account: acct.id, date: d, amount: amt,
       reference: str(body.payment.reference, 80), allocs: [{ txk, amount: amt, total }],
     }));
@@ -482,6 +494,7 @@ export async function createDoc(ctx, body) {
     const msg = String(e && e.message);
     if (/UNIQUE constraint failed: docs\.org_id, docs\.type, docs\.number/.test(msg)) throw bad('This document number is already used. Change the next number in Settings > Numbering.');
     if (cap && /NOT NULL constraint failed: doc_lines\.doc_id/.test(msg)) throw invoiceCapError(cap);   // the guarded insert added no row: the cap was reached
+    if (POINTS_RACE.test(msg)) throw bad(`${party.name}'s points were just used on another bill. Check the points and save again.`);
     throw e;
   }
   return db.prepare(`SELECT * FROM docs WHERE txk = ?`).bind(txk).first();
@@ -646,10 +659,14 @@ export async function cancelDoc(ctx, id) {
   const child = await db.prepare(`SELECT number FROM docs WHERE ref_id = ?1 AND org_id = ?2 AND status != 'cancelled'
       UNION ALL SELECT number FROM write_offs WHERE bill_id = ?1 AND org_id = ?2 AND status = 'done' LIMIT 1`).bind(doc.id, ctx.org.id).first();
   if (child) throw bad(`Cancel ${child.number} first: it was made from this document.`);
-  const pay = await db.prepare(`SELECT 1 FROM payment_allocs WHERE doc_id = ? AND payment_id > 0 LIMIT 1`).bind(doc.id).first();
-  if (pay) throw bad('Void the payments against this document first.');
+  // points used on the bill are part of it: their receipt is voided with it; any other payment must be voided first
+  const { results: pays } = await db.prepare(`SELECT p.*, a.sys FROM payment_allocs pa JOIN payments p ON p.id = pa.payment_id LEFT JOIN accounts a ON a.id = p.account_id
+      WHERE pa.doc_id = ? AND pa.payment_id > 0`).bind(doc.id).all();
+  if (pays.some((p) => p.sys !== 'loyalty')) throw bad('Void the payments against this document first.');
 
   const st = await reverseStock(ctx, { refType: doc.type, refId: doc.id, date: doc.date, label: doc.number });
+  for (const p of pays) st.push(...await voidStatements(ctx, p));
+  st.push(cancelPointStatement(ctx, doc));
   const { results: jls } = await db.prepare(`SELECT jl.* FROM journal_lines jl JOIN journals j ON j.id = jl.journal_id
       WHERE j.org_id = ? AND j.ref_type = ? AND j.ref_id = ?`).bind(ctx.org.id, doc.type, doc.id).all();
   if (jls.length) {
@@ -685,9 +702,15 @@ export async function voidPayment(ctx, id) {
   const { db } = ctx;
   requireCan(ctx.user, 'finance');
   requireCancel(ctx.user);
-  const p = await db.prepare(`SELECT * FROM payments WHERE id = ? AND org_id = ?`).bind(id, ctx.org.id).first();
+  const p = await db.prepare(`SELECT p.*, a.sys FROM payments p LEFT JOIN accounts a ON a.id = p.account_id WHERE p.id = ? AND p.org_id = ?`).bind(id, ctx.org.id).first();
   if (!p) throw notFound('Payment not found.');
   if (p.notes && p.notes.startsWith('[void]')) throw bad('Already void.');
+  await db.batch(await voidStatements(ctx, p));
+}
+
+/* everything that voids one payment or receipt; points used on a bill come back to the customer */
+async function voidStatements(ctx, p) {
+  const { db } = ctx;
   const st = [];
   const { results: allocs } = await db.prepare(`SELECT * FROM payment_allocs WHERE payment_id = ?`).bind(p.id).all();
   for (const a of allocs) {
@@ -700,8 +723,9 @@ export async function voidPayment(ctx, id) {
   st.push(...journalStatements(db, ctx, { date: p.date, narration: 'Void ' + p.number, refType: p.kind + '-X', refId: p.id,
     lines: jls.map((l) => ({ account: l.account_id, party: l.party_id, amount: l.credit - l.debit })) }));
   st.push(db.prepare(`UPDATE payments SET notes = '[void] ' || notes WHERE id = ?`).bind(p.id));
+  if (p.sys === 'loyalty') st.push(...unredeemStatements(ctx, allocs));
   st.push(auditStatement(ctx, `void ${p.kind}`, p.number));
-  await db.batch(st);
+  return st;
 }
 
 /* ---------------------------------------------------------------- inventory operations */

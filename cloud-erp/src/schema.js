@@ -3,7 +3,7 @@
    Every business table carries org_id: one database serves many businesses (multi-tenant).
    migrate() runs on the first request after each deploy, so no manual migration step is needed. */
 
-export const SCHEMA_VERSION = 37;
+export const SCHEMA_VERSION = 38;
 
 // document types whose monthly totals doc_month keeps (sales and purchase money documents)
 const MONTH_TYPES = `('INV','SRET','CNOTE','BILL','PRET','DNOTE')`;
@@ -639,6 +639,14 @@ export const MIGRATIONS = {
     `ALTER TABLE orgs ADD COLUMN shop TEXT NOT NULL DEFAULT '{}'`,
     `CREATE UNIQUE INDEX IF NOT EXISTS ix_orgs_shop ON orgs (shop_token)`,
     `ALTER TABLE items ADD COLUMN shop_hide INTEGER NOT NULL DEFAULT 0`,
+  ],
+  /* loyalty points: the business's rules, and a ledger of every point earned, used or given back (src/loyalty.js) */
+  38: [
+    `ALTER TABLE orgs ADD COLUMN loyalty TEXT NOT NULL DEFAULT '{}'`,
+    `CREATE TABLE IF NOT EXISTS loyalty_points (id INTEGER PRIMARY KEY, org_id INTEGER NOT NULL, party_id INTEGER NOT NULL, doc_id INTEGER,
+      date TEXT NOT NULL, points INTEGER NOT NULL, kind TEXT NOT NULL, note TEXT NOT NULL DEFAULT '', created_by INTEGER, created_at TEXT NOT NULL)`,
+    `CREATE INDEX IF NOT EXISTS ix_loyalty_party ON loyalty_points (org_id, party_id)`,
+    `CREATE INDEX IF NOT EXISTS ix_loyalty_doc ON loyalty_points (doc_id)`,
   ],
 };
 

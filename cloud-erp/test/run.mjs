@@ -2866,5 +2866,72 @@ if (process.env.ERP_AI_MOCK) {
   check('cash short of the bills due this week is flagged with the gap', R1('cash_short') && R1('cash_short').n === 1 && R1('cash_short').value > 0, JSON.stringify(R1('cash_short')));
 }
 
+/* --- loyalty points: earned on bills, used to pay part of a bill, undone by cancel and returns --- */
+{
+  const ip = '203.0.113.158';
+  const su = await rq('POST', '/api/auth/signup', { business: 'Loyal Kirana', name: 'L', email: `loyal${Date.now()}@test.in`, password: 'Loyal-pass-12345', state: 'Rajasthan' }, { ip });
+  const L = async (m, p, b) => (await rq(m, p, b, { cookie: su.cookie, ip })).data, LE = (m, p, b) => rq(m, p, b, { cookie: su.cookie, ip });
+  const it = await L('POST', '/api/items', { name: 'Ghee 1kg', sale_price: 1000, gst_rate: 0, purchase_price: 700, opening_qty: 50 });
+  const ravi = await L('POST', '/api/parties', { name: 'Ravi Loyal', kind: 'customer', state: 'Rajasthan', phone: '9876500011' });
+  const walk = (await L('GET', '/api/parties')).rows.find((p) => p.name === 'Walk-in Customer');
+  const cash = (await L('GET', '/api/accounts')).rows.find((a) => a.sys === 'cash');
+  const s0 = await L('GET', '/api/settings/loyalty');
+  check('loyalty points start off, with 1 point per ₹100 and 1 point = ₹1 ready', s0.on === false && s0.earn_per === 100 && s0.point_value === 1 && s0.max_pct === 50, JSON.stringify(s0));
+  const inv = (party, extra = {}) => LE('POST', '/api/docs', { type: 'INV', party_id: party.id, lines: [{ item_id: it.id, qty: 1, rate: 1000 }], ...extra });
+  check('points cannot be used while loyalty is off', (await inv(ravi, { redeem_points: 5 })).status === 400);
+  const off = (await inv(ravi)).data;
+  check('a bill earns nothing while loyalty is off', off.points === null && (await L('GET', `/api/loyalty/${ravi.id}`)).balance === 0);
+  const s1 = await L('PUT', '/api/settings/loyalty', { on: true, earn_per: 100, point_value: 1, max_pct: 50, min_points: 0 });
+  check('the owner turns loyalty on', s1.on === true && (await L('GET', '/api/me')).org.loyalty.on === true);
+  const i1 = (await inv(ravi)).data;
+  check('a ₹1,000 bill to a named customer earns 10 points, shown on the bill', i1.points && i1.points.earned === 10 && i1.points.balance === 10, JSON.stringify(i1.points));
+  const w1 = (await inv(walk)).data;
+  check('the walk-in customer earns nothing and has no points to use', w1.points === null && (await inv(walk, { redeem_points: 1 })).status === 400);
+  const adj = await L('POST', '/api/loyalty/adjust', { party_id: ravi.id, points: 100, note: 'Opening balance' });
+  check('the owner gives points by hand (an opening balance)', adj.balance === 110 && adj.rows[0].kind === 'adjust' && adj.rows[0].note === 'Opening balance');
+  check('more points than the customer has cannot be used', /has 110 points/.test((await inv(ravi, { redeem_points: 200 })).data.error || ''));
+  const small = await LE('POST', '/api/docs', { type: 'INV', party_id: ravi.id, lines: [{ item_id: it.id, qty: 1, rate: 100 }], redeem_points: 60 });
+  check('points pay at most the set share of a bill (50% of ₹100 = 50 points)', small.status === 400 && /At most 50 points/.test(small.data.error || ''), JSON.stringify(small.data));
+  const r2r = await inv(ravi, { redeem_points: 110, payment: { amount: 1000, account_id: cash.id } });
+  const i2 = r2r.data;
+  check('110 points pay ₹110 of a bill, cash pays the rest, and the rest earns points', r2r.status === 200 && i2.paid === 1000 && i2.status === 'paid' && i2.points.used === 110 && i2.points.earned === 8 && i2.points.balance === 8, JSON.stringify([r2r.status, i2.paid, i2.status, i2.points]));
+  check('the points show as a receipt and the cash receipt is only the rest', i2.settlements.length === 2 && i2.settlements.some((x) => x.amount === 110) && i2.settlements.some((x) => x.amount === 890), JSON.stringify(i2.settlements));
+  const acct = async () => (await L('GET', '/api/accounts')).rows.find((a) => a.sys === 'loyalty');
+  check('points used are booked to "Loyalty Points Redeemed"', (await acct()).balance === 110 && (await acct()).name === 'Loyalty Points Redeemed');
+  const vs = (await L('GET', '/api/vasooli')).summary;
+  check('points are not counted as money collected', vs.received === 890, JSON.stringify(vs.received));
+  check('a bill with a cash receipt still asks for that receipt to be voided first', /Void the payments/.test((await LE('POST', `/api/docs/${i2.id}/cancel`)).data.error || ''));
+  const cashRct = (await L('GET', '/api/payments?kind=receipt')).rows.find((x) => x.amount === 890);
+  await L('POST', `/api/payments/${cashRct.id}/void`);
+  const c2 = await LE('POST', `/api/docs/${i2.id}/cancel`);
+  const after = await L('GET', `/api/loyalty/${ravi.id}`);
+  check('cancelling the bill gives back the points used and takes back the points earned', c2.status === 200 && after.balance === 110 && after.rows[0].kind === 'cancel' && after.rows[0].points === -8 && after.rows[1].kind === 'unredeem' && after.rows[1].points === 110, JSON.stringify([c2.status, after.balance, after.rows.slice(0, 3)]));
+  check('the points receipt is voided with the bill, so the expense is back to nothing', (await acct()).balance === 0);
+  const i3 = (await inv(ravi, { redeem_points: 50 })).data;
+  check('points alone pay part of a credit bill', i3.paid === 50 && i3.status === 'partial' && i3.points.balance === 110 - 50 + 9, JSON.stringify([i3.paid, i3.status, i3.points]));
+  const p3 = i3.settlements.find((x) => x.amount === 50);
+  await L('POST', `/api/payments/${p3.id}/void`);
+  const b3 = await L('GET', `/api/loyalty/${ravi.id}`), d3 = await L('GET', `/api/docs/${i3.id}`);
+  check('voiding the points receipt gives the points back and the bill is owed again', b3.balance === 119 && b3.rows[0].kind === 'unredeem' && d3.paid === 0 && d3.status === 'unpaid', JSON.stringify([b3.balance, b3.rows[0], d3.paid, d3.status]));
+  const conv = await L('GET', `/api/docs/${i1.id}/convert?to=SRET`);
+  const ret = await LE('POST', '/api/docs', { type: 'SRET', party_id: ravi.id, ref_id: i1.id, lines: conv.lines.map((l) => ({ ...l, qty: l.qty / 2 })) });
+  const b4 = await L('GET', `/api/loyalty/${ravi.id}`);
+  check('returning half the goods takes back half the points that bill earned', ret.status === 200 && b4.balance === 114 && b4.rows[0].kind === 'return' && b4.rows[0].points === -5, JSON.stringify([ret.status, ret.data.error, b4.balance, b4.rows[0]]));
+  await LE('POST', `/api/docs/${ret.data.id}/cancel`);
+  check('cancelling the return gives those points back', (await L('GET', `/api/loyalty/${ravi.id}`)).balance === 119);
+  const mem = await L('GET', '/api/loyalty');
+  check('the members list shows each customer with points, and what they are worth', mem.members.length === 1 && mem.members[0].name === 'Ravi Loyal' && mem.members[0].balance === 119 && mem.points_out === 119 && mem.value_out === 119, JSON.stringify(mem));
+  const stEm = `loyalstaff${Date.now()}@test.in`;
+  await L('POST', '/api/users', { name: 'Counter boy', email: stEm, password: 'Counter-pass-123', role: 'sales' });
+  const sl = await rq('POST', '/api/auth/login', { email: stEm, password: 'Counter-pass-123' }, { ip });
+  const S = (m, p, b) => rq(m, p, b, { cookie: sl.cookie, ip });
+  check('staff see points and use them on a bill, but cannot change the rules or give points', (await S('GET', `/api/loyalty/${ravi.id}`)).status === 200
+    && (await S('POST', '/api/docs', { type: 'INV', party_id: ravi.id, lines: [{ item_id: it.id, qty: 1, rate: 1000 }], redeem_points: 10 })).status === 200
+    && (await S('POST', '/api/loyalty/adjust', { party_id: ravi.id, points: 1000 })).status === 403 && (await S('PUT', '/api/settings/loyalty', { on: false })).status === 403
+    && (await rq('GET', `/api/loyalty/${ravi.id}`, undefined, { ip })).status === 401);
+  const bk = await L('GET', '/api/export/backup');
+  check('points are in the backup', bk && bk.tables && Array.isArray(bk.tables.loyalty_points) && bk.tables.loyalty_points.length >= 8, JSON.stringify(Object.keys(bk || {})));
+}
+
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

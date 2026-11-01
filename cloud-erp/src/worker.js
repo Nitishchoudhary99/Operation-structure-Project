@@ -42,6 +42,7 @@ import { STATES, einvoiceJson, ewaybillJson } from './gst.js';
 import { listBins, addBins, deleteBin, binContents, moveInBins, itemLots, expiryReport, serialLookup, putawayPlan, wavePick } from './lots.js';
 import { tallyXml } from './tally.js';
 import { gstr1, gstr1Sheets, match2b } from './gstr.js';
+import { loyaltyOf, cleanLoyalty, partyPoints, members as loyaltyMembers, adjustPoints } from './loyalty.js';
 import { secondStep, twoStepStart, twoStepEnable, twoStepDisable, newBackupCodes, twoStepReset, requireTwoStep, loginStatement, signInHistory,
   closeBusiness, cancelClose, purgeClosed, notOwnerWhileClosing } from './security.js';
 import { workbook } from './xlsx.js';
@@ -316,7 +317,7 @@ router.add('PUT', '/api/org/mode', async (c) => {
   return json({ ok: true, mode });
 });
 /* business row for the app: settings JSON parsed, image URLs ready for <img> */
-const orgOut = (o) => ({ ...o, print: printOf(o), series: seriesOf(o), fields: fieldsOf(o), vaada: cleanVaada(o.vaada), approvals: approvalsOf(o) });
+const orgOut = (o) => ({ ...o, print: printOf(o), series: seriesOf(o), fields: fieldsOf(o), vaada: cleanVaada(o.vaada), approvals: approvalsOf(o), loyalty: loyaltyOf(o) });
 /* approval rules: purchase orders above po_above rupees made by anyone but the owner or an admin wait for approval */
 router.add('PUT', '/api/settings/approvals', async (c) => {
   requireCan(c.user, 'settings');
@@ -886,6 +887,23 @@ router.add('GET', '/api/public/shop/:token', async (c) => {
     items: results.map((i) => ({ id: i.id, name: i.name, unit: i.unit, category: i.category || '', price: R(i.sale_price * (100 + (i.gst_rate || 0)) / 100),
       ...(s.stock ? { in_stock: !!i.is_service || i.qty_on_hand > 0 } : {}) })) }, 200, { 'X-Robots-Tag': 'noindex', 'Cache-Control': 'no-store' });
 }, { public: true });
+/* Loyalty points: src/loyalty.js. The rules (owner/admin), the members list, one customer's points, and the owner's own change. */
+router.add('GET', '/api/settings/loyalty', async (c) => json(loyaltyOf(c.org)));
+router.add('PUT', '/api/settings/loyalty', async (c) => {
+  requireCan(c.user, 'settings');
+  const s = cleanLoyalty(c.body);
+  await c.db.batch([c.db.prepare(`UPDATE orgs SET loyalty = ? WHERE id = ?`).bind(JSON.stringify(s), c.org.id),
+    auditStatement(c, 'loyalty points', s.on ? `on: 1 point per ₹${s.earn_per}, 1 point = ₹${s.point_value}, up to ${s.max_pct}% of a bill` : 'off')]);
+  return json(loyaltyOf({ loyalty: JSON.stringify(s) }));
+});
+router.add('GET', '/api/loyalty', async (c) => json(await loyaltyMembers(c)));
+router.add('GET', '/api/loyalty/:party', async (c) => json(await partyPoints(c, +c.params.party)));
+router.add('POST', '/api/loyalty/adjust', async (c) => {
+  requireCan(c.user, 'settings');
+  const a = await adjustPoints(c, c.body);
+  await c.db.batch([a.statement, auditStatement(c, 'loyalty points', `${a.party.name} ${a.points > 0 ? '+' : ''}${a.points}`)]);
+  return json(await partyPoints(c, a.party.id));
+});
 /* What this customer paid last for each item (their bills of the last year): the bill editor offers it next to the rate */
 router.add('GET', '/api/rates', async (c) => {
   const pid = +c.url.searchParams.get('party_id') || 0;
@@ -1128,7 +1146,7 @@ async function docDetail(c, id) {
   const d = await c.db.prepare(`SELECT d.*, w.name AS warehouse FROM docs d LEFT JOIN warehouses w ON w.id = d.warehouse_id WHERE d.id = ? AND d.org_id = ?`).bind(id, c.org.id).first();
   if (!d) throw notFound('Document not found.');
   if (c.user && !canView(c.user, DOC_TYPES[d.type].side)) throw forbidden('Your role cannot see this document.');
-  const [lines, party, children, parent, pays, wos] = await Promise.all([
+  const [lines, party, children, parent, pays, wos, pts] = await Promise.all([
     c.db.prepare(`SELECT l.*, i.name AS item, i.unit, i.hsn, i.is_service, i.location, i.track_batch, i.track_serial, i.extra AS item_extra FROM doc_lines l LEFT JOIN items i ON i.id = l.item_id WHERE l.doc_id = ? ORDER BY l.id`).bind(id).all(),
     c.db.prepare(`SELECT * FROM parties WHERE id = ?`).bind(d.party_id).first(),
     c.db.prepare(`SELECT id, type, number, date, status, total FROM docs WHERE ref_id = ? AND org_id = ? ORDER BY id`).bind(id, c.org.id).all(),
@@ -1137,6 +1155,11 @@ async function docDetail(c, id) {
         LEFT JOIN payments p ON p.id = pa.payment_id LEFT JOIN docs n ON n.id = pa.note_id WHERE pa.doc_id = ?`).bind(id).all(),
     // goods of a bill-first bill written off (damaged / lost on the way)
     d.type === 'BILL' && d.transit ? c.db.prepare(`SELECT * FROM write_offs WHERE bill_id = ? AND org_id = ? ORDER BY id`).bind(id, c.org.id).all() : { results: [] },
+    // loyalty points this invoice earned and used, and the customer's balance now (printed on the bill)
+    ['INV', 'SRET'].includes(d.type) ? c.db.prepare(`SELECT SUM(CASE WHEN kind = 'earn' THEN points ELSE 0 END) AS earned,
+        -SUM(CASE WHEN kind IN ('redeem', 'unredeem') THEN points ELSE 0 END) AS used, SUM(CASE WHEN kind = 'return' THEN -points ELSE 0 END) AS taken,
+        (SELECT COALESCE(SUM(points), 0) FROM loyalty_points WHERE org_id = ?1 AND party_id = ?3) AS balance, COUNT(*) AS n
+      FROM loyalty_points WHERE org_id = ?1 AND doc_id = ?2`).bind(c.org.id, id, d.party_id).first() : null,
   ]);
   const money = (x) => R(x), defs = fieldsOf(c.org), side = DOC_TYPES[d.type].side;
   return {
@@ -1150,6 +1173,7 @@ async function docDetail(c, id) {
       remaining: Math.round((d.transit && d.type === 'BILL' ? l.recv_qty - l.done_qty : l.qty - l.done_qty) * 1000) / 1000,
       to_receive: d.transit && d.type === 'BILL' && l.item_id && !l.is_service ? Math.round((l.qty - l.recv_qty - l.short_qty) * 1000) / 1000 : 0 })),
     org: orgOut(c.org), ...fileUrls(printOf(c.org), '/api/org/files'),
+    points: pts && pts.n ? { earned: pts.earned, used: pts.used, taken: pts.taken, balance: pts.balance } : null,
   };
 }
 router.add('GET', '/api/docs/:id', async (c) => json(await docDetail(c, +c.params.id)));
@@ -2240,6 +2264,7 @@ const READ_AREAS = [
   [/^\/api\/vaade\/(cash|check)\/?$/, OPEN],
   [/^\/api\/items(\/lookup)?\/?$/, ['items', 'sales', 'purchase']],
   [/^\/api\/rates\/?$/, 'sales'],
+  [/^\/api\/(loyalty(\/\d+)?|settings\/loyalty)\/?$/, 'sales'],
   [/^\/api\/settings\/shop\/?$/, ['sales', 'items', 'settings']],
   [/^\/api\/items\/\d+\/moves\/?$/, 'items'],
   [/^\/api\/reports\/(stock|stock-ageing|expiry)\/?$/, 'items'],

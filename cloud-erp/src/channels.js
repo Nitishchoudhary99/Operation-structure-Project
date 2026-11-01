@@ -253,7 +253,7 @@ export async function billOrder(c, R, o, warehouseId = 0) {
     p = await c.db.prepare(`INSERT INTO parties (org_id, name, kind, state, credit_days, created_at) VALUES (?, ?, 'customer', ?, 7, ?)
         ON CONFLICT(org_id, name) DO UPDATE SET name = excluded.name RETURNING id`).bind(c.org.id, o.party, o.state, nowIso()).first();
   }
-  const doc = await createDoc(c, { type: 'INV', party_id: p.id, date: o.date, warehouse_id: warehouseId, notes: `${R.label} order ${o.order_id}${o.invoice ? ` · ${R.label} invoice ${o.invoice}` : ''}`,
+  const doc = await createDoc(c, { type: 'INV', points: false, party_id: p.id, date: o.date, warehouse_id: warehouseId, notes: `${R.label} order ${o.order_id}${o.invoice ? ` · ${R.label} invoice ${o.invoice}` : ''}`,
     lines: o.lines.map((l) => ({ item_id: l.item_id, qty: l.qty, rate: l.rate, gst_rate: l.gst_rate })) });
   await c.db.prepare(`INSERT INTO channel_orders (org_id, channel, order_id, doc_id, created_at) VALUES (?, ?, ?, (SELECT id FROM docs WHERE org_id = ? AND id = ?), ?)
       ON CONFLICT DO NOTHING`).bind(c.org.id, R.channel, o.order_id, c.org.id, doc.id, nowIso()).run();
