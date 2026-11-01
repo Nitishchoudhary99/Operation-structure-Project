@@ -195,6 +195,14 @@ export const HI = {
   'Show in the online catalogue': 'ऑनलाइन कैटलॉग में दिखाएँ', 'Empty = your business phone.': 'खाली = बिज़नेस का फ़ोन।', 'Catalogue QR poster': 'कैटलॉग QR पोस्टर',
   'Accept': 'स्वीकार करें', 'Keep pending': 'रोक कर रखें', 'Check first': 'पहले जाँचें', 'IMS': 'IMS',
   'Cash and bank are short of the supplier bills due this week': 'इस हफ़्ते के सप्लायर बिलों के लिए नकद और बैंक में पैसे कम हैं', 'Plan': 'योजना', 'Call': 'फ़ोन करें',
+  'Loyalty Points': 'लॉयल्टी पॉइंट', 'Loyalty points on': 'लॉयल्टी पॉइंट चालू', 'Rupees spent for 1 point': '1 पॉइंट के लिए कितने रुपये की खरीद',
+  'Value of 1 point (₹)': '1 पॉइंट की क़ीमत (₹)', 'Most of a bill paid with points (%)': 'बिल का ज़्यादा से ज़्यादा कितना हिस्सा पॉइंट से (%)',
+  'Usable from (points)': 'कितने पॉइंट से इस्तेमाल', '0 = any number of points.': '0 = कितने भी पॉइंट।', 'Members': 'सदस्य', 'customers with points': 'पॉइंट वाले ग्राहक',
+  'Points out': 'बाक़ी पॉइंट', 'Earned / used': 'मिले / इस्तेमाल', 'all time': 'अब तक', '+ Give / take points': '+ पॉइंट दें / घटाएँ', 'History': 'इतिहास',
+  'Points': 'पॉइंट', 'Earned': 'मिले', 'Used': 'इस्तेमाल', 'Last bill': 'पिछला बिल', 'Give or take points': 'पॉइंट दें या घटाएँ', 'Points (a minus takes them off)': 'पॉइंट (माइनस = घटाएँ)',
+  'Why (e.g. opening balance, birthday gift)': 'क्यों (जैसे पुराने पॉइंट, जन्मदिन तोहफ़ा)', 'Use undone': 'इस्तेमाल वापस', 'Goods returned': 'माल वापसी', 'Bill cancelled': 'बिल रद्द', 'Changed': 'बदला',
+  'No points yet.': 'अभी कोई पॉइंट नहीं।', 'Turn loyalty points on above.': 'ऊपर लॉयल्टी पॉइंट चालू करें।', 'Loyalty points to use': 'कितने लॉयल्टी पॉइंट लगाएँ',
+  '⭐ Loyalty points': '⭐ लॉयल्टी पॉइंट', 'None on this bill': 'इस बिल पर नहीं', 'Up to': 'ज़्यादा से ज़्यादा',
   // months
   'Jan': 'जन॰', 'Feb': 'फ़र॰', 'Mar': 'मार्च', 'Apr': 'अप्रै॰', 'May': 'मई', 'Jun': 'जून', 'Jul': 'जुला॰', 'Aug': 'अग॰', 'Sept': 'सित॰', 'Sep': 'सित॰', 'Oct': 'अक्टू॰', 'Nov': 'नव॰', 'Dec': 'दिस॰',
 };

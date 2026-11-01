@@ -380,7 +380,7 @@ const ADVANCED = new Set(['sales/SO', 'sales/DN', 'sales/QUOTE', 'purchase/PO', 
 const ADV_DOCS = ['QUOTE', 'SO', 'DN', 'PO', 'GRN'];
 const simple = () => !ME || (ME.org.mode || 'simple') !== 'advanced';
 /* which permission area a menu entry needs (custom roles may not see every area); the gate register also opens with 'gate' */
-const navArea = (h) => /^(receipts|payments|expenses|accounts|journal|staff|bankrec|assets|tds)$/.test(h) ? 'finance' : /^(sales\/|pos$|recurring$|channels$|shop$)/.test(h) ? 'sales' : /^(purchase\/|receive$)/.test(h) ? 'purchase'
+const navArea = (h) => /^(receipts|payments|expenses|accounts|journal|staff|bankrec|assets|tds)$/.test(h) ? 'finance' : /^(sales\/|pos$|recurring$|channels$|shop$|loyalty$)/.test(h) ? 'sales' : /^(purchase\/|receive$)/.test(h) ? 'purchase'
   : /^gate\/in$/.test(h) ? ['purchase', 'gate'] : /^gate\/out$/.test(h) ? ['items', 'gate'] : h === 'claims' ? ['purchase', 'finance'] : h === 'wa-inbox' ? ['sales', 'khata', 'finance']
   : /^(items|stock|stockcount|pending|bins|expiry|stock-ageing|serials|production|wave|putaway)$/.test(h) ? 'items' : /^(parties|reminders)$/.test(h) ? 'masters' : /^(khata|vaade)$/.test(h) ? 'khata'
   : /^(reports\/|tally$|daybook$|gstr$)/.test(h) ? 'reports' : h === 'plan' ? 'settings' : '';
@@ -401,7 +401,7 @@ const JOBS = {
   accounts: { t: 'Accountant', home: 'dashboard', screens: ['dashboard', 'sales/INV', 'sales/SRET', 'sales/CNOTE', 'receipts', 'purchase/BILL', 'purchase/PRET', 'purchase/DNOTE', 'payments',
     'parties', 'khata', 'reminders', 'vaade', 'staff', 'expenses', 'bankrec', 'assets', 'tds', 'accounts', 'journal', 'daybook', 'reports/pnl', 'reports/balance-sheet', 'reports/trial-balance', 'reports/gst', 'gstr', 'reports/ageing',
     'reports/register', 'cash', 'tally', 'claims', 'wa-inbox'] },
-  sales: { t: 'Salesman', home: 'sales/INV', screens: ['dashboard', 'pos', 'sales/INV', 'shop', 'sales/QUOTE', 'sales/SO', 'sales/DN', 'sales/SRET', 'receipts', 'channels', 'recurring', 'parties', 'khata',
+  sales: { t: 'Salesman', home: 'sales/INV', screens: ['dashboard', 'pos', 'sales/INV', 'shop', 'loyalty', 'sales/QUOTE', 'sales/SO', 'sales/DN', 'sales/SRET', 'receipts', 'channels', 'recurring', 'parties', 'khata',
     'reminders', 'vaade', 'items', 'stock', 'wa-inbox'] },
 };
 const ROLE_JOB = { owner: 'all', admin: 'all', accountant: 'accounts', store: 'store', sales: 'sales' };
@@ -432,7 +432,7 @@ const minDate = () => {
 };
 const NAV = [
   ['', [['dashboard', 'Dashboard']]],
-  ['Sales', [['pos', 'Quick Bill (POS)'], ['sales/INV', 'Invoices'], ['shop', 'Online Catalogue'], ['channels', 'Online Orders (Amazon…)'], ['recurring', 'Recurring Bills'], ['sales/SO', 'Sales Orders'], ['sales/DN', 'Delivery Notes'], ['sales/QUOTE', 'Quotations'], ['sales/SRET', 'Sales Returns'], ['sales/CNOTE', 'Credit Notes (rate diff)'], ['receipts', 'Receipts']]],
+  ['Sales', [['pos', 'Quick Bill (POS)'], ['sales/INV', 'Invoices'], ['shop', 'Online Catalogue'], ['loyalty', 'Loyalty Points'], ['channels', 'Online Orders (Amazon…)'], ['recurring', 'Recurring Bills'], ['sales/SO', 'Sales Orders'], ['sales/DN', 'Delivery Notes'], ['sales/QUOTE', 'Quotations'], ['sales/SRET', 'Sales Returns'], ['sales/CNOTE', 'Credit Notes (rate diff)'], ['receipts', 'Receipts']]],
   ['Purchase', [['receive', 'Receive Goods (scan)'], ['purchase/PO', 'Purchase Orders'], ['gate/in', 'Gate Entry (inward)'], ['purchase/GRN', 'Goods Receipts (GRN)'], ['purchase/BILL', 'Purchase Bills'], ['purchase/PRET', 'Purchase Returns'], ['purchase/DNOTE', 'Debit Notes (rate diff)'], ['claims', 'Transit Claims'], ['payments', 'Payments']]],
   ['Inventory', [['items', 'Items'], ['stock', 'Stock & Godowns'], ['stock-ageing', 'Stock Ageing'], ['bins', 'Bins & Racks'], ['expiry', 'Batch & Expiry'], ['serials', 'Serial / IMEI'], ['production', 'Production (BOM)'], ['wave', 'Wave Pick List'], ['stockcount', 'Stock Count'], ['gate/out', 'Gate Pass (outward)'], ['pending', 'Pending Orders']]],
   ['Contacts', [['parties', 'Customers & Suppliers'], ['khata', 'Khata Book'], ['reminders', 'Vasooli (Collections)'], ['vaade', 'Vaade (Promises)'], ['wa-inbox', 'WhatsApp Inbox']]],
@@ -822,7 +822,7 @@ route(/^new\/([A-Z]+)$/, async (el, m, q) => {
   const isNote = !!T.note, isShort = !!draft.short;     // isShort: goods that never came, claimed back at the bill's price
   // a purchase bill can be booked before its goods come; the supplier's own bill number guards against entering it twice
   const billFirst = type === 'BILL' && draft.ref_type !== 'GRN', refField = billFirst || type === 'GRN';
-  const isSale = T.side === 'sales', money = ['INV', 'BILL'].includes(type);
+  const isSale = T.side === 'sales', money = ['INV', 'BILL'].includes(type), LOY = ME.org.loyalty || {};
   // batches (items that track batch & expiry): typed when goods come in, chosen (or first-to-expire) when they go out
   const movesStock = !!T.stock && !(type === 'INV' && draft.ref_type === 'DN') && !(type === 'BILL' && draft.ref_type === 'GRN');
   const tracks = (id) => { const it = items.find((i) => i.id === +id); return !!(it && it.track_batch); };
@@ -882,20 +882,44 @@ route(/^new\/([A-Z]+)$/, async (el, m, q) => {
     <div class="grid g2">
       <div class="panel"><label class="f">Design <span class="muted">(how this bill looks)</span><select name="design">${designOptions(draft.design || '', true)}</select></label><label class="f">Notes / terms<textarea name="notes" rows="3">${esc(draft.notes || '')}</textarea></label>
         ${money ? `<div class="form" style="margin-top:12px"><label class="f">${isSale ? 'Amount received now' : 'Amount paid now'} (₹)<input type="number" step="any" min="0" inputmode="decimal" name="pay_amount" placeholder="0"><small class="help">Leave empty for credit (udhaar).</small></label>
-          <label class="f">${isSale ? 'Money went into' : 'Paid from'}<select name="pay_account">${cashAccts.map((o) => `<option value="${o.v}">${esc(o.t)}</option>`).join('')}</select></label></div>` : ''}</div>
+          <label class="f">${isSale ? 'Money went into' : 'Paid from'}<select name="pay_account">${cashAccts.map((o) => `<option value="${o.v}">${esc(o.t)}</option>`).join('')}</select></label></div>` : ''}
+        ${type === 'INV' && LOY.on ? '<div class="pts" id="ptsbox" hidden></div>' : ''}</div>
       <div class="panel"><div class="totals" id="totals"></div></div>
     </div>
     <div class="panel warnbox cwarn" id="cwarn" role="status" hidden></div>
     <div class="row savebar"><span class="sb-total" id="sbtotal"></span><span class="spacer"></span><a class="btn hide-sm" href="#" data-act="back">Cancel</a><button class="btn primary" id="save">Save ${esc(T.label)}</button></div></form>`;
 
   const form = $('#docf'), tbody = $('#lines');
+  // loyalty points (Sales → Loyalty Points): the customer's balance, and how many of them pay part of this invoice
+  let pts = null;
+  const ptsUse = () => Math.max(0, Math.floor(+((form.elements.redeem_points || {}).value || 0)));
+  const ptsMost = () => pts && pts.can_use ? Math.max(0, Math.min(pts.balance, Math.floor((+form.dataset.total || 0) * LOY.max_pct / 100 / LOY.point_value + 1e-9))) : 0;
+  const ptsValue = () => r2(Math.min(ptsUse(), ptsMost()) * LOY.point_value);
+  const showPts = () => {
+    const box = $('#ptsbox'); if (!box) return;
+    box.hidden = !(pts && pts.earns && pts.on);
+    if (box.hidden) return;
+    box.innerHTML = pts.balance > 0 && pts.can_use
+      ? `<label class="f">&#11088; Loyalty points to use <small class="muted">${esc(pts.party.name)} has <b>${pts.balance}</b> (worth ${inr(pts.value)})</small>
+          <span class="row"><input type="number" name="redeem_points" min="0" step="1" inputmode="numeric" placeholder="0" style="max-width:120px"><button type="button" class="btn sm" data-ptsmax></button></span>
+          <small class="help">1 point = ${inr(LOY.point_value)} &middot; up to ${LOY.max_pct}% of a bill &middot; earns ${LOY.earn_per > 1 ? `1 point per ${inr(LOY.earn_per)}` : '1 point per rupee'}</small></label>`
+      : `<p class="muted small">&#11088; ${esc(pts.party.name)}: ${pts.balance} loyalty point${pts.balance === 1 ? '' : 's'}${pts.balance > 0 && LOY.min_points ? ` (usable from ${LOY.min_points})` : ''}. This bill earns ${LOY.earn_per > 1 ? `1 point per ${inr(LOY.earn_per)}` : '1 point per rupee'}.</p>`;
+    const b = $('[data-ptsmax]', box);
+    if (b) b.onclick = () => { form.elements.redeem_points.value = ptsMost() || ''; recalc(); };
+  };
+  const loadPts = async () => {
+    pts = null;
+    const pid = +((form.elements.party_id || {}).value || 0);
+    if (type === 'INV' && LOY.on && pid) { try { pts = await GET('/api/loyalty/' + pid); } catch (e) { pts = null; } }
+    if (pid === +((form.elements.party_id || {}).value || 0)) { showPts(); recalc(); }
+  };
   if ($('#scanbill')) { $('#scanbill').onclick = () => $('#scanfile').click(); $('#scanfile').onchange = (e) => { const f = e.target.files[0]; e.target.value = ''; if (f) scanBillFlow(f, type); }; }
   const partyOf = () => parties.find((p) => p.id === +form.elements.party_id.value);
   // udhaar check (Vaada Pakka): a banner while the sale is on credit, for a risky customer
   let risk = null, riskFor = 0;
   const creditBanner = () => {
     const box = $('#cwarn'); if (!box) return;
-    const paid = form.elements.pay_amount ? +form.elements.pay_amount.value || 0 : 0;
+    const paid = (form.elements.pay_amount ? +form.elements.pay_amount.value || 0 : 0) + ptsValue();
     box.hidden = !(risk && risk.risky && paid < (+form.dataset.total || 0));
     if (!box.hidden) box.innerHTML = creditText(risk);
   };
@@ -948,6 +972,14 @@ route(/^new\/([A-Z]+)$/, async (el, m, q) => {
       <div class="grand"><span>Total</span><span>${inr(total)}</span></div>`;
     $('#sbtotal').innerHTML = `Total <b>${inr(total)}</b>`;
     form.dataset.total = total;
+    // points: what they pay, and the rest still to pay
+    const most = ptsMost(), pb = $('[data-ptsmax]');
+    if (pb) { pb.textContent = most ? `Use ${most}` : 'None on this bill'; pb.disabled = !most; form.elements.redeem_points.max = most; }
+    const pv = ptsValue();
+    if (pv > 0) {
+      $('#totals').insertAdjacentHTML('beforeend', `<div><span>&#11088; Paid with ${Math.min(ptsUse(), most)} points</span><span>&minus;${inr(pv)}</span></div><div><span>To pay</span><span>${inr(total - pv)}</span></div>`);
+      $('#sbtotal').innerHTML = `To pay <b>${inr(total - pv)}</b> <span class="muted small">(${inr(total)} &minus; points)</span>`;
+    }
     if (type === 'INV') creditBanner();
   };
   const lotCache = new Map();
@@ -1041,6 +1073,7 @@ route(/^new\/([A-Z]+)$/, async (el, m, q) => {
     });
     recalc();
   };
+  if (type === 'INV' && LOY.on && form.elements.party_id) { form.elements.party_id.addEventListener('change', loadPts); if (form.elements.party_id.value) loadPts(); }
   recalc(); loadRisk();
   form.onsubmit = async (e) => {
     e.preventDefault();
@@ -1057,6 +1090,7 @@ route(/^new\/([A-Z]+)$/, async (el, m, q) => {
     if (isShort) body.short = true;
     if (f.due_date && f.due_date.value) body.due_date = f.due_date.value;
     if (f.pay_amount && +f.pay_amount.value > 0) body.payment = { amount: +f.pay_amount.value, account_id: +f.pay_account.value };
+    if (ptsValue() > 0) body.redeem_points = Math.min(ptsUse(), ptsMost());
     if (type === 'INV') body.credit_ok = false;
     const btn = $('#save'); btn.disabled = true;
     const save = async () => {
@@ -1107,6 +1141,9 @@ function hsnSummary(d, inter) {
 const mmyy = (d) => (d ? `${d.slice(5, 7)}/${d.slice(2, 4)}` : '');
 const batchLine = (l) => (l.batch_no ? `<div class="muted">Batch ${esc(l.batch_no)}${l.expiry ? ` · Exp ${mmyy(l.expiry)}` : ''}</div>` : '');
 const lotLine = (l) => batchLine(l) + (l.serials ? `<div class="muted">S/N: ${esc(l.serials)}</div>` : '');
+/* loyalty points on a printed invoice: what it earned and used, and the balance now */
+const pointsLine = (d, tag = 'p') => (d.points && d.type === 'INV' && d.status !== 'cancelled'
+  ? `<${tag} class="ptsp">&#11088; Loyalty points: earned <b>${d.points.earned}</b>${d.points.used ? `, used <b>${d.points.used}</b>` : ''} &middot; balance <b>${d.points.balance}</b></${tag}>` : '');
 function docPaper(d) {
   const o = d.org, p = d.party || {}, P = o.print || {};
   const isTax = ['INV', 'BILL', 'SRET', 'PRET', 'CNOTE', 'DNOTE'].includes(d.type);
@@ -1136,7 +1173,7 @@ function docPaper(d) {
       <div class="tbl-wrap"><table class="dl"><thead><tr>${heads}</tr></thead>
       <tbody>${d.lines.map((l, i) => `<tr>${lineCells(l, i)}</tr>`).join('')}</tbody></table></div>
       ${L === 'gst' && isTax ? `<div class="tbl-wrap hsn-wrap"><b>HSN-wise tax summary</b>${hsnSummary(d, inter)}</div>` : ''}
-      <div class="foot"><div class="words"><b>Amount in words:</b> ${esc(words(d.total))}${d.notes ? `<p><b>Notes:</b> ${esc(d.notes)}</p>` : ''}
+      <div class="foot"><div class="words"><b>Amount in words:</b> ${esc(words(d.total))}${d.notes ? `<p><b>Notes:</b> ${esc(d.notes)}</p>` : ''}${pointsLine(d)}
         ${upi ? `<p>Pay by UPI: <b>${esc(o.upi_id)}</b></p>` : ''}${bank}</div>
         <div class="totals"><div><span>Taxable</span><span>${inr(d.taxable)}</span></div>
           ${inter ? `<div><span>IGST</span><span>${inr(d.igst)}</span></div>` : `<div><span>CGST</span><span>${inr(d.cgst)}</span></div><div><span>SGST</span><span>${inr(d.sgst)}</span></div>`}
@@ -1414,7 +1451,7 @@ route(/^party\/(\d+)$/, async (el, m, q) => {
   const L = await GET(`/api/parties/${p.id}/ledger?from=${q.get('from') || ''}&to=${q.get('to') || ''}`);
   el.innerHTML = head(esc(p.name), `<button class="btn" id="edit">Edit</button><button class="btn" id="open">Opening balance</button><button class="btn danger" id="del">Delete</button>`) + `
     <div class="kpis"><div class="kpi"><div class="l">Balance</div><div class="v ${L.closing >= 0 ? 'pos' : 'neg'}">${inr(Math.abs(L.closing))} ${L.closing >= 0 ? 'Dr' : 'Cr'}</div><div class="s">${L.closing >= 0 ? 'They owe you' : 'You owe them'}</div></div>
-      <div class="kpi"><div class="l">Contact</div><div class="s">${esc(p.phone)} ${esc(p.email)}<br>${esc(p.gstin)} ${esc(p.state)}</div></div></div>
+      <div class="kpi"><div class="l">Contact</div><div class="s">${esc(p.phone)} ${esc(p.email)}<br>${esc(p.gstin)} ${esc(p.state)}</div></div><span id="ptskpi"></span></div>
     <div id="vaada-box" class="no-print"></div>
     <div class="panel"><form class="row" id="per"><input type="date" name="from" aria-label="From date" value="${L.from}" style="max-width:170px"><input type="date" name="to" aria-label="To date" value="${L.to}" style="max-width:170px"><button class="btn">Show</button><span class="spacer"></span><button type="button" class="btn" data-act="print">Print statement</button></form></div>
     <div class="panel flush">${table([{ h: 'Date', f: (r) => fdate(r.date) }, { h: 'Voucher', f: (r) => r.ref_id && ['INV', 'BILL', 'SRET', 'PRET'].includes(r.ref_type) ? `<a href="#/doc/${r.ref_id}">${esc(r.number)}</a>` : esc(r.number || r.ref_type) },
@@ -1422,6 +1459,9 @@ route(/^party\/(\d+)$/, async (el, m, q) => {
     [{ date: L.from, narration: 'Opening balance', debit: 0, credit: 0, balance: L.opening }, ...L.rows])}</div>`;
   $('#per').onsubmit = (e) => { e.preventDefault(); go(`party/${p.id}?${new URLSearchParams(new FormData(e.target))}`); };
   if (p.kind !== 'supplier' && (!ME.view || ME.view.khata !== false)) vaadaParty($('#vaada-box'), p.id, '');
+  if (p.kind !== 'supplier' && (ME.org.loyalty || {}).on && seen('loyalty')) GET('/api/loyalty/' + p.id).then((x) => {
+    if (x.earns && $('#ptskpi')) $('#ptskpi').outerHTML = `<a class="kpi" href="#/loyalty?p=${p.id}"><div class="l">&#11088; Loyalty points</div><div class="v">${x.balance}</div><div class="s">worth ${inr(x.value)}</div></a>`;
+  }).catch(() => {});
   $('#edit').onclick = () => partyForm(p);
   $('#open').onclick = () => modal('Opening balance', [{ k: 'amount', label: 'Amount (₹): positive = they owe you, negative = you owe them', type: 'number', wide: true }, { k: 'date', label: 'As on', type: 'date', value: ME.today }],
     async (v) => { await POST(`/api/parties/${p.id}/opening`, v); dirty('parties', 'accounts'); render(); });
@@ -4569,6 +4609,54 @@ route(/^shop$/, async (el) => {
     try { await api('PUT', `/api/items/${b.dataset.shop}/shop`, { show: b.checked }); dirty('items'); } catch (x) { b.checked = !b.checked; toast(x.message, 'err'); }
   }; });
 });
+/* ======================================================================= loyalty points */
+const waNum = (ph) => { const d = String(ph || '').replace(/\D/g, ''); return d.length === 10 ? '91' + d : d; };
+const PTS_KIND = { earn: 'Earned', redeem: 'Used', unredeem: 'Use undone', return: 'Goods returned', cancel: 'Bill cancelled', adjust: 'Changed' };
+async function pointsHistory(pid) {
+  const x = await GET('/api/loyalty/' + pid);
+  modal(`${x.party.name}: ${x.balance} points`, [], async () => {}, { submit: 'Close', intro: `<p class="muted">Worth ${inr(x.value)} now.</p>` + table([{ h: 'Date', f: (r) => fdate(r.date) },
+    { h: 'What', f: (r) => `${esc(PTS_KIND[r.kind] || r.kind)}${r.number ? ` <a href="#/doc/${r.doc_id}">${esc(r.number)}</a>` : ''}${r.note ? ` <span class="muted small">${esc(r.note)}</span>` : ''}` },
+    { h: 'Points', num: 1, f: (r) => `<b class="${r.points < 0 ? 'neg' : 'pos'}">${r.points > 0 ? '+' : ''}${r.points}</b>` }], x.rows, { empty: 'No points yet.' }) });
+}
+route(/^loyalty$/, async (el, m, q) => {
+  const x = await GET('/api/loyalty'), s = x.settings, canSet = ME.can.settings;
+  const eg = Math.floor(1000 / s.earn_per), egv = r2(eg * s.point_value);
+  el.innerHTML = head('Loyalty Points') + `
+    <div class="panel"><p>Customers earn points on every bill and pay part of a later bill with them, so they come back to you. It works in Quick Bill and on invoices; the points show on the printed bill. The walk-in customer does not earn (choose the customer by name).</p>
+      <p class="muted small" lang="hi">हर बिल पर ग्राहक को पॉइंट मिलते हैं; अगली बार वो पॉइंट से बिल का कुछ हिस्सा चुका सकते हैं। ग्राहक लौटकर आता है।</p>
+      <form id="lyf"><label class="mode-opt"><input type="checkbox" name="on" ${s.on ? 'checked' : ''} ${canSet ? '' : 'disabled'}> <span><b>Loyalty points on</b><br>
+        <span class="muted">Example: a ${inr(1000)} bill earns ${eg} point${eg === 1 ? '' : 's'}, worth ${inr(egv)} on the next bill (${r2(egv / 10)}% back).</span></span></label>
+        <div class="form"><label class="f">Rupees spent for 1 point<input name="earn_per" type="number" min="1" step="any" value="${s.earn_per}" ${canSet ? '' : 'disabled'}></label>
+          <label class="f">Value of 1 point (₹)<input name="point_value" type="number" min="0.01" step="0.01" value="${s.point_value}" ${canSet ? '' : 'disabled'}></label>
+          <label class="f">Most of a bill paid with points (%)<input name="max_pct" type="number" min="1" max="100" step="1" value="${s.max_pct}" ${canSet ? '' : 'disabled'}></label>
+          <label class="f">Usable from (points)<input name="min_points" type="number" min="0" step="1" value="${s.min_points}" ${canSet ? '' : 'disabled'}><small class="help">0 = any number of points.</small></label></div>
+        <p class="muted small">Points used are booked like a payment into "Loyalty Points Redeemed" (an expense), so the bill shows paid and your books balance. GST stays on the full bill. Cancelling a bill undoes its points; a sales return takes back its share.</p>
+        <div class="row" style="margin-top:10px"><span class="spacer"></span><button class="btn primary" ${canSet ? '' : 'disabled'}>Save</button></div></form></div>
+    <div class="kpis"><div class="kpi"><div class="l">Members</div><div class="v">${x.members.length}</div><div class="s">customers with points</div></div>
+      <div class="kpi"><div class="l">Points out</div><div class="v">${x.points_out}</div><div class="s">worth ${inr(x.value_out)} on future bills</div></div>
+      <div class="kpi"><div class="l">Earned / used</div><div class="v">${x.earned} / ${x.used}</div><div class="s">all time</div></div></div>
+    <div class="panel flush"><div class="row" style="padding:12px 16px 0"><h3 style="margin:0">Customers</h3><span class="spacer"></span>${canSet ? '<button class="btn sm" id="lyadd">+ Give / take points</button>' : ''}</div>
+      ${table([{ h: 'Customer', f: (r) => `<a href="#/party/${r.id}"><b>${esc(r.name)}</b></a>${r.phone ? `<div class="muted small">${esc(r.phone)}</div>` : ''}` },
+        { h: 'Points', num: 1, f: (r) => `<b>${r.balance}</b><div class="muted small">${inr(r2(Math.max(0, r.balance) * s.point_value))}</div>` },
+        { h: 'Earned', num: 1, cls: 'hide-sm', k: 'earned' }, { h: 'Used', num: 1, cls: 'hide-sm', k: 'used' }, { h: 'Last bill', cls: 'hide-sm', f: (r) => fdate(r.last) },
+        { h: '', f: (r) => `<button class="btn sm" data-hist="${r.id}">History</button>${r.phone && r.balance > 0 ? ` <a class="btn sm" target="_blank" rel="noopener" href="https://wa.me/${esc(waNum(r.phone))}?text=${encodeURIComponent(`Namaste ${r.name} ji, ${ME.org.name} mein aapke ${r.balance} loyalty points hain (${inr(r2(r.balance * s.point_value))}). Agli khareed par inka fayda uthaiye!`)}">WhatsApp</a>` : ''}` }],
+      x.members, { empty: s.on ? 'No points yet: they start with the next bill to a named customer.' : 'Turn loyalty points on above.' })}</div>`;
+  $('#lyf').onsubmit = async (e) => {
+    e.preventDefault(); const f = e.target;
+    try {
+      await api('PUT', '/api/settings/loyalty', { on: f.on.checked, earn_per: +f.earn_per.value, point_value: +f.point_value.value, max_pct: +f.max_pct.value, min_points: +f.min_points.value });
+      const me = await GET('/api/me'); ME.org = me.org; toast(f.on.checked ? 'Loyalty points are on' : 'Loyalty points are off'); render();
+    } catch (er) { toast(er.message, 'err'); }
+  };
+  $$('[data-hist]', el).forEach((b) => { b.onclick = () => pointsHistory(+b.dataset.hist); });
+  if ($('#lyadd')) $('#lyadd').onclick = async () => {
+    const cs = (await master('parties')).filter((p) => p.kind !== 'supplier' && p.name !== 'Walk-in Customer');
+    modal('Give or take points', [{ k: 'party_id', label: 'Customer', type: 'select', options: cs.map((p) => ({ v: p.id, t: p.name })), value: q.get('p') || '' },
+      { k: 'points', label: 'Points (a minus takes them off)', type: 'number' }, { k: 'note', label: 'Why (e.g. opening balance, birthday gift)', wide: true }],
+    async (v) => { await POST('/api/loyalty/adjust', { party_id: +v.party_id, points: +v.points, note: v.note }); toast('Points changed'); render(); }, { submit: 'Save' });
+  };
+  if (q.get('p')) pointsHistory(+q.get('p')).catch((er) => toast(er.message, 'err'));
+});
 route(/^shop-poster$/, async (el) => {
   const s = await GET('/api/settings/shop');
   if (!s.on || !s.link) { el.innerHTML = head('Catalogue QR poster') + `<div class="panel">${emptyCta('Turn on the online catalogue first.', '<a class="btn primary" href="#/shop">Online Catalogue</a>')}</div>`; return; }
@@ -5294,6 +5382,7 @@ route(/^pos$/, async (el) => {
       <div class="panel pos-pay">
         <div class="totals" id="ptot" style="width:100%"></div>
         <div class="seg" id="method">${[['cash', 'Cash'], ['upi', 'UPI'], ['bank', 'Card / Bank'], ...(limits().no_credit ? [] : [['credit', 'Credit (udhaar)']])].map(([k, t]) => `<button type="button" data-m="${k}" class="${k === method ? 'on' : ''}">${t}</button>`).join('')}</div>
+        <div class="pts" id="pospts" hidden></div>
         <label class="f" id="recvw">Amount received (₹)<input id="recv" type="number" step="any" min="0"></label>
         <div id="change" class="muted"></div><div id="posqr"></div>${cfDefs('doc', 'sales').length ? `<div class="form">${cfInputs('doc', {}, 'sales')}</div>` : ''}
         <div class="warnbox cwarn" id="cwarn" role="status" hidden></div>
@@ -5308,6 +5397,16 @@ route(/^pos$/, async (el) => {
     for (const l of cart) { const g = r2(l.qty * l.rate), t = l.incl ? r2(g * 100 / (100 + l.gst_rate)) : g; taxable += t; tax += l.incl ? r2(g - t) : r2(t * l.gst_rate / 100); }
     return { taxable, tax, total: Math.round(taxable + tax) };
   };
+  // loyalty points: a named customer's balance; one tick uses as many as this bill allows
+  const LOY = ME.org.loyalty || {};
+  let pts = null, usePts = false;
+  const ptsMost = (total) => (usePts && pts && pts.can_use ? Math.max(0, Math.min(pts.balance, Math.floor(total * LOY.max_pct / 100 / LOY.point_value + 1e-9))) : 0);
+  const loadPts = async () => {
+    pts = null; usePts = false;
+    const pid = +$('#cust').value || 0;
+    if (LOY.on && pid) { try { pts = await GET('/api/loyalty/' + pid); } catch (e) { pts = null; } }
+    if (pid === (+$('#cust').value || 0)) draw();
+  };
   const draw = () => {
     $('#cart').innerHTML = cart.length ? `<table class="t lines"><thead><tr><th>Item</th><th>Qty</th><th class="num">Rate</th><th class="num">Amount</th><th></th></tr></thead><tbody>${cart.map((l, i) => `<tr>
         <td><b>${esc(l.name)}</b><div class="muted">${esc(l.code)} · GST ${l.gst_rate}% · stock ${qtyf(l.stock)}</div></td>
@@ -5315,15 +5414,21 @@ route(/^pos$/, async (el) => {
         <td class="num"><input type="number" step="any" min="0" value="${l.rate}" data-r="${i}" style="width:90px"></td>
         <td class="num">${inr(r2(l.qty * l.rate * (1 + l.gst_rate / 100)))}</td><td><button class="btn sm danger" data-x="${i}">&times;</button></td></tr>`).join('')}</tbody></table>`
       : '<div class="empty">Scan an item to start the bill.</div>';
-    const t = totals();
+    const t = totals(), used = ptsMost(t.total), pv = r2(used * (LOY.point_value || 0)), toPay = r2(t.total - pv);
     $('#ptot').innerHTML = `<div><span>Items</span><span>${cart.reduce((s, l) => s + l.qty, 0)}</span></div><div><span>Taxable</span><span>${inr(t.taxable)}</span></div>
-      <div><span>GST</span><span>${inr(t.tax)}</span></div><div class="grand"><span>Total</span><span>${inr(t.total)}</span></div>`;
+      <div><span>GST</span><span>${inr(t.tax)}</span></div><div class="grand"><span>Total</span><span>${inr(t.total)}</span></div>
+      ${pv > 0 ? `<div><span>&#11088; ${used} points</span><span>&minus;${inr(pv)}</span></div><div class="grand"><span>To pay</span><span>${inr(toPay)}</span></div>` : ''}`;
+    const pbox = $('#pospts');
+    pbox.hidden = !(pts && pts.on && pts.earns);
+    if (!pbox.hidden) pbox.innerHTML = pts.can_use
+      ? `<label class="check"><input type="checkbox" id="useps" ${usePts ? 'checked' : ''}> <span>&#11088; Use points: <b>${pts.balance}</b> (worth ${inr(pts.value)})<small class="help">Up to ${LOY.max_pct}% of a bill.</small></span></label>`
+      : `<p class="muted small">&#11088; ${pts.balance} loyalty point${pts.balance === 1 ? '' : 's'}${pts.balance > 0 && LOY.min_points ? ` (usable from ${LOY.min_points})` : ''}</p>`;
     const recv = $('#recv');
-    if (document.activeElement !== recv) recv.value = method === 'credit' ? '' : t.total || '';
+    if (document.activeElement !== recv) recv.value = method === 'credit' ? '' : toPay || '';
     $('#recvw').hidden = method === 'credit';
-    const ch = (+recv.value || 0) - t.total;
+    const ch = (+recv.value || 0) - toPay;
     $('#change').textContent = method === 'cash' && ch > 0 ? `Return change: ${inr(ch)}` : method === 'credit' ? 'The full amount goes to the customer’s account.' : '';
-    if (method === 'upi' && t.total) upiQr($('#posqr'), ME.org, t.total, 'Bill', 'Customer scans to pay'); else $('#posqr').innerHTML = method === 'upi' ? '<p class="muted">Add your UPI ID in Settings to show a QR here.</p>' : '';
+    if (method === 'upi' && toPay) upiQr($('#posqr'), ME.org, toPay, 'Bill', 'Customer scans to pay'); else $('#posqr').innerHTML = method === 'upi' ? '<p class="muted">Add your UPI ID in Settings to show a QR here.</p>' : '';
     if (method === 'upi' && !ME.org.upi_id) $('#posqr').innerHTML = '<p class="muted">Add your UPI ID in Settings to show a QR here.</p>';
   };
   const add = async (code) => {
@@ -5361,6 +5466,8 @@ route(/^pos$/, async (el) => {
     if (!box.hidden) box.innerHTML = creditText(risk);
   };
   $('#cust').addEventListener('change', posRisk);
+  $('#cust').addEventListener('change', loadPts);
+  $('#pospts').addEventListener('change', (e) => { if (e.target.id === 'useps') { usePts = e.target.checked; draw(); } });
   if ($('#cam')) $('#cam').onclick = () => cameraScan(add);
   const complete = async () => {
     const lines = cart.filter((l) => l.qty > 0);
@@ -5368,7 +5475,9 @@ route(/^pos$/, async (el) => {
     const t = totals(), btn = $('#done'); btn.disabled = true; $('#perr').hidden = true;
     const body = { type: 'INV', party_id: +$('#cust').value, warehouse_id: +$('#wh').value, date: ME.today, notes: 'POS sale', extra: cfRead($('.pos-pay')),
       lines: lines.map((l) => ({ item_id: l.item_id, qty: l.qty, rate: l.rate, gst_rate: l.gst_rate, incl: l.incl || undefined })) };
-    if (method !== 'credit') body.payment = { amount: Math.min(+$('#recv').value || t.total, t.total), account_id: acc(method === 'upi' ? 'upi' : method === 'bank' ? 'bank' : 'cash') };
+    const used = ptsMost(t.total), toPay = r2(t.total - used * (LOY.point_value || 0));
+    if (used) body.redeem_points = used;
+    if (method !== 'credit' && toPay > 0) body.payment = { amount: Math.min(+$('#recv').value || toPay, toPay), account_id: acc(method === 'upi' ? 'upi' : method === 'bank' ? 'bank' : 'cash') };
     body.credit_ok = false;
     const save = async () => {
       try {
@@ -5376,7 +5485,8 @@ route(/^pos$/, async (el) => {
         if (d.queued) { cart.length = 0; draw(); scan.focus(); toast('No internet: bill saved on this device, sent when online (Outbox).', 'info'); return; }
         dirty('items', 'accounts', 'parties');
         printReceipt(d, method, +$('#recv').value || 0);
-        cart.length = 0; draw(); scan.focus(); toast(`${d.number} saved`);
+        cart.length = 0; draw(); scan.focus(); toast(`${d.number} saved${d.points && d.points.earned ? ` · ${d.points.earned} points earned` : ''}`);
+        if (pts) loadPts();
       } catch (err) {
         if (err.status === 409 && err.data.credit_warning) return creditSheet(err.data.credit_warning, { yes: () => { body.credit_ok = true; save(); }, cash: () => setMethod('cash') });
         $('#perr').hidden = false; $('#perr').textContent = err.message;
@@ -5388,7 +5498,7 @@ route(/^pos$/, async (el) => {
   const keys = (e) => { if (e.key === 'F9') { e.preventDefault(); complete(); } };
   document.addEventListener('keydown', keys);
   window.addEventListener('hashchange', () => document.removeEventListener('keydown', keys), { once: true });
-  draw(); scan.focus();
+  draw(); scan.focus(); loadPts();
 });
 function beep(ok) {
   try {
@@ -5426,13 +5536,15 @@ function printReceipt(d, method, received) {
   let r = $('#receipt');
   if (!r) { r = document.createElement('div'); r.id = 'receipt'; r.className = 'receipt'; document.body.appendChild(r); }
   const P = o.print || {};
+  const pv = d.points && d.points.used ? r2(d.points.used * ((o.loyalty || {}).point_value || 0)) : 0, toPay = r2(d.total - pv);
   r.innerHTML = `<div class="c">${d.logo_url ? `<img src="${esc(d.logo_url)}" alt="" style="max-height:40px;filter:grayscale(1)"><br>` : ''}<b>${esc(o.name)}</b><br>${esc(o.address || '')}${o.gstin ? `<br>GSTIN ${esc(o.gstin)}` : ''}${o.phone ? `<br>${esc(o.phone)}` : ''}</div>
     <div class="c">${esc(P.title || (o.gstin ? 'TAX INVOICE' : 'BILL'))}<br>${esc(d.number)} &middot; ${fdate(d.date)}</div>
     <table>${d.lines.map((l) => `<tr><td colspan="3">${esc(l.item || l.description)}</td></tr><tr><td>${qtyf(l.qty)} x ${inr(l.rate)}</td><td>${l.gst_rate}%</td><td class="r">${inr(l.total)}</td></tr>`).join('')}</table>
     <table><tr><td>Taxable</td><td class="r">${inr(d.taxable)}</td></tr>${d.igst ? `<tr><td>IGST</td><td class="r">${inr(d.igst)}</td></tr>` : `<tr><td>CGST</td><td class="r">${inr(d.cgst)}</td></tr><tr><td>SGST</td><td class="r">${inr(d.sgst)}</td></tr>`}
     ${d.round_off ? `<tr><td>Round off</td><td class="r">${inr(d.round_off)}</td></tr>` : ''}<tr class="g"><td>TOTAL</td><td class="r">${inr(d.total)}</td></tr>
-    <tr><td>Paid (${esc(method)})</td><td class="r">${inr(d.paid)}</td></tr>${method === 'cash' && received > d.total ? `<tr><td>Change</td><td class="r">${inr(received - d.total)}</td></tr>` : ''}
-    ${d.balance > 0 ? `<tr><td>Balance due</td><td class="r">${inr(d.balance)}</td></tr>` : ''}</table>
+    ${pv ? `<tr><td>Points used (${d.points.used})</td><td class="r">${inr(pv)}</td></tr>` : ''}
+    <tr><td>Paid (${esc(method)})</td><td class="r">${inr(r2(d.paid - pv))}</td></tr>${method === 'cash' && received > toPay ? `<tr><td>Change</td><td class="r">${inr(received - toPay)}</td></tr>` : ''}
+    ${d.balance > 0 ? `<tr><td>Balance due</td><td class="r">${inr(d.balance)}</td></tr>` : ''}</table>${pointsLine(d, 'div')}
     ${P.show_upi !== false && o.upi_id && d.balance > 0 ? `<div class="c">UPI: ${esc(o.upi_id)}</div>` : ''}<div class="c">${esc(P.footer || 'Thank you! Visit again.')}</div>`;
   document.body.classList.add('print-receipt');
   setTimeout(() => { print(); document.body.classList.remove('print-receipt'); }, 50);
