@@ -4,6 +4,7 @@
    the books balance, stock value equals the inventory ledger, and every total is exact. */
 import { backupHealth } from '../src/lib.js';
 import { totpCode } from '../src/security.js';
+import { parseOrder, soundKey } from '../public/voice.js';
 const BASE = process.argv[2] || process.env.ERP_URL || 'http://localhost:8787';
 let cookie = '', pass = 0, fail = 0;
 
@@ -2931,6 +2932,33 @@ if (process.env.ERP_AI_MOCK) {
     && (await rq('GET', `/api/loyalty/${ravi.id}`, undefined, { ip })).status === 401);
   const bk = await L('GET', '/api/export/backup');
   check('points are in the backup', bk && bk.tables && Array.isArray(bk.tables.loyalty_points) && bk.tables.loyalty_points.length >= 8, JSON.stringify(Object.keys(bk || {})));
+}
+
+/* --- bolkar bill: a spoken order (Hindi, Hinglish, English) read into bill lines --- */
+{
+  const items = [
+    { id: 1, name: 'Sugar', unit: 'Kg', sale_price: 45 }, { id: 2, name: 'Tata Salt 1kg', unit: 'Pcs', sale_price: 28 }, { id: 3, name: 'Fortune Soyabean Oil 1L', unit: 'Pcs', sale_price: 150 },
+    { id: 4, name: 'Lifebuoy Soap', unit: 'Pcs', sale_price: 35 }, { id: 5, name: 'Aashirvaad Atta 5kg', unit: 'Pcs', sale_price: 280 }, { id: 6, name: 'Jeera 100g', unit: 'Pcs', sale_price: 40 },
+    { id: 7, name: 'Red Chilli Powder', unit: 'Kg', sale_price: 200, sale_price_incl: 210 }, { id: 8, name: 'Tata Tea Premium 250g', unit: 'Pcs', sale_price: 140 },
+    { id: 9, name: 'Mustard Oil 1L', unit: 'Pcs', sale_price: 170 }, { id: 10, name: 'Toor Dal', unit: 'Kg', sale_price: 160 }, { id: 11, name: 'Amul Butter 100g', unit: 'Pcs', sale_price: 56 },
+    { id: 12, name: 'Parle G', unit: 'Pcs', sale_price: 10 }, { id: 13, name: 'Eggs', unit: 'Dozen', sale_price: 84 }, { id: 14, name: 'Basmati Rice', unit: 'Kg', sale_price: 120 },
+    { id: 15, name: 'चीनी लूज़', unit: 'Kg', sale_price: 44 },
+  ];
+  const P = (t) => parseOrder(t, items).map((l) => [l.item_id, l.qty]);
+  const same = (a, b) => JSON.stringify(a) === JSON.stringify(b);
+  check('one Hindi word, three spellings, one sound', soundKey('चीनी') === soundKey('cheeni') && soundKey('chini') === soundKey('cheeni') && soundKey('आटा') === soundKey('atta') && soundKey('नमक') === soundKey('namak'));
+  const a = P('do kilo cheeni, ek litre sarson tel aur paanch sabun');
+  check('Hinglish: three items with their quantities', same(a.map((x) => x[1]), [2, 1, 5]) && a[1][0] === 9 && a[2][0] === 4 && [1, 15].includes(a[0][0]), JSON.stringify(a));
+  const h = P('दो किलो चीनी एक लीटर सरसों तेल और पांच साबुन');
+  check('Hindi in Devanagari reads the same, even without commas', same(h.map((x) => x[1]), [2, 1, 5]) && h[1][0] === 9 && h[2][0] === 4, JSON.stringify(h));
+  check('Hindi words find items named in English (namak = salt, makhan = butter, ande = eggs)', same(P('Tata namak 2'), [[2, 2]]) && same(P('2 amul makhan'), [[11, 2]]) && same(P('do darjan ande'), [[13, 2]]));
+  check('fractions and hundreds: saadhe teen, aadha, dhai sau, paav', same(P('साढ़े तीन किलो चावल'), [[14, 3.5]]) && P('aadha kilo toor dal')[0][1] === 0.5
+    && same(P('dhai sau gram jeera'), [[6, 2.5]]) && same(P('पाव किलो जीरा'), [[6, 2.5]]));
+  check('grams of an item sold by the kg become kg; kilos of a 1 kg pack become packs', P('250 gram toor dal')[0][1] === 0.25 && same(P('3 kilo tata namak'), [[2, 3]]));
+  check('"50 rupaye ki mirchi" is ₹50 worth at the price with GST', (() => { const l = parseOrder('50 rupaye ki mirchi', items)[0]; return l.item_id === 7 && l.qty === 0.238 && l.note === '₹50'; })());
+  check('the quantity may come after the item; "de do" at the end is not "two"', same(P('cheeni 2 kilo tel 1 litre').map((x) => x[1]), [2, 1]) && same(P('ek kilo arhar dal de do'), [[10, 1]]));
+  check('nothing close is left for the user to choose, with no item guessed', (() => { const l = parseOrder('xyz kuch bhi', items)[0]; return l.item_id === null && l.qty === 1; })());
+  check('every line offers other likely items to pick from', parseOrder('ek litre tel', items)[0].options.map((o) => o.id).sort().join() === '3,9');
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);

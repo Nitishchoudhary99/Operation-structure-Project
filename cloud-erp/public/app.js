@@ -854,7 +854,8 @@ route(/^new\/([A-Z]+)$/, async (el, m, q) => {
       <td class="c-del">${fromDoc && !isNote && ['SRET', 'PRET'].includes(type) ? '' : '<button type="button" class="btn sm danger" data-del aria-label="Remove line">&times;</button>'}</td></tr>`;
   const canScan = T.side === 'purchase' && !fromDoc && !isNoteType(type);
   el.innerHTML = head(`New ${esc(T.label)}${fromDoc ? ` <span class="muted">from ${esc(draft.ref_number)}</span>` : ''}`,
-    canScan ? '<button type="button" class="btn primary" id="scanbill">&#128247; Scan supplier bill</button><input type="file" id="scanfile" accept="image/*,application/pdf" hidden>' : '') + `
+    (canScan ? '<button type="button" class="btn primary" id="scanbill">&#128247; Scan supplier bill</button><input type="file" id="scanfile" accept="image/*,application/pdf" hidden>' : '')
+    + (!fromDoc && !isNoteType(type) ? '<button type="button" class="btn" id="voicebill" title="Speak the items">&#127908; Bolkar bill</button>' : '')) + `
     ${q.get('scan') && draft.scan_note ? `<div class="panel ${draft.scan_ok ? '' : 'warnbox'}">${draft.scan_note}</div>` : ''}
     <form id="docf"><div class="err" hidden></div>
     ${ge ? `<div class="panel warnbox">Receiving against gate entry <b>${esc(ge.number)}</b>: vehicle ${esc(ge.vehicle_no)}${ge.challan_no ? `, challan ${esc(ge.challan_no)}` : ''}${ge.packages ? `, ${ge.packages} packages` : ''}.</div>` : ''}
@@ -913,6 +914,17 @@ route(/^new\/([A-Z]+)$/, async (el, m, q) => {
     if (type === 'INV' && LOY.on && pid) { try { pts = await GET('/api/loyalty/' + pid); } catch (e) { pts = null; } }
     if (pid === +((form.elements.party_id || {}).value || 0)) { showPts(); recalc(); }
   };
+  // bolkar bill: the lines spoken go on the bill (an empty first line is used first), each priced as if chosen by hand
+  if ($('#voicebill')) $('#voicebill').onclick = () => voiceOrder(items, (got) => {
+    for (const g of got) {
+      let tr = $$('tr', tbody).find((r) => !(($('select[name=item_id]', r) || {}).value) && !(($('[name=description]', r) || {}).value));
+      if (!tr) { tbody.insertAdjacentHTML('beforeend', lineRow({})); tr = tbody.lastElementChild; wireRow(tr); }
+      $('[name=qty]', tr).value = g.qty;
+      const sel = $('select[name=item_id]', tr); sel.value = g.item_id; sel.dispatchEvent(new Event('change'));
+    }
+    if (got.length) toast(`${got.length} line${got.length === 1 ? '' : 's'} added`);
+    recalc();
+  });
   if ($('#scanbill')) { $('#scanbill').onclick = () => $('#scanfile').click(); $('#scanfile').onchange = (e) => { const f = e.target.files[0]; e.target.value = ''; if (f) scanBillFlow(f, type); }; }
   const partyOf = () => parties.find((p) => p.id === +form.elements.party_id.value);
   // udhaar check (Vaada Pakka): a banner while the sale is on credit, for a risky customer
@@ -5360,6 +5372,70 @@ const loadScript = (src) => scripts[src] || (scripts[src] = new Promise((ok, fai
 const labelCode = (it) => it.barcode || it.sku || 'ST' + it.id;
 
 /* ======================================================================= POS / quick bill with barcode scanning */
+/* ======================================================================= bolkar bill (voice) */
+/* The order spoken in Hindi, Hinglish or English (public/voice.js reads it): what was heard, the item found for each part and
+   its quantity, all of which the user can fix before the lines go on the bill. Without speech in the browser the order is typed. */
+const SpeechRec = window.SpeechRecognition || window.webkitSpeechRecognition;
+async function voiceOrder(items, onAdd) {
+  const { parseOrder } = await import('/voice.js');
+  let root = $('#voice-root');
+  if (!root) { root = document.createElement('div'); root.id = 'voice-root'; document.body.appendChild(root); }
+  const lang = storeGet('st:voice') || (LANG === 'hi' ? 'hi-IN' : 'hi-IN');
+  root.innerHTML = `<div class="modal-bg"><div class="modal voice" role="dialog" aria-label="Speak the order"><h2>&#127908; Bolkar bill</h2>
+    <p class="muted small">Say the items one after another: <b>"do kilo cheeni, ek litre tel, paanch sabun"</b>. Rupees work too: <b>"50 rupaye ki mirchi"</b>.</p>
+    <p class="muted small" lang="hi">बोलिए: "दो किलो चीनी, एक लीटर तेल, पांच साबुन"। थोड़ा रुककर अगला सामान बोलें।</p>
+    ${SpeechRec ? `<div class="row vmicrow"><button type="button" class="btn primary big" id="vmic">&#127908; Tap and speak</button>
+      <select id="vlang" aria-label="Language you speak in"><option value="hi-IN" ${lang === 'hi-IN' ? 'selected' : ''}>हिंदी / Hinglish</option><option value="en-IN" ${lang === 'en-IN' ? 'selected' : ''}>English (India)</option></select></div>`
+      : '<p class="panel warnbox small">Speaking needs Chrome or Edge. Type the order below instead.</p>'}
+    <label class="f wide">Heard <span class="muted">(fix or type here)</span><textarea id="vtext" rows="3" placeholder="do kilo cheeni, ek litre tel, paanch sabun"></textarea></label>
+    <div class="row"><button type="button" class="btn" id="vread">Find items</button></div>
+    <div id="vlist"></div>
+    ${SpeechRec ? '<p class="muted small">Your browser turns the voice into text (Chrome does it through Google). SmartTrader keeps no recording.</p>' : ''}
+    <div class="actions"><button type="button" class="btn" data-x>Cancel</button><button type="button" class="btn primary" id="vadd" disabled>Add to bill</button></div></div></div>`;
+  let rec = null, on = false, lines = [];
+  const close = () => { if (rec) { try { rec.abort(); } catch (e) { /* stopped */ } } root.innerHTML = ''; document.removeEventListener('keydown', escKey); };
+  const escKey = (e) => { if (e.key === 'Escape') close(); };
+  document.addEventListener('keydown', escKey);
+  $('[data-x]', root).onclick = close;
+  const allOpts = items.map((i) => `<option value="${i.id}">${esc(i.name)}</option>`).join('');
+  const draw = () => {
+    $('#vlist').innerHTML = lines.length ? `<div class="tbl-wrap"><table class="t vlines"><thead><tr><th>Item</th><th>Qty</th><th></th></tr></thead><tbody>${lines.map((l, i) => `<tr class="${l.item_id ? '' : 'vmiss'}">
+        <td><div class="muted small">&ldquo;${esc(l.heard)}&rdquo;${l.note ? ` &middot; ${esc(l.note)} worth` : ''}</div><select data-vi="${i}" aria-label="Item"><option value="">${l.item_id ? '' : 'Not found: choose…'}</option>${l.options.length ? `<optgroup label="Close matches">${l.options.map((o) => `<option value="${o.id}" ${o.id === l.item_id ? 'selected' : ''}>${esc(o.name)}</option>`).join('')}</optgroup>` : ''}<optgroup label="All items">${allOpts}</optgroup></select></td>
+        <td><input type="number" step="any" min="0" inputmode="decimal" data-vq="${i}" value="${l.qty}" style="width:80px" aria-label="Quantity"></td>
+        <td><button type="button" class="btn sm danger" data-vx="${i}" aria-label="Remove">&times;</button></td></tr>`).join('')}</tbody></table></div>`
+      : '';
+    $('#vadd').disabled = !lines.some((l) => l.item_id && l.qty > 0);
+    $('#vadd').textContent = `Add ${lines.filter((l) => l.item_id && l.qty > 0).length || ''} to bill`.replace('  ', ' ');
+  };
+  const read = () => { lines = parseOrder($('#vtext').value, items); draw(); };
+  $('#vread').onclick = read;
+  $('#vlist').addEventListener('change', (e) => {
+    const t = e.target;
+    if (t.dataset.vi !== undefined) { const l = lines[+t.dataset.vi]; l.item_id = +t.value || null; l.name = (items.find((x) => x.id === l.item_id) || {}).name || ''; }
+    if (t.dataset.vq !== undefined) lines[+t.dataset.vq].qty = +t.value || 0;
+    draw();
+  });
+  $('#vlist').addEventListener('click', (e) => { const x = e.target.closest('[data-vx]'); if (x) { lines.splice(+x.dataset.vx, 1); draw(); } });
+  $('#vadd').onclick = () => { const ok = lines.filter((l) => l.item_id && l.qty > 0); close(); onAdd(ok.map((l) => ({ item_id: l.item_id, qty: l.qty }))); };
+  const mic = $('#vmic');
+  if (!mic) { $('#vtext').focus(); return; }
+  $('#vlang').onchange = () => storeSet('st:voice', $('#vlang').value);
+  const label = () => { mic.innerHTML = on ? '&#9209; Stop' : '&#127908; Tap and speak'; mic.classList.toggle('listening', on); };
+  mic.onclick = () => {
+    if (on) { try { rec.stop(); } catch (e) { /* stopped */ } return; }
+    rec = new SpeechRec(); rec.lang = $('#vlang').value; rec.interimResults = true; rec.continuous = true;
+    const before = $('#vtext').value.trim();
+    rec.onresult = (e) => {
+      let done = '', now = '';
+      for (let i = 0; i < e.results.length; i++) { const r = e.results[i]; if (r.isFinal) done += r[0].transcript.trim() + ', '; else now += r[0].transcript; }
+      $('#vtext').value = (before ? before.replace(/,?\s*$/, ', ') : '') + done + now;
+      if (done) { lines = parseOrder($('#vtext').value, items); draw(); }
+    };
+    rec.onerror = (e) => { if (e.error !== 'aborted' && e.error !== 'no-speech') toast(e.error === 'not-allowed' || e.error === 'service-not-allowed' ? 'Allow the microphone for this site to speak the order.' : 'Could not hear: ' + e.error, 'err'); };
+    rec.onend = () => { on = false; if (root.innerHTML) { label(); read(); } };
+    try { rec.start(); on = true; label(); } catch (e) { toast('The microphone could not start: ' + e.message, 'err'); }
+  };
+}
 route(/^pos$/, async (el) => {
   dirty('items', 'accounts');
   const [items, parties, whs, accts] = await Promise.all([master('items'), master('parties'), master('warehouses'), master('accounts')]);
@@ -5375,7 +5451,7 @@ route(/^pos$/, async (el) => {
           <label class="f grow">Customer<select id="cust">${customers.map((p) => `<option value="${p.id}" ${p.id === (walkin && walkin.id) ? 'selected' : ''}>${esc(p.name)}</option>`).join('')}</select></label>
           <label class="f">Godown<select id="wh">${whs.map((w) => `<option value="${w.id}">${esc(w.name)}</option>`).join('')}</select></label></div>
           <div class="row" style="margin-top:10px"><input id="scan" class="grow scan" list="pos-items" placeholder="Scan barcode or type item name, then Enter" autocomplete="off" autofocus>
-            ${'BarcodeDetector' in window ? '<button class="btn" id="cam" title="Scan with camera">📷 Camera</button>' : ''}</div>
+            ${'BarcodeDetector' in window ? '<button class="btn" id="cam" title="Scan with camera">📷 Camera</button>' : ''}<button class="btn" id="voice" title="Speak the order">&#127908; Bolkar</button></div>
           <datalist id="pos-items">${items.map((i) => `<option value="${esc(i.name)}">${esc(labelCode(i))} · ${inr(shownPrice(i))}</option>`).join('')}</datalist></div>
         <div class="panel flush" id="cart"></div>
       </div>
@@ -5469,6 +5545,17 @@ route(/^pos$/, async (el) => {
   $('#cust').addEventListener('change', loadPts);
   $('#pospts').addEventListener('change', (e) => { if (e.target.id === 'useps') { usePts = e.target.checked; draw(); } });
   if ($('#cam')) $('#cam').onclick = () => cameraScan(add);
+  // bolkar bill: each line found goes on the cart with the quantity said
+  $('#voice').onclick = () => voiceOrder(items, (got) => {
+    for (const g of got) {
+      const it = items.find((i) => i.id === g.item_id); if (!it) continue;
+      const line = cart.find((l) => l.item_id === it.id);
+      if (line) line.qty = r2(line.qty + g.qty);
+      else cart.push({ item_id: it.id, name: it.name, code: labelCode(it), qty: g.qty, rate: it.price_incl ? it.sale_price_incl : it.sale_price, incl: !!it.price_incl, gst_rate: it.gst_rate, stock: it.qty_on_hand, unit: it.unit });
+    }
+    if (got.length) { beep(true); toast(`${got.length} item${got.length === 1 ? '' : 's'} added`); }
+    draw(); scan.focus();
+  });
   const complete = async () => {
     const lines = cart.filter((l) => l.qty > 0);
     if (!lines.length) return toast('The bill is empty.');

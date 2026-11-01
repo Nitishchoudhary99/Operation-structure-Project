@@ -203,6 +203,9 @@ export const HI = {
   'Why (e.g. opening balance, birthday gift)': 'क्यों (जैसे पुराने पॉइंट, जन्मदिन तोहफ़ा)', 'Use undone': 'इस्तेमाल वापस', 'Goods returned': 'माल वापसी', 'Bill cancelled': 'बिल रद्द', 'Changed': 'बदला',
   'No points yet.': 'अभी कोई पॉइंट नहीं।', 'Turn loyalty points on above.': 'ऊपर लॉयल्टी पॉइंट चालू करें।', 'Loyalty points to use': 'कितने लॉयल्टी पॉइंट लगाएँ',
   '⭐ Loyalty points': '⭐ लॉयल्टी पॉइंट', 'None on this bill': 'इस बिल पर नहीं', 'Up to': 'ज़्यादा से ज़्यादा',
+  'Bolkar bill': 'बोलकर बिल', 'Bolkar': 'बोलकर', 'Tap and speak': 'दबाएँ और बोलें', 'Heard': 'सुना', 'Find items': 'आइटम ढूँढें', 'Close matches': 'मिलते-जुलते',
+  'All items': 'सभी आइटम', 'Speaking needs Chrome or Edge. Type the order below instead.': 'बोलने के लिए Chrome या Edge चाहिए। नीचे ऑर्डर लिख दें।',
+  'Your browser turns the voice into text (Chrome does it through Google). SmartTrader keeps no recording.': 'आवाज़ को लिखने का काम आपका ब्राउज़र करता है (Chrome, Google से)। SmartTrader कोई रिकॉर्डिंग नहीं रखता।',
   // months
   'Jan': 'जन॰', 'Feb': 'फ़र॰', 'Mar': 'मार्च', 'Apr': 'अप्रै॰', 'May': 'मई', 'Jun': 'जून', 'Jul': 'जुला॰', 'Aug': 'अग॰', 'Sept': 'सित॰', 'Sep': 'सित॰', 'Oct': 'अक्टू॰', 'Nov': 'नव॰', 'Dec': 'दिस॰',
 };
