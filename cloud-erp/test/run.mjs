@@ -2735,18 +2735,22 @@ if (process.env.ERP_AI_MOCK) {
   const sl2 = await rq('POST', '/api/auth/login', { email: sEm, password: 'Staff-pass-12345' }, { ip });
   check('while it waits, staff cannot sign in or work; the owner still can', sl2.status === 403 && (await T('GET', '/api/items')).status === 403 && (await SE('GET', '/api/items')).status === 200);
   check('the owner can change their mind', (await S('POST', '/api/org/close/cancel')).ok && (await T('GET', '/api/items')).status === 200);
-  check('the daily run deletes nothing before the 7 days are over', (await (await adm('POST', '/api/admin/purge', {})).json()).purged.every((x) => x.org_id !== su.data.org_id)
-    && (await (await adm('POST', '/api/admin/purge', { org_id: (await S('GET', '/api/me')).org.id })).json()).purged.length === 0);
-  await S('POST', '/api/org/close', { password: pw, name: 'Safe Store' });
-  const orgId = (await S('GET', '/api/me')).org.id;
-  const pg = await (await adm('POST', '/api/admin/purge', { org_id: orgId })).json();
-  const p1 = pg.purged[0] || { deleted: {} };
-  check('when it runs, every record of that business goes', p1.done === true && p1.deleted.docs >= 1 && p1.deleted.doc_lines >= 1 && p1.deleted.items >= 1 && p1.deleted.parties >= 1
-    && p1.deleted.users === 2 && p1.deleted.logins >= 1 && p1.deleted.journal_lines >= 1, JSON.stringify(pg));
-  check('nobody of the closed business can sign in any more', (await rq('POST', '/api/auth/login', { email: em, password: pw, code: '' }, { ip })).status === 401
-    && (await SE('GET', '/api/me')).status === 401 && item.id > 0);
-  const ci = await C('GET', '/api/items'), ctb = await C('GET', '/api/reports/trial-balance');
-  check('another business is untouched', ci.rows.length === 1 && ci.rows[0].name === 'Control item' && ctb.balanced && ctb.total_debit > 0, JSON.stringify([ci.rows.length, ctb.balanced]));
+  // the purge runs from the daily job, or from the admin (needs ADMIN_KEY, as the admin tests above)
+  if ((await adm('POST', '/api/admin/purge', {})).status === 404) console.log('SKIP  closing purge (no ADMIN_KEY configured)');
+  else {
+    check('the daily run deletes nothing before the 7 days are over', (await (await adm('POST', '/api/admin/purge', {})).json()).purged.every((x) => x.org_id !== su.data.org_id)
+      && (await (await adm('POST', '/api/admin/purge', { org_id: (await S('GET', '/api/me')).org.id })).json()).purged.length === 0);
+    await S('POST', '/api/org/close', { password: pw, name: 'Safe Store' });
+    const orgId = (await S('GET', '/api/me')).org.id;
+    const pg = await (await adm('POST', '/api/admin/purge', { org_id: orgId })).json();
+    const p1 = pg.purged[0] || { deleted: {} };
+    check('when it runs, every record of that business goes', p1.done === true && p1.deleted.docs >= 1 && p1.deleted.doc_lines >= 1 && p1.deleted.items >= 1 && p1.deleted.parties >= 1
+      && p1.deleted.users === 2 && p1.deleted.logins >= 1 && p1.deleted.journal_lines >= 1, JSON.stringify(pg));
+    check('nobody of the closed business can sign in any more', (await rq('POST', '/api/auth/login', { email: em, password: pw, code: '' }, { ip })).status === 401
+      && (await SE('GET', '/api/me')).status === 401 && item.id > 0);
+    const ci = await C('GET', '/api/items'), ctb = await C('GET', '/api/reports/trial-balance');
+    check('another business is untouched', ci.rows.length === 1 && ci.rows[0].name === 'Control item' && ctb.balanced && ctb.total_debit > 0, JSON.stringify([ci.rows.length, ctb.balanced]));
+  }
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);
