@@ -3,7 +3,7 @@
    Every business table carries org_id: one database serves many businesses (multi-tenant).
    migrate() runs on the first request after each deploy, so no manual migration step is needed. */
 
-export const SCHEMA_VERSION = 34;
+export const SCHEMA_VERSION = 35;
 
 // document types whose monthly totals doc_month keeps (sales and purchase money documents)
 const MONTH_TYPES = `('INV','SRET','CNOTE','BILL','PRET','DNOTE')`;
@@ -614,6 +614,18 @@ export const MIGRATIONS = {
   /* MRP billing: an item's sale price may be typed with GST in it (kept here without GST, to a hundredth of a paisa) */
   34: [
     `ALTER TABLE items ADD COLUMN price_incl INTEGER NOT NULL DEFAULT 0`,
+  ],
+  /* security & privacy (src/security.js): two-step sign-in, the sign-in history, closing a business */
+  35: [
+    `ALTER TABLE users ADD COLUMN totp_secret TEXT NOT NULL DEFAULT ''`,
+    `ALTER TABLE users ADD COLUMN totp_on INTEGER NOT NULL DEFAULT 0`,
+    `ALTER TABLE users ADD COLUMN totp_last INTEGER NOT NULL DEFAULT 0`,
+    `ALTER TABLE users ADD COLUMN totp_backup TEXT NOT NULL DEFAULT ''`,
+    `ALTER TABLE orgs ADD COLUMN require_2fa INTEGER NOT NULL DEFAULT 0`,
+    `ALTER TABLE orgs ADD COLUMN close_after TEXT NOT NULL DEFAULT ''`,
+    `CREATE TABLE IF NOT EXISTS logins (id INTEGER PRIMARY KEY, org_id INTEGER NOT NULL, user_id INTEGER, email TEXT DEFAULT '', at TEXT NOT NULL,
+       ip TEXT DEFAULT '', ua TEXT DEFAULT '', ok INTEGER NOT NULL, how TEXT DEFAULT '')`,
+    `CREATE INDEX IF NOT EXISTS ix_logins_org ON logins (org_id, id)`,
   ],
 };
 

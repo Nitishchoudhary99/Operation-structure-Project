@@ -42,6 +42,8 @@ import { STATES, einvoiceJson, ewaybillJson } from './gst.js';
 import { listBins, addBins, deleteBin, binContents, moveInBins, itemLots, expiryReport, serialLookup, putawayPlan, wavePick } from './lots.js';
 import { tallyXml } from './tally.js';
 import { gstr1, gstr1Sheets, match2b } from './gstr.js';
+import { secondStep, twoStepStart, twoStepEnable, twoStepDisable, newBackupCodes, twoStepReset, requireTwoStep, loginStatement, signInHistory,
+  closeBusiness, cancelClose, purgeClosed, notOwnerWhileClosing } from './security.js';
 import { workbook } from './xlsx.js';
 import { printOf, cleanPrint, imageFromDataUrl, shortHash, imageResponse, FILE_KINDS, seriesOf, numberSpec, formatNumber, cleanSeries, fyParts,
   fieldsOf, extraOf, cleanField, cleanExtra, extraFilter, printExtra, LAYOUTS } from './custom.js';
@@ -110,6 +112,7 @@ router.add('POST', '/api/auth/signup', async (c) => {
   if (taken) throw bad('An account with this email already exists. Sign in instead.');
   const user = await createBusiness(c, fields);
   const token = await issueSession(c.env, user);
+  await newAccountLog(c, user);
   return json({ ok: true, user: publicUser(user) }, 200, { 'Set-Cookie': sessionCookie(token, c.request) });
 }, { public: true });
 
@@ -129,23 +132,41 @@ router.add('POST', '/api/auth/verify', async (c) => {
   if (!claim.meta.changes) throw bad('This link has expired or was already used. Please sign up again.');
   const user = await createBusiness(c, { ...d, email: row.email });
   const session = await issueSession(c.env, user);
+  await newAccountLog(c, user);
   return json({ ok: true, user: publicUser(user) }, 200, { 'Set-Cookie': sessionCookie(session, c.request) });
 }, { public: true });
 
 const clientIp = (c) => c.request.headers.get('CF-Connecting-IP') || 'local';
+const newAccountLog = (c, user) => loginStatement(c.db, { org_id: user.org_id, user_id: user.id, email: user.email, ip: clientIp(c),
+  ua: c.request.headers.get('User-Agent') || '', ok: 1, how: 'new account' }).run();
 router.add('POST', '/api/auth/login', async (c) => {
   const email = str(c.body.email, 120).toLowerCase(), ip = clientIp(c);
   const release = await loginGate(c.env, email, ip);
   try {
     const user = await c.db.prepare(`SELECT * FROM users WHERE email = ?`).bind(email).first();
     const hash = await hashPassword(c.body.password || '', user ? user.salt : 'no-such-user-salt');
+    const ua = c.request.headers.get('User-Agent') || '', log = (ok, how) => loginStatement(c.db, { org_id: user.org_id, user_id: user.id, email, ip, ua, ok, how }).run();
     if (!user || !user.active || !sameText(hash, user.pw_hash)) {
       await loginFailed(c.env, email, ip);
+      if (user) await log(0, user.active ? 'wrong password' : 'user switched off');
       throw new HttpError(401, 'Incorrect email or password.');
+    }
+    // two-step sign-in: the password was right, now the code from the authenticator app (or a backup code)
+    let how = 'password';
+    if (user.totp_on) {
+      if (!str(c.body.code, 20)) return json({ ok: false, need_code: true });
+      const step = await secondStep(c.env, c.db, user, c.body.code);
+      if (!step) {
+        await loginFailed(c.env, email, ip); await log(0, 'wrong code');
+        throw new HttpError(401, 'That code is not right. Type the 6-digit code your authenticator app shows now, or a backup code.', { need_code: true });
+      }
+      how = 'password + ' + step;
     }
     const [row, org] = await c.db.batch([c.db.prepare(USER_SQL).bind(user.id), c.db.prepare(`SELECT * FROM orgs WHERE id = ?`).bind(user.org_id)]);
     if (seatBlocked(org.results[0], row.results[0])) throw seatError(org.results[0]);
+    notOwnerWhileClosing(org.results[0], user);
     const token = await issueSession(c.env, user);
+    await log(1, how);
     return json({ ok: true, user: publicUser(user) }, 200, { 'Set-Cookie': sessionCookie(token, c.request) });
   } finally { release(); }
 }, { public: true });
@@ -223,7 +244,10 @@ router.add('POST', '/api/auth/reset', async (c) => {
     c.db.prepare(`UPDATE users SET pw_hash = ?, salt = ?, pw_changed_at = ? WHERE id = ?`).bind(await hashPassword(c.body.password, salt), salt, now, r.user_id),
     c.db.prepare(`DELETE FROM pw_resets WHERE user_id = ?`).bind(r.user_id),
   ]);
+  // with two-step sign-in on, the e-mailed link alone does not sign in: the new password and the code do
+  if (r.totp_on) return json({ ok: true, signin: true });
   const token2 = await issueSession(c.env, { ...r, id: r.user_id, pw_changed_at: now });
+  await loginStatement(c.db, { org_id: r.org_id, user_id: r.user_id, email: r.email, ip, ua: c.request.headers.get('User-Agent') || '', ok: 1, how: 'reset link' }).run();
   return json({ ok: true }, 200, { 'Set-Cookie': sessionCookie(token2, c.request) });
 }, { public: true });
 
@@ -239,7 +263,7 @@ router.add('POST', '/api/me/logout-all', async (c) => {
 });
 
 router.add('GET', '/api/me', async (c) => json({
-  user: { ...publicUser(c.user), role_key: c.user.role }, org: orgOut(c.org),
+  user: { ...publicUser(c.user), role_key: c.user.role, two_step: !!c.user.totp_on }, org: orgOut(c.org), must_2fa: !!(c.org.require_2fa && !c.user.totp_on),
   can: Object.fromEntries(['settings', 'users', 'items', 'purchase', 'sales', 'stock', 'finance', 'khata', 'masters', 'gate'].map((a) => [a, can(c.user, a)])),
   ui: uiOf(c.user.ui), role_ui: uiOf(c.user.role_ui), rules: rulesOf(c.user),
   view: Object.fromEntries(AREAS.map((a) => [a, canView(c.user, a)])), costs: seesCosts(c.user), wa_auto: waConfigured(c.env),
@@ -261,6 +285,17 @@ router.add('POST', '/api/me/password', async (c) => {
 });
 
 const publicUser = (u) => ({ id: u.id, email: u.email, name: u.name, role: u.role === 'custom' ? u.role_name || 'custom' : u.role });
+
+/* Security & privacy (src/security.js): two-step sign-in, the sign-in history, closing the business */
+router.add('GET', '/api/security', async (c) => json({ ...(await signInHistory(c)), two_step: !!c.user.totp_on, require_2fa: !!c.org.require_2fa, close_after: c.org.close_after || '' }));
+router.add('POST', '/api/me/2fa/start', async (c) => { await rateLimit(c.env, '2fa:' + c.user.id, 20, 3600); return json(await twoStepStart(c)); });
+router.add('POST', '/api/me/2fa/enable', async (c) => { await rateLimit(c.env, '2fa:' + c.user.id, 20, 3600); return json(await twoStepEnable(c)); });
+router.add('POST', '/api/me/2fa/disable', async (c) => { await rateLimit(c.env, '2fa:' + c.user.id, 20, 3600); return json(await twoStepDisable(c)); });
+router.add('POST', '/api/me/2fa/backup-codes', async (c) => { await rateLimit(c.env, '2fa:' + c.user.id, 20, 3600); return json(await newBackupCodes(c)); });
+router.add('POST', '/api/users/:id/2fa-reset', async (c) => json(await twoStepReset(c, +c.params.id)));
+router.add('PUT', '/api/settings/require-2fa', async (c) => json(await requireTwoStep(c, c.body.on === true)));
+router.add('POST', '/api/org/close', async (c) => { await rateLimit(c.env, 'close:' + c.org.id, 10, 3600); return json(await closeBusiness(c)); });
+router.add('POST', '/api/org/close/cancel', async (c) => json(await cancelClose(c)));
 
 /* ======================================================================= business settings & users */
 router.add('PUT', '/api/org', async (c) => {
@@ -1309,6 +1344,10 @@ router.add('POST', '/api/admin/orgs/:id/plan', async (c) => {
   const until = await extendPlan(c.db, org, plan, int(c.body.months, 'Months', { min: 1, max: 1200, def: 12 }));
   return json({ ok: true, plan, until });
 }, { public: true });
+router.add('POST', '/api/admin/purge', async (c) => {
+  await requireAdmin(c);
+  return json({ ok: true, purged: await purgeClosed(c.env, { orgId: +c.body.org_id || 0 }) });
+}, { public: true });
 router.add('GET', '/api/admin/payments', async (c) => {
   await requireAdmin(c);
   const { results } = await c.db.prepare(`SELECT b.ref, b.plan, b.paise, b.status, b.payment_id, b.method, b.created_at, b.paid_at, b.plan_until, o.name AS business,
@@ -2114,7 +2153,7 @@ function countingDb(db, counter) {
    side in docDetail). Anything not listed is refused for custom roles, so a new endpoint is closed until it is listed here. */
 const OPEN = 'open';
 const READ_AREAS = [
-  [/^\/api\/(me|plan|search)\/?$/, OPEN],
+  [/^\/api\/(me|plan|search|security)\/?$/, OPEN],
   [/^\/api\/settings\/(print|fields)\/?$/, OPEN],
   [/^\/api\/org\/files\/[^/]+\/?$/, OPEN],
   [/^\/api\/(parties|accounts|warehouses)\/?$/, OPEN],
@@ -2147,6 +2186,7 @@ const READ_AREAS = [
   [/^\/api\/wa\/inbox(\/\d+)?\/?$/, ['sales', 'khata', 'finance']],
   [/^\/api\/(audit|users|roles|billing\/status|settings\/series)\/?$/, 'settings'],
 ];
+const TWO_STEP_OPEN = /^\/api\/(me|me\/2fa\/(start|enable)|me\/logout-all|security)\/?$/;
 function readArea(url) {
   const p = url.pathname;
   if (p === '/api/docs' || p === '/api/docs/') {
@@ -2191,6 +2231,11 @@ async function handleApi(request, env, counter) {
     if (!sessionValid(c.user, p) || !c.org || (p.i && res[2].results.length)) throw new HttpError(401, 'Please sign in.');
     c.sys = write ? sysMap(res[res.length - 1].results) : null;
     if (seatBlocked(c.org, c.user)) throw seatError(c.org);
+    // a business that asks everyone for two-step sign-in: until this user turns it on, only the screens to do that work
+    if (c.org.require_2fa && !c.user.totp_on && !TWO_STEP_OPEN.test(url.pathname)) {
+      throw new HttpError(403, 'Your business asks everyone to use two-step sign-in. Turn it on first: Settings → Security.', { code: 'need_2fa' });
+    }
+    notOwnerWhileClosing(c.org, c.user);
     if (limitedView(c.user) && request.method === 'GET') {
       const area = readArea(url);
       if (area === null) throw forbidden('Your role cannot see this. Ask the owner.');
@@ -2311,6 +2356,10 @@ export default {
         env.DB.prepare(`DELETE FROM wa_contacts WHERE updated_at < ?`).bind(half)]);
       const w = await runAutoReminders(env);
       if (w.due) console.log('auto whatsapp', JSON.stringify(w));
+      // sign-in history is kept 180 days; businesses whose 7 days to close are over are deleted
+      await env.DB.prepare(`DELETE FROM logins WHERE id IN (SELECT id FROM logins WHERE at < ? LIMIT 5000)`).bind(new Date(Date.now() - 180 * 864e5).toISOString()).run();
+      const gone = await purgeClosed(env);
+      if (gone.length) console.log('businesses closed', JSON.stringify(gone.map((x) => [x.org_id, x.done])));
     })());
   },
   async fetch(request, env) {

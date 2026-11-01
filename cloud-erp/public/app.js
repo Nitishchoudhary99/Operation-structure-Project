@@ -291,6 +291,7 @@ function renderAuth(mode = /^#\/?signup/.test(location.hash) ? 'signup' : 'login
         return;
       }
       const r = await POST('/api/auth/' + mode, body);
+      if (mode === 'login' && r.need_code) { askCode(e.target); return; }
       if (mode === 'signup' && r.verify) {         // the account is made when the owner opens the e-mailed link
         e.target.innerHTML = `<h1>Check your email</h1>
           <p>We sent a link to <b>${esc(body.email)}</b>. Open it to confirm your address and start your free trial. Look in the spam folder too. The link works once, for 24 hours.</p>
@@ -300,8 +301,23 @@ function renderAuth(mode = /^#\/?signup/.test(location.hash) ? 'signup' : 'login
       }
       if (/^#\/?(signup|login)/.test(location.hash)) history.replaceState(null, '', '/#/dashboard');
       await boot();
-    } catch (err) { const b = $('.err', e.target); b.hidden = false; b.textContent = err.message; } finally { btn.disabled = false; }
+    } catch (err) {
+      if (err.data && err.data.need_code) askCode(e.target);
+      const b = $('.err', e.target); b.hidden = false; b.textContent = err.message;
+    } finally { btn.disabled = false; }
   };
+}
+/* two-step sign-in: the password was right, so the form asks for the code from the authenticator app */
+function askCode(form) {
+  if (!$('#codef', form)) {
+    $('button.primary', form).insertAdjacentHTML('beforebegin', `<label class="f" id="codef">Code from your authenticator app
+      <input name="code" inputmode="numeric" autocomplete="one-time-code" maxlength="11" required placeholder="6-digit code"></label>
+      <p class="muted small">Phone not with you? Type one of your backup codes.</p>`);
+    $('button.primary', form).textContent = 'Verify and sign in';
+    $('.err', form).hidden = true;
+  }
+  $('[name=code]', form).value = '';
+  $('[name=code]', form).focus();
 }
 
 /* Forgot password: the e-mail link opens #/reset/<token> (no login needed) */
@@ -322,7 +338,11 @@ function renderReset(token) {
     if (v.password !== v.password2) { b.hidden = false; b.textContent = 'The two passwords are not the same.'; return; }
     btn.disabled = true;
     try {
-      await POST('/api/auth/reset', { token, password: v.password });
+      const r = await POST('/api/auth/reset', { token, password: v.password });
+      if (r.signin) {          // two-step sign-in is on: the link alone does not sign in
+        e.target.innerHTML = '<h1>Password changed</h1><p>Two-step sign-in is on for this account, so sign in with the new password and the code from your authenticator app.</p><p><a class="btn primary" href="/#/login">Sign in</a></p>';
+        return;
+      }
       history.replaceState(null, '', '/#/dashboard');
       await boot();
     } catch (err) { b.hidden = false; b.textContent = err.message; } finally { btn.disabled = false; }
@@ -441,6 +461,13 @@ function navHtml() {
   try { open = open || localStorage.getItem('st:navmore') === '1'; } catch (e) { /* storage off */ }
   return block(main) + `<details class="nav-more" id="navmore" ${open ? 'open' : ''}><summary>More features <span>${n}</span></summary>${block(more)}</details>`;
 }
+/* Hide amounts: blurs totals and money columns on this device, for a counter screen customers can see */
+function hideAmounts(on) {
+  document.body.classList.toggle('hide-amt', on);
+  const b = $('#hideamt'); if (b) { b.setAttribute('aria-pressed', String(on)); $('span', b).textContent = on ? 'Show' : 'Hide'; }
+}
+const storeGet = (k) => { try { return localStorage.getItem(k); } catch (e) { return null; } };
+const storeSet = (k, v) => { try { localStorage.setItem(k, v); } catch (e) { /* storage off */ } };
 function shell() {
   // the gate entry is a quick action only for those who do not make bills (guard, godown)
   const news = NEW_MENU.filter(([, , a, h]) => ME.can[a] && onMenu(h) && (h !== 'gate/in' || !onMenu('purchase/BILL')));
@@ -456,13 +483,17 @@ function shell() {
         <button class="btn sm burger" id="burger" aria-label="Menu">&#9776;</button>
         <strong class="orgname">${esc(ME.org.name)}</strong>
         <a class="btn sm outbox" id="outbox" href="#/outbox" hidden title="Saved without internet, waiting to be sent"></a>
+        <button class="btn sm hideamt" id="hideamt" type="button" title="Hide amounts on screen (for when customers can see it)" aria-pressed="false">₹<span>Hide</span></button>
         <div class="gsearch"><input id="gq" type="search" placeholder="Search items, customers, bills…" autocomplete="off" aria-label="Search" enterkeyhint="search">
           <div class="gres" id="gres" hidden></div></div>
         ${news.length ? `<div class="newmenu"><button class="btn primary" id="newbtn" aria-haspopup="true" aria-expanded="false">+ <span>New</span></button>
           <div class="menu" id="newmenu" hidden>${news.map(([h, t]) => `<a href="#/${h}">${t}</a>`).join('')}</div></div>` : ''}
       </header>
+      ${ME.org.close_after && ME.user.role_key === 'owner' ? `<div class="closing">This business will be deleted on <b>${fdate(ME.org.close_after.slice(0, 10))}</b>. <a href="#/settings/security">Keep it (cancel)</a> · <a href="#/settings?backup=1">Download a backup</a></div>` : ''}
       <main class="page" id="page"></main>
     </div></div><div class="scrim" id="scrim"></div>`;
+  hideAmounts(storeGet('st:hideamt') === '1');
+  $('#hideamt').onclick = () => { const on = !document.body.classList.contains('hide-amt'); hideAmounts(on); storeSet('st:hideamt', on ? '1' : '0'); };
   $('#burger').onclick = () => menu(!$('#side').classList.contains('open'));
   if ($('#navmore')) $('#navmore').addEventListener('toggle', (e) => { try { localStorage.setItem('st:navmore', e.target.open ? '1' : '0'); } catch (err) { /* storage off */ } });
   $('#scrim').onclick = () => menu(false);
@@ -3333,7 +3364,7 @@ route(/^reports\/([a-z-]+)$/, async (el, m, q) => {
 });
 
 /* ======================================================================= settings */
-const SET_TABS = [['settings', 'Business & users'], ['settings/print', 'Branding & print'], ['settings/numbering', 'Numbering'], ['settings/fields', 'Custom fields'], ['settings/roles', 'Roles']];
+const SET_TABS = [['settings', 'Business & users'], ['settings/security', 'Security & privacy'], ['settings/print', 'Branding & print'], ['settings/numbering', 'Numbering'], ['settings/fields', 'Custom fields'], ['settings/roles', 'Roles']];
 const setTabs = (cur) => `<div class="tabs">${SET_TABS.filter(([h]) => h !== 'settings/roles' || ME.can.users).map(([h, t]) => `<a href="#/${h}" class="${h === cur ? 'on' : ''}">${t}</a>`).join('')}</div>`;
 
 /* Shrink a photo on this device (canvas) so it fits the 64 KB limit; nothing is uploaded until it is small. */
@@ -3592,6 +3623,113 @@ route(/^settings\/roles$/, async (el) => {
   });
 });
 
+/* ======================================================================= security & privacy (src/security.js) */
+/* Locked backup: the backup is locked on this device (PBKDF2 → AES-GCM, gzip first) before it is saved; only the password opens it */
+const LOCKED = 'smarttrader-locked-backup';
+const b64s = (u8) => { let s = ''; for (let i = 0; i < u8.length; i += 0x8000) s += String.fromCharCode(...u8.subarray(i, i + 0x8000)); return btoa(s); };
+const unb64s = (s) => Uint8Array.from(atob(s), (ch) => ch.charCodeAt(0));
+const gzip = async (u8, pack) => new Uint8Array(await new Response(new Blob([u8]).stream().pipeThrough(pack ? new CompressionStream('gzip') : new DecompressionStream('gzip'))).arrayBuffer());
+async function lockKey(pass, salt, iterations) {
+  const base = await crypto.subtle.importKey('raw', new TextEncoder().encode(pass), 'PBKDF2', false, ['deriveKey']);
+  return crypto.subtle.deriveKey({ name: 'PBKDF2', hash: 'SHA-256', salt, iterations }, base, { name: 'AES-GCM', length: 256 }, false, ['encrypt', 'decrypt']);
+}
+async function lockBackup(text, pass) {
+  const salt = crypto.getRandomValues(new Uint8Array(16)), iv = crypto.getRandomValues(new Uint8Array(12)), iterations = 310000;
+  const ct = await crypto.subtle.encrypt({ name: 'AES-GCM', iv }, await lockKey(pass, salt, iterations), await gzip(new TextEncoder().encode(text), true));
+  return JSON.stringify({ format: LOCKED, v: 1, kdf: { name: 'PBKDF2', hash: 'SHA-256', iterations, salt: b64s(salt) }, cipher: 'AES-GCM', iv: b64s(iv), data: b64s(new Uint8Array(ct)) });
+}
+async function unlockBackup(o, pass) {
+  try {
+    const pt = await crypto.subtle.decrypt({ name: 'AES-GCM', iv: unb64s(o.iv) }, await lockKey(pass, unb64s(o.kdf.salt), +o.kdf.iterations || 310000), unb64s(o.data));
+    return JSON.parse(new TextDecoder().decode(await gzip(new Uint8Array(pt), false)));
+  } catch (e) { throw new Error('Wrong password, or the file is damaged.'); }
+}
+
+/* Two-step sign-in set-up: scan the QR in an authenticator app, type its code, keep the backup codes */
+async function twoStepSetup(box, done) {
+  box.innerHTML = '<p class="muted">Getting a key…</p>';
+  let s;
+  try { s = await POST('/api/me/2fa/start'); } catch (e) { box.innerHTML = `<div class="err">${esc(e.message)}</div>`; return; }
+  box.innerHTML = `<ol class="steps"><li>On your phone, open an authenticator app: <b>Google Authenticator</b>, <b>Microsoft Authenticator</b> or any other (free on the Play Store / App Store).</li>
+      <li>Tap <b>+</b> and <b>Scan a QR code</b>, and scan this:<div class="qrbox" id="tsqr" style="margin:8px 0"></div>
+        <span class="muted small">Cannot scan? Choose "Enter a setup key" and type: <b class="mono">${esc(s.secret.replace(/(.{4})/g, '$1 ').trim())}</b></span></li>
+      <li>Type the 6-digit code the app now shows for SmartTrader:</li></ol>
+    <form id="tsf" class="row"><input name="code" inputmode="numeric" autocomplete="one-time-code" maxlength="6" placeholder="123456" required style="max-width:160px">
+      <button class="btn primary">Turn on</button></form><div class="err" hidden></div>
+    <p class="muted small" lang="hi">फ़ोन के authenticator ऐप से QR स्कैन करें और ऐप में दिखा 6 अंकों का कोड यहाँ लिखें।</p>`;
+  qrInto($('#tsqr', box), s.uri);
+  $('#tsf', box).onsubmit = async (e) => {
+    e.preventDefault();
+    const err = $('.err', box); err.hidden = true;
+    try { const r = await POST('/api/me/2fa/enable', { code: e.target.code.value }); showBackupCodes(box, r.backup_codes, done); }
+    catch (x) { err.textContent = x.message; err.hidden = false; }
+  };
+}
+function showBackupCodes(box, codes, done) {
+  const text = `SmartTrader backup codes for ${ME.user.email}\nEach code works once, if your phone is lost.\n\n${codes.join('\n')}\n`;
+  box.innerHTML = `<div class="panel okbox">✓ Two-step sign-in is on. From now on SmartTrader asks for the code from your phone after the password.</div>
+    <h3>Your backup codes</h3><p>If your phone is lost or reset, each of these works once instead of the code. Write them down or print them and keep them away from the phone.</p>
+    <div class="codes mono">${codes.map((c) => `<span>${esc(c)}</span>`).join('')}</div>
+    <div class="row" style="margin-top:10px"><button type="button" class="btn" id="cdl">Download</button><button type="button" class="btn" id="cpr">Print</button><button type="button" class="btn primary" id="cok">I have kept them safe</button></div>`;
+  $('#cdl', box).onclick = () => download('smarttrader-backup-codes.txt', text, 'text/plain');
+  $('#cpr', box).onclick = () => { const w = window.open('', '_blank'); if (w) { w.document.write(`<pre style="font:16px monospace">${esc(text)}</pre>`); w.document.close(); w.print(); } };
+  $('#cok', box).onclick = () => done();
+}
+/* A business that asks everyone for two-step sign-in: this user sets it up before anything else opens */
+function twoStepGate() {
+  $('#app').innerHTML = `<div class="auth"><div class="box"><div class="brandline"><i>&#x2197;</i>SmartTrader ERP</div>
+    <h1>Turn on two-step sign-in</h1><p>${esc(ME.org.name)} asks everyone to sign in with the password <b>and</b> a code from their phone, so a stolen password alone cannot open the business.</p>
+    <div id="tsbox"></div><p class="muted"><a href="#" id="tsout">Sign out</a></p></div></div>`;
+  twoStepSetup($('#tsbox'), async () => { await boot(); });
+  $('#tsout').onclick = async (e) => { e.preventDefault(); await POST('/api/auth/logout'); ME = null; remember(false); location.hash = ''; renderAuth(); };
+}
+
+route(/^settings\/security$/, async (el) => {
+  const d = await GET('/api/security'), owner = ME.user.role_key === 'owner', when = (t) => new Date(t).toLocaleString('en-IN', { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' });
+  el.innerHTML = head('Settings') + setTabs('settings/security') + `
+    <div class="panel"><h2>Two-step sign-in ${d.two_step ? badge('ok') : ''}</h2>
+      <p class="muted">After the password, SmartTrader asks for a 6-digit code from an app on your phone. Someone who learns your password still cannot get in.
+        <span lang="hi">पासवर्ड के बाद फ़ोन के ऐप का कोड भी लगेगा, तो पासवर्ड चोरी होने पर भी कोई अंदर नहीं आ सकता।</span></p>
+      <div id="tsbox">${d.two_step ? `<div class="row"><button class="btn" id="tsnew">New backup codes</button><button class="btn" id="tsoff" ${d.require_2fa ? 'disabled title="Your business needs it on"' : ''}>Turn off</button></div>`
+        : '<button class="btn primary" id="tson">Turn on two-step sign-in</button>'}</div></div>
+    ${owner ? `<div class="panel"><h2>For everyone in the business</h2>
+      <label class="mode-opt"><input type="checkbox" id="req2" ${d.require_2fa ? 'checked' : ''} ${d.two_step ? '' : 'disabled'}> <span><b>Ask everyone for two-step sign-in</b><br>
+        <span class="muted">Staff without it are asked to set it up when they next open SmartTrader, before anything else.${d.two_step ? '' : ' Turn it on for yourself first.'}</span></span></label>
+      ${table([{ h: 'User', f: (u) => `<b>${esc(u.name)}</b><div class="muted small">${esc(u.email)}</div>` }, { h: 'Two-step', f: (u) => (u.totp_on ? badge('ok') : '<span class="muted">off</span>') },
+        { h: '', f: (u) => (u.totp_on && u.role !== 'owner' ? `<button class="btn sm" data-reset2="${u.id}" data-n="${esc(u.name)}">Reset (lost phone)</button>` : '') }], d.users.filter((u) => u.active))}</div>` : ''}
+    <div class="panel flush"><div style="padding:14px 16px 0"><h2 style="margin:0">Sign-in history</h2><p class="muted small">${d.all ? 'Everyone in the business' : 'Your sign-ins'}, the last 100, kept 180 days. A sign-in you do not recognise? Change your password and tap "Sign out everywhere".</p></div>
+      ${table([{ h: 'When', f: (r) => when(r.at) }, ...(d.all ? [{ h: 'Who', f: (r) => esc(r.name || r.email) }] : []), { h: 'Device', k: 'device' }, { h: 'IP', cls: 'hide-sm', f: (r) => `<span class="mono small">${esc(r.ip)}</span>` },
+        { h: 'Result', f: (r) => (r.ok ? `<span class="badge b-paid">signed in</span><div class="muted small">${esc(r.how)}</div>` : `<span class="badge b-overdue">${esc(r.how || 'refused')}</span>`) }], d.rows, { empty: 'No sign-ins recorded yet.' })}</div>
+    <div class="panel"><h2>Your data, your control</h2><ul class="small">
+      <li><b>Each business is walled off.</b> Every record carries your business, and every request is checked against it. Staff see only what their role allows.</li>
+      <li><b>No ads, no selling.</b> Your bills, customers and stock are used only to run your account. They are never sold or shown to anyone else.</li>
+      <li><b>Passwords</b> are stored only as a salted hash; the authenticator key is kept encrypted.</li>
+      <li><b>Take it all, any time:</b> a full backup (also locked with your own password), an Excel copy, or Tally XML. Settings → Backup.</li>
+      <li><b>Customer links</b> (bills, khata) can be turned off one by one or all at once. WhatsApp chats are kept 6 months, the sign-in history 180 days.</li>
+      <li><b>Close the business</b> and every record is deleted after 7 days (the payment records of your SmartTrader plan stay, as tax law needs).</li></ul></div>
+    ${owner ? `<div class="panel" id="closebox"><h2>Close this business</h2>${d.close_after
+      ? `<p class="neg"><b>This business will be deleted on ${fdate(d.close_after.slice(0, 10))}.</b> Until then only you can sign in. Download a backup if you want to keep a copy.</p><button class="btn primary" id="closecancel">Keep the business (cancel closing)</button>`
+      : `<p class="muted">Deletes every bill, customer, item, payment, khata entry and login of <b>${esc(ME.org.name)}</b>. You get 7 days to change your mind; staff cannot sign in during that time. Download a backup first.</p>
+        <button class="btn danger" id="closego">Close and delete this business…</button>`}</div>` : ''}`;
+  const passCode = (title, submit, fn, extra = []) => modal(title, [...extra, { k: 'password', label: 'Your password', type: 'password' }, ...(d.two_step ? [{ k: 'code', label: 'Code from your authenticator app (or a backup code)' }] : [])], fn, { submit });
+  if ($('#tson')) $('#tson').onclick = () => twoStepSetup($('#tsbox'), () => { ME.user.two_step = true; render(); });
+  if ($('#tsnew')) $('#tsnew').onclick = () => passCode('New backup codes', 'Make new codes', async (v) => {
+    const r = await POST('/api/me/2fa/backup-codes', v); setTimeout(() => showBackupCodes($('#tsbox'), r.backup_codes, () => render()), 0);
+  });
+  if ($('#tsoff')) $('#tsoff').onclick = () => passCode('Turn off two-step sign-in', 'Turn off', async (v) => { await POST('/api/me/2fa/disable', v); toast('Two-step sign-in is off'); render(); });
+  if ($('#req2')) $('#req2').onchange = async (e) => {
+    try { await api('PUT', '/api/settings/require-2fa', { on: e.target.checked }); toast(e.target.checked ? 'Everyone needs two-step sign-in now' : 'Two-step sign-in is up to each user'); }
+    catch (x) { e.target.checked = !e.target.checked; toast(x.message, 'err'); }
+  };
+  $$('[data-reset2]', el).forEach((b) => { b.onclick = async () => {
+    if (!confirm(`Turn off two-step sign-in for ${b.dataset.n}? They sign in with the password alone until they set it up again on the new phone.`)) return;
+    try { await POST(`/api/users/${b.dataset.reset2}/2fa-reset`); toast('Reset'); render(); } catch (x) { toast(x.message, 'err'); }
+  }; });
+  if ($('#closego')) $('#closego').onclick = () => passCode('Close and delete this business', 'Close the business', async (v) => {
+    const r = await POST('/api/org/close', v); ME = await GET('/api/me'); shell(); toast(`The business will be deleted on ${fdate(r.close_after.slice(0, 10))}`); render();
+  }, [{ k: 'name', label: `Type the business name: ${ME.org.name}` }]);
+  if ($('#closecancel')) $('#closecancel').onclick = async () => { await POST('/api/org/close/cancel'); ME = await GET('/api/me'); shell(); toast('Closing cancelled. The business stays.'); render(); };
+});
 route(/^settings$/, async (el, m, q) => {
   const o = ME.org, canUsers = ME.can.users;
   const users = canUsers ? await GET('/api/users') : { rows: [], roles: [], custom_roles: [] };
@@ -3642,7 +3780,8 @@ route(/^settings$/, async (el, m, q) => {
     ${ME.can.settings ? `<div class="panel"><h2>Customer links</h2><p class="muted">Invoice and khata links you sent on WhatsApp or SMS work for anyone who has them. If a link went to the wrong person, turn it off on that invoice or khata page. To turn off every link of this business at once:</p>
       <div class="row"><button type="button" class="btn danger" id="revokeall">Turn off all customer links</button></div></div>` : ''}
     ${ME.user.role === 'owner' ? `<div class="panel" id="backup-panel"><h2>Backup</h2><p class="muted">Download every record of your business (invoices, parties, items, stock, khata, payments, accounts) in one file. Keep it safe on your phone, PC or Google Drive. Your data is yours: you can take it with you anytime.<br>अपने पूरे कारोबार का डेटा एक फ़ाइल में डाउनलोड करें।</p>
-      <div class="row"><button type="button" class="btn" id="backup">Download full backup (.json)</button><button type="button" class="btn" id="backupx">Download as Excel</button></div>
+      <div class="row"><button type="button" class="btn" id="backup">Download full backup (.json)</button><button type="button" class="btn primary" id="backuplock">Download locked backup</button><button type="button" class="btn" id="backupx">Download as Excel</button></div>
+      <p class="muted small"><b>Locked backup:</b> the file is locked on this device with a password you choose. Anyone who finds it (a lost pen drive, a shared folder) sees only scrambled data. Keep the password safe: without it nobody, not even SmartTrader, can open the file.</p>
       <p class="muted small">The .json file can be restored into SmartTrader. The Excel file is for reading: one sheet each for bills, items, customers, payments, khata and accounts, amounts in rupees.</p>
       <h3 style="margin-top:16px">Google Drive auto-backup</h3><div id="gdrive"><span class="muted">Checking…</span></div>
       <h3 style="margin-top:16px">Backup to a folder on this computer</h3><div id="fbox"><span class="muted">Checking…</span></div>
@@ -3680,6 +3819,14 @@ route(/^settings$/, async (el, m, q) => {
     await POST('/api/me/logout-all'); ME = null; remember(false); location.hash = ''; renderAuth();
   };
   if ($('#backup')) $('#backup').onclick = () => fileDownload('/api/export/backup');
+  if ($('#backuplock')) $('#backuplock').onclick = () => modal('Download locked backup', [{ k: 'p1', label: 'Password for the file (8+ characters)', type: 'password' }, { k: 'p2', label: 'Type it again', type: 'password' }],
+    async (v) => {
+      if (String(v.p1).length < 8) throw new Error('Use at least 8 characters.');
+      if (v.p1 !== v.p2) throw new Error('The two passwords are not the same.');
+      const f = await fetchFile('/api/export/backup');
+      download(f.name.replace(/\.json$/, '') + '.stbackup', await lockBackup(await f.blob.text(), v.p1), 'application/octet-stream');
+      toast('Locked backup downloaded');
+    }, { submit: 'Lock and download', intro: '<p class="muted">The backup is locked here, on this device, before it is saved. Nothing about the password is sent anywhere.</p>' });
   if ($('#backupx')) $('#backupx').onclick = () => fileDownload('/api/export/excel');
   folderUi(); folderShow();
   // after render() has put the page at the top
@@ -3695,7 +3842,7 @@ route(/^settings$/, async (el, m, q) => {
     }
     const day = (t) => t ? new Date(t).toLocaleString('en-IN', { day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' }) : '';
     box.innerHTML = `<p class="muted">This business is empty, so you can bring back a backup: bills, parties, items, stock, payments, khata, accounts and settings. Staff logins are not in a backup; add them again under Users. Recurring bills come back paused. बैकअप से पूरा डेटा वापस लाएँ।</p>
-      <div class="row"><label class="btn primary">Choose backup file (.json)<input type="file" id="rfile" accept=".json,application/json" hidden></label>
+      <div class="row"><label class="btn primary">Choose backup file (.json or locked)<input type="file" id="rfile" accept=".json,.stbackup,application/json" hidden></label>
       <button type="button" class="btn" id="rdrive">Restore from Google Drive</button></div><div id="rlist"></div>`;
     const run = async (fn, label) => {
       if (!confirm(`Restore ${label}? It fills this empty business with the backup's records.`)) return;
@@ -3711,7 +3858,12 @@ route(/^settings$/, async (el, m, q) => {
       const f = e.target.files[0]; if (!f) return;
       if (f.size > 30e6) { toast('This file is too big to restore here.', 'err'); return; }
       let data = null; try { data = JSON.parse(await f.text()); } catch (err) { data = null; }
-      if (!data || data.format !== 'smarttrader-backup') { toast('That is not a SmartTrader backup (.json) file.', 'err'); return; }
+      if (data && data.format === LOCKED) {
+        const raw = data;
+        data = await new Promise((done) => modal('Open the locked backup', [{ k: 'p', label: 'Password of the file', type: 'password' }],
+          async (v) => { done(await unlockBackup(raw, v.p)); }, { submit: 'Open' }));
+      }
+      if (!data || data.format !== 'smarttrader-backup') { toast('That is not a SmartTrader backup file.', 'err'); return; }
       run(() => POST('/api/restore', data), `the backup of ${(data.org && data.org.name) || 'your business'} from ${day(data.exported_at) || 'an earlier date'}`);
     };
     $('#rdrive').onclick = async () => {
@@ -5428,6 +5580,7 @@ async function boot() {
     return;
   }
   if (ME._offline) ME.today = new Date(Date.now() - new Date().getTimezoneOffset() * 60000).toISOString().slice(0, 10);
+  if (ME.must_2fa) return twoStepGate();
   // open on the user's own start screen (a link to a particular page still opens that page)
   if (/^(#\/?(dashboard)?)?$/.test(location.hash) && myHome() !== 'dashboard') history.replaceState(null, '', '/#/' + myHome());
   shell();
