@@ -186,6 +186,9 @@ export const HI = {
   'a script': 'कोई स्क्रिप्ट', 'Choose backup file (.json or locked)': 'बैकअप फ़ाइल चुनें (.json या ताला लगी)', 'Restore from Google Drive': 'Google Drive से वापस लाएँ',
   'English': 'English', 'Hinglish': 'Hinglish', 'Vaade aur udhaar': 'वादे और उधार', 'Save karein': 'सेव करें',
   'or type a name / note': 'या नाम / नोट लिखें', 'Cash in Hand (₹0.00)': 'हाथ में नकद (₹0.00)',
+  'Wholesale price (₹)': 'होलसेल रेट (₹)', 'Wholesale from quantity': 'इतनी मात्रा से होलसेल', 'Price list': 'रेट लिस्ट', 'Retail (selling price)': 'रिटेल (बिक्री रेट)',
+  'Wholesale price': 'होलसेल रेट', 'Last to this customer': 'इस ग्राहक को पिछली बार', 'Use': 'लगाएँ', 'Wholesale': 'होलसेल', 'Retail': 'रिटेल',
+  'Empty = only customers on the wholesale price list.': 'खाली = सिर्फ़ होलसेल रेट लिस्ट वाले ग्राहक।', 'Their bills start from this price of each item.': 'इनके बिल में हर आइटम का यही रेट आएगा।',
   // months
   'Jan': 'जन॰', 'Feb': 'फ़र॰', 'Mar': 'मार्च', 'Apr': 'अप्रै॰', 'May': 'मई', 'Jun': 'जून', 'Jul': 'जुला॰', 'Aug': 'अग॰', 'Sept': 'सित॰', 'Sep': 'सित॰', 'Oct': 'अक्टू॰', 'Nov': 'नव॰', 'Dec': 'दिस॰',
 };

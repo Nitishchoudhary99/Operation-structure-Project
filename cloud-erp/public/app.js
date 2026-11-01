@@ -824,7 +824,7 @@ route(/^new\/([A-Z]+)$/, async (el, m, q) => {
   const gstOpt = (sel) => ME.gst_rates.map((g) => `<option value="${g}" ${+sel === g ? 'selected' : ''}>${g}%</option>`).join('');
   const lineRow = (l) => `<tr>
       <td class="c-item">${fromDoc ? `<b>${esc(l.item || l.description)}</b>${isNote && l.orig_rate !== undefined ? `<div class="muted">billed at ${inr(l.orig_rate)}</div>` : ''}<input type="hidden" name="item_id" value="${esc(l.item_id || '')}"><input type="hidden" name="src_line_id" value="${esc(l.src_line_id || '')}"><input type="hidden" name="description" value="${esc(l.description || '')}">`
-        : `<select name="item_id" aria-label="Item">${itemOpt(l.item_id)}</select><input name="description" placeholder="or type a name / note" value="${esc(l.description || '')}" style="margin-top:4px">`}${lotCell(l)}</td>
+        : `<select name="item_id" aria-label="Item">${itemOpt(l.item_id)}</select><input name="description" placeholder="or type a name / note" value="${esc(l.description || '')}" style="margin-top:4px"><div class="lastrate small" hidden></div>`}${lotCell(l)}</td>
       <td class="c-n" data-l="Qty"><input name="qty" type="number" step="any" min="0" inputmode="decimal" value="${esc(l.qty ?? 1)}" aria-label="Quantity"></td>
       <td class="c-n" data-l="${isNote && !isShort ? 'Rate diff ₹' : 'Rate ₹'}"><input name="rate" type="number" step="any" min="0" inputmode="decimal" value="${esc(l.rate ?? '')}" aria-label="Rate"${isShort ? ' readonly' : ''}></td>
       <td class="c-n" data-l="Disc %"><input name="discount_pct" type="number" step="any" min="0" max="100" inputmode="decimal" value="${esc(l.discount_pct ?? 0)}" aria-label="Discount percent"></td>
@@ -886,6 +886,31 @@ route(/^new\/([A-Z]+)$/, async (el, m, q) => {
   };
   if (type === 'INV') { form.elements.party_id.addEventListener('change', loadRisk); if (form.elements.pay_amount) form.elements.pay_amount.addEventListener('input', creditBanner); }
   const incl = () => !!($('#inclall') && $('#inclall').checked);
+  /* the price a line starts from: the wholesale price for a wholesale customer or from the item's wholesale quantity, else the selling price
+     (the same rule the server uses when a rate is left out); and what this customer paid for it last */
+  const partyNow = () => parties.find((x) => x.id === +((form.elements.party_id || {}).value || 0)) || {};
+  const listRate = (it, qty, on = incl()) => {
+    const whole = it.wholesale_price > 0 && (partyNow().price_level === 'wholesale' || (it.wholesale_min > 0 && qty >= it.wholesale_min));
+    return whole ? (on ? it.wholesale_price_incl : it.wholesale_price) : (on ? it.sale_price_incl : it.sale_price);
+  };
+  let lastRates = {};
+  const showLast = (tr) => {
+    const box = $('.lastrate', tr); if (!box) return;
+    const id = +(($('[name=item_id]', tr) || {}).value || 0), last = lastRates[id];
+    box.hidden = !last;
+    if (last) box.innerHTML = `<span class="muted">Last to this customer</span> <b>${inr(last.rate)}${last.discount_pct ? ` −${last.discount_pct}%` : ''}</b> <span class="muted">${fdate(last.date)}</span> <button type="button" class="btn sm" data-uselast>Use</button>`;
+  };
+  const loadLast = async () => {
+    lastRates = {};
+    const pid = +((form.elements.party_id || {}).value || 0);
+    if (isSale && !isNote && pid) { try { lastRates = (await GET('/api/rates?party_id=' + pid)).rates || {}; } catch (e) { lastRates = {}; } }
+    $$('tr', tbody).forEach((tr) => {
+      showLast(tr);
+      const it = items.find((i) => i.id === +(($('[name=item_id]', tr) || {}).value || 0));
+      if (it && isSale && !isNote && tr.dataset.auto === '1') $('[name=rate]', tr).value = listRate(it, +$('[name=qty]', tr).value || 0);
+    });
+    recalc();
+  };
   const recalc = () => {
     const p = partyOf(), inter = !!(p && p.state && ME.org.state && p.state.toLowerCase() !== ME.org.state.toLowerCase());
     let taxable = 0, tax = 0;
@@ -931,7 +956,8 @@ route(/^new\/([A-Z]+)$/, async (el, m, q) => {
     if (sel) sel.onchange = () => {
       const it = items.find((i) => i.id === +sel.value);
       if (it) {
-        if (!isNote) $('[name=rate]', tr).value = isSale ? (incl() ? it.sale_price_incl : it.sale_price) : (it.purchase_price || it.avg_cost);
+        if (!isNote) $('[name=rate]', tr).value = isSale ? listRate(it, +$('[name=qty]', tr).value || 0) : (it.purchase_price || it.avg_cost);
+        tr.dataset.auto = '1';
         $('[name=gst_rate]', tr).value = it.gst_rate;
         $('[name=description]', tr).value = '';
       }
@@ -939,7 +965,24 @@ route(/^new\/([A-Z]+)$/, async (el, m, q) => {
       if (lot) { lot.hidden = !(it && it.track_batch); const b = $('[name=batch_no]', lot); if (b && !lot.hidden && b.tagName === 'SELECT') { b.value = ''; fillBatches(tr); } }
       const sn = $('.sn', tr);
       if (sn) { sn.hidden = !(it && it.track_serial); $('[name=serials]', sn).value = ''; if (!sn.hidden) fillSerials(tr); }
+      showLast(tr);
       recalc();
+    };
+    // a rate the user typed stays; one the app filled follows the quantity across the wholesale step
+    const rateIn = $('[name=rate]', tr), qtyIn = $('[name=qty]', tr);
+    if (rateIn) rateIn.addEventListener('input', () => { tr.dataset.auto = ''; });
+    if (qtyIn && isSale && !isNote) qtyIn.addEventListener('input', () => {
+      const it = items.find((i) => i.id === +((sel || {}).value || 0));
+      if (it && tr.dataset.auto === '1') rateIn.value = listRate(it, +qtyIn.value || 0);
+    });
+    const use = $('.lastrate', tr);
+    if (use) use.onclick = (e) => {
+      if (!e.target.closest('[data-uselast]')) return;
+      const last = lastRates[+((sel || {}).value || 0)]; if (!last) return;
+      const g = +(($('[name=gst_rate]', tr) || {}).value || 0);
+      rateIn.value = incl() ? r2(last.rate * (100 + g) / 100) : last.rate;
+      if (last.discount_pct) $('[name=discount_pct]', tr).value = last.discount_pct;
+      tr.dataset.auto = ''; recalc();
     };
     // scanning serials sets the quantity; a tap on a serial in stock adds it
     const snBox = $('textarea[name=serials]', tr);
@@ -960,6 +1003,7 @@ route(/^new\/([A-Z]+)$/, async (el, m, q) => {
   form.addEventListener('input', recalc);
   form.addEventListener('change', recalc);
   if ($('#addline')) $('#addline').onclick = () => { tbody.insertAdjacentHTML('beforeend', lineRow({})); wireRow(tbody.lastElementChild); recalc(); };
+  if (form.elements.party_id && form.elements.party_id.tagName === 'SELECT' && isSale && !isNote) { form.elements.party_id.addEventListener('change', loadLast); if (form.elements.party_id.value) loadLast(); }
   if (form.elements.warehouse_id && form.elements.warehouse_id.tagName === 'SELECT') form.elements.warehouse_id.addEventListener('change', () => $$('tr', tbody).forEach(fillBatches));
   if ($('#newparty')) $('#newparty').onclick = () => partyForm({ kind: side }, async (p) => {
     parties.push(p); const s = form.elements.party_id;
@@ -972,7 +1016,7 @@ route(/^new\/([A-Z]+)$/, async (el, m, q) => {
     $$('tr', tbody).forEach((tr) => {
       const r = $('[name=rate]', tr); if (!r || r.value === '') return;
       const it = items.find((i) => i.id === +(($('[name=item_id]', tr) || {}).value || 0)), g = +(($('[name=gst_rate]', tr) || {}).value || 0);
-      r.value = it && isSale ? (on ? it.sale_price_incl : it.sale_price) : r2(on ? +r.value * (100 + g) / 100 : +r.value * 100 / (100 + g));
+      r.value = it && isSale && tr.dataset.auto === '1' ? listRate(it, +$('[name=qty]', tr).value || 0, on) : r2(on ? +r.value * (100 + g) / 100 : +r.value * 100 / (100 + g));
     });
     recalc();
   };
@@ -1311,6 +1355,8 @@ function partyForm(p = {}, after) {
     { k: 'city', label: 'City', value: p.city, more: true }, { k: 'pincode', label: 'PIN code', value: p.pincode, more: true, help: 'Needed for e-invoice / e-way bill.' },
     { k: 'credit_days', label: 'Payment due in (days)', type: 'number', value: p.credit_days ?? 0, more: true, help: 'Sets the due date on their bills.' },
     { k: 'credit_limit', label: 'Credit limit (₹)', type: 'number', value: p.credit_limit ?? 0, more: true, help: '0 = no limit. You get a warning above it.' },
+    { k: 'price_level', label: 'Price list', type: 'select', value: p.price_level || '', more: true, help: 'Their bills start from this price of each item.',
+      options: [{ v: '', t: 'Retail (selling price)' }, { v: 'wholesale', t: 'Wholesale price' }] },
     { k: 'lang', label: 'Message language', type: 'select', value: p.lang || '', more: true, help: 'Bills, reminders and receipts go to them in this language.',
       options: [{ v: '', t: `Business default (${(LANGS.find((x) => x[0] === (ME.org.msg_lang || 'hl')) || LANGS[2])[1]})` }, ...LANGS.map(([v, t]) => ({ v, t }))] },
     { k: 'vip', label: 'VIP buyer: only gentle reminders, never the firm 30-day or final wording', type: 'checkbox', value: !!p.vip, more: true },
@@ -1375,6 +1421,9 @@ function itemForm(i = {}) {
     { k: 'name', label: 'Item name', value: i.name, required: true, placeholder: 'e.g. Tata Salt 1kg', wide: true },
     { k: 'sale_price', label: 'Selling price (₹)', type: 'number', value: (i.id ? i.price_incl : inclPref()) ? i.sale_price_incl : i.sale_price, help: 'Tick the box below if this price has GST in it.' },
     { k: 'price_incl', label: 'Selling price includes GST (MRP)', type: 'checkbox', value: i.id ? !!i.price_incl : inclPref() },
+    { k: 'wholesale_price', label: 'Wholesale price (₹)', type: 'number', value: ((i.id ? i.price_incl : inclPref()) ? i.wholesale_price_incl : i.wholesale_price) || '', more: true,
+      help: 'For wholesale customers, and for bills of the quantity below or more. With or without GST, like the selling price.' },
+    { k: 'wholesale_min', label: 'Wholesale from quantity', type: 'number', value: i.wholesale_min || '', more: true, help: 'Empty = only customers on the wholesale price list.' },
     ...(ME.costs === false ? [] : [{ k: 'purchase_price', label: 'Buying price (₹)', type: 'number', value: i.purchase_price, help: 'Used for profit.' }]),
     { k: 'gst_rate', label: 'GST rate', type: 'select', options: ME.gst_rates.map((g) => ({ v: g, t: g + '%' })), value: i.gst_rate ?? 18 },
     { k: 'unit', label: 'Unit', value: i.unit || 'Pcs', list: 'units', help: 'Pcs, Kg, Box, Litre…' },
@@ -1428,7 +1477,8 @@ const IMPORT_COLS = {
     ['opening_qty', 'Opening stock', [/opening\s*(stock|qty|quantity)/, /^(stock|qty|quantity|closing stock|current stock)( quantity)?$/]],
     ['opening_rate', 'Opening stock rate', [/opening\s*(stock\s*)?(rate|price|value per)|stock rate|at price/]],
     ['reorder_level', 'Reorder level', [/reorder|min(imum)?\s*(stock|qty)|low stock/]], ['is_service', 'Service (yes/no)', [/service/]],
-    ['price_incl', 'Price includes GST (yes/no)', [/inclusive|incl(\.|uding)?\s*(of\s*)?(gst|tax)|with tax/]]],
+    ['price_incl', 'Price includes GST (yes/no)', [/inclusive|incl(\.|uding)?\s*(of\s*)?(gst|tax)|with tax/]],
+    ['wholesale_price', 'Wholesale price', [/wholesale\s*(price|rate)|^wholesale$/]], ['wholesale_min', 'Wholesale from qty', [/wholesale\s*(from|min|qty|quantity)/]]],
   parties: [['name', 'Name', [/^(party|customer|supplier|ledger|business)\s*name$/, /^name$|^party$|^customer$|^supplier$|^name of ledger$/]],
     ['kind', 'Type (customer / supplier / both)', [/^(party\s*)?(type|kind)$/, /group|category/]],
     ['phone', 'Mobile', [/mobile|phone/, /contact|whatsapp/]], ['email', 'Email', [/e-?mail/]], ['gstin', 'GSTIN', [/gstin|gst\s*(no|number|in)/]],
@@ -1437,8 +1487,8 @@ const IMPORT_COLS = {
     ['opening_balance', 'Opening balance (+ they owe you, - you owe them)', [/opening/, /balance|due|outstanding|receivable/]]],
 };
 const IMPORT_SAMPLE = {
-  items: [['Basmati Rice 25kg', 2200, 1800, 5, '1006', 'Bag', 'RICE25', '', 'Grocery', 40, 1800, 10, 'no', 'no'], ['Mustard Oil 15L', 2450, 2100, 5, '1514', 'Tin', '', '8901234567890', 'Grocery', 12, '', 5, 'no', 'yes'],
-    ['Home delivery', 50, '', 18, '9968', 'Nos', '', '', 'Services', '', '', '', 'yes', 'no']],
+  items: [['Basmati Rice 25kg', 2200, 1800, 5, '1006', 'Bag', 'RICE25', '', 'Grocery', 40, 1800, 10, 'no', 'no', 2100, 10], ['Mustard Oil 15L', 2450, 2100, 5, '1514', 'Tin', '', '8901234567890', 'Grocery', 12, '', 5, 'no', 'yes', '', ''],
+    ['Home delivery', 50, '', 18, '9968', 'Nos', '', '', 'Services', '', '', '', 'yes', 'no', '', '']],
   parties: [['Mehta Stores', 'customer', '9123456780', '', '', 'Rajasthan', 'Station Road', 'Jaipur', '302001', 50000, 15, 12500], ['Gupta Wholesale', 'supplier', '9876543210', '', '08ABCDE1234F1Z5', 'Rajasthan', '', 'Jaipur', '', '', 30, -8000]],
 };
 /* CSV text -> rows (quotes, commas or tabs or semicolons inside fields, Windows line ends) */
@@ -1479,7 +1529,7 @@ function importObjects(kind, rows, m) {
     // a cell our own exports wrote as text ('=..., '-...) comes back without the apostrophe
     for (const [k, i] of Object.entries(m.map)) o[k] = String(rows[r][i] ?? '').trim().replace(/^'(?=[=+\-@])/, '');
     if (!o.name) continue;
-    for (const k of ['sale_price', 'purchase_price', 'opening_rate', 'credit_limit', 'opening_balance']) if (o[k] !== undefined) o[k] = money(o[k]);
+    for (const k of ['sale_price', 'purchase_price', 'opening_rate', 'credit_limit', 'opening_balance', 'wholesale_price']) if (o[k] !== undefined) o[k] = money(o[k]);
     if (o.gst_rate !== undefined) o.gst_rate = o.gst_rate.replace(/%|gst@?/gi, '').trim();
     if (o.opening_balance !== undefined && /cr$/i.test(o.opening_balance)) o.opening_balance = '-' + o.opening_balance.replace(/\s*cr$/i, '');
     if (o.opening_balance !== undefined) o.opening_balance = o.opening_balance.replace(/\s*dr$/i, '');

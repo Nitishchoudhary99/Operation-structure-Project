@@ -877,3 +877,5 @@ label.check.incl-all { margin: 2px 0 8px; }
 .closing a { color: inherit; font-weight: 700; }
 @media (max-width: 860px) { .hideamt span { display: none; } }
 .langlink { margin: 0 0 6px; text-align: right; font-size: 14px; }
+.lastrate { margin-top: 4px; display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
+.lastrate[hidden] { display: none; }

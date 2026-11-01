@@ -2753,5 +2753,45 @@ if (process.env.ERP_AI_MOCK) {
   }
 }
 
+/* --- wholesale prices, customer price lists and the last rate a customer paid --- */
+{
+  const ip = '203.0.113.154';
+  const su = await rq('POST', '/api/auth/signup', { business: 'Wholesale Mart', name: 'W', email: `whl${Date.now()}@test.in`, password: 'Whole-pass-12345', state: 'Rajasthan' }, { ip });
+  const W = async (m, p, b) => (await rq(m, p, b, { cookie: su.cookie, ip })).data, WE = (m, p, b) => rq(m, p, b, { cookie: su.cookie, ip });
+  const sugar = await W('POST', '/api/items', { name: 'Sugar 1kg', sale_price: 50, wholesale_price: 45, wholesale_min: 10, gst_rate: 5, opening_qty: 500, purchase_price: 40 });
+  const soap = await W('POST', '/api/items', { name: 'Soap MRP', sale_price: 118, wholesale_price: 106.2, price_incl: true, gst_rate: 18, opening_qty: 100, purchase_price: 70 });
+  check('an item keeps a wholesale price and the quantity it starts from; an MRP item keeps both before GST', sugar.wholesale_price === 45 && sugar.wholesale_min === 10
+    && soap.sale_price === 100 && soap.wholesale_price === 90 && soap.wholesale_price_incl === 106.2, JSON.stringify([sugar.wholesale_price, sugar.wholesale_min, soap.wholesale_price, soap.wholesale_price_incl]));
+  const retail = await W('POST', '/api/parties', { name: 'Retail Ram', kind: 'customer', state: 'Rajasthan' });
+  const whole = await W('POST', '/api/parties', { name: 'Wholesale Shyam', kind: 'customer', state: 'Rajasthan', price_level: 'wholesale' });
+  check('a customer can be on the wholesale price list', whole.price_level === 'wholesale' && retail.price_level === '');
+  const line = async (party, item, qty, extra = {}) => (await W('GET', `/api/docs/${(await W('POST', '/api/docs', { type: 'INV', party_id: party.id, lines: [{ item_id: item.id, qty, ...extra }] })).id}`)).lines[0];
+  const a = await line(retail, sugar, 5), b = await line(retail, sugar, 10), c = await line(whole, sugar, 1), d = await line(whole, soap, 2);
+  check('a bill without a rate takes the selling price, the wholesale price from its quantity, and for a wholesale customer always', a.rate === 50 && b.rate === 45 && c.rate === 45, JSON.stringify([a.rate, b.rate, c.rate]));
+  check('a wholesale MRP line is billed at the wholesale price with GST in it', d.rate === 90 && Math.abs(d.taxable + d.cgst + d.sgst - 212.4) < 0.005, JSON.stringify(d));
+  await W('PUT', `/api/items/${sugar.id}`, { name: 'Sugar 1kg', sale_price: 52, gst_rate: 5 });
+  const sugar2 = (await W('GET', '/api/items')).rows.find((i) => i.id === sugar.id);
+  check('saving an item without the wholesale fields keeps them', sugar2.sale_price === 52 && sugar2.wholesale_price === 45 && sugar2.wholesale_min === 10, JSON.stringify(sugar2));
+  await W('POST', '/api/docs', { type: 'INV', party_id: retail.id, lines: [{ item_id: sugar.id, qty: 3, rate: 48, discount_pct: 2 }] });
+  const lr = (await W('GET', `/api/rates?party_id=${retail.id}`)).rates;
+  check('the last rate each customer paid for an item comes back for the bill editor', lr[sugar.id] && lr[sugar.id].rate === 48 && lr[sugar.id].discount_pct === 2 && !lr[soap.id]
+    && (await W('GET', `/api/rates?party_id=${whole.id}`)).rates[soap.id].rate === 90, JSON.stringify(lr));
+  // a role with a discount limit counts it from the price list the customer is on
+  await W('PUT', '/api/roles/builtin/sales', { rules: { max_discount: 5 } });
+  const sEm = `whls${Date.now()}@test.in`;
+  await W('POST', '/api/users', { name: 'Seller', email: sEm, password: 'Seller-pass-12345', role: 'sales' });
+  const sl = await rq('POST', '/api/auth/login', { email: sEm, password: 'Seller-pass-12345' }, { ip });
+  const SE = (m, p, b) => rq(m, p, b, { cookie: sl.cookie, ip });
+  const ok1 = await SE('POST', '/api/docs', { type: 'INV', party_id: whole.id, lines: [{ item_id: sugar.id, qty: 1, rate: 43 }] });
+  const no1 = await SE('POST', '/api/docs', { type: 'INV', party_id: whole.id, lines: [{ item_id: sugar.id, qty: 1, rate: 42 }] });
+  const no2 = await SE('POST', '/api/docs', { type: 'INV', party_id: retail.id, lines: [{ item_id: sugar.id, qty: 1, rate: 45 }] });
+  check('a staff discount limit starts from the wholesale price for a wholesale customer, from the selling price for others', ok1.status === 200 && no1.status === 403 && no2.status === 403
+    && /₹45\.00/.test(no1.data.error) && /₹52\.00/.test(no2.data.error), JSON.stringify([ok1.status, no1.data.error, no2.data.error]));
+  const im = await W('POST', '/api/import/items', { rows: [{ name: 'Tea 250g', sale_price: '120', wholesale_price: '110', wholesale_min: '6', gst_rate: '5' }] });
+  const tea = (await W('GET', '/api/items')).rows.find((i) => i.name === 'Tea 250g');
+  check('the Excel import takes the wholesale price and quantity', im.added === 1 && tea.wholesale_price === 110 && tea.wholesale_min === 6, JSON.stringify([im, tea && tea.wholesale_price]));
+  check('the books balance after wholesale bills', (await W('GET', '/api/reports/trial-balance')).balanced);
+}
+
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);
