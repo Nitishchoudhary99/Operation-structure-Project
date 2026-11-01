@@ -3,7 +3,7 @@
    Every business table carries org_id: one database serves many businesses (multi-tenant).
    migrate() runs on the first request after each deploy, so no manual migration step is needed. */
 
-export const SCHEMA_VERSION = 40;
+export const SCHEMA_VERSION = 41;
 
 // document types whose monthly totals doc_month keeps (sales and purchase money documents)
 const MONTH_TYPES = `('INV','SRET','CNOTE','BILL','PRET','DNOTE')`;
@@ -677,6 +677,13 @@ export const MIGRATIONS = {
     `ALTER TABLE docs ADD COLUMN sb_date TEXT NOT NULL DEFAULT ''`,
     `ALTER TABLE parties ADD COLUMN country TEXT NOT NULL DEFAULT ''`,
     `ALTER TABLE orgs ADD COLUMN lut TEXT NOT NULL DEFAULT ''`,
+  ],
+  /* saved dashboards (src/widgets.js): each user's own, the ones the owner shares, and which one opens first for each user */
+  41: [
+    `CREATE TABLE IF NOT EXISTS dashboards (id INTEGER PRIMARY KEY, org_id INTEGER NOT NULL, user_id INTEGER NOT NULL, name TEXT NOT NULL,
+      layout TEXT NOT NULL DEFAULT '{}', shared INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL, updated_at TEXT NOT NULL)`,
+    `CREATE INDEX IF NOT EXISTS ix_dashboards ON dashboards (org_id, user_id)`,
+    `CREATE TABLE IF NOT EXISTS dash_pick (org_id INTEGER NOT NULL, user_id INTEGER NOT NULL, dash_id INTEGER NOT NULL, PRIMARY KEY (org_id, user_id)) WITHOUT ROWID`,
   ],
 };
 

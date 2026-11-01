@@ -150,7 +150,82 @@ function table(cols, rows, { onRow, foot, empty = 'Nothing here yet.' } = {}) {
   const th = cols.map((c) => `<th class="${c.num ? 'num' : ''} ${c.cls || ''}">${c.h}</th>`).join('');
   const tr = rows.map((r, i) => `<tr ${onRow ? `class="click" data-i="${i}"` : ''}>${cols.map((c) => `<td class="${c.num ? 'num' : ''} ${c.cls || ''}">${c.f ? c.f(r) : esc(r[c.k])}</td>`).join('')}</tr>`).join('');
   const tf = foot ? `<tfoot><tr>${cols.map((c) => `<td class="${c.num ? 'num' : ''} ${c.cls || ''}">${foot[c.k] ?? ''}</td>`).join('')}</tr></tfoot>` : '';
-  return `<div class="tbl-wrap"><table class="t"><thead><tr>${th}</tr></thead><tbody>${tr}</tbody>${tf}</table></div>`;
+  return `<div class="tbl-wrap"><table class="t" data-rows="${rows.length}"><thead><tr>${th}</tr></thead><tbody>${tr}</tbody>${tf}</table></div>`;
+}
+/* Every list made with table() gets, without each screen doing anything: a click on a heading sorts by it (again: the other
+   way), and from 8 rows a filter box, the count, "Download as Excel (CSV)" of what is shown, and from 100 rows "Show all".
+   Rows are moved, never redrawn, so whatever a screen wired to them keeps working. */
+const SHOW_FIRST = 100;
+const cellValue = (td) => {
+  const t = (td ? td.innerText || td.textContent : '').trim();
+  const n = t.replace(/[₹,\s]|Dr|Cr/g, '').replace(/^−/, '-');
+  if (/^-?\d+(\.\d+)?%?$/.test(n)) return { n: parseFloat(n) };
+  if (/^\d{1,2} [A-Z][a-z]{2} \d{4}/.test(t)) { const d = Date.parse(t.slice(0, 11)); if (!isNaN(d)) return { n: d }; }
+  return { s: t.toLowerCase() };
+};
+function enhanceTables(root) {
+  for (const tb of $$('table.t[data-rows]:not([data-enh])', root)) {
+    tb.dataset.enh = '1';
+    if (tb.closest('.doc-paper, .modal, .receipt, .lines, .no-tools')) continue;
+    const body = tb.tBodies[0], rows = [...body.rows], n = rows.length;
+    if (n < 2) continue;
+    const heads = [...tb.tHead.rows[0].cells];
+    heads.forEach((th, i) => {
+      if (!th.textContent.trim()) return;
+      const b = document.createElement('button');
+      b.type = 'button'; b.className = 'sortbtn'; b.innerHTML = th.innerHTML; b.title = 'Sort';
+      th.innerHTML = ''; th.appendChild(b);
+      b.onclick = () => {
+        const dir = th.getAttribute('aria-sort') === 'ascending' ? -1 : 1;
+        heads.forEach((h) => h.removeAttribute('aria-sort'));
+        th.setAttribute('aria-sort', dir === 1 ? 'ascending' : 'descending');
+        const keyed = [...body.rows].map((r, k) => ({ r, k, v: cellValue(r.cells[i]) }));
+        keyed.sort((a, c) => {
+          const x = a.v, y = c.v;
+          const d = x.n !== undefined && y.n !== undefined ? x.n - y.n : x.n !== undefined ? -1 : y.n !== undefined ? 1 : (x.s || '').localeCompare(y.s || '', 'en-IN', { numeric: true });
+          return d * dir || a.k - c.k;
+        });
+        keyed.forEach(({ r }) => body.appendChild(r));
+        paint();
+      };
+    });
+    let q = '', all = n <= SHOW_FIRST;
+    const bar = document.createElement('div');
+    bar.className = 'ttools';
+    if (n >= 8) {
+      bar.innerHTML = `<input type="search" placeholder="Filter these ${n} rows" aria-label="Filter rows" autocomplete="off"><span class="muted small" data-count></span>
+        <button type="button" class="btn sm" data-csv>Download (CSV)</button>`;
+      tb.closest('.tbl-wrap').before(bar);
+      $('input', bar).oninput = (e) => { q = e.target.value.trim().toLowerCase(); paint(); };
+      $('[data-csv]', bar).onclick = () => {
+        const keep = heads.map((h, i) => [h.textContent.trim(), i]).filter(([h]) => h);
+        const csvCell = (v) => (/[",\n]/.test(v) ? `"${v.replace(/"/g, '""')}"` : v);
+        const lines = [keep.map(([h]) => csvCell(h)).join(',')];
+        for (const r of body.rows) if (!r.dataset.out) lines.push(keep.map(([, i]) => csvCell(((r.cells[i] || {}).innerText || '').replace(/\s+/g, ' ').trim())).join(','));
+        const name = (($('.page-head h1') || {}).textContent || 'list').trim().replace(/[^\w\u0900-\u097F]+/g, '-').toLowerCase();
+        download(`${name}-${ME ? ME.today : ''}.csv`, lines.join('\n'));
+      };
+    }
+    const more = document.createElement('button');
+    more.type = 'button'; more.className = 'btn sm showall';
+    more.onclick = () => { all = true; paint(); };
+    tb.closest('.tbl-wrap').after(more);
+    function paint() {
+      const words = q.split(/\s+/).filter(Boolean);
+      let shown = 0, match = 0;
+      for (const r of body.rows) {
+        const hit = !words.length || words.every((w) => r.textContent.toLowerCase().includes(w));
+        if (hit) { r.removeAttribute('data-out'); match++; } else r.dataset.out = '1';
+        const vis = hit && (all || shown < SHOW_FIRST);
+        r.hidden = !vis; if (vis) shown++;
+      }
+      const c = $('[data-count]', bar);
+      if (c) c.textContent = words.length ? `${match} of ${n}` : `${n} rows`;
+      more.hidden = all || match <= SHOW_FIRST;
+      more.textContent = `Show all ${match} rows`;
+    }
+    paint();
+  }
 }
 function bindRows(el, rows, fn) {
   $$('tr.click', el).forEach((tr) => tr.addEventListener('click', (e) => { if (!e.target.closest('a,button')) fn(rows[+tr.dataset.i]); }));
@@ -445,9 +520,20 @@ const NAV = [
 ];
 
 /* the + New menu: the everyday actions, only those the user's role may do */
-const NEW_MENU = [['new/INV', 'Sales invoice', 'sales', 'sales/INV'], ['pos', 'Quick bill (POS)', 'sales', 'pos'], ['new/BILL', 'Purchase bill', 'purchase', 'purchase/BILL'],
-  ['receive', 'Receive goods', 'purchase', 'receive'], ['gate/in?new=1', 'Gate entry', 'gate', 'gate/in'], ['receipts?new=1', 'Receive payment', 'finance', 'receipts'],
-  ['expenses?new=1', 'Expense', 'finance', 'expenses'], ['khata?new=1', 'Khata entry', 'khata', 'khata'], ['items?new=1', 'Item', 'items', 'items'], ['parties?new=1', 'Customer / supplier', 'masters', 'parties']];
+const NEW_MENU = [['new/INV', 'Sales invoice', 'sales', 'sales/INV', 'doc'], ['pos', 'Quick bill (POS)', 'sales', 'pos', 'bolt'], ['new/BILL', 'Purchase bill', 'purchase', 'purchase/BILL', 'cart'],
+  ['receive', 'Receive goods', 'purchase', 'receive', 'box'], ['gate/in?new=1', 'Gate entry', 'gate', 'gate/in', 'truck'], ['receipts?new=1', 'Receive payment', 'finance', 'receipts', 'in'],
+  ['payments?new=1', 'Pay a supplier', 'finance', 'payments', 'out'], ['expenses?new=1', 'Expense', 'finance', 'expenses', 'wallet'], ['khata?new=1', 'Khata entry', 'khata', 'khata', 'book'],
+  ['items?new=1', 'Product / item', 'items', 'items', 'tag'], ['parties?new=1', 'Customer / supplier', 'masters', 'parties', 'user'], ['stock', 'See stock', 'items', 'stock', 'layers']];
+/* one line-icon set (24-unit grid, drawn with the text colour) for the quick actions and the dashboard */
+const ICONS = {
+  doc: '<path d="M7 3h7l5 5v13H7z"/><path d="M14 3v5h5M10 13h6M10 17h6"/>', bolt: '<path d="M13 2 5 14h6l-1 8 8-12h-6z"/>', cart: '<path d="M3 4h2l2.5 11h10L20 7H6.2"/><circle cx="9" cy="19" r="1.5"/><circle cx="17" cy="19" r="1.5"/>',
+  box: '<path d="M3 7.5 12 3l9 4.5v9L12 21l-9-4.5z"/><path d="m3 7.5 9 4.5 9-4.5M12 12v9"/>', truck: '<path d="M2 6h11v10H2zM13 10h4l3 3v3h-7"/><circle cx="6" cy="18" r="1.6"/><circle cx="17" cy="18" r="1.6"/>',
+  in: '<path d="M12 3v12m0 0-4-4m4 4 4-4"/><path d="M4 17v3h16v-3"/>', out: '<path d="M12 15V3m0 0L8 7m4-4 4 4"/><path d="M4 17v3h16v-3"/>', wallet: '<path d="M3 7h16a2 2 0 0 1 2 2v9H3z"/><path d="M3 7V5h13v2M16 13h2"/>',
+  book: '<path d="M5 4h11a3 3 0 0 1 3 3v13H8a3 3 0 0 1-3-3z"/><path d="M5 17a3 3 0 0 1 3-3h11"/>', tag: '<path d="M3 12V3h9l9 9-9 9z"/><circle cx="7.5" cy="7.5" r="1.5"/>',
+  user: '<circle cx="12" cy="8" r="4"/><path d="M4 21a8 8 0 0 1 16 0"/>', layers: '<path d="m12 3 9 5-9 5-9-5z"/><path d="m3 13 9 5 9-5"/>',
+  search: '<circle cx="11" cy="11" r="7"/><path d="m20 20-4-4"/>', grid: '<path d="M4 4h7v7H4zM13 4h7v7h-7zM4 13h7v7H4zM13 13h7v7h-7z"/>',
+};
+const icon = (k) => `<svg class="ico" viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">${ICONS[k] || ''}</svg>`;
 
 /* Simple mode (the default) keeps the everyday screens in the menu and puts the specialist ones under "More features",
    one tap away and remembered open. Advanced mode, or a menu the owner made for a user, shows its screens as they are. */
@@ -522,8 +608,9 @@ function shell() {
         <button class="btn sm" id="langbtn" type="button" title="${LANG === 'hi' ? 'Show the app in English' : 'ऐप हिंदी में देखें'}" lang="${LANG === 'hi' ? 'en' : 'hi'}">${LANG === 'hi' ? 'EN' : 'हिं'}</button>
         <div class="gsearch"><input id="gq" type="search" placeholder="Search items, customers, bills…" autocomplete="off" aria-label="Search" enterkeyhint="search">
           <div class="gres" id="gres" hidden></div></div>
+        <button class="btn sm cmdbtn hide-sm" id="cmdbtn" type="button" title="Go to or do anything (Ctrl K)">${icon('grid')}<kbd>Ctrl K</kbd></button>
         ${news.length ? `<div class="newmenu"><button class="btn primary" id="newbtn" aria-haspopup="true" aria-expanded="false">+ <span>New</span></button>
-          <div class="menu" id="newmenu" hidden>${news.map(([h, t]) => `<a href="#/${h}">${t}</a>`).join('')}</div></div>` : ''}
+          <div class="menu qmenu" id="newmenu" hidden>${news.map(([h, t, , , ic]) => `<a href="#/${h}">${icon(ic)}<span>${t}</span></a>`).join('')}</div></div>` : ''}
       </header>
       ${ME.org.close_after && ME.user.role_key === 'owner' ? `<div class="closing">This business will be deleted on <b>${fdate(ME.org.close_after.slice(0, 10))}</b>. <a href="#/settings/security">Keep it (cancel)</a> · <a href="#/settings?backup=1">Download a backup</a></div>` : ''}
       <main class="page" id="page"></main>
@@ -547,6 +634,10 @@ function shell() {
     nm.onclick = () => { nm.hidden = true; };
   }
   wireSearch();
+  $('#cmdbtn').onclick = palette;
+  // lists that arrive after a screen has drawn (a report tab, a search) get the same sort / filter / download
+  let pend = 0;
+  new MutationObserver(() => { if (!pend) pend = requestAnimationFrame(() => { pend = 0; enhanceTables($('#page')); }); }).observe($('#page'), { childList: true, subtree: true });
 }
 /* buttons marked data-act (the page has no inline scripts, so a strict Content-Security-Policy can be used) */
 const ACTS = { print: () => window.print(), back: () => history.back(), reload: () => location.reload() };
@@ -608,7 +699,7 @@ async function render() {
     page.innerHTML = '<div class="muted">Loading&hellip;</div>';
     page.onclick = page.onkeydown = page.onchange = null;     // a page's own handlers must not outlive it
     rendering = true;
-    try { await fn(page, m, q); const tab = $('.tabs a.on', page); if (tab && tab.parentNode.scrollWidth > tab.parentNode.clientWidth) tab.parentNode.scrollLeft = tab.offsetLeft - tab.parentNode.offsetLeft - 16; } catch (e) {
+    try { await fn(page, m, q); enhanceTables(page); rememberPage(hash); const tab = $('.tabs a.on', page); if (tab && tab.parentNode.scrollWidth > tab.parentNode.clientWidth) tab.parentNode.scrollLeft = tab.offsetLeft - tab.parentNode.offsetLeft - 16; } catch (e) {
       if (e.status === 0) offlinePage(page);
       else if (e.status !== 401) page.innerHTML = `<div class="err">${esc(e.message)}</div>`;
     } finally { rendering = false; }
@@ -618,6 +709,110 @@ async function render() {
   page.innerHTML = '<div class="empty">Page not found.</div>';
 }
 const go = (h) => { location.hash = '#/' + h; };
+
+/* ---- recent pages: the last screens this user opened on this device (titles as shown) ---- */
+const recentKey = () => (ME ? `st:recent:${ME.org.id}:${ME.user.id}` : '');
+function recentPages() { try { return JSON.parse(storeGet(recentKey()) || '[]') || []; } catch (e) { return []; } }
+function rememberPage(hash) {
+  const h1 = $('#page .page-head h1');
+  const t = h1 ? h1.textContent.trim().replace(/\s+/g, ' ').slice(0, 60) : '';
+  if (!t || /^(new|login)/.test(hash)) return;
+  const list = recentPages().filter((x) => x.h !== hash);
+  list.unshift({ h: hash, t });
+  storeSet(recentKey(), JSON.stringify(list.slice(0, 8)));
+}
+
+/* ---- command palette (Ctrl+K / ⌘K): screens, quick actions, plain words ("unpaid", "low stock", "gst"), recent pages,
+   and the business's own items, customers and bills. Only what this user's role may open is offered. ---- */
+const INTENTS = [
+  [/\b(unpaid|overdue|due|dues|baaki|baki|udhaar|udhar|vasooli|collect)/, 'reminders', 'Customers who owe money'],
+  [/\b(low stock|reorder|kam stock|khatam|out of stock)/, 'new/PO?reorder=1', 'Order what is running low'],
+  [/\b(gst|gstr|return|2b|itc)/, 'gstr', 'GST returns'],
+  [/\b(profit|loss|p&l|pnl|munafa|nuksan)/, 'reports/pnl', 'Profit & Loss'],
+  [/\b(cash|bank|balance|paisa)/, 'cash', 'Cash and bank (Kal ka Cash)'],
+  [/\b(backup|drive|restore)/, 'settings?backup=1', 'Backup'],
+  [/\b(staff|salary|attendance|hajri)/, 'staff', 'Staff & Salary'],
+  [/\b(expir|batch)/, 'expiry', 'Batch & Expiry'],
+  [/\b(sales today|aaj|today)/, 'reports/register?type=INV', 'Today’s sales register'],
+];
+const navAll = () => NAV.flatMap(([g, list]) => list.map(([h, t]) => ({ h, t, g }))).filter((x) => onMenu(x.h) && seen(x.h));
+const fuzzy = (text, q) => {
+  const t = text.toLowerCase(); if (t.includes(q)) return 100 - t.indexOf(q);
+  let i = 0; for (const ch of t) { if (ch === q[i]) i++; if (i === q.length) return 10; }
+  return 0;
+};
+function palette() {
+  if ($('#cmdk')) return;
+  const root = document.createElement('div');
+  root.id = 'cmdk';
+  root.innerHTML = `<div class="modal-bg"><div class="cmdk" role="dialog" aria-label="Go to or do anything">
+    <input id="cmdq" type="search" placeholder="Type a screen, an action, a customer, an item or a bill number…" autocomplete="off" aria-label="Search">
+    <div class="cmdl" id="cmdl" role="listbox"></div>
+    <div class="cmdf muted small"><span><kbd>↑</kbd><kbd>↓</kbd> move</span><span><kbd>Enter</kbd> open</span><span><kbd>Esc</kbd> close</span><span><kbd>?</kbd> all shortcuts</span></div></div></div>`;
+  document.body.appendChild(root);
+  const inp = $('#cmdq', root), list = $('#cmdl', root);
+  let items = [], at = 0, timer = 0, seq = 0;
+  const close = () => { root.remove(); document.removeEventListener('keydown', keys, true); };
+  const open = (h) => { close(); if (h) location.hash = '#/' + h.replace(/^#\/?/, ''); };
+  const draw = () => {
+    let g = '';
+    list.innerHTML = items.length ? items.map((x, i) => { const head = x.g !== g ? `<div class="g">${esc(x.g)}</div>` : ''; g = x.g;
+      return `${head}<a href="#/${esc(x.h)}" role="option" data-i="${i}" class="${i === at ? 'on' : ''}" aria-selected="${i === at}"><b>${esc(x.t)}</b>${x.s ? ` <span class="muted">${esc(x.s)}</span>` : ''}</a>`; }).join('')
+      : '<div class="none">Nothing matches. Try a customer name, an item or a bill number.</div>';
+    const on = $('a.on', list); if (on) on.scrollIntoView({ block: 'nearest' });
+  };
+  const build = (qRaw, found) => {
+    const q = qRaw.trim().toLowerCase(), out = [];
+    const acts = NEW_MENU.filter(([, , a, h]) => ME.can[a] && onMenu(h)).map(([h, t]) => ({ h, t, g: 'Quick actions' }));
+    if (!q) {
+      out.push(...recentPages().slice(0, 5).map((x) => ({ h: x.h, t: x.t, g: 'Recent' })), ...acts.slice(0, 6));
+      out.push(...navAll().slice(0, 8).map((x) => ({ ...x, s: x.g, g: 'Go to' })));
+    } else {
+      for (const [re, h, t] of INTENTS) if (re.test(q) && (onMenu(h.split(/[/?]/)[0]) || onMenu(h.split('?')[0]))) out.push({ h, t, g: 'Suggested' });
+      const hi = (t) => (HI && HI[t]) || '';
+      const score = (x) => Math.max(fuzzy(x.t, q), fuzzy(hi(x.t), q), x.g ? fuzzy(x.g, q) / 4 : 0);
+      out.push(...acts.map((x) => ({ ...x, sc: score(x) })).filter((x) => x.sc).sort((a, b) => b.sc - a.sc));
+      out.push(...navAll().map((x) => ({ ...x, s: x.g, sc: score(x), g: 'Go to' })).filter((x) => x.sc).sort((a, b) => b.sc - a.sc).slice(0, 8));
+      if (found) {
+        out.push(...found.docs.map((d) => ({ h: `doc/${d.id}`, t: d.number, s: `${d.label} · ${d.party || ''} · ${inr(d.total)}`, g: 'Bills & documents' })));
+        out.push(...found.parties.map((p) => ({ h: `${ME.view && ME.view.masters === false ? 'khata' : 'party'}/${p.id}`, t: p.name, s: p.kind + (p.phone ? ' · ' + p.phone : ''), g: 'Customers & suppliers' })));
+        out.push(...found.items.map((i) => ({ h: `item/${i.id}`, t: i.name, s: `${inr(shownPrice(i))}${i.is_service ? '' : ` · ${qtyf(i.qty_on_hand)} ${i.unit} in stock`}`, g: 'Items' })));
+      }
+    }
+    items = out.slice(0, 40); at = 0; draw();
+  };
+  inp.oninput = () => {
+    const text = inp.value; build(text);
+    clearTimeout(timer);
+    if (text.trim().length < 2) return;
+    const my = ++seq;
+    timer = setTimeout(async () => { try { const r = await GET('/api/search?q=' + encodeURIComponent(text.trim())); if (my === seq) build(text, r); } catch (e) { /* offline: screens still work */ } }, 220);
+  };
+  const keys = (e) => {
+    if (e.key === 'Escape') { e.preventDefault(); close(); }
+    else if (e.key === 'ArrowDown' || e.key === 'ArrowUp') { e.preventDefault(); if (items.length) { at = (at + (e.key === 'ArrowDown' ? 1 : items.length - 1)) % items.length; draw(); } }
+    else if (e.key === 'Enter' && document.activeElement === inp) { e.preventDefault(); if (items[at]) open(items[at].h); }
+  };
+  document.addEventListener('keydown', keys, true);
+  list.onclick = (e) => { const a = e.target.closest('a[data-i]'); if (a) { e.preventDefault(); open(items[+a.dataset.i].h); } };
+  $('.modal-bg', root).addEventListener('mousedown', (e) => { if (e.target.classList.contains('modal-bg')) close(); });
+  build(''); inp.focus();
+}
+const SHORTCUTS = [['Ctrl K  /  ⌘K', 'Go to or do anything'], ['/', 'Search items, customers, bills'], ['N', 'Quick actions (+ New)'], ['G then D', 'Dashboard'],
+  ['G then I', 'Invoices'], ['G then P', 'Purchase bills'], ['G then S', 'Stock'], ['G then K', 'Khata'], ['G then R', 'Profit & Loss'], ['F9', 'Complete the sale (Quick Bill)'], ['?', 'This list']];
+const GO_KEYS = { d: 'dashboard', i: 'sales/INV', p: 'purchase/BILL', s: 'stock', k: 'khata', r: 'reports/pnl' };
+let gPending = 0;
+document.addEventListener('keydown', (e) => {
+  if (!ME || !$('#page')) return;
+  if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'k') { e.preventDefault(); palette(); return; }
+  if (e.ctrlKey || e.metaKey || e.altKey || e.target.closest('input,textarea,select,[contenteditable]') || $('#cmdk') || $('#modal-root .modal')) return;
+  const k = e.key.toLowerCase();
+  if (gPending && Date.now() - gPending < 1200 && GO_KEYS[k]) { gPending = 0; if (onMenu(GO_KEYS[k]) && seen(GO_KEYS[k])) go(GO_KEYS[k]); return; }
+  gPending = 0;
+  if (k === 'g') gPending = Date.now();
+  else if (k === 'n' && $('#newbtn')) { e.preventDefault(); $('#newbtn').click(); }
+  else if (e.key === '?') modal('Keyboard shortcuts', [], async () => {}, { submit: 'Close', intro: `<table class="t no-tools keys">${SHORTCUTS.map(([a, b]) => `<tr><td><kbd>${esc(a)}</kbd></td><td>${esc(b)}</td></tr>`).join('')}</table>` });
+});
 /* open / close the phone menu (and its backdrop); scrolls the current page's entry into view when it opens */
 function menu(open) {
   const side = $('#side'), scrim = $('#scrim');
@@ -636,42 +831,211 @@ function takeNew(q) {
 const head = (title, actions = '') => `<div class="page-head"><h1>${title}</h1><span class="spacer"></span>${actions}</div>`;
 
 /* ======================================================================= dashboard */
-route(/^dashboard$/, async (el) => {
-  const [d, vs, td] = await Promise.all([GET('/api/reports/dashboard'), ME.view && ME.view.khata === false ? null : GET('/api/vaade/summary').catch(() => null), GET('/api/today').catch(() => null)]);
-  const max = Math.max(1, ...d.monthly.map((m) => Math.max(m.sales || 0, m.purchases || 0)));      // a custom role may not get every figure
-  const W = 720, H = 190, bw = W / d.monthly.length;
-  const bars = d.monthly.map((m, i) => {
-    const hs = (m.sales || 0) / max * (H - 30), hp = (m.purchases || 0) / max * (H - 30), x = i * bw;
-    return `<rect x="${x + bw * 0.15}" y="${H - 20 - hs}" width="${bw * 0.33}" height="${hs}" fill="var(--brand)" rx="2"><title>Sales ${m.month}: ${inr0(m.sales)}</title></rect>
-      <rect x="${x + bw * 0.5}" y="${H - 20 - hp}" width="${bw * 0.33}" height="${hp}" fill="#94a3b8" rx="2"><title>Purchases ${m.month}: ${inr0(m.purchases)}</title></rect>
-      <text x="${x + bw / 2}" y="${H - 5}" font-size="10" text-anchor="middle" fill="var(--muted)">${new Date(m.month + '-01').toLocaleString('en-IN', { month: 'short' })}</text>`;
-  }).join('');
-  el.innerHTML = head('Dashboard', `${ME.can.purchase ? '<a class="btn hide-sm" href="#/new/BILL">+ Purchase bill</a>' : ''}${ME.can.sales ? '<a class="btn primary hide-sm" href="#/new/INV">+ New invoice</a>' : ''}`)
-    + getStarted(d.setup) + todayCard(td) + vaadaCard(vs) + `
-    <div class="kpis">
-      ${d.sales_month === undefined ? '' : `<div class="kpi"><div class="l">Sales this month</div><div class="v">${inr0(d.sales_month)}</div><div class="s">FY: ${inr0(d.sales_fy)} &middot; ${d.invoices_fy} invoices</div></div>`}
-      ${d.gross_profit_fy === undefined ? '' : `<div class="kpi"><div class="l">Gross profit (FY)</div><div class="v">${inr0(d.gross_profit_fy)}</div><div class="s">Margin ${d.gross_margin}% &middot; Net ${inr0(d.net_profit_fy)}</div></div>`}
-      ${d.receivable === undefined ? '' : `<div class="kpi"><div class="l">To receive</div><div class="v pos">${inr0(d.receivable)}</div><div class="s"><a href="#/reports/ageing">${d.overdue.length} overdue</a></div></div>`}
-      ${d.payable === undefined ? '' : `<div class="kpi"><div class="l">To pay</div><div class="v neg">${inr0(d.payable)}</div><div class="s"><a href="#/reports/ageing?kind=payable">Payables</a></div></div>`}
-      <div class="kpi"><div class="l">${d.stock_value === undefined ? 'Stock' : 'Stock value'}</div><div class="v">${d.stock_value === undefined ? d.reorder_count : inr0(d.stock_value)}</div><div class="s"><a href="#/stock">${d.reorder_count} items to reorder</a></div></div>
-      ${d.gst_payable === undefined ? '' : `<div class="kpi"><div class="l">GST payable (net)</div><div class="v">${inr0(d.gst_payable)}</div><div class="s"><a href="#/reports/gst">GST summary</a></div></div>`}
-    </div>
-    <div class="grid g2">
-      <div class="panel"><h3>Sales vs purchases, last 12 months</h3>
-        <svg class="chart" viewBox="0 0 ${W} ${H}" preserveAspectRatio="none">${bars}</svg>
-        <div class="legend"><span><i style="background:var(--brand)"></i>Sales</span><span><i style="background:#94a3b8"></i>Purchases</span></div></div>
-      <div class="panel"><h3>Cash &amp; bank</h3>${table([{ h: 'Account', k: 'name' }, { h: 'Balance', num: 1, f: (r) => inr(r.balance) }], d.cash)}
-        <div class="row" style="margin-top:12px"><a class="btn sm" href="#/receipts?new=1">Receive money</a><a class="btn sm" href="#/payments?new=1">Pay supplier</a><a class="btn sm" href="#/expenses?new=1">Add expense</a>${seen('cash') ? '<a class="btn sm" href="#/cash">Agle 4 hafte ka cash</a>' : ''}</div></div>
-      <div class="panel flush"><div style="padding:14px 16px 0"><h3>Overdue invoices</h3></div>${table([
-        { h: 'Invoice', f: (r) => `<a href="#/doc/${r.id}">${esc(r.number)}</a>` }, { h: 'Customer', k: 'party' }, { h: 'Due', f: (r) => fdate(r.due_date) }, { h: 'Balance', num: 1, f: (r) => inr(r.balance) }],
-        d.overdue, { empty: 'No overdue invoices.' })}</div>
-      <div class="panel flush"><div style="padding:14px 16px 0"><h3>Low stock</h3></div>${table([
-        { h: 'Item', k: 'name' }, { h: 'In stock', num: 1, f: (r) => qtyf(r.qty) + ' ' + esc(r.unit) }, { h: 'Reorder at', num: 1, f: (r) => qtyf(r.reorder_level) }, { h: '', f: (r) => badge(r.status) }],
-        d.low_stock, { empty: 'All items are above their reorder level.' })}</div>
-    </div>
-    <div class="panel flush"><div style="padding:14px 16px 0"><h3>Recent documents</h3></div>${table([
-      { h: 'Number', f: (r) => `<a href="#/doc/${r.id}">${esc(r.number)}</a>` }, { h: 'Type', f: (r) => esc(ME.doc_types[r.type].label) }, { h: 'Party', k: 'party' },
-      { h: 'Date', f: (r) => fdate(r.date) }, { h: 'Total', num: 1, f: (r) => inr(r.total) }, { h: 'Status', f: (r) => badge(r.status) }], d.recent, { empty: 'Create your first invoice or purchase to get started.' })}</div>`;
+/* ======================================================================= dashboard and Dashboard Maker */
+/* A dashboard is a list of widgets, each with a size (1 to 4 columns), and the period it shows. Every number comes from the
+   server for this user's role (src/widgets.js). With no saved dashboard the user gets a ready one for their job; "Customize"
+   turns the page into an editor: templates, a widget library, drag or arrows to arrange, sizes, undo / redo, save. */
+const DASH_TEMPLATES = {
+  owner: ['Business owner', [['today_tasks', 4], ['sales_period', 1], ['receivables', 1], ['payables', 1], ['profit', 1], ['sales_trend', 2], ['cash_flow', 2], ['customer_dues', 2], ['low_stock', 2], ['product_sales', 2], ['recent_activity', 2]]],
+  retail: ['Retail store', [['today_tasks', 4], ['sales_today', 1], ['sales_period', 1], ['avg_invoice', 1], ['cash_balance', 1], ['sales_trend', 2], ['product_sales', 2], ['low_stock', 2], ['recent_invoices', 2], ['out_of_stock', 1], ['sales_returns', 1]]],
+  wholesale: ['Wholesale business', [['today_tasks', 4], ['sales_period', 1], ['receivables', 1], ['purchase_period', 1], ['payables', 1], ['customer_sales', 2], ['customer_dues', 2], ['supplier_dues', 2], ['fast_moving', 2], ['pending_orders', 1], ['stock_value', 1]]],
+  distributor: ['Distributor', [['today_tasks', 4], ['sales_period', 1], ['pending_orders', 1], ['stock_value', 1], ['receivables', 1], ['godown_stock', 2], ['fast_moving', 2], ['slow_moving', 2], ['customer_dues', 2]]],
+  finance: ['Finance', [['cash_balance', 1], ['bank_balance', 1], ['receivables', 1], ['payables', 1], ['profit', 1], ['expenses', 1], ['gst_payable', 1], ['sales_period', 1], ['cash_flow', 4], ['customer_dues', 2], ['supplier_dues', 2]]],
+  sales: ['Sales', [['today_tasks', 4], ['sales_today', 1], ['sales_period', 1], ['avg_invoice', 1], ['new_customers', 1], ['sales_trend', 4], ['customer_sales', 2], ['product_sales', 2], ['recent_invoices', 2], ['customer_dues', 2]]],
+  inventory: ['Inventory', [['today_tasks', 4], ['stock_value', 1], ['out_of_stock', 1], ['pending_orders', 1], ['purchase_period', 1], ['low_stock', 2], ['godown_stock', 2], ['fast_moving', 2], ['slow_moving', 2]]],
+  blank: ['Blank', []],
+};
+const JOB_TEMPLATE = { all: 'owner', counter: 'retail', store: 'inventory', accounts: 'finance', sales: 'sales', gate: 'inventory', waiter: 'retail' };
+const greet = () => { const h = new Date(Date.now() + 5.5 * 3600e3).getUTCHours(); return h < 12 ? 'Good morning' : h < 17 ? 'Good afternoon' : 'Good evening'; };
+const pct = (a, b) => (b ? Math.round((a - b) / Math.abs(b) * 1000) / 10 : null);
+function spark(values, cls = '') {
+  if (!values || values.length < 2) return '';
+  const W = 120, H = 32, max = Math.max(...values, 0), min = Math.min(...values, 0), span = max - min || 1;
+  const pts = values.map((v, i) => [i / (values.length - 1) * W, H - 2 - (v - min) / span * (H - 4)]);
+  const line = pts.map(([x, y]) => `${x.toFixed(1)},${y.toFixed(1)}`).join(' ');
+  const [lx, ly] = pts[pts.length - 1];
+  return `<svg class="spark ${cls}" viewBox="0 0 ${W} ${H}" preserveAspectRatio="none" aria-hidden="true"><polygon points="0,${H} ${line} ${W},${H}" class="sa"/><polyline points="${line}" class="sl"/><circle cx="${lx}" cy="${ly}" r="2.4" class="sd"/></svg>`;
+}
+const shortLabel = (k, monthly) => (monthly ? new Date(k + '-01').toLocaleString('en-IN', { month: 'short', year: '2-digit' }) : new Date(k).toLocaleString('en-IN', { day: 'numeric', month: 'short' }));
+function seriesChart(d) {
+  const W = 600, H = 170, n = d.labels.length;
+  if (!n) return '<div class="wempty">No data in this period.</div>';
+  const max = Math.max(1, ...d.series.flatMap((s) => s.values));
+  const y = (v) => H - 4 - Math.max(0, v) / max * (H - 12);
+  let body = '';
+  if (d.bars) {
+    const bw = W / n, k = d.series.length;
+    d.series.forEach((s, j) => s.values.forEach((v, i) => { body += `<rect x="${(i * bw + bw * 0.12 + j * bw * 0.76 / k).toFixed(1)}" y="${y(v).toFixed(1)}" width="${(bw * 0.76 / k - 1).toFixed(1)}" height="${(H - 4 - y(v)).toFixed(1)}" class="b${j}"><title>${shortLabel(d.labels[i], d.monthly)} · ${s.name}: ${inr0(v)}</title></rect>`; }));
+  } else {
+    d.series.slice().reverse().forEach((s) => {
+      const pts = s.values.map((v, i) => `${(n === 1 ? W / 2 : i / (n - 1) * W).toFixed(1)},${y(v).toFixed(1)}`).join(' ');
+      if (!s.faint) body += `<polygon points="0,${H} ${pts} ${W},${H}" class="ca"/>`;
+      body += `<polyline points="${pts}" class="${s.faint ? 'cf' : 'cl'}"/>`;
+    });
+    const s0 = d.series[0];
+    body += s0.values.map((v, i) => `<rect x="${(i / Math.max(1, n - 1) * W - W / n / 2).toFixed(1)}" y="0" width="${(W / n).toFixed(1)}" height="${H}" class="hit"><title>${shortLabel(d.labels[i], d.monthly)}: ${inr0(v)}${d.series[1] ? ` (before: ${inr0(d.series[1].values[i] || 0)})` : ''}</title></rect>`).join('');
+  }
+  const total = d.series.map((s) => s.values.reduce((a, b) => a + b, 0));
+  const mid = Math.floor((n - 1) / 2);
+  return `<div class="ctop"><span class="muted small">up to ${inr0(max)}</span><span class="legend">${d.series.map((s, j) => `<span><i class="k${d.bars ? 'b' + j : s.faint ? 'f' : 'l'}"></i>${esc(s.name)} <b>${inr0(total[j])}</b></span>`).join('')}</span></div>
+    <svg class="wchart" viewBox="0 0 ${W} ${H}" preserveAspectRatio="none" role="img" aria-label="${esc(d.series.map((s, j) => `${s.name} ${inr0(total[j])}`).join(', '))}">
+      <line x1="0" y1="${H - 4}" x2="${W}" y2="${H - 4}" class="ax"/><line x1="0" y1="${y(max / 2)}" x2="${W}" y2="${y(max / 2)}" class="gr"/>${body}</svg>
+    <div class="cx muted small"><span>${shortLabel(d.labels[0], d.monthly)}</span>${n > 2 ? `<span>${shortLabel(d.labels[mid], d.monthly)}</span>` : ''}<span>${shortLabel(d.labels[n - 1], d.monthly)}</span></div>`;
+}
+function widgetBody(meta, d, extra) {
+  if (!d) return '<div class="wskel" aria-hidden="true"><i></i><i></i><i></i></div>';
+  if (d.kind === 'denied') return '<div class="wempty">Your role does not show this.</div>';
+  if (d.kind === 'error') return `<div class="wempty">${esc(d.error)}</div>`;
+  if (d.kind === 'today') return extra.today || '<div class="wempty">Nothing needs doing right now.</div>';
+  if (d.kind === 'kpi') {
+    const money = d.unit !== 'count', val = money ? inr0(d.value) : Number(d.value || 0).toLocaleString('en-IN');
+    const ch = d.prev === undefined ? null : pct(d.value, d.prev), good = ch === null ? '' : (ch >= 0) !== !!meta.down ? 'up' : 'down';
+    return `<div class="kv num">${val}</div>
+      ${ch === null ? '' : `<div class="kd ${ch === 0 ? '' : good}"><b>${ch > 0 ? '▲' : ch < 0 ? '▼' : '•'} ${Math.abs(ch)}%</b> <span class="muted">vs ${esc(d.vs || 'before')}</span></div>`}
+      ${d.prev !== undefined && !d.prev && d.value ? `<div class="kd"><span class="muted">nothing ${esc(d.vs || 'before')}</span></div>` : ''}
+      ${d.sub ? `<div class="ks muted small ${d.tone || ''}">${esc(d.sub)}</div>` : ''}${spark(d.spark)}`;
+  }
+  if (d.kind === 'series') return seriesChart(d);
+  if (d.kind === 'bars') {
+    if (!d.rows.length) return '<div class="wempty">Nothing in this period.</div>';
+    const max = Math.max(...d.rows.map((r) => r.value), 1);
+    return `<ol class="hbars">${d.rows.map((r) => `<li><a ${r.href ? `href="#/${esc(r.href)}"` : ''}><span class="hl"><b>${esc(r.label)}</b>${r.note ? `<small class="${r.warn ? 'neg' : 'muted'}">${esc(r.note)}</small>` : ''}</span>
+      <span class="hv num">${d.unit === 'qty' ? Number(r.value).toLocaleString('en-IN') : inr0(r.value)}</span><span class="hb"><i style="width:${Math.max(2, r.value / max * 100).toFixed(1)}%"></i></span></a></li>`).join('')}</ol>`;
+  }
+  if (d.kind === 'list') {
+    if (!d.rows.length) return '<div class="wempty">Nothing to show.</div>';
+    return `<ul class="wlist">${d.rows.map((r) => `<li><a ${r.href ? `href="#/${esc(r.href)}"` : ''}><span class="hl"><b>${esc(r.label)}</b>${r.note ? `<small class="${r.warn ? 'neg' : 'muted'}">${esc(r.note)}</small>` : ''}</span>
+      <span class="num">${esc(r.value)}${r.status ? ` ${badge(r.status)}` : ''}</span></a></li>`).join('')}</ul>`;
+  }
+  return '';
+}
+route(/^dashboard$/, async (el, m, q) => {
+  const L = await GET('/api/dashboards');
+  const meta = Object.fromEntries(L.widgets.map((w) => [w.id, w]));
+  const allowed = (list) => list.filter(([w]) => meta[w]).map(([w, size]) => ({ w, size }));
+  const recommended = () => { const key = JOB_TEMPLATE[jobOf()] || 'owner'; return { id: 0, name: 'Recommended', layout: { range: '30d', widgets: allowed(DASH_TEMPLATES[key][1]) }, mine: false }; };
+  const boards = [recommended(), ...L.dashboards];
+  let cur = boards.find((b) => b.id === +(q.get('d') || 0)) || boards.find((b) => b.id === L.default_id) || boards[0];
+  let range = q.get('range') || cur.layout.range || 'month', editing = false, draft = null, hist = [], fut = [], data = {}, extra = {};
+  const canEdit = () => cur.id === 0 || cur.mine || L.can_share;
+  const widgets = () => (editing ? draft.widgets : cur.layout.widgets).filter((x) => meta[x.w]);
+  const load = async () => {
+    const list = widgets(), ids = [...new Set(list.filter((x) => !meta[x.w].client).map((x) => x.w))];
+    data = {};
+    const tasks = [ids.length ? GET(`/api/dash/widgets?ids=${ids.join(',')}&range=${encodeURIComponent(range)}`).then((r) => { data = r.widgets; extra.period = r.period; }) : Promise.resolve()];
+    if (list.some((x) => x.w === 'today_tasks')) {
+      tasks.push(Promise.all([GET('/api/today').catch(() => null), ME.view && ME.view.khata === false ? null : GET('/api/vaade/summary').catch(() => null)])
+        .then(([td, vs]) => { extra.today = (todayCard(td) + vaadaCard(vs)) || ''; }));
+    }
+    await Promise.all(tasks);
+    for (const x of list) if (meta[x.w].client) data[x.w] = { kind: meta[x.w].client };
+  };
+  const card = (x, i) => {
+    const w = meta[x.w];
+    return `<section class="wcard s${x.size}" data-i="${i}" ${editing ? 'draggable="true"' : ''} aria-label="${esc(w.label)}">
+      <header>${editing ? '<span class="grip" aria-hidden="true">⠿</span>' : ''}<h3>${esc(w.label)}</h3>${!editing && w.link ? `<a class="wgo" href="#/${esc(w.link)}" aria-label="Open ${esc(w.label)}">Open ›</a>` : ''}
+        ${editing ? `<span class="wed"><button type="button" class="btn sm" data-mv="-1" aria-label="Move ${esc(w.label)} earlier">←</button><button type="button" class="btn sm" data-mv="1" aria-label="Move ${esc(w.label)} later">→</button>
+          <select data-sz aria-label="Width of ${esc(w.label)}">${[[1, 'Small'], [2, 'Half'], [3, 'Wide'], [4, 'Full']].map(([v, t]) => `<option value="${v}" ${x.size === v ? 'selected' : ''}>${t}</option>`).join('')}</select>
+          <button type="button" class="btn sm danger" data-rm aria-label="Remove ${esc(w.label)}">×</button></span>` : ''}</header>
+      <div class="wbody">${widgetBody(w, data[x.w], extra)}</div></section>`;
+  };
+  const draw = () => {
+    const opts = boards.map((b) => `<option value="${b.id}" ${b.id === cur.id ? 'selected' : ''}>${esc(b.name)}${b.id && !b.mine ? ' (shared)' : ''}${b.id && b.id === L.default_id ? ' ★' : ''}</option>`).join('');
+    const acts = NEW_MENU.filter(([, , a, h]) => ME.can[a] && onMenu(h)).slice(0, 6);
+    const p = extra.period;
+    el.innerHTML = `<div class="dhead">
+        <div class="dgreet"><h1>${greet()}, ${esc(String(ME.user.name || '').split(' ')[0])}</h1><p class="muted">${editing ? 'Arrange your dashboard: add widgets, drag them or use the arrows, pick a width, then save.' : "Here's what's happening in your business."}${p && !editing ? ` <span class="small">${esc(p.label)}: ${fdate(p.from)}${p.from !== p.to ? ' – ' + fdate(p.to) : ''}</span>` : ''}</p></div>
+        <div class="dtools">${editing ? `
+          <button type="button" class="btn" id="dadd">+ Add widget</button><button type="button" class="btn" id="dtpl">Templates</button>
+          <button type="button" class="btn" id="dundo" ${hist.length ? '' : 'disabled'} title="Undo (Ctrl Z)">Undo</button><button type="button" class="btn" id="dredo" ${fut.length ? '' : 'disabled'} title="Redo">Redo</button>
+          <button type="button" class="btn" id="dreset">Reset</button><span class="spacer"></span><button type="button" class="btn" id="dcancel">Cancel</button><button type="button" class="btn primary" id="dsave">Save</button>`
+          : `<label class="sel"><span class="sr">Dashboard</span><select id="dpick">${opts}<option value="new">+ New dashboard…</option></select></label>
+          <label class="sel"><span class="sr">Period</span><select id="drange">${Object.entries(L.ranges).map(([k, t]) => `<option value="${k}" ${k === range ? 'selected' : ''}>${esc(t)}</option>`).join('')}</select></label>
+          ${canEdit() ? '<button type="button" class="btn" id="dedit">Customize</button>' : ''}`}</div></div>
+      ${editing ? `<div class="panel dmeta"><label class="f">Name<input id="dname" maxlength="60" value="${esc(draft.name)}"></label>
+          <label class="f">Opens with<select id="drange2">${Object.entries(L.ranges).map(([k, t]) => `<option value="${k}" ${k === draft.range ? 'selected' : ''}>${esc(t)}</option>`).join('')}</select></label>
+          <label class="check"><input type="checkbox" id="ddef" ${draft.is_default ? 'checked' : ''}> Open this dashboard first</label>
+          ${L.can_share ? `<label class="check"><input type="checkbox" id="dshare" ${draft.shared ? 'checked' : ''}> Share with everyone in the business <small class="muted">(each person sees only what their role allows)</small></label>` : ''}
+          ${cur.id && cur.mine ? '<span class="spacer"></span><button type="button" class="btn sm" id="ddup">Duplicate</button><button type="button" class="btn sm danger" id="ddel">Delete</button>' : ''}</div>`
+        : `${getStarted(L.setup)}<nav class="qacts" aria-label="Quick actions">${acts.map(([h, t, , , ic]) => `<a href="#/${h}">${icon(ic)}<span>${t}</span></a>`).join('')}</nav>`}
+      <div class="dgrid ${editing ? 'editing' : ''}" id="dgrid">${widgets().map(card).join('') || `<div class="wempty big">${editing ? 'Add widgets from the library, or start from a template.' : 'This dashboard is empty. Press Customize to add widgets.'}</div>`}</div>`;
+    wire();
+  };
+  const snap = () => { hist.push(JSON.stringify(draft)); if (hist.length > 50) hist.shift(); fut = []; };
+  const change = async (fn, reload) => { snap(); fn(); if (reload) { draw(); await load(); } draw(); };
+  const library = () => {
+    const have = new Set(draft.widgets.map((x) => x.w)), cats = [...new Set(L.widgets.map((w) => w.cat))];
+    modal('Add a widget', [], async () => {}, { submit: 'Done', intro: `<input type="search" id="wlq" placeholder="Search widgets: sales, stock, cash…" aria-label="Search widgets" autocomplete="off">
+      <div class="wlib">${cats.map((c) => `<div class="wcat" data-cat="${esc(c)}"><h4>${esc(c)}</h4>${L.widgets.filter((w) => w.cat === c).map((w) => `<button type="button" class="wpick" data-add="${w.id}" data-q="${esc((w.label + ' ' + c).toLowerCase())}">
+        <b>${esc(w.label)}</b><small class="muted">${have.has(w.id) ? 'on the dashboard · add again' : w.size >= 2 ? 'chart or list' : 'figure'}</small></button>`).join('')}</div>`).join('')}</div>` });
+    const box = $('#modal-root');
+    $('#wlq', box).oninput = (e) => { const t = e.target.value.trim().toLowerCase(); $$('.wpick', box).forEach((b) => { b.hidden = !!t && !b.dataset.q.includes(t); }); $$('.wcat', box).forEach((c) => { c.hidden = !$$('.wpick:not([hidden])', c).length; }); };
+    $('.wlib', box).onclick = (e) => { const b = e.target.closest('[data-add]'); if (!b) return; const w = meta[b.dataset.add]; change(() => draft.widgets.push({ w: w.id, size: w.size }), true); b.querySelector('small').textContent = 'added'; toast(`${w.label} added`); };
+  };
+  const templates = () => modal('Start from a template', [], async () => {}, { submit: 'Close', intro: `<div class="tpls">${Object.entries(DASH_TEMPLATES).map(([k, [name, list]]) => `<button type="button" class="tpl" data-tpl="${k}"><b>${esc(name)}</b>
+      <small class="muted">${list.length ? allowed(list).map((x) => meta[x.w].label).slice(0, 5).join(', ') + (allowed(list).length > 5 ? '…' : '') : 'Start empty and add your own'}</small></button>`).join('')}</div>
+      <p class="muted small">This replaces the widgets now on the dashboard. You can undo it.</p>` }) && $('.tpls', $('#modal-root')).addEventListener('click', (e) => {
+    const b = e.target.closest('[data-tpl]'); if (!b) return;
+    $('#modal-root').innerHTML = '';
+    change(() => { draft.widgets = allowed(DASH_TEMPLATES[b.dataset.tpl][1]); if (draft.name === 'Recommended' || !draft.name) draft.name = DASH_TEMPLATES[b.dataset.tpl][0]; }, true);
+  });
+  const startEdit = (base) => {
+    editing = true; hist = []; fut = [];
+    draft = { name: base.id === 0 ? 'My dashboard' : base.name, range: base.layout.range || 'month', widgets: base.layout.widgets.filter((x) => meta[x.w]).map((x) => ({ ...x })),
+      is_default: base.id ? base.id === L.default_id : false, shared: !!base.shared };
+    draw();
+  };
+  const save = async (asNew) => {
+    const body = { name: draft.name, layout: { range: draft.range, widgets: draft.widgets }, is_default: draft.is_default, shared: L.can_share ? draft.shared : undefined };
+    const update = cur.id && (cur.mine || L.can_share) && !asNew;
+    const r = update ? await api('PUT', `/api/dashboards/${cur.id}`, body) : await POST('/api/dashboards', body);
+    if (!body.is_default && cur.id && cur.id === L.default_id && update) await api('PUT', '/api/dashboards-default', { id: 0 });
+    const id = update ? cur.id : Math.max(0, ...r.dashboards.filter((b) => b.mine).map((b) => b.id));
+    toast('Dashboard saved'); show(`dashboard?d=${id}`);
+  };
+  const show = (h) => { editing = false; if (location.hash === '#/' + h) render(); else go(h); };
+  function wire() {
+    const g = $('#dgrid');
+    if (!editing) {
+      $('#drange').onchange = async (e) => { range = e.target.value; draw(); await load(); draw(); };
+      $('#dpick').onchange = (e) => {
+        if (e.target.value === 'new') { cur = { id: 0, name: 'New dashboard', layout: { range, widgets: [] }, mine: true }; startEdit(cur); draft.name = 'New dashboard'; templates(); return; }
+        go(`dashboard?d=${e.target.value}`);
+      };
+      if ($('#dedit')) $('#dedit').onclick = () => startEdit(cur);
+      return;
+    }
+    $('#dadd').onclick = library; $('#dtpl').onclick = templates;
+    $('#dundo').onclick = async () => { if (!hist.length) return; fut.push(JSON.stringify(draft)); draft = JSON.parse(hist.pop()); draw(); await load(); draw(); };
+    $('#dredo').onclick = async () => { if (!fut.length) return; hist.push(JSON.stringify(draft)); draft = JSON.parse(fut.pop()); draw(); await load(); draw(); };
+    $('#dreset').onclick = () => change(() => { draft.widgets = recommended().layout.widgets; }, true);
+    $('#dcancel').onclick = () => { editing = false; draw(); };
+    $('#dsave').onclick = () => save(false).catch((er) => toast(er.message, 'err'));
+    $('#dname').oninput = (e) => { draft.name = e.target.value; };
+    $('#drange2').onchange = (e) => change(() => { draft.range = e.target.value; });
+    $('#ddef').onchange = (e) => { draft.is_default = e.target.checked; };
+    if ($('#dshare')) $('#dshare').onchange = (e) => { draft.shared = e.target.checked; };
+    if ($('#ddup')) $('#ddup').onclick = () => { draft.name = `${draft.name} (copy)`; save(true).catch((er) => toast(er.message, 'err')); };
+    if ($('#ddel')) $('#ddel').onclick = async () => { if (!confirm(`Delete the dashboard "${cur.name}"?`)) return; await api('DELETE', `/api/dashboards/${cur.id}`); toast('Dashboard deleted'); show('dashboard'); };
+    g.onclick = (e) => {
+      const sec = e.target.closest('.wcard'); if (!sec) return;
+      const i = +sec.dataset.i, b = e.target.closest('button');
+      if (b && b.dataset.mv) { const j = i + +b.dataset.mv; if (j < 0 || j >= draft.widgets.length) return; change(() => { const [x] = draft.widgets.splice(i, 1); draft.widgets.splice(j, 0, x); }); }
+      if (b && b.hasAttribute('data-rm')) change(() => draft.widgets.splice(i, 1));
+    };
+    g.onchange = (e) => { const s = e.target.closest('[data-sz]'); if (s) change(() => { draft.widgets[+s.closest('.wcard').dataset.i].size = +s.value; }); };
+    let from = -1;
+    g.ondragstart = (e) => { const sec = e.target.closest('.wcard'); if (!sec) return; from = +sec.dataset.i; sec.classList.add('dragging'); e.dataTransfer.effectAllowed = 'move'; e.dataTransfer.setData('text/plain', String(from)); };
+    g.ondragover = (e) => { if (from < 0) return; e.preventDefault(); $$('.wcard.over', g).forEach((x) => x.classList.remove('over')); const t = e.target.closest('.wcard'); if (t) t.classList.add('over'); };
+    g.ondragend = () => { from = -1; $$('.wcard', g).forEach((x) => x.classList.remove('dragging', 'over')); };
+    g.ondrop = (e) => { e.preventDefault(); const t = e.target.closest('.wcard'); if (from < 0 || !t) return; const to = +t.dataset.i, f = from; from = -1; if (to !== f) change(() => { const [x] = draft.widgets.splice(f, 1); draft.widgets.splice(to, 0, x); }); else draw(); };
+  }
+  const undoKey = (e) => {
+    if (!editing || !location.hash.startsWith('#/dashboard')) { if (!location.hash.startsWith('#/dashboard')) document.removeEventListener('keydown', undoKey); return; }
+    if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'z' && !e.target.closest('input,textarea')) { e.preventDefault(); (e.shiftKey ? $('#dredo') : $('#dundo')).click(); }
+  };
+  document.addEventListener('keydown', undoKey);
+  draw(); await load(); draw();
 });
 
 /* Today: everything that needs doing, one row each, one tap to the screen that does it */

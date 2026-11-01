@@ -3057,5 +3057,64 @@ if (process.env.ERP_AI_MOCK) {
   check('the GST workbook has an Exports sheet', xl.status === 200);
 }
 
+/* --- dashboards: widgets answer from the books, for the viewer's role; dashboards saved per user, shared by the owner --- */
+{
+  const ip = '203.0.113.163';
+  const su = await rq('POST', '/api/auth/signup', { business: 'Dash Traders', name: 'Dinesh Owner', email: `dash${Date.now()}@test.in`, password: 'Dash-pass-12345', state: 'Rajasthan' }, { ip });
+  const D = async (m, p, b) => (await rq(m, p, b, { cookie: su.cookie, ip })).data, DE = (m, p, b) => rq(m, p, b, { cookie: su.cookie, ip });
+  const rice = await D('POST', '/api/items', { name: 'Rice 25kg', sale_price: 1000, gst_rate: 5, purchase_price: 800, opening_qty: 50, reorder_level: 45 });
+  const dal = await D('POST', '/api/items', { name: 'Dal 1kg', sale_price: 100, gst_rate: 0, purchase_price: 70, opening_qty: 0 });
+  const amit = await D('POST', '/api/parties', { name: 'Amit Stores', kind: 'customer', state: 'Rajasthan' });
+  const cash = (await D('GET', '/api/accounts')).rows.find((a) => a.sys === 'cash');
+  await D('POST', '/api/docs', { type: 'INV', party_id: amit.id, lines: [{ item_id: rice.id, qty: 3 }] });                       // 3,000 + 150 GST, on credit
+  await D('POST', '/api/docs', { type: 'INV', party_id: amit.id, lines: [{ item_id: rice.id, qty: 2 }], payment: { amount: 2100, account_id: cash.id } });
+  const L = await D('GET', '/api/dashboards');
+  const ids = L.widgets.map((w) => w.id);
+  check('the owner gets every widget, the setup list and no saved dashboard yet', ['sales_today', 'sales_period', 'profit', 'stock_value', 'cash_flow', 'today_tasks'].every((w) => ids.includes(w))
+    && L.dashboards.length === 0 && L.setup.items === true && L.setup.invoices === true && L.can_share === true, JSON.stringify(ids));
+  const W = await D('GET', '/api/dash/widgets?ids=sales_today,sales_period,receivables,customer_dues,product_sales,profit,stock_value,low_stock,out_of_stock,cash_balance,sales_trend,nonsense&range=month');
+  const w = W.widgets;
+  check('sales today and this month are the bills before GST', w.sales_today.value === 5000 && w.sales_period.value === 5000 && w.sales_period.kind === 'kpi' && Array.isArray(w.sales_period.spark), JSON.stringify([w.sales_today, w.sales_period]));
+  check('to receive is the unpaid bill; the customer who owes is listed', w.receivables.value === 3150 && w.customer_dues.rows[0].label === 'Amit Stores' && w.customer_dues.rows[0].value === 3150, JSON.stringify([w.receivables, w.customer_dues]));
+  check('revenue by product and stock widgets come from the books', w.product_sales.rows[0].label === 'Rice 25kg' && w.product_sales.rows[0].value === 5000 && w.stock_value.value === 36000
+    && w.low_stock.rows[0].label === 'Rice 25kg' && w.out_of_stock.value === 1 && w.cash_balance.value === 2100, JSON.stringify([w.product_sales, w.stock_value, w.low_stock, w.out_of_stock, w.cash_balance]));
+  check('profit for the period is sales less cost of goods', w.profit.value === 1000, JSON.stringify(w.profit));
+  check('a chart has one value per day of the period, and an unknown widget is ignored', w.sales_trend.kind === 'series' && w.sales_trend.labels.length === w.sales_trend.series[0].values.length
+    && w.sales_trend.series[0].values.reduce((a, b) => a + b, 0) === 5000 && !('nonsense' in w), JSON.stringify(w.sales_trend).slice(0, 200));
+  const fy = await D('GET', '/api/dash/widgets?ids=sales_trend&range=fy');
+  check('a long period is charted by month', fy.period.key === 'fy' && /^\d{4}-\d{2}$/.test(fy.widgets.sales_trend.labels[0]), JSON.stringify(fy.period));
+  const bad = await DE('POST', '/api/dashboards', { name: 'Too big', layout: { widgets: Array.from({ length: 41 }, () => ({ w: 'sales_today' })) } });
+  check('a dashboard holds at most 40 widgets', bad.status === 400);
+  const s1 = await D('POST', '/api/dashboards', { name: 'Counter view', layout: { range: '7d', widgets: [{ w: 'sales_today', size: 9 }, { w: 'made_up', size: 1 }, { w: 'profit', size: 2 }] }, is_default: true, shared: true });
+  const mine = s1.dashboards.find((d) => d.name === 'Counter view');
+  check('a dashboard is saved with known widgets only, sizes kept to 1 to 4, as the default, shared', mine && mine.layout.range === '7d' && mine.layout.widgets.length === 2 && mine.layout.widgets[0].size === 4
+    && s1.default_id === mine.id && mine.shared === true, JSON.stringify(s1.dashboards));
+  const stEm = `dashstaff${Date.now()}@test.in`;
+  // a counter role the owner made: it bills and sees sales only (built-in roles see every report, as elsewhere in the app)
+  const crole = await D('POST', '/api/roles', { name: 'Counter only', perms: { view: ['sales'], edit: ['sales'] } });
+  await D('POST', '/api/users', { name: 'Sales Sonu', email: stEm, password: 'Sonu-pass-12345', role: `c:${crole.id}` });
+  const sl = await rq('POST', '/api/auth/login', { email: stEm, password: 'Sonu-pass-12345' }, { ip });
+  const S = async (m, p, b) => (await rq(m, p, b, { cookie: sl.cookie, ip })).data, SE = (m, p, b) => rq(m, p, b, { cookie: sl.cookie, ip });
+  const SL = await S('GET', '/api/dashboards');
+  const sids = SL.widgets.map((x) => x.id);
+  check('a counter role sees the shared dashboard but no widgets with costs, profit or cash', SL.dashboards.some((d) => d.id === mine.id && !d.mine) && sids.includes('sales_period')
+    && !sids.includes('profit') && !sids.includes('stock_value') && !sids.includes('cash_balance') && SL.can_share === false, JSON.stringify(sids));
+  const SW = await S('GET', '/api/dash/widgets?ids=profit,stock_value,sales_period');
+  check('asking for a widget the role may not see gets nothing from the books', SW.widgets.profit.kind === 'denied' && SW.widgets.stock_value.kind === 'denied' && SW.widgets.sales_period.value === 5000, JSON.stringify(SW.widgets));
+  check('the salesman cannot change or delete the owner\'s dashboard', (await SE('PUT', `/api/dashboards/${mine.id}`, { name: 'Mine now', layout: { widgets: [] } })).status === 404
+    && (await SE('DELETE', `/api/dashboards/${mine.id}`)).status === 404);
+  const own = await S('POST', '/api/dashboards', { name: 'Sonu', layout: { widgets: [{ w: 'sales_today' }] }, shared: true });
+  check('the salesman saves his own, which he cannot share', own.dashboards.some((d) => d.name === 'Sonu' && d.mine && !d.shared));
+  const pick = await S('PUT', '/api/dashboards-default', { id: mine.id });
+  check('each person picks the dashboard that opens first, a shared one too', pick.default_id === mine.id);
+  const other = await rq('POST', '/api/auth/signup', { business: 'Other Dash Co', name: 'O', email: `odash${Date.now()}@test.in`, password: 'Other-pass-12345', state: 'Rajasthan' }, { ip: '203.0.113.164' });
+  const O = (m, p, b) => rq(m, p, b, { cookie: other.cookie, ip: '203.0.113.164' });
+  check('another business cannot see, change or pick these dashboards', (await O('GET', '/api/dashboards')).data.dashboards.length === 0 && (await O('PUT', `/api/dashboards/${mine.id}`, { name: 'x', layout: {} })).status === 404
+    && (await O('PUT', '/api/dashboards-default', { id: mine.id })).status === 404 && (await O('DELETE', `/api/dashboards/${mine.id}`)).status === 404);
+  check('another business\'s widgets show only its own (empty) books', (await O('GET', '/api/dash/widgets?ids=sales_period,customer_dues')).data.widgets.sales_period.value === 0);
+  const del = await D('DELETE', `/api/dashboards/${mine.id}`);
+  check('the owner deletes the dashboard and nobody keeps it as their first', !del.dashboards.some((d) => d.id === mine.id) && (await S('GET', '/api/dashboards')).default_id === null);
+}
+
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);
