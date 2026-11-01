@@ -35,6 +35,7 @@ export async function gstr1(db, org, q) {
   const W = `d.org_id = ? AND d.type IN ('INV','SRET','CNOTE') AND d.date >= ? AND d.date <= ?`;
   const [docs, lines, inward, wo] = await db.batch([
     db.prepare(`SELECT d.id, d.type, d.number, d.date, d.status, d.place_of_supply, d.inter_state, d.total, p.name AS party, p.gstin,
+        d.export_type, d.port_code, d.sb_no, d.sb_date, o.export_type AS ref_exp,
         o.total AS ref_total, o.inter_state AS ref_inter, o.date AS ref_date
       FROM docs d LEFT JOIN parties p ON p.id = d.party_id LEFT JOIN docs o ON o.id = d.ref_id AND o.org_id = d.org_id
       WHERE ${W} ORDER BY d.date, d.id`).bind(org.id, p.from, p.to),
@@ -51,7 +52,8 @@ export async function gstr1(db, org, q) {
   for (const l of lines.results) { if (!byDoc.has(l.doc_id)) byDoc.set(l.doc_id, []); byDoc.get(l.doc_id).push(l); }
 
   const b2b = new Map(), b2cl = new Map(), b2cs = new Map(), cdnr = new Map(), cdnur = [], nil = new Map(), hsn = { b2b: new Map(), b2c: new Map() };
-  const noHsn = new Map(), shortHsn = new Set(), badGstin = new Set(), noPos = [], longNo = [];
+  const exp = new Map();       // exports (table 6A) by type: WPAY with IGST, WOPAY under LUT / bond
+  const noHsn = new Map(), shortHsn = new Set(), badGstin = new Set(), noPos = [], longNo = [], noShip = [];
   const add = (a, l, s) => { a.txval += s * l.taxable; a.iamt += s * l.igst; a.camt += s * l.cgst; a.samt += s * l.sgst; };
   const zero = () => ({ txval: 0, iamt: 0, camt: 0, samt: 0 });
   const det = (r, igstOnly) => (igstOnly ? { txval: R(r.txval), rt: r.rt, iamt: R(r.iamt), csamt: 0 }
@@ -61,14 +63,15 @@ export async function gstr1(db, org, q) {
   for (const d of docs.results) {
     if (d.status === 'cancelled') continue;
     const note = d.type !== 'INV', s = note ? -1 : 1, ctin = up(d.gstin), reg = REG.test(ctin), inter = !!d.inter_state;
+    const ex = (note ? d.ref_exp : d.export_type) || '';
     if (ctin && !reg) badGstin.add(d.party || '');
-    const pos = inter ? stateCode(d.place_of_supply) || (reg ? ctin.slice(0, 2) : '') : own;
+    const pos = ex ? '96' : inter ? stateCode(d.place_of_supply) || (reg ? ctin.slice(0, 2) : '') : own;
     if (!pos) noPos.push(d.number);
     if (!/^[A-Za-z0-9/-]{1,16}$/.test(d.number)) longNo.push(d.number);
     const rates = new Map();
     let nilAmt = 0;
     for (const l of byDoc.get(d.id) || []) {
-      if (l.gst_rate) {
+      if (l.gst_rate || ex) {      // an export at 0% (LUT) is a zero-rated supply, not a nil-rated one
         if (!rates.has(l.gst_rate)) rates.set(l.gst_rate, { rt: l.gst_rate, ...zero() });
         add(rates.get(l.gst_rate), l, 1);
       } else nilAmt += l.taxable;
@@ -86,6 +89,16 @@ export async function gstr1(db, org, q) {
     if (nilAmt) { const k = (inter ? 'INTR' : 'INTRA') + (reg ? 'B2B' : 'B2C'); nil.set(k, (nil.get(k) || 0) + s * nilAmt); }
     if (!rates.size) continue;
     const list = [...rates.values()].sort((a, b) => a.rt - b.rt);
+    if (ex) {
+      const flat = list.map((r) => ({ txval: R(r.txval), rt: r.rt, iamt: R(r.iamt), csamt: 0 }));
+      if (!note) {
+        if (!exp.has(ex)) exp.set(ex, { exp_typ: ex, inv: [] });
+        exp.get(ex).inv.push({ inum: d.number, idt: dmy(d.date), val: R(d.total), ...(d.port_code ? { sbpcode: d.port_code } : {}), ...(d.sb_no ? { sbnum: d.sb_no } : {}),
+          ...(d.sb_date ? { sbdt: dmy(d.sb_date) } : {}), itms: flat });
+        if (!d.sb_no) noShip.push(d.number);
+      } else cdnur.push({ typ: ex === 'WPAY' ? 'EXPWP' : 'EXPWOP', ntty: 'C', nt_num: d.number, nt_dt: dmy(d.date), val: R(d.total), itms: itms(list, true) });
+      continue;
+    }
     const toB2cs = () => {
       for (const r of list) {
         const k = `${pos}|${r.rt}`;
@@ -133,6 +146,7 @@ export async function gstr1(db, org, q) {
     .map((h, i) => ({ num: i + 1, hsn_sc: h.hsn_sc, uqc: h.uqc, qty: q2(h.qty), rt: h.rt, txval: R(h.txval), iamt: R(h.iamt), camt: R(h.camt), samt: R(h.samt), csamt: 0 }));
   const json = { gstin, fp: p.fp };
   if (b2b.size) json.b2b = [...b2b.values()];
+  if (exp.size) json.exp = [...exp.values()];
   if (b2cl.size) json.b2cl = [...b2cl.values()];
   const cs = [...b2cs.values()].filter((a) => a.txval || a.iamt || a.camt || a.samt).sort((a, b) => a.pos.localeCompare(b.pos) || a.rt - b.rt).map(money);
   if (cs.length) json.b2cs = cs.map((a) => ({ ...a, csamt: 0 }));
@@ -152,12 +166,18 @@ export async function gstr1(db, org, q) {
     b2b: tidy(sum((json.b2b || []).flatMap((g) => g.inv))), b2cl: tidy(sum((json.b2cl || []).flatMap((g) => g.inv))),
     b2cs: tidy(cs.reduce((t, a) => ({ n: t.n + 1, val: 0, txval: t.txval + a.txval, tax: t.tax + a.iamt + a.camt + a.samt }), { n: 0, val: 0, txval: 0, tax: 0 })),
     cdnr: tidy(sum((json.cdnr || []).flatMap((g) => g.nt))), cdnur: tidy(sum(cdnur)),
+    exp: tidy((json.exp || []).flatMap((g) => g.inv).reduce((t, r) => { for (const x of r.itms) { t.txval += x.txval; t.tax += x.iamt; } t.val += r.val; t.n++; return t; }, { n: 0, val: 0, txval: 0, tax: 0 })),
     nil: q2(nilRows.reduce((t, r) => t + r.nil_amt, 0)), hsn: hb.length + hc.length,
     docs: { issued: docs.results.length, cancelled: docs.results.filter((d) => d.status === 'cancelled').length },
   };
   const outTax = { txval: 0, iamt: 0, camt: 0, samt: 0 };
   for (const t of [...(json.b2b || []).flatMap((g) => g.inv), ...(json.b2cl || []).flatMap((g) => g.inv)]) for (const l of t.itms) for (const k of Object.keys(outTax)) outTax[k] += l.itm_det[k] || 0;
-  for (const t of [...(json.cdnr || []).flatMap((g) => g.nt), ...cdnur]) for (const l of t.itms) for (const k of Object.keys(outTax)) outTax[k] -= l.itm_det[k] || 0;
+  const domesticNotes = cdnur.filter((t) => t.typ === 'B2CL'), exportNotes = cdnur.filter((t) => t.typ !== 'B2CL');
+  for (const t of [...(json.cdnr || []).flatMap((g) => g.nt), ...domesticNotes]) for (const l of t.itms) for (const k of Object.keys(outTax)) outTax[k] -= l.itm_det[k] || 0;
+  // 3.1(b) zero-rated: exports with IGST (paid now, refunded later) and under LUT, less their credit notes
+  const zr = { txval: 0, iamt: 0 };
+  for (const g of json.exp || []) for (const t of g.inv) for (const x of t.itms) { zr.txval += x.txval; zr.iamt += x.iamt; }
+  for (const t of exportNotes) for (const l of t.itms) { zr.txval -= l.itm_det.txval; zr.iamt -= l.itm_det.iamt; }
   for (const a of cs) for (const k of Object.keys(outTax)) outTax[k] += a[k];
   const inp = { igst: 0, cgst: 0, sgst: 0 };
   for (const r of inward.results) for (const k of Object.keys(inp)) inp[k] += (r.type === 'BILL' ? 1 : -1) * (r[k] || 0);
@@ -165,13 +185,14 @@ export async function gstr1(db, org, q) {
   const unreg = new Map();
   for (const a of cs.filter((x) => x.sply_ty === 'INTER')) unreg.set(a.pos, (unreg.get(a.pos) || 0) + a.txval);
   for (const g of json.b2cl || []) for (const t of g.inv) for (const l of t.itms) unreg.set(g.pos, (unreg.get(g.pos) || 0) + l.itm_det.txval);
-  for (const t of cdnur) for (const l of t.itms) unreg.set(t.pos, (unreg.get(t.pos) || 0) - l.itm_det.txval);
+  for (const t of domesticNotes) for (const l of t.itms) unreg.set(t.pos, (unreg.get(t.pos) || 0) - l.itm_det.txval);
   const b3 = {
     outward: { txval: q2(outTax.txval), igst: q2(outTax.iamt), cgst: q2(outTax.camt), sgst: q2(outTax.samt) }, nil: tables.nil,
+    zero_rated: { txval: q2(zr.txval), igst: q2(zr.iamt) },
     unregistered_inter: [...unreg].filter(([, v]) => Math.abs(v) >= 0.005).map(([pos, txval]) => ({ pos, txval: q2(txval) })),
     itc: { igst: R(inp.igst), cgst: R(inp.cgst), sgst: R(inp.sgst) }, reversed: { igst: R(rev.igst), cgst: R(rev.cgst), sgst: R(rev.sgst) },
   };
-  b3.payable = q2(b3.outward.igst + b3.outward.cgst + b3.outward.sgst - (b3.itc.igst + b3.itc.cgst + b3.itc.sgst) + b3.reversed.igst + b3.reversed.cgst + b3.reversed.sgst);
+  b3.payable = q2(b3.outward.igst + b3.outward.cgst + b3.outward.sgst + b3.zero_rated.igst - (b3.itc.igst + b3.itc.cgst + b3.itc.sgst) + b3.reversed.igst + b3.reversed.cgst + b3.reversed.sgst);
 
   const problems = [];
   if (!REG.test(gstin)) problems.push({ stop: true, text: 'Your GSTIN is missing or wrong (Settings → Business). The file needs it.' });
@@ -180,6 +201,7 @@ export async function gstr1(db, org, q) {
   if (shortHsn.size) problems.push({ text: `HSN codes need 4 to 8 digits (6 when your turnover is above ₹5 crore): ${[...shortHsn].slice(0, 8).join(', ')}.` });
   if (badGstin.size) problems.push({ text: `These customers have a GSTIN in the wrong format, so their bills went in as B2C: ${[...badGstin].slice(0, 8).join(', ')}.` });
   if (noPos.length) problems.push({ text: `No state on these inter-state bills (add the customer's state): ${noPos.slice(0, 8).join(', ')}.` });
+  if (noShip.length) problems.push({ text: `No shipping bill on these exports (needed for goods, not for services; add it on the invoice when you have it): ${noShip.slice(0, 8).join(', ')}.` });
   if (longNo.length) problems.push({ text: `The portal takes bill numbers of up to 16 letters, digits, / and -: ${longNo.slice(0, 8).join(', ')}.` });
   return { ...p, gstin, json, tables, b3, problems };
 }
@@ -199,13 +221,17 @@ export function gstr1Sheets(g) {
     { name: 'B2C small', cols: [T('Supply', 8), T('Place of supply', 8), ...taxCols], rows: (j.b2cs || []).map((a) => [a.sply_ty, a.pos, a.rt, a.txval, a.iamt, a.camt, a.samt]) },
     { name: 'Credit notes', cols: [T('Buyer GSTIN', 18), T('Note no.', 16), T('Date', 12), M('Note value'), T('Place of supply', 8), ...taxCols],
       rows: [...(j.cdnr || []).flatMap((b) => b.nt.flatMap((t) => inv([t]).map((l) => [b.ctin, t.nt_num, t.nt_dt, t.val, t.pos, ...l]))),
-        ...(j.cdnur || []).flatMap((t) => inv([t], true).map((l) => ['Unregistered (B2C large)', t.nt_num, t.nt_dt, t.val, t.pos, ...l]))] },
+        ...(j.cdnur || []).flatMap((t) => inv([t], true).map((l) => [t.typ === 'B2CL' ? 'Unregistered (B2C large)' : `Export (${t.typ})`, t.nt_num, t.nt_dt, t.val, t.pos || '96', ...l]))] },
+    { name: 'Exports', cols: [T('Type', 8), T('Invoice no.', 16), T('Date', 12), M('Invoice value'), T('Port code', 10), T('Shipping bill', 14), T('SB date', 12),
+      { h: 'Rate %', num: 1, w: 8 }, M('Taxable value'), M('IGST')],
+      rows: (j.exp || []).flatMap((g) => g.inv.flatMap((t) => t.itms.map((x) => [g.exp_typ, t.inum, t.idt, t.val, t.sbpcode || '', t.sbnum || '', t.sbdt || '', x.rt, x.txval, x.iamt]))) },
     { name: 'Nil rated', cols: [T('Supply', 12), M('Nil rated')], rows: ((j.nil || {}).inv || []).map((r) => [r.sply_ty, r.nil_amt]) },
     hsnSheet('HSN B2B', (j.hsn || {}).hsn_b2b || []), hsnSheet('HSN B2C', (j.hsn || {}).hsn_b2c || []),
     { name: 'Documents', cols: [T('Kind', 16), T('From', 16), T('To', 16), { h: 'Total', num: 1, w: 8 }, { h: 'Cancelled', num: 1, w: 10 }, { h: 'Net issued', num: 1, w: 10 }],
       rows: ((j.doc_issue || {}).doc_det || []).flatMap((k) => k.docs.map((x) => [k.doc_num === 1 ? 'Invoices' : 'Credit notes', x.from, x.to, x.totnum, x.cancel, x.net_issue])) },
     { name: 'GSTR-3B', cols: [T('Table', 34), M('Taxable value'), M('IGST'), M('CGST'), M('SGST')], rows: [
       ['3.1(a) Outward taxable supplies', g.b3.outward.txval, g.b3.outward.igst, g.b3.outward.cgst, g.b3.outward.sgst],
+      ['3.1(b) Zero rated (exports)', g.b3.zero_rated.txval, g.b3.zero_rated.igst, '', ''],
       ['3.1(c) Nil rated', g.b3.nil, '', '', ''],
       ...g.b3.unregistered_inter.map((u) => [`3.2 To unregistered, state ${u.pos}`, u.txval, '', '', '']),
       ['4(A)(5) Input tax credit (purchase bills)', '', g.b3.itc.igst, g.b3.itc.cgst, g.b3.itc.sgst],

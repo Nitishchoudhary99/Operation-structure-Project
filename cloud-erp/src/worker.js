@@ -38,7 +38,7 @@ import { queue as vasooliQueue, logReminder, summary as vasooliSummary, summaryT
   answerConfirmation, recoveryFile, stepFor, toneFor } from './vasooli.js';
 import { cleanVaada, splitPlan, planOptions, minPart, risk, riskStatements, riskInput, setStatements, evalSet, writeBackStatements, promiseOut, pctOf,
   forecast, inr0, FREE_OPEN_MAX } from './vaada.js';
-import { STATES, einvoiceJson, ewaybillJson } from './gst.js';
+import { STATES, CURRENCIES, einvoiceJson, ewaybillJson } from './gst.js';
 import { listBins, addBins, deleteBin, binContents, moveInBins, itemLots, expiryReport, serialLookup, putawayPlan, wavePick } from './lots.js';
 import { tallyXml } from './tally.js';
 import { gstr1, gstr1Sheets, match2b } from './gstr.js';
@@ -271,7 +271,7 @@ router.add('GET', '/api/me', async (c) => json({
   view: Object.fromEntries(AREAS.map((a) => [a, canView(c.user, a)])), costs: seesCosts(c.user), wa_auto: waConfigured(c.env),
   wa_bot: botReady(c.env), wa_bot_link: c.org.wa_bot ? botLink(c.env, c.org.bot_code) : '',
   doc_types: Object.fromEntries(Object.entries(DOC_TYPES).map(([k, v]) => [k, { label: v.label, side: v.side, from: v.from, prefix: v.prefix, note: !!v.note, stock: v.stock || '' }])),
-  gst_rates: GST_RATES, today: today(), states: STATES.map(([, n]) => n), plan: planOut(c.org),
+  gst_rates: GST_RATES, today: today(), states: STATES.map(([, n]) => n), currencies: CURRENCIES, plan: planOut(c.org),
 }));
 
 router.add('POST', '/api/me/password', async (c) => {
@@ -304,10 +304,11 @@ router.add('PUT', '/api/org', async (c) => {
   requireCan(c.user, 'settings');
   const b = c.body;
   await c.db.prepare(`UPDATE orgs SET name = ?, gstin = ?, state = ?, address = ?, phone = ?, upi_id = ?, fy_start = ?, city = ?, pincode = ?, email = ?,
-      msg_lang = ?, udyam = ? WHERE id = ?`)
+      msg_lang = ?, udyam = ?, lut = ? WHERE id = ?`)
     .bind(reqStr(b.name, 'Business name', 120), str(b.gstin, 15).toUpperCase(), str(b.state, 60), str(b.address, 300), str(b.phone, 20),
       str(b.upi_id, 60), /^\d{2}-\d{2}$/.test(b.fy_start || '') ? b.fy_start : c.org.fy_start, str(b.city, 60), str(b.pincode, 6).replace(/\D/g, ''),
-      str(b.email, 120), cleanLang(b.msg_lang, cleanLang(c.org.msg_lang)), b.udyam === undefined ? c.org.udyam || '' : str(b.udyam, 19).toUpperCase(), c.org.id).run();
+      str(b.email, 120), cleanLang(b.msg_lang, cleanLang(c.org.msg_lang)), b.udyam === undefined ? c.org.udyam || '' : str(b.udyam, 19).toUpperCase(),
+      b.lut === undefined ? c.org.lut || '' : str(b.lut, 60), c.org.id).run();
   return json({ ok: true });
 });
 
@@ -597,7 +598,7 @@ const partyFields = (b, c) => ({
   name: reqStr(b.name, 'Name', 120), kind: oneOf(b.kind || 'customer', ['customer', 'supplier', 'both'], 'Type'),
   phone: str(b.phone, 20), email: str(b.email, 120), gstin: str(b.gstin, 15).toUpperCase(), state: str(b.state, 60), address: str(b.address, 300),
   credit_limit: toPaise(num(b.credit_limit, 'Credit limit', { min: 0, def: 0 })), credit_days: int(b.credit_days, 'Credit days', { min: 0, max: 365, def: 0 }),
-  city: str(b.city, 60), pincode: str(b.pincode, 6).replace(/\D/g, ''),
+  city: str(b.city, 60), pincode: str(b.pincode, 6).replace(/\D/g, ''), country: b.country === undefined ? null : str(b.country, 40),
   price_level: b.price_level === undefined ? null : b.price_level === 'wholesale' ? 'wholesale' : '',
   lang: b.lang === undefined ? null : LANGS.includes(b.lang) ? b.lang : '', vip: b.vip === undefined ? null : b.vip === true || b.vip === 1 || b.vip === '1' || b.vip === 'on' ? 1 : 0,
 });
@@ -621,9 +622,9 @@ router.add('POST', '/api/parties', async (c) => {
   requireCan(c.user, 'masters');
   const f = partyFields(c.body, c);
   if (await c.db.prepare(`SELECT 1 FROM parties WHERE org_id = ? AND name = ?`).bind(c.org.id, f.name).first()) throw bad(`A party called ${f.name} already exists.`);
-  const r = await c.db.prepare(`INSERT INTO parties (org_id, name, kind, phone, email, gstin, state, address, credit_limit, credit_days, city, pincode, extra, lang, vip, price_level, created_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING *`).bind(c.org.id, f.name, f.kind, f.phone, f.email, f.gstin, f.state, f.address, f.credit_limit, f.credit_days, f.city, f.pincode,
-    f.extra ?? cleanExtra(fieldsOf(c.org), 'party', {}), f.lang ?? '', f.vip ?? 0, f.price_level ?? '', nowIso()).first();
+  const r = await c.db.prepare(`INSERT INTO parties (org_id, name, kind, phone, email, gstin, state, address, credit_limit, credit_days, city, pincode, extra, lang, vip, price_level, country, created_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING *`).bind(c.org.id, f.name, f.kind, f.phone, f.email, f.gstin, f.state, f.address, f.credit_limit, f.credit_days, f.city, f.pincode,
+    f.extra ?? cleanExtra(fieldsOf(c.org), 'party', {}), f.lang ?? '', f.vip ?? 0, f.price_level ?? '', f.country ?? '', nowIso()).first();
   return json({ ...r, extra: extraOf(r.extra), credit_limit: R(r.credit_limit) });
 });
 router.add('PUT', '/api/parties/:id', async (c) => {
@@ -632,8 +633,8 @@ router.add('PUT', '/api/parties/:id', async (c) => {
   const dup = await c.db.prepare(`SELECT id FROM parties WHERE org_id = ? AND name = ? AND id != ?`).bind(c.org.id, f.name, +c.params.id).first();
   if (dup) throw bad(`A party called ${f.name} already exists.`);
   const r = await c.db.prepare(`UPDATE parties SET name = ?, kind = ?, phone = ?, email = ?, gstin = ?, state = ?, address = ?, credit_limit = ?, credit_days = ?, city = ?, pincode = ?,
-      extra = COALESCE(?, extra), lang = COALESCE(?, lang), vip = COALESCE(?, vip), price_level = COALESCE(?, price_level) WHERE id = ? AND org_id = ?`)
-    .bind(f.name, f.kind, f.phone, f.email, f.gstin, f.state, f.address, f.credit_limit, f.credit_days, f.city, f.pincode, f.extra, f.lang, f.vip, f.price_level, +c.params.id, c.org.id).run();
+      extra = COALESCE(?, extra), lang = COALESCE(?, lang), vip = COALESCE(?, vip), price_level = COALESCE(?, price_level), country = COALESCE(?, country) WHERE id = ? AND org_id = ?`)
+    .bind(f.name, f.kind, f.phone, f.email, f.gstin, f.state, f.address, f.credit_limit, f.credit_days, f.city, f.pincode, f.extra, f.lang, f.vip, f.price_level, f.country, +c.params.id, c.org.id).run();
   if (!r.meta.changes) throw notFound('Party not found.');
   return json({ ok: true });
 });
@@ -1219,6 +1220,7 @@ router.add('GET', '/api/docs/:id/convert', async (c) => {
   }
   if (T.note) {     // value note: every line of the bill/invoice, the user types the rate difference per unit
     return json({ type: to, party_id: src.party_id, ref_id: src.id, ref_number: src.number, warehouse_id: src.warehouse_id, date: today(), extra: src.extra,
+      export_type: src.export_type || '', currency: src.currency || '', fx_rate: src.fx_rate || 0,
       lines: src.lines.map((l) => ({ item_id: l.item_id, item: l.item, unit: l.unit, description: l.description || l.item, qty: l.qty, rate: '', discount_pct: 0, gst_rate: l.gst_rate, orig_rate: l.rate })) });
   }
   const left = (l) => (receiving ? l.to_receive : l.remaining);
@@ -1230,7 +1232,7 @@ router.add('GET', '/api/docs/:id/convert', async (c) => {
   }));
   if (!lines.length) throw bad(`Nothing left to ${['SRET', 'PRET'].includes(to) ? 'return' : receiving ? 'receive' : 'process'} on ${src.number}.`);
   return json({ type: to, party_id: src.party_id, ref_id: src.id, ref_number: src.number, ref_type: src.type, warehouse_id: src.warehouse_id, date: today(), extra: src.extra,
-    party_ref: src.party_ref || '', lines });
+    party_ref: src.party_ref || '', export_type: src.export_type || '', currency: src.currency || '', fx_rate: src.fx_rate || 0, lines });
 });
 
 /* Print design of one document (presentation only, so it can change after saving; '' goes back to the business default) */
@@ -1285,8 +1287,13 @@ router.add('GET', '/api/docs/:id/ewaybill', async (c) => {
 router.add('PUT', '/api/docs/:id/gst-refs', async (c) => {
   requireCan(c.user, 'sales');
   const b = c.body;
-  const r = await c.db.prepare(`UPDATE docs SET irn = ?, ack_no = ?, ack_date = ?, ewb_no = ?, ewb_date = ? WHERE id = ? AND org_id = ?`)
-    .bind(str(b.irn, 64), str(b.ack_no, 20), str(b.ack_date, 30), str(b.ewb_no, 20), str(b.ewb_date, 30), +c.params.id, c.org.id).run();
+  // an export's shipping bill comes after the invoice: port code, shipping bill number and date (left as they are when not sent)
+  const keep = (k, v) => (b[k] === undefined ? null : v);
+  const r = await c.db.prepare(`UPDATE docs SET irn = ?, ack_no = ?, ack_date = ?, ewb_no = ?, ewb_date = ?,
+      port_code = COALESCE(?, port_code), sb_no = COALESCE(?, sb_no), sb_date = COALESCE(?, sb_date) WHERE id = ? AND org_id = ?`)
+    .bind(str(b.irn, 64), str(b.ack_no, 20), str(b.ack_date, 30), str(b.ewb_no, 20), str(b.ewb_date, 30),
+      keep('port_code', str(b.port_code, 10).toUpperCase().replace(/[^A-Z0-9]/g, '')), keep('sb_no', str(b.sb_no, 20).replace(/[^0-9A-Za-z]/g, '')),
+      keep('sb_date', b.sb_date ? date(b.sb_date, 'Shipping bill date') : ''), +c.params.id, c.org.id).run();
   if (!r.meta.changes) throw notFound('Document not found.');
   return json({ ok: true });
 });
