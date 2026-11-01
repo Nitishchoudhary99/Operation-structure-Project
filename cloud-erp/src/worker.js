@@ -43,6 +43,7 @@ import { listBins, addBins, deleteBin, binContents, moveInBins, itemLots, expiry
 import { tallyXml } from './tally.js';
 import { gstr1, gstr1Sheets, match2b } from './gstr.js';
 import { loyaltyOf, cleanLoyalty, partyPoints, members as loyaltyMembers, adjustPoints } from './loyalty.js';
+import { widgetData, listDashboards, saveDashboard, deleteDashboard, pickDefault } from './widgets.js';
 import { dineBoard, addTables, removeTable, tableDetail, sendKot, voidLine, moveOrder, billOrder, voidOrder, kotLog } from './dine.js';
 import { secondStep, twoStepStart, twoStepEnable, twoStepDisable, newBackupCodes, twoStepReset, requireTwoStep, loginStatement, signInHistory,
   closeBusiness, cancelClose, purgeClosed, notOwnerWhileClosing } from './security.js';
@@ -906,6 +907,13 @@ router.add('POST', '/api/loyalty/adjust', async (c) => {
   await c.db.batch([a.statement, auditStatement(c, 'loyalty points', `${a.party.name} ${a.points > 0 ? '+' : ''}${a.points}`)]);
   return json(await partyPoints(c, a.party.id));
 });
+/* Dashboards: src/widgets.js. Widget answers follow the viewer's own role; dashboards are saved per user. */
+router.add('GET', '/api/dash/widgets', async (c) => json(await widgetData(c, c.url.searchParams.get('ids'), c.url.searchParams)));
+router.add('GET', '/api/dashboards', async (c) => json(await listDashboards(c)));
+router.add('POST', '/api/dashboards', async (c) => json(await saveDashboard(c, 0, c.body)));
+router.add('PUT', '/api/dashboards/:id', async (c) => json(await saveDashboard(c, +c.params.id, c.body)));
+router.add('DELETE', '/api/dashboards/:id', async (c) => json(await deleteDashboard(c, +c.params.id)));
+router.add('PUT', '/api/dashboards-default', async (c) => json(await pickDefault(c, +c.body.id || 0)));
 /* Restaurant tables and KOT: src/dine.js */
 router.add('GET', '/api/dine', async (c) => json(await dineBoard(c)));
 router.add('POST', '/api/dine/tables', async (c) => json(await addTables(c, c.body)));
@@ -2285,6 +2293,7 @@ const READ_AREAS = [
   [/^\/api\/rates\/?$/, 'sales'],
   [/^\/api\/(loyalty(\/\d+)?|settings\/loyalty)\/?$/, 'sales'],
   [/^\/api\/dine(\/|$)/, 'sales'],
+  [/^\/api\/(dash\/widgets|dashboards)\/?$/, OPEN],
   [/^\/api\/settings\/shop\/?$/, ['sales', 'items', 'settings']],
   [/^\/api\/items\/\d+\/moves\/?$/, 'items'],
   [/^\/api\/reports\/(stock|stock-ageing|expiry)\/?$/, 'items'],
