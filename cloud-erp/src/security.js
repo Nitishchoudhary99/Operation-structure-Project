@@ -195,6 +195,7 @@ const CHILDREN = {
   bom_lines: 'bom_id IN (SELECT id FROM boms WHERE org_id = ?1)',
   write_off_lines: 'write_off_id IN (SELECT id FROM write_offs WHERE org_id = ?1)',
   pw_resets: 'user_id IN (SELECT id FROM users WHERE org_id = ?1)',
+  dine_lines: 'order_id IN (SELECT id FROM dine_orders WHERE org_id = ?1)',
 };
 /* kept: the business's SmartTrader plan payments (tax records of the service) */
 const KEEP = new Set(['orgs', 'billing_orders']);
