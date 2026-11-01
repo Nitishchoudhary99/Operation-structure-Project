@@ -189,6 +189,10 @@ export const HI = {
   'Wholesale price (₹)': 'होलसेल रेट (₹)', 'Wholesale from quantity': 'इतनी मात्रा से होलसेल', 'Price list': 'रेट लिस्ट', 'Retail (selling price)': 'रिटेल (बिक्री रेट)',
   'Wholesale price': 'होलसेल रेट', 'Last to this customer': 'इस ग्राहक को पिछली बार', 'Use': 'लगाएँ', 'Wholesale': 'होलसेल', 'Retail': 'रिटेल',
   'Empty = only customers on the wholesale price list.': 'खाली = सिर्फ़ होलसेल रेट लिस्ट वाले ग्राहक।', 'Their bills start from this price of each item.': 'इनके बिल में हर आइटम का यही रेट आएगा।',
+  'Online Catalogue': 'ऑनलाइन कैटलॉग', 'Catalogue on': 'कैटलॉग चालू', 'WhatsApp number for orders': 'ऑर्डर के लिए WhatsApp नंबर', 'Note on the page': 'पेज पर नोट',
+  'Your catalogue link': 'आपका कैटलॉग लिंक', 'Copy link': 'लिंक कॉपी करें', 'Share on WhatsApp': 'WhatsApp पर शेयर करें', 'Print QR poster': 'QR पोस्टर प्रिंट करें',
+  'New link (the old one stops)': 'नया लिंक (पुराना बंद)', 'Items in the catalogue': 'कैटलॉग के आइटम', 'In catalogue': 'कैटलॉग में', 'shown': 'दिखेगा', 'Price': 'रेट',
+  'Show in the online catalogue': 'ऑनलाइन कैटलॉग में दिखाएँ', 'Empty = your business phone.': 'खाली = बिज़नेस का फ़ोन।', 'Catalogue QR poster': 'कैटलॉग QR पोस्टर',
   // months
   'Jan': 'जन॰', 'Feb': 'फ़र॰', 'Mar': 'मार्च', 'Apr': 'अप्रै॰', 'May': 'मई', 'Jun': 'जून', 'Jul': 'जुला॰', 'Aug': 'अग॰', 'Sept': 'सित॰', 'Sep': 'सित॰', 'Oct': 'अक्टू॰', 'Nov': 'नव॰', 'Dec': 'दिस॰',
 };

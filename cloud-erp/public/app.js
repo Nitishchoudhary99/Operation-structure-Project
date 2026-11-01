@@ -380,7 +380,7 @@ const ADVANCED = new Set(['sales/SO', 'sales/DN', 'sales/QUOTE', 'purchase/PO', 
 const ADV_DOCS = ['QUOTE', 'SO', 'DN', 'PO', 'GRN'];
 const simple = () => !ME || (ME.org.mode || 'simple') !== 'advanced';
 /* which permission area a menu entry needs (custom roles may not see every area); the gate register also opens with 'gate' */
-const navArea = (h) => /^(receipts|payments|expenses|accounts|journal|staff|bankrec|assets|tds)$/.test(h) ? 'finance' : /^(sales\/|pos$|recurring$|channels$)/.test(h) ? 'sales' : /^(purchase\/|receive$)/.test(h) ? 'purchase'
+const navArea = (h) => /^(receipts|payments|expenses|accounts|journal|staff|bankrec|assets|tds)$/.test(h) ? 'finance' : /^(sales\/|pos$|recurring$|channels$|shop$)/.test(h) ? 'sales' : /^(purchase\/|receive$)/.test(h) ? 'purchase'
   : /^gate\/in$/.test(h) ? ['purchase', 'gate'] : /^gate\/out$/.test(h) ? ['items', 'gate'] : h === 'claims' ? ['purchase', 'finance'] : h === 'wa-inbox' ? ['sales', 'khata', 'finance']
   : /^(items|stock|stockcount|pending|bins|expiry|stock-ageing|serials|production|wave|putaway)$/.test(h) ? 'items' : /^(parties|reminders)$/.test(h) ? 'masters' : /^(khata|vaade)$/.test(h) ? 'khata'
   : /^(reports\/|tally$|daybook$|gstr$)/.test(h) ? 'reports' : h === 'plan' ? 'settings' : '';
@@ -401,7 +401,7 @@ const JOBS = {
   accounts: { t: 'Accountant', home: 'dashboard', screens: ['dashboard', 'sales/INV', 'sales/SRET', 'sales/CNOTE', 'receipts', 'purchase/BILL', 'purchase/PRET', 'purchase/DNOTE', 'payments',
     'parties', 'khata', 'reminders', 'vaade', 'staff', 'expenses', 'bankrec', 'assets', 'tds', 'accounts', 'journal', 'daybook', 'reports/pnl', 'reports/balance-sheet', 'reports/trial-balance', 'reports/gst', 'gstr', 'reports/ageing',
     'reports/register', 'cash', 'tally', 'claims', 'wa-inbox'] },
-  sales: { t: 'Salesman', home: 'sales/INV', screens: ['dashboard', 'pos', 'sales/INV', 'sales/QUOTE', 'sales/SO', 'sales/DN', 'sales/SRET', 'receipts', 'channels', 'recurring', 'parties', 'khata',
+  sales: { t: 'Salesman', home: 'sales/INV', screens: ['dashboard', 'pos', 'sales/INV', 'shop', 'sales/QUOTE', 'sales/SO', 'sales/DN', 'sales/SRET', 'receipts', 'channels', 'recurring', 'parties', 'khata',
     'reminders', 'vaade', 'items', 'stock', 'wa-inbox'] },
 };
 const ROLE_JOB = { owner: 'all', admin: 'all', accountant: 'accounts', store: 'store', sales: 'sales' };
@@ -432,7 +432,7 @@ const minDate = () => {
 };
 const NAV = [
   ['', [['dashboard', 'Dashboard']]],
-  ['Sales', [['pos', 'Quick Bill (POS)'], ['sales/INV', 'Invoices'], ['channels', 'Online Orders (Amazon…)'], ['recurring', 'Recurring Bills'], ['sales/SO', 'Sales Orders'], ['sales/DN', 'Delivery Notes'], ['sales/QUOTE', 'Quotations'], ['sales/SRET', 'Sales Returns'], ['sales/CNOTE', 'Credit Notes (rate diff)'], ['receipts', 'Receipts']]],
+  ['Sales', [['pos', 'Quick Bill (POS)'], ['sales/INV', 'Invoices'], ['shop', 'Online Catalogue'], ['channels', 'Online Orders (Amazon…)'], ['recurring', 'Recurring Bills'], ['sales/SO', 'Sales Orders'], ['sales/DN', 'Delivery Notes'], ['sales/QUOTE', 'Quotations'], ['sales/SRET', 'Sales Returns'], ['sales/CNOTE', 'Credit Notes (rate diff)'], ['receipts', 'Receipts']]],
   ['Purchase', [['receive', 'Receive Goods (scan)'], ['purchase/PO', 'Purchase Orders'], ['gate/in', 'Gate Entry (inward)'], ['purchase/GRN', 'Goods Receipts (GRN)'], ['purchase/BILL', 'Purchase Bills'], ['purchase/PRET', 'Purchase Returns'], ['purchase/DNOTE', 'Debit Notes (rate diff)'], ['claims', 'Transit Claims'], ['payments', 'Payments']]],
   ['Inventory', [['items', 'Items'], ['stock', 'Stock & Godowns'], ['stock-ageing', 'Stock Ageing'], ['bins', 'Bins & Racks'], ['expiry', 'Batch & Expiry'], ['serials', 'Serial / IMEI'], ['production', 'Production (BOM)'], ['wave', 'Wave Pick List'], ['stockcount', 'Stock Count'], ['gate/out', 'Gate Pass (outward)'], ['pending', 'Pending Orders']]],
   ['Contacts', [['parties', 'Customers & Suppliers'], ['khata', 'Khata Book'], ['reminders', 'Vasooli (Collections)'], ['vaade', 'Vaade (Promises)'], ['wa-inbox', 'WhatsApp Inbox']]],
@@ -1424,6 +1424,7 @@ function itemForm(i = {}) {
     { k: 'wholesale_price', label: 'Wholesale price (₹)', type: 'number', value: ((i.id ? i.price_incl : inclPref()) ? i.wholesale_price_incl : i.wholesale_price) || '', more: true,
       help: 'For wholesale customers, and for bills of the quantity below or more. With or without GST, like the selling price.' },
     { k: 'wholesale_min', label: 'Wholesale from quantity', type: 'number', value: i.wholesale_min || '', more: true, help: 'Empty = only customers on the wholesale price list.' },
+    { k: 'shop_show', label: 'Show in the online catalogue', type: 'checkbox', value: !i.shop_hide, more: true },
     ...(ME.costs === false ? [] : [{ k: 'purchase_price', label: 'Buying price (₹)', type: 'number', value: i.purchase_price, help: 'Used for profit.' }]),
     { k: 'gst_rate', label: 'GST rate', type: 'select', options: ME.gst_rates.map((g) => ({ v: g, t: g + '%' })), value: i.gst_rate ?? 18 },
     { k: 'unit', label: 'Unit', value: i.unit || 'Pcs', list: 'units', help: 'Pcs, Kg, Box, Litre…' },
@@ -4507,6 +4508,111 @@ route(/^wa-inbox$/, async (el, m, q) => {
 });
 
 /* the counter poster: the shop's QR that opens WhatsApp with its code */
+/* ======================================================================= online catalogue (owner screen, QR poster, the public page) */
+route(/^shop$/, async (el) => {
+  const [s, items] = await Promise.all([GET('/api/settings/shop'), master('items')]), canSet = ME.can.settings, canItems = ME.can.items;
+  const shareText = `${ME.org.name}: hamari rate list dekhiye aur WhatsApp par order kijiye: ${s.link}`;
+  el.innerHTML = head('Online Catalogue') + `
+    <div class="panel"><p>Your rate list on a link of its own. Customers see your items and prices (with GST), pick what they want, and the order comes to your WhatsApp as a message. No commission, nothing for them to install.</p>
+      <p class="muted small" lang="hi">ग्राहक लिंक खोलकर आपके रेट देखते हैं, सामान चुनते हैं और ऑर्डर आपके WhatsApp पर आता है।</p>
+      <form id="shf"><label class="mode-opt"><input type="checkbox" name="on" ${s.on ? 'checked' : ''} ${canSet ? '' : 'disabled'}> <span><b>Catalogue on</b><br>
+        <span class="muted">${s.items} item(s) with a selling price are on it. Leave any out below.</span></span></label>
+        <div class="form"><label class="f">WhatsApp number for orders<input name="wa" value="${esc(s.wa)}" inputmode="numeric" maxlength="12" placeholder="${esc(ME.org.phone || '10-digit mobile')}"><small class="help">Empty = your business phone.</small></label>
+          <label class="f wide">Note on the page<input name="note" value="${esc(s.note)}" maxlength="200" placeholder="Free home delivery above ₹500 · Open 9 am to 9 pm"></label></div>
+        <label class="check"><input type="checkbox" name="stock" ${s.stock ? 'checked' : ''}> Show "out of stock" on items you have none of (never how many you have)</label>
+        <div class="row" style="margin-top:10px"><span class="spacer"></span><button class="btn primary" ${canSet ? '' : 'disabled'}>Save</button></div></form></div>
+    ${s.on && s.link ? `<div class="panel"><div class="row qrbox"><div id="shqr"></div><div><b>Your catalogue link</b><br><a href="${esc(s.link)}" target="_blank" rel="noopener" class="small">${esc(s.link)}</a>
+        <div class="row" style="margin-top:8px"><button type="button" class="btn sm" id="shcopy">Copy link</button>
+          <a class="btn sm" target="_blank" rel="noopener" href="https://wa.me/?text=${encodeURIComponent(shareText)}">Share on WhatsApp</a><a class="btn sm" href="#/shop-poster">Print QR poster</a>
+          ${canSet ? '<button type="button" class="btn sm danger" id="shnew">New link (the old one stops)</button>' : ''}</div></div></div></div>` : ''}
+    <div class="panel flush"><div style="padding:14px 16px 0"><h3 style="margin:0">Items in the catalogue</h3><p class="muted small">Price shown to customers is the selling price with GST. Wholesale prices, costs and stock counts are never shown.</p></div>
+      ${table([{ h: 'Item', f: (i) => `<b>${esc(i.name)}</b>${i.category ? `<div class="muted small">${esc(i.category)}</div>` : ''}` }, { h: 'Price', num: 1, f: (i) => inr(i.sale_price_incl) },
+        { h: 'In catalogue', f: (i) => (i.sale_price > 0 ? `<label class="check"><input type="checkbox" data-shop="${i.id}" ${i.shop_hide ? '' : 'checked'} ${canItems ? '' : 'disabled'}> shown</label>` : '<span class="muted small">no price</span>') }],
+      items, { empty: 'Add items with a selling price first.' })}</div>`;
+  if ($('#shqr')) qrInto($('#shqr'), s.link);
+  $('#shf').onsubmit = async (e) => {
+    e.preventDefault(); const f = e.target;
+    try { await api('PUT', '/api/settings/shop', { on: f.on.checked, stock: f.stock.checked, wa: f.wa.value, note: f.note.value }); toast(f.on.checked ? 'Catalogue is on' : 'Catalogue is off'); render(); }
+    catch (x) { toast(x.message, 'err'); }
+  };
+  if ($('#shcopy')) $('#shcopy').onclick = async () => { try { await navigator.clipboard.writeText(s.link); toast('Link copied'); } catch (x) { toast(s.link); } };
+  if ($('#shnew')) $('#shnew').onclick = async () => {
+    if (!confirm('Make a new link? The old link and its QR stop working at once.')) return;
+    try { await POST('/api/settings/shop/new-link'); toast('New link made'); render(); } catch (x) { toast(x.message, 'err'); }
+  };
+  $$('[data-shop]', el).forEach((b) => { b.onchange = async () => {
+    try { await api('PUT', `/api/items/${b.dataset.shop}/shop`, { show: b.checked }); dirty('items'); } catch (x) { b.checked = !b.checked; toast(x.message, 'err'); }
+  }; });
+});
+route(/^shop-poster$/, async (el) => {
+  const s = await GET('/api/settings/shop');
+  if (!s.on || !s.link) { el.innerHTML = head('Catalogue QR poster') + `<div class="panel">${emptyCta('Turn on the online catalogue first.', '<a class="btn primary" href="#/shop">Online Catalogue</a>')}</div>`; return; }
+  el.innerHTML = head('Catalogue QR poster', '<a class="btn" href="#/shop">Back</a><button class="btn primary" data-act="print">Print</button>') + `
+    <div class="panel wa-poster"><h1>${esc(ME.org.name)}</h1><p class="big">Scan karein, rate dekhein, WhatsApp par order karein</p>
+      <div id="shpq"></div><p>${esc(s.note || 'Ghar baithe order · Rate list hamesha taaza')}</p>
+      <p class="muted">स्कैन करें, रेट देखें, WhatsApp पर ऑर्डर करें · Scan to see prices and order on WhatsApp</p></div>`;
+  qrInto($('#shpq'), s.link);
+});
+/* The public rate list: /s/<token>. The cart stays on the customer's phone; the order is a WhatsApp message to the shop. */
+const SHOP_T = {
+  hl: { search: 'Saaman khojein…', all: 'Sab', add: 'Add', out: 'Stock khatam', items: (n) => `${n} saaman`, order: 'WhatsApp par order', name: 'Aapka naam', addr: 'Pata / note (delivery ke liye)',
+    send: 'WhatsApp par bhejein', back: 'Wapas', total: 'Kul', none: 'Yeh rate list abhi band hai.', hint: 'Rate GST sahit. Final bill dukaan dega.', empty: 'Koi saaman nahi mila.',
+    msg: (shop) => `Namaste ${shop}, mujhe ye chahiye:`, nameL: 'Naam', addrL: 'Pata / note', foot: '(SmartTrader rate list se)' },
+  en: { search: 'Search items…', all: 'All', add: 'Add', out: 'Out of stock', items: (n) => `${n} item(s)`, order: 'Order on WhatsApp', name: 'Your name', addr: 'Address / note (for delivery)',
+    send: 'Send on WhatsApp', back: 'Back', total: 'Total', none: 'This rate list is not available now.', hint: 'Prices include GST. The shop gives the final bill.', empty: 'No items found.',
+    msg: (shop) => `Hello ${shop}, I would like to order:`, nameL: 'Name', addrL: 'Address / note', foot: '(from the SmartTrader rate list)' },
+  hi: { search: 'सामान खोजें…', all: 'सब', add: 'जोड़ें', out: 'स्टॉक खत्म', items: (n) => `${n} सामान`, order: 'WhatsApp पर ऑर्डर', name: 'आपका नाम', addr: 'पता / नोट (डिलीवरी के लिए)',
+    send: 'WhatsApp पर भेजें', back: 'वापस', total: 'कुल', none: 'यह रेट लिस्ट अभी बंद है।', hint: 'रेट GST सहित। आखिरी बिल दुकान देगी।', empty: 'कोई सामान नहीं मिला।',
+    msg: (shop) => `नमस्ते ${shop}, मुझे यह चाहिए:`, nameL: 'नाम', addrL: 'पता / नोट', foot: '(SmartTrader रेट लिस्ट से)' },
+};
+async function publicShop(token) {
+  const app = $('#app'), l = new URLSearchParams(location.search).get('l'), L = SHOP_T[l] || (LANG === 'hi' ? SHOP_T.hi : SHOP_T.hl);
+  document.documentElement.lang = L === SHOP_T.hi ? 'hi' : 'en';
+  const res = await fetch('/api/public/shop/' + token).catch(() => null), d = res ? await res.json().catch(() => ({})) : {};
+  if (!res || !res.ok) { app.innerHTML = `<div class="boot"><h2>${L.none}</h2><p class="muted">${esc(d.error || '')}</p></div>`; return; }
+  const key = 'st:cart:' + token, items = d.items, byId = new Map(items.map((i) => [i.id, i]));
+  let cart = {}; try { cart = JSON.parse(localStorage.getItem(key) || '{}') || {}; } catch (e) { cart = {}; }
+  for (const k of Object.keys(cart)) if (!byId.has(+k) || !(cart[k] > 0)) delete cart[k];
+  const save = () => { try { localStorage.setItem(key, JSON.stringify(cart)); } catch (e) { /* storage off */ } };
+  const cats = [...new Set(items.map((i) => i.category).filter(Boolean))];
+  let q = '', cat = '';
+  app.innerHTML = `<div class="shop"><header class="shop-head"><h1>${esc(d.shop.name)}</h1>${d.shop.city ? `<p class="muted">${esc(d.shop.city)}</p>` : ''}
+      ${d.shop.note ? `<p class="shop-note">${esc(d.shop.note)}</p>` : ''}<input id="sq" type="search" placeholder="${L.search}" autocomplete="off" aria-label="${L.search}"></header>
+    ${cats.length > 1 ? `<div class="chips" id="scats"><button type="button" class="chip on" data-c="">${L.all}</button>${cats.map((c) => `<button type="button" class="chip" data-c="${esc(c)}">${esc(c)}</button>`).join('')}</div>` : ''}
+    <div id="slist" class="shop-list"></div><p class="muted small shop-hint">${L.hint}</p>
+    <div class="shop-bar" id="sbar" hidden><span id="scount"></span><button type="button" class="btn primary" id="sorder">${L.order}</button></div><div id="ssheet"></div></div>`;
+  const totalOf = () => Object.entries(cart).reduce((t, [id, n]) => t + byId.get(+id).price * n, 0);
+  const bar = () => { const n = Object.values(cart).reduce((a, b) => a + b, 0); $('#sbar').hidden = !n; $('#scount').textContent = `${L.items(n)} · ${inr(totalOf())}`; };
+  const draw = () => {
+    const rows = items.filter((i) => (!cat || i.category === cat) && (!q || i.name.toLowerCase().includes(q)));
+    $('#slist').innerHTML = rows.length ? rows.map((i) => `<div class="shop-item${i.in_stock === false ? ' out' : ''}"><div><b>${esc(i.name)}</b><div class="muted small">${esc(i.unit)}${i.in_stock === false ? ` · ${L.out}` : ''}</div></div>
+        <div class="shop-price">${inr(i.price)}</div><div class="shop-qty">${cart[i.id] ? `<button type="button" class="btn sm" data-dec="${i.id}" aria-label="-">−</button><b>${cart[i.id]}</b><button type="button" class="btn sm" data-inc="${i.id}" aria-label="+">+</button>`
+          : `<button type="button" class="btn sm primary" data-inc="${i.id}" ${i.in_stock === false ? 'disabled' : ''}>${L.add}</button>`}</div></div>`).join('') : `<p class="muted">${L.empty}</p>`;
+    bar();
+  };
+  $('#slist').onclick = (e) => {
+    const inc = e.target.closest('[data-inc]'), dec = e.target.closest('[data-dec]');
+    if (inc) cart[inc.dataset.inc] = (cart[inc.dataset.inc] || 0) + 1;
+    else if (dec) { cart[dec.dataset.dec] -= 1; if (cart[dec.dataset.dec] <= 0) delete cart[dec.dataset.dec]; } else return;
+    save(); draw();
+  };
+  $('#sq').oninput = (e) => { q = e.target.value.trim().toLowerCase(); draw(); };
+  if ($('#scats')) $('#scats').onclick = (e) => { const b = e.target.closest('[data-c]'); if (!b) return; cat = b.dataset.c; $$('#scats .chip').forEach((x) => x.classList.toggle('on', x === b)); draw(); };
+  $('#sorder').onclick = () => {
+    const lines = Object.entries(cart).map(([id, n], k) => { const i = byId.get(+id); return `${k + 1}. ${i.name} (${i.unit}) × ${n} = ${inr(i.price * n)}`; });
+    $('#ssheet').innerHTML = `<div class="shop-sheet panel"><h3 style="margin-top:0">${L.order}</h3><pre class="shop-pre">${esc(lines.join('\n'))}\n${L.total}: ${inr(totalOf())}</pre>
+      <label class="f">${L.name}<input id="sname" maxlength="60" autocomplete="name"></label><label class="f">${L.addr}<textarea id="saddr" rows="2" maxlength="300"></textarea></label>
+      <div class="row"><button type="button" class="btn" id="sback">${L.back}</button><span class="spacer"></span><button type="button" class="btn primary" id="ssend">${L.send}</button></div></div>`;
+    $('#sback').onclick = () => { $('#ssheet').innerHTML = ''; };
+    $('#ssend').onclick = () => {
+      const nm = $('#sname').value.trim(), ad = $('#saddr').value.trim();
+      const text = [L.msg(d.shop.name), ...lines, `${L.total}: ${inr(totalOf())}`, nm ? `${L.nameL}: ${nm}` : '', ad ? `${L.addrL}: ${ad}` : '', L.foot].filter(Boolean).join('\n');
+      window.open(`https://wa.me/${d.shop.wa}?text=${encodeURIComponent(text)}`, '_blank', 'noopener');
+    };
+    $('#ssheet').scrollIntoView({ behavior: 'smooth' });
+  };
+  draw();
+}
 route(/^wa-poster$/, async (el) => {
   if (!ME.wa_bot_link) { el.innerHTML = head('WhatsApp QR poster') + `<div class="panel">${emptyCta('Turn on the WhatsApp bot in Settings first.', '<a class="btn primary" href="#/settings">Settings</a>')}</div>`; return; }
   el.innerHTML = head('WhatsApp QR poster', '<a class="btn" href="#/settings">Back</a><button class="btn primary" data-act="print">Print</button>') + `
@@ -5647,6 +5753,8 @@ async function boot() {
   if (pi) return publicDoc(pi[1]);
   const pc = location.pathname.match(/^\/c\/([0-9a-f]{24})\/?$/);
   if (pc) return publicConfirm(pc[1]);
+  const ps = location.pathname.match(/^\/s\/([0-9a-f]{24})\/?$/);       // the online catalogue
+  if (ps) return publicShop(ps[1]);
   const rt = location.hash.match(/^#\/reset\/([0-9a-f]{64})$/);   // link from the forgot-password e-mail
   if (rt) return renderReset(rt[1]);
   const vt = location.hash.match(/^#\/verify\/([0-9a-f]{64})$/);  // link from the sign-up e-mail

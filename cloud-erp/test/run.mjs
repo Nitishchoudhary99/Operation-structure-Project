@@ -2793,5 +2793,50 @@ if (process.env.ERP_AI_MOCK) {
   check('the books balance after wholesale bills', (await W('GET', '/api/reports/trial-balance')).balanced);
 }
 
+/* --- online catalogue: a public rate list with WhatsApp orders, nothing private on it --- */
+{
+  const ip = '203.0.113.155';
+  const su = await rq('POST', '/api/auth/signup', { business: 'Catalogue Kirana', name: 'K', email: `cat${Date.now()}@test.in`, password: 'Catalog-pass-123', state: 'Rajasthan' }, { ip });
+  const K = async (m, p, b) => (await rq(m, p, b, { cookie: su.cookie, ip })).data, KE = (m, p, b) => rq(m, p, b, { cookie: su.cookie, ip });
+  await K('PUT', '/api/org', { name: 'Catalogue Kirana', state: 'Rajasthan', phone: '9876543210', city: 'Jaipur' });
+  const rice = await K('POST', '/api/items', { name: 'Rice 5kg', sale_price: 400, gst_rate: 5, purchase_price: 350, wholesale_price: 380, opening_qty: 10, category: 'Grocery' });
+  const oil = await K('POST', '/api/items', { name: 'Oil 1L', sale_price: 150, gst_rate: 5, purchase_price: 120, category: 'Grocery' });
+  const secret = await K('POST', '/api/items', { name: 'Secret item', sale_price: 99, gst_rate: 0, shop_show: false });
+  await K('POST', '/api/items', { name: 'No price', sale_price: 0 });
+  const s0 = await K('GET', '/api/settings/shop');
+  check('the catalogue starts off, with no link', s0.on === false && s0.link === '' && s0.items === 2, JSON.stringify(s0));
+  check('the order number must be a mobile number', (await KE('PUT', '/api/settings/shop', { on: true, wa: '12345' })).status === 400);
+  const s1 = await K('PUT', '/api/settings/shop', { on: true, stock: true, wa: '', note: 'Free delivery above Rs 500' });
+  const tok = (s1.link.match(/\/s\/([0-9a-f]{24})$/) || [])[1];
+  check('turning it on gives a link of its own', s1.on && !!tok, JSON.stringify(s1));
+  const pub = await rq('GET', `/api/public/shop/${tok}`, undefined, { ip: '203.0.113.156' });
+  const names = pub.data.items.map((i) => i.name), r1 = pub.data.items.find((i) => i.name === 'Rice 5kg'), o1 = pub.data.items.find((i) => i.name === 'Oil 1L');
+  check('anyone with the link sees the shop, its items and prices with GST, and in stock or not', pub.status === 200 && pub.data.shop.name === 'Catalogue Kirana' && pub.data.shop.wa === '919876543210'
+    && pub.data.shop.note === 'Free delivery above Rs 500' && r1.price === 420 && r1.in_stock === true && o1.in_stock === false, JSON.stringify(pub.data));
+  check('items left out or without a price are not there', !names.includes('Secret item') && !names.includes('No price') && names.length === 2, JSON.stringify(names));
+  const keys = new Set(pub.data.items.flatMap((i) => Object.keys(i)));
+  check('the public page never carries quantities, costs, wholesale prices or ids of anything else', ['qty_on_hand', 'purchase_price', 'avg_cost', 'wholesale_price', 'sale_price', 'org_id'].every((k) => !keys.has(k))
+    && !('phone' in pub.data.shop) && !('upi_id' in pub.data.shop), JSON.stringify([...keys]));
+  await K('PUT', `/api/items/${rice.id}/shop`, { show: false });
+  await K('PUT', '/api/settings/shop', { on: true, stock: false, wa: '9123456780', note: '' });
+  const pub2 = (await rq('GET', `/api/public/shop/${tok}`, undefined, { ip: '203.0.113.156' })).data;
+  check('an item can be taken off, stock can be hidden, and orders go to the number given', pub2.items.length === 1 && pub2.items[0].name === 'Oil 1L' && !('in_stock' in pub2.items[0])
+    && pub2.shop.wa === '919123456780', JSON.stringify(pub2));
+  const page = await fetch(`${BASE}/s/${tok}`, { headers: { 'CF-Connecting-IP': '203.0.113.156' } });
+  check('the link opens a page with a preview card for WhatsApp', page.status === 200 && /Catalogue Kirana, Jaipur: rate list/.test(await page.text()));
+  const s2 = await K('POST', '/api/settings/shop/new-link');
+  const tok2 = s2.link.split('/s/')[1];
+  check('a new link stops the old one at once', tok2 !== tok && (await rq('GET', `/api/public/shop/${tok}`, undefined, { ip: '203.0.113.156' })).status === 404
+    && (await rq('GET', `/api/public/shop/${tok2}`, undefined, { ip: '203.0.113.156' })).status === 200);
+  await K('PUT', '/api/settings/shop', { on: false });
+  check('turning it off closes the page', (await rq('GET', `/api/public/shop/${tok2}`, undefined, { ip: '203.0.113.156' })).status === 404
+    && (await rq('GET', '/api/public/shop/zz', undefined, { ip: '203.0.113.156' })).status === 404);
+  const stEm = `catstaff${Date.now()}@test.in`;
+  await K('POST', '/api/users', { name: 'Shop boy', email: stEm, password: 'Shopboy-pass-123', role: 'sales' });
+  const sl = await rq('POST', '/api/auth/login', { email: stEm, password: 'Shopboy-pass-123' }, { ip });
+  check('staff see the catalogue settings but only the owner side changes them; nobody signed out does', (await rq('GET', '/api/settings/shop', undefined, { cookie: sl.cookie, ip })).status === 200
+    && (await rq('PUT', '/api/settings/shop', { on: true }, { cookie: sl.cookie, ip })).status === 403 && (await rq('GET', '/api/settings/shop', undefined, { ip })).status === 401 && secret.shop_hide === 1);
+}
+
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);
