@@ -8,6 +8,8 @@ const $ = (s, el = document) => el.querySelector(s);
 const $$ = (s, el = document) => [...el.querySelectorAll(s)];
 const esc = (v) => String(v ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const inr = (n) => (n < 0 ? '−' : '') + '₹' + Math.abs(Number(n || 0)).toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+/* an amount in a foreign currency (export invoices): "USD 1,234.50" */
+const fcMoney = (n, c) => `${n < 0 ? '−' : ''}${c} ${Math.abs(Number(n || 0)).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 const inr0 = (n) => (n < 0 ? '−' : '') + '₹' + Math.abs(Number(n || 0)).toLocaleString('en-IN', { maximumFractionDigits: 0 });
 const qtyf = (n) => Number(n || 0).toLocaleString('en-IN', { maximumFractionDigits: 3 });
 const fdate = (d) => d ? new Date(d + 'T00:00:00').toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' }) : '';
@@ -877,6 +879,13 @@ route(/^new\/([A-Z]+)$/, async (el, m, q) => {
         : `<input type="hidden" name="warehouse_id" value="${whs[0] ? whs[0].id : ''}">`}
       ${cfInputs('doc', draft.extra || {}, T.side)}
     </div></div>
+    ${isSale && !fromDoc && !isNote ? `<div class="panel expbox" id="expbox" hidden><h3>&#127760; Export invoice</h3><div class="form">
+      <label class="f">GST on this export<select name="export_type"><option value="WOPAY">No IGST: under LUT / bond (zero rated)</option><option value="WPAY">With IGST paid (refund later)</option></select></label>
+      <label class="f">Currency<select name="currency"><option value="">INR (rupees)</option>${(ME.currencies || []).map((c) => `<option value="${c}">${c}</option>`).join('')}</select></label>
+      <label class="f">Rupees for 1 <span data-curname>unit</span><input name="fx_rate" type="number" step="any" min="0" inputmode="decimal" placeholder="83.25"><small class="help">The rate on the invoice date (customs notified, or your bank's).</small></label>
+      <label class="f">Port code<input name="port_code" maxlength="10" placeholder="INNSA1"></label><label class="f">Shipping bill no.<input name="sb_no" maxlength="20" placeholder="later is fine"></label>
+      <label class="f">Shipping bill date<input name="sb_date" type="date"></label></div><p class="muted small" data-exphelp></p></div>` : ''}
+    ${fromDoc && draft.export_type ? `<div class="panel muted small">&#127760; Export ${draft.export_type === 'WPAY' ? 'with IGST' : 'under LUT, no IGST'}${draft.currency ? ` in ${esc(draft.currency)} at ₹${draft.fx_rate}` : ''}: the same terms as ${esc(draft.ref_number)}. Rates below are in rupees.</div>` : ''}
     ${isNote ? '' : `<label class="check incl-all"><input type="checkbox" id="inclall" ${(draft.incl ?? (isSale && !draft.lines.some((l) => l.rate) && (inclPref() || items.some((x) => x.price_incl)))) ? 'checked' : ''}> Rates include GST (MRP)</label>`}
     <div class="panel flush"><div class="tbl-wrap"><table class="t lines"><thead><tr><th>Item</th><th>Qty</th><th>${isNote ? 'Rate diff (₹/unit)' : 'Rate (₹)'}</th><th>Disc %</th><th>GST</th><th class="num">Amount</th><th></th></tr></thead>
       <tbody id="lines">${draft.lines.map(lineRow).join('')}</tbody></table></div>
@@ -908,6 +917,35 @@ route(/^new\/([A-Z]+)$/, async (el, m, q) => {
       : `<p class="muted small">&#11088; ${esc(pts.party.name)}: ${pts.balance} loyalty point${pts.balance === 1 ? '' : 's'}${pts.balance > 0 && LOY.min_points ? ` (usable from ${LOY.min_points})` : ''}. This bill earns ${LOY.earn_per > 1 ? `1 point per ${inr(LOY.earn_per)}` : '1 point per rupee'}.</p>`;
     const b = $('[data-ptsmax]', box);
     if (b) b.onclick = () => { form.elements.redeem_points.value = ptsMost() || ''; recalc(); };
+  };
+  /* export (the customer's state is "Other Country"): LUT or IGST, a currency and its rupee rate, the shipping bill. Once a currency
+     has its rate, the rates on screen are in that currency (they are sent as such, and the server turns them into rupees). */
+  const isExp = () => !!$('#expbox') && /^other country$/i.test(String((parties.find((x) => x.id === +((form.elements.party_id || {}).value || 0)) || {}).state || '').trim());
+  const basis = { cur: '', fx: 0 };          // what the rates on screen are in now
+  const expCur = () => (isExp() ? form.elements.currency.value : '');
+  const expFx = () => +((form.elements.fx_rate || {}).value || 0);
+  const shown = (v) => (basis.cur && basis.fx ? r2(v / basis.fx) : v);
+  const rebase = () => {
+    const cur = expCur(), fx = expFx();
+    if (cur === basis.cur) { if (cur && fx) basis.fx = fx; return; }
+    if (cur && !fx) return;                  // wait for the rate
+    const oldFx = basis.fx || fx;
+    $$('tr', tbody).forEach((tr) => {
+      const r = $('[name=rate]', tr); if (!r || r.value === '') return;
+      const rupees = basis.cur ? +r.value * oldFx : +r.value;
+      r.value = cur ? r2(rupees / fx) : r2(rupees);
+    });
+    basis.cur = cur; basis.fx = cur ? fx : 0;
+  };
+  const expHelp = () => {
+    const box = $('#expbox'); if (!box) return;
+    box.hidden = !isExp();
+    if (box.hidden) { if (basis.cur) { form.elements.currency.value = ''; rebase(); } return; }
+    const c = form.elements.currency.value;
+    $('[data-curname]', box).textContent = c || 'unit';
+    $('[data-exphelp]', box).textContent = (form.elements.export_type.value === 'WPAY' ? 'IGST at each item\'s rate is charged and paid; claim it back as a refund. '
+      : `No GST: the invoice says "supply meant for export under LUT"${ME.org.lut ? ` with your LUT ${ME.org.lut}` : ' (add your LUT number in Settings → Business)'}. `)
+      + (c ? (basis.cur ? `Rates below are in ${c}; the invoice shows both ${c} and rupees.` : `Type the rupee rate for 1 ${c}; the rates below then turn into ${c}.`) : 'Rates below are in rupees.');
   };
   const loadPts = async () => {
     pts = null;
@@ -965,25 +1003,27 @@ route(/^new\/([A-Z]+)$/, async (el, m, q) => {
     $$('tr', tbody).forEach((tr) => {
       showLast(tr);
       const it = items.find((i) => i.id === +(($('[name=item_id]', tr) || {}).value || 0));
-      if (it && isSale && !isNote && tr.dataset.auto === '1') $('[name=rate]', tr).value = listRate(it, +$('[name=qty]', tr).value || 0);
+      if (it && isSale && !isNote && tr.dataset.auto === '1') $('[name=rate]', tr).value = shown(listRate(it, +$('[name=qty]', tr).value || 0));
     });
     recalc();
   };
   const recalc = () => {
-    const p = partyOf(), inter = !!(p && p.state && ME.org.state && p.state.toLowerCase() !== ME.org.state.toLowerCase());
+    const p = partyOf(), ex = isExp(), inter = ex || !!(p && p.state && ME.org.state && p.state.toLowerCase() !== ME.org.state.toLowerCase());
+    const lut = ex && form.elements.export_type.value === 'WOPAY', inc = incl() && !ex;
+    const M = (v) => (basis.cur ? fcMoney(v, basis.cur) : inr(v));
     let taxable = 0, tax = 0;
     $$('tr', tbody).forEach((tr) => {
-      const g = (n) => +($(`[name=${n}]`, tr).value || 0), base = g('qty') * g('rate') * (1 - g('discount_pct') / 100);
+      const g = (n) => +($(`[name=${n}]`, tr).value || 0), base = g('qty') * g('rate') * (1 - g('discount_pct') / 100), gr = lut ? 0 : g('gst_rate');
       // with GST in the rate the line total is the rate itself and the tax is taken out of it
-      const t = incl() ? r2(base * 100 / (100 + g('gst_rate'))) : r2(base), x = incl() ? r2(r2(base) - t) : r2(t * g('gst_rate') / 100);
-      taxable += t; tax += x; $('[data-amt]', tr).textContent = inr(t + x);
+      const t = inc ? r2(base * 100 / (100 + gr)) : r2(base), x = inc ? r2(r2(base) - t) : r2(t * gr / 100);
+      taxable += t; tax += x; $('[data-amt]', tr).textContent = M(t + x);
     });
-    const exact = r2(taxable + tax), total = money || isNote || ['SRET', 'PRET'].includes(type) ? Math.round(exact) : exact;
-    $('#totals').innerHTML = `<div><span>Taxable value</span><span>${inr(taxable)}</span></div>
-      ${inter ? `<div><span>IGST</span><span>${inr(tax)}</span></div>` : `<div><span>CGST</span><span>${inr(tax / 2)}</span></div><div><span>SGST</span><span>${inr(tax / 2)}</span></div>`}
+    const exact = r2(taxable + tax), total = !basis.cur && (money || isNote || ['SRET', 'PRET'].includes(type)) ? Math.round(exact) : exact;
+    $('#totals').innerHTML = `<div><span>Taxable value</span><span>${M(taxable)}</span></div>
+      ${inter ? `<div><span>IGST${lut ? ' (LUT: none)' : ''}</span><span>${M(tax)}</span></div>` : `<div><span>CGST</span><span>${inr(tax / 2)}</span></div><div><span>SGST</span><span>${inr(tax / 2)}</span></div>`}
       ${total !== exact ? `<div><span>Round off</span><span>${inr(total - exact)}</span></div>` : ''}
-      <div class="grand"><span>Total</span><span>${inr(total)}</span></div>`;
-    $('#sbtotal').innerHTML = `Total <b>${inr(total)}</b>`;
+      <div class="grand"><span>Total</span><span>${M(total)}</span></div>${basis.cur ? `<div class="muted small"><span>In rupees at ₹${basis.fx}</span><span>${inr(r2(total * basis.fx))}</span></div>` : ''}`;
+    $('#sbtotal').innerHTML = `Total <b>${M(total)}</b>`;
     form.dataset.total = total;
     // points: what they pay, and the rest still to pay
     const most = ptsMost(), pb = $('[data-ptsmax]');
@@ -1022,7 +1062,7 @@ route(/^new\/([A-Z]+)$/, async (el, m, q) => {
     if (sel) sel.onchange = () => {
       const it = items.find((i) => i.id === +sel.value);
       if (it) {
-        if (!isNote) $('[name=rate]', tr).value = isSale ? listRate(it, +$('[name=qty]', tr).value || 0) : (it.purchase_price || it.avg_cost);
+        if (!isNote) $('[name=rate]', tr).value = isSale ? shown(listRate(it, +$('[name=qty]', tr).value || 0)) : (it.purchase_price || it.avg_cost);
         tr.dataset.auto = '1';
         $('[name=gst_rate]', tr).value = it.gst_rate;
         $('[name=description]', tr).value = '';
@@ -1039,14 +1079,14 @@ route(/^new\/([A-Z]+)$/, async (el, m, q) => {
     if (rateIn) rateIn.addEventListener('input', () => { tr.dataset.auto = ''; });
     if (qtyIn && isSale && !isNote) qtyIn.addEventListener('input', () => {
       const it = items.find((i) => i.id === +((sel || {}).value || 0));
-      if (it && tr.dataset.auto === '1') rateIn.value = listRate(it, +qtyIn.value || 0);
+      if (it && tr.dataset.auto === '1') rateIn.value = shown(listRate(it, +qtyIn.value || 0));
     });
     const use = $('.lastrate', tr);
     if (use) use.onclick = (e) => {
       if (!e.target.closest('[data-uselast]')) return;
       const last = lastRates[+((sel || {}).value || 0)]; if (!last) return;
       const g = +(($('[name=gst_rate]', tr) || {}).value || 0);
-      rateIn.value = incl() ? r2(last.rate * (100 + g) / 100) : last.rate;
+      rateIn.value = shown(incl() ? r2(last.rate * (100 + g) / 100) : last.rate);
       if (last.discount_pct) $('[name=discount_pct]', tr).value = last.discount_pct;
       tr.dataset.auto = ''; recalc();
     };
@@ -1087,10 +1127,16 @@ route(/^new\/([A-Z]+)$/, async (el, m, q) => {
     recalc();
   };
   if (type === 'INV' && LOY.on && form.elements.party_id) { form.elements.party_id.addEventListener('change', loadPts); if (form.elements.party_id.value) loadPts(); }
+  if ($('#expbox')) {
+    form.elements.party_id.addEventListener('change', () => { expHelp(); recalc(); });
+    for (const n of ['currency', 'fx_rate', 'export_type']) form.elements[n].addEventListener('change', () => { rebase(); expHelp(); recalc(); });
+    expHelp();
+  }
   recalc(); loadRisk();
   form.onsubmit = async (e) => {
     e.preventDefault();
     const f = form.elements;
+    if (isExp() && expCur() && expFx() > 0 && expCur() !== basis.cur) { rebase(); recalc(); }
     const lines = $$('tr', tbody).map((tr) => {
       const g = (n) => { const x = $(`[name=${n}]`, tr); return x ? x.value : ''; };
       return { item_id: +g('item_id') || null, description: g('description'), qty: g('qty'), rate: g('rate'), discount_pct: g('discount_pct'), gst_rate: g('gst_rate'), src_line_id: +g('src_line_id') || undefined,
@@ -1104,6 +1150,12 @@ route(/^new\/([A-Z]+)$/, async (el, m, q) => {
     if (f.due_date && f.due_date.value) body.due_date = f.due_date.value;
     if (f.pay_amount && +f.pay_amount.value > 0) body.payment = { amount: +f.pay_amount.value, account_id: +f.pay_account.value };
     if (ptsValue() > 0) body.redeem_points = Math.min(ptsUse(), ptsMost());
+    if (isExp()) {
+      if (expCur() && !(expFx() > 0)) { toast(`Type the rupee rate for 1 ${expCur()}.`, 'err'); return; }
+      if (expCur() !== basis.cur) rebase();
+      Object.assign(body, { export_type: f.export_type.value, currency: basis.cur, fx_rate: basis.cur ? expFx() : 0, rates_in: basis.cur ? 'fc' : undefined,
+        port_code: f.port_code.value, sb_no: f.sb_no.value, sb_date: f.sb_date.value || undefined });
+    }
     if (type === 'INV') body.credit_ok = false;
     const btn = $('#save'); btn.disabled = true;
     const save = async () => {
@@ -1160,37 +1212,44 @@ const pointsLine = (d, tag = 'p') => (d.points && d.type === 'INV' && d.status !
 function docPaper(d) {
   const o = d.org, p = d.party || {}, P = o.print || {};
   const isTax = ['INV', 'BILL', 'SRET', 'PRET', 'CNOTE', 'DNOTE'].includes(d.type);
-  const title = d.type === 'INV' ? (P.title || (o.gstin ? 'TAX INVOICE' : 'INVOICE')) : String(d.label || '').toUpperCase();
+  const exp = d.export_type && d.side === 'sales', fc = d.currency && d.fx_rate > 0 ? { c: d.currency, fx: d.fx_rate } : null;
+  const F = (v) => fcMoney(v / fc.fx, fc.c);
+  const title = d.type === 'INV' ? (exp ? 'EXPORT INVOICE' : P.title || (o.gstin ? 'TAX INVOICE' : 'INVOICE')) : String(d.label || '').toUpperCase();
   const L = DESIGNS.some(([k]) => k === d.design) ? d.design : DESIGNS.some(([k]) => k === P.layout) ? P.layout : 'classic';
   const inter = !!d.inter_state, compact = L === 'compact' || L === 'compact58', ours = d.side === 'sales' || d.type === 'PO';
   // columns nobody uses on this bill are left out (no discount anywhere, no HSN anywhere)
   const hasDisc = d.lines.some((l) => +l.discount_pct), hasHsn = d.lines.some((l) => l.hsn);
   const color = /^#[0-9a-f]{6}$/i.test(P.color || '') ? P.color : '#0f766e';
   const bank = ours && P.bank_account ? `<p class="bank"><b>Bank details</b><br>${[P.bank_name, 'A/c ' + P.bank_account, P.bank_ifsc && 'IFSC ' + P.bank_ifsc, P.bank_branch].filter(Boolean).map(esc).join(' &middot; ')}</p>` : '';
-  const upi = d.type === 'INV' && o.upi_id && d.balance > 0 && P.show_upi !== false;
+  const upi = d.type === 'INV' && o.upi_id && d.balance > 0 && P.show_upi !== false && !d.export_type;   // a buyer abroad pays by bank, not UPI
   const lineCells = (l, i) => compact
-    ? `<td>${esc(l.item || l.description)}${l.print_extra ? `<div class="muted">${esc(l.print_extra)}</div>` : ''}${lotLine(l)}<div class="muted">${qtyf(l.qty)} ${esc(l.unit || '')} &times; ${inr(l.rate)}${l.discount_pct ? ` &minus;${l.discount_pct}%` : ''}${l.gst_rate ? ` &middot; GST ${l.gst_rate}%` : ''}</div></td><td class="num">${inr(l.total)}</td>`
+    ? `<td>${esc(l.item || l.description)}${l.print_extra ? `<div class="muted">${esc(l.print_extra)}</div>` : ''}${lotLine(l)}<div class="muted">${qtyf(l.qty)} ${esc(l.unit || '')} &times; ${fc ? F(l.rate) : inr(l.rate)}${l.discount_pct ? ` &minus;${l.discount_pct}%` : ''}${l.gst_rate ? ` &middot; GST ${l.gst_rate}%` : ''}</div></td><td class="num">${inr(l.total)}</td>`
     : `<td>${i + 1}</td><td>${esc(l.item || l.description)}${l.item && l.description && l.description !== l.item ? `<div class="muted">${esc(l.description)}</div>` : ''}${l.print_extra ? `<div class="muted">${esc(l.print_extra)}</div>` : ''}${lotLine(l)}</td>${hasHsn ? `<td>${esc(l.hsn || '')}</td>` : ''}
-        <td class="num">${qtyf(l.qty)} ${esc(l.unit || '')}</td><td class="num">${inr(l.rate)}</td>${hasDisc ? `<td class="num">${l.discount_pct ? l.discount_pct + '%' : ''}</td>` : ''}<td class="num">${inr(l.taxable)}</td><td class="num">${l.gst_rate}%</td>
-        ${inter ? `<td class="num">${inr(l.igst)}</td>` : `<td class="num">${inr(l.cgst)}</td><td class="num">${inr(l.sgst)}</td>`}<td class="num">${inr(l.total)}</td>`;
+        <td class="num">${qtyf(l.qty)} ${esc(l.unit || '')}</td><td class="num">${fc ? `${F(l.rate)}<div class="muted">${inr(l.rate)}</div>` : inr(l.rate)}</td>${hasDisc ? `<td class="num">${l.discount_pct ? l.discount_pct + '%' : ''}</td>` : ''}<td class="num">${inr(l.taxable)}</td><td class="num">${l.gst_rate}%</td>
+        ${inter ? `<td class="num">${inr(l.igst)}</td>` : `<td class="num">${inr(l.cgst)}</td><td class="num">${inr(l.sgst)}</td>`}<td class="num">${inr(l.total)}${fc ? `<div class="muted">${F(l.total)}</div>` : ''}</td>`;
   const heads = compact ? '<th>Item</th><th class="num">Amount</th>'
     : `<th>#</th><th>Item</th>${hasHsn ? '<th>HSN</th>' : ''}<th class="num">Qty</th><th class="num">Rate</th>${hasDisc ? '<th class="num">Disc</th>' : ''}<th class="num">Taxable</th><th class="num">GST</th>${inter ? '<th class="num">IGST</th>' : '<th class="num">CGST</th><th class="num">SGST</th>'}<th class="num">Amount</th>`;
   return `<div class="paper-fit"><button type="button" class="fit-btn no-print" hidden>&#128269; Zoom</button><div class="paper-box"><div class="doc-paper fit L-${L} F-${P.font === 'serif' ? 'serif' : 'sans'}" style="--ac:${color}">
       <div class="hdr"><div class="org">${d.logo_url ? `<img class="logo" src="${esc(d.logo_url)}" alt="">` : ''}<div><div class="oname">${esc(o.name)}</div><div>${esc(o.address)}</div>
         <div>${[o.gstin ? 'GSTIN: ' + esc(o.gstin) : '', o.state ? 'State: ' + esc(o.state) : ''].filter(Boolean).join(' &middot; ')}</div><div>${esc(o.phone)}</div></div></div>
         <div class="meta"><div class="title">${esc(title)}</div><div>No: <b>${esc(d.number)}</b></div><div>Date: ${fdate(d.date)}</div>
-        ${d.due_date ? `<div>${d.type === 'QUOTE' ? 'Valid till' : 'Due'}: ${fdate(d.due_date)}</div>` : ''}${d.parent ? `<div>Ref: ${esc(d.parent.number)}</div>` : ''}${d.party_ref ? `<div>Supplier ref: ${esc(d.party_ref)}</div>` : ''}</div></div>
-      <div class="parties"><div><b>${d.side === 'sales' ? 'Bill to' : 'Supplier'}</b><br>${esc(p.name)}<br>${esc(p.address || '')}<br>${p.gstin ? 'GSTIN: ' + esc(p.gstin) + '<br>' : ''}${esc(p.phone || '')}</div>
-        <div><b>Place of supply</b><br>${esc(d.place_of_supply || '-')}<br>${isTax ? (inter ? 'Inter-state (IGST)' : 'Intra-state (CGST + SGST)') : ''}${d.warehouse ? '<br>Godown: ' + esc(d.warehouse) : ''}</div></div>
+        ${d.due_date ? `<div>${d.type === 'QUOTE' ? 'Valid till' : 'Due'}: ${fdate(d.due_date)}</div>` : ''}${d.parent ? `<div>Ref: ${esc(d.parent.number)}</div>` : ''}${d.party_ref ? `<div>Supplier ref: ${esc(d.party_ref)}</div>` : ''}
+        ${fc ? `<div>Currency: <b>${esc(fc.c)}</b> &middot; 1 ${esc(fc.c)} = ₹${fc.fx}</div>` : ''}${exp && d.port_code ? `<div>Port: ${esc(d.port_code)}</div>` : ''}
+        ${exp && d.sb_no ? `<div>Shipping bill: ${esc(d.sb_no)}${d.sb_date ? ` dt ${fdate(d.sb_date)}` : ''}</div>` : ''}</div></div>
+      <div class="parties"><div><b>${d.side === 'sales' ? 'Bill to' : 'Supplier'}</b><br>${esc(p.name)}<br>${esc(p.address || '')}${exp && p.country ? `, ${esc(p.country)}` : ''}<br>${p.gstin ? 'GSTIN: ' + esc(p.gstin) + '<br>' : ''}${esc(p.phone || '')}</div>
+        <div><b>Place of supply</b><br>${esc(d.place_of_supply || '-')}${exp ? ' (96)' : ''}<br>${exp ? (d.export_type === 'WPAY' ? 'Export with IGST' : 'Export under LUT, zero rated') : isTax ? (inter ? 'Inter-state (IGST)' : 'Intra-state (CGST + SGST)') : ''}${d.warehouse ? '<br>Godown: ' + esc(d.warehouse) : ''}</div></div>
       ${(d.print_fields || []).length ? `<div class="cfp">${d.print_fields.map((f) => `<span><b>${esc(f.label)}:</b> ${esc(f.value)}</span>`).join('')}</div>` : ''}
       <div class="tbl-wrap"><table class="dl"><thead><tr>${heads}</tr></thead>
       <tbody>${d.lines.map((l, i) => `<tr>${lineCells(l, i)}</tr>`).join('')}</tbody></table></div>
       ${L === 'gst' && isTax ? `<div class="tbl-wrap hsn-wrap"><b>HSN-wise tax summary</b>${hsnSummary(d, inter)}</div>` : ''}
       <div class="foot"><div class="words"><b>Amount in words:</b> ${esc(words(d.total))}${d.notes ? `<p><b>Notes:</b> ${esc(d.notes)}</p>` : ''}${pointsLine(d)}
+        ${exp && d.type === 'INV' ? `<p class="expdecl"><b>${d.export_type === 'WPAY' ? 'SUPPLY MEANT FOR EXPORT WITH PAYMENT OF INTEGRATED TAX (IGST).'
+          : `SUPPLY MEANT FOR EXPORT UNDER LETTER OF UNDERTAKING${o.lut ? ` (LUT ARN ${esc(o.lut)})` : ''} WITHOUT PAYMENT OF INTEGRATED TAX (IGST).`}</b></p>` : ''}
         ${upi ? `<p>Pay by UPI: <b>${esc(o.upi_id)}</b></p>` : ''}${bank}</div>
         <div class="totals"><div><span>Taxable</span><span>${inr(d.taxable)}</span></div>
           ${inter ? `<div><span>IGST</span><span>${inr(d.igst)}</span></div>` : `<div><span>CGST</span><span>${inr(d.cgst)}</span></div><div><span>SGST</span><span>${inr(d.sgst)}</span></div>`}
-          ${d.round_off ? `<div><span>Round off</span><span>${inr(d.round_off)}</span></div>` : ''}<div class="grand"><span>Total</span><span>${inr(d.total)}</span></div></div></div>
+          ${d.round_off ? `<div><span>Round off</span><span>${inr(d.round_off)}</span></div>` : ''}<div class="grand"><span>Total</span><span>${inr(d.total)}</span></div>
+          ${fc ? `<div class="grand"><span>Total</span><span>${F(d.total)}</span></div>` : ''}</div></div>
       ${d.irn || d.ewb_no ? `<div style="margin-top:12px;font-size:12px">${d.irn ? `IRN: <b>${esc(d.irn)}</b>${d.ack_no ? ` &middot; Ack No: ${esc(d.ack_no)}` : ''}${d.ack_date ? ` &middot; Ack Date: ${esc(d.ack_date)}` : ''}<br>` : ''}${d.ewb_no ? `E-way bill: <b>${esc(d.ewb_no)}</b>${d.ewb_date ? ` &middot; ${esc(d.ewb_date)}` : ''}` : ''}</div>` : ''}
       ${ours && P.terms ? `<div class="terms"><b>Terms &amp; conditions</b><div>${esc(P.terms).replace(/\n/g, '<br>')}</div></div>` : ''}
       <div class="foot"><div id="upiqr"></div><div class="sign">For ${esc(o.name)}<br>${d.sign_url ? `<img class="sig" src="${esc(d.sign_url)}" alt="">` : '<br><br>'}<br>${P.signatory ? esc(P.signatory) + '<br>' : ''}Authorised signatory</div></div>
@@ -1267,7 +1326,8 @@ route(/^doc\/(\d+)$/, async (el, m) => {
     if (!simple() && ['SO', 'DN'].includes(d.type)) more.push(`<a class="btn" href="#/picklist/${d.id}">Pick list</a>`);
     if (!simple() && ['INV', 'SRET', 'CNOTE'].includes(d.type)) more.push(`<a class="btn" href="/api/docs/${d.id}/einvoice" id="einv">E-invoice JSON</a>`);
     if (!simple() && ['INV', 'DN'].includes(d.type)) more.push(`<button class="btn" id="ewb">E-way bill</button>`);
-    if (!simple() && ['INV', 'SRET', 'DN'].includes(d.type)) more.push(`<button class="btn" id="refs">${d.irn || d.ewb_no ? 'Edit' : 'Add'} IRN / EWB no.</button>`);
+    if (!simple() && ['INV', 'SRET', 'DN'].includes(d.type)) more.push(`<button class="btn" id="refs">${d.irn || d.ewb_no ? 'Edit' : 'Add'} IRN / EWB no.${d.export_type ? ' / shipping bill' : ''}</button>`);
+    else if (d.export_type && d.type === 'INV') more.push(`<button class="btn" id="refs">${d.sb_no ? 'Edit' : 'Add'} shipping bill</button>`);
     if (['INV', 'BILL', 'QUOTE', 'SO', 'PO'].includes(d.type)) more.push(`<a class="btn" href="#/new/${d.type}?copy=${d.id}">Repeat (new copy, today)</a>`);
     if (['INV', 'BILL'].includes(d.type)) more.push('<button class="btn" id="recur">Make it every month / week…</button>');
     if (!limits().no_cancel) more.push(`<button class="btn danger" id="cancel">Cancel ${esc((T && T.label) || 'document')}</button>`);
@@ -1322,7 +1382,9 @@ route(/^doc\/(\d+)$/, async (el, m) => {
   };
   if ($('#refs')) $('#refs').onclick = () => modal('GST portal numbers', [
     { k: 'irn', label: 'IRN (e-invoice)', value: d.irn, wide: true }, { k: 'ack_no', label: 'Ack No', value: d.ack_no }, { k: 'ack_date', label: 'Ack date', value: d.ack_date },
-    { k: 'ewb_no', label: 'E-way bill no.', value: d.ewb_no }, { k: 'ewb_date', label: 'E-way bill date', value: d.ewb_date }],
+    { k: 'ewb_no', label: 'E-way bill no.', value: d.ewb_no }, { k: 'ewb_date', label: 'E-way bill date', value: d.ewb_date },
+    ...(d.export_type ? [{ k: 'port_code', label: 'Port code (e.g. INNSA1)', value: d.port_code }, { k: 'sb_no', label: 'Shipping bill no.', value: d.sb_no },
+      { k: 'sb_date', label: 'Shipping bill date', type: 'date', value: d.sb_date }] : [])],
   async (v) => { await api('PUT', `/api/docs/${d.id}/gst-refs`, v); toast('Saved'); render(); },
   { intro: '<p class="muted">Upload the e-invoice JSON on einvoice1.gst.gov.in (or through your GSP), then paste the IRN and Ack details here. They print on the invoice.</p>' });
   if ($('#approve')) $('#approve').onclick = async () => {
@@ -1420,10 +1482,11 @@ function partyForm(p = {}, after) {
     { k: 'name', label: 'Name', value: p.name, required: true, placeholder: 'Shop or person name' },
     { k: 'phone', label: 'Mobile', value: p.phone, type: 'tel', placeholder: '10-digit mobile', help: 'Used to send bills and reminders on WhatsApp.' },
     { k: 'kind', label: 'This is a', type: 'select', options: [{ v: 'customer', t: 'Customer (buys from you)' }, { v: 'supplier', t: 'Supplier (you buy from)' }, { v: 'both', t: 'Both' }], value: p.kind || 'customer' },
-    { k: 'state', label: 'State', value: p.state ?? ME.org.state, list: 'states', help: 'Decides CGST + SGST or IGST.' },
+    { k: 'state', label: 'State', value: p.state ?? ME.org.state, list: 'states', help: 'Decides CGST + SGST or IGST. A customer abroad (export): "Other Country".' },
     { k: 'gstin', label: 'GSTIN', value: p.gstin, placeholder: '15 characters, if registered', more: true },
     { k: 'email', label: 'Email', value: p.email, type: 'email', more: true },
     { k: 'city', label: 'City', value: p.city, more: true }, { k: 'pincode', label: 'PIN code', value: p.pincode, more: true, help: 'Needed for e-invoice / e-way bill.' },
+    { k: 'country', label: 'Country (customers abroad)', value: p.country || '', more: true, placeholder: 'US, AE, GB…', help: 'The 2-letter code goes on the export e-invoice.' },
     { k: 'credit_days', label: 'Payment due in (days)', type: 'number', value: p.credit_days ?? 0, more: true, help: 'Sets the due date on their bills.' },
     { k: 'credit_limit', label: 'Credit limit (₹)', type: 'number', value: p.credit_limit ?? 0, more: true, help: '0 = no limit. You get a warning above it.' },
     { k: 'price_level', label: 'Price list', type: 'select', value: p.price_level || '', more: true, help: 'Their bills start from this price of each item.',
@@ -3395,7 +3458,8 @@ route(/^gstr$/, async (el, m, q) => {
       <div class="panel flush"><div style="padding:14px 16px 0"><h3 style="margin:0">GSTR-1 · ${quarterly ? 'quarter ending ' : ''}${monthName(month)}</h3><p class="muted small">${fdate(g.from)} – ${fdate(g.to)} · GSTIN ${esc(g.gstin || 'not set')}</p></div>
         ${table([{ h: 'Table', k: 't' }, { h: 'Count', num: 1, k: 'n' }, { h: 'Taxable value', num: 1, f: (r) => inr(r.txval) }, { h: 'Tax', num: 1, f: (r) => inr(r.tax) }], [
           sumRow('4A · B2B: customers with a GSTIN', T.b2b), sumRow('5 · B2C large: other state, above ₹1 lakh', T.b2cl), sumRow('7 · B2C others (one row per state and rate)', T.b2cs),
-          sumRow('9B · Credit notes to registered customers', T.cdnr), sumRow('9B · Credit notes, unregistered (B2C large)', T.cdnur)])}
+          sumRow('6A · Exports (with IGST and under LUT)', T.exp || { n: 0, txval: 0, tax: 0 }),
+          sumRow('9B · Credit notes to registered customers', T.cdnr), sumRow('9B · Credit notes, unregistered (B2C large, exports)', T.cdnur)])}
         <p class="small" style="padding:0 16px">8 · Nil rated: <b>${inr(T.nil)}</b> &middot; 12 · HSN summary: <b>${T.hsn}</b> row(s) &middot; 13 · Documents: <b>${T.docs.issued}</b> issued, ${T.docs.cancelled} cancelled</p>
         <div class="row" style="padding:0 16px 14px"><button class="btn primary" id="g1json" ${stop ? 'disabled' : ''}>Download GSTR-1 file (.json)</button><button class="btn" id="g1xls">Excel for your CA</button></div></div>
       <div class="panel"><h3 style="margin-top:0">How to file</h3><ol class="steps small"><li>On <b>gst.gov.in</b>: Returns → Returns Dashboard → pick the month → GSTR-1 → <b>Prepare offline</b> → Upload → choose this file.</li>
@@ -3404,7 +3468,7 @@ route(/^gstr$/, async (el, m, q) => {
         <p class="muted small">Invoices with an e-invoice (IRN) are already filled in on the portal; uploading them again is fine.</p></div>
       <div class="panel flush"><div style="padding:14px 16px 0"><h3 style="margin:0">For GSTR-3B (same period)</h3><p class="muted small">Type these in GSTR-3B. Take only the input credit your GSTR-2B shows: <a href="#/gstr?tab=2b&month=${month}">match it</a>.</p></div>
         ${table([{ h: 'Table', k: 't' }, { h: 'Taxable value', num: 1, f: (r) => (r.v === '' ? '' : inr(r.v)) }, { h: 'IGST', num: 1, f: (r) => (r.i === '' ? '' : inr(r.i)) }, { h: 'CGST', num: 1, f: (r) => (r.c === '' ? '' : inr(r.c)) }, { h: 'SGST', num: 1, f: (r) => (r.s === '' ? '' : inr(r.s)) }], [
-          { t: '3.1(a) Outward taxable supplies', v: b.outward.txval, i: b.outward.igst, c: b.outward.cgst, s: b.outward.sgst }, { t: '3.1(c) Nil rated', v: b.nil, i: '', c: '', s: '' },
+          { t: '3.1(a) Outward taxable supplies', v: b.outward.txval, i: b.outward.igst, c: b.outward.cgst, s: b.outward.sgst }, ...(b.zero_rated && b.zero_rated.txval ? [{ t: '3.1(b) Zero rated (exports)', v: b.zero_rated.txval, i: b.zero_rated.igst, c: '', s: '' }] : []), { t: '3.1(c) Nil rated', v: b.nil, i: '', c: '', s: '' },
           ...b.unregistered_inter.map((u) => ({ t: `3.2 To unregistered persons, state ${u.pos}`, v: u.txval, i: '', c: '', s: '' })),
           { t: '4(A)(5) Input tax credit, from your purchase bills', v: '', i: b.itc.igst, c: b.itc.cgst, s: b.itc.sgst }, { t: '4(B)(2) Credit reversed (goods lost)', v: '', i: b.reversed.igst, c: b.reversed.cgst, s: b.reversed.sgst }])}
         <p style="padding:0 16px 14px">${b.payable >= 0 ? `Tax to pay after credit: <b>${inr(b.payable)}</b>` : `No tax to pay: <b>${inr(-b.payable)}</b> credit is left over for next month`}</p></div>`;
@@ -3913,6 +3977,7 @@ route(/^settings$/, async (el, m, q) => {
       <label class="f">Customer message language<select name="msg_lang">${LANGS.map(([v, t]) => `<option value="${v}" ${(o.msg_lang || 'hl') === v ? 'selected' : ''}>${t}</option>`).join('')}</select>
         <small class="help">The default for bills, reminders and receipts. Set it per customer too, or change it before each send.</small></label>
       <label class="f">Udyam registration no.<input name="udyam" value="${esc(o.udyam || '')}" maxlength="19" placeholder="UDYAM-RJ-17-0012345"><small class="help">For interest on late payments under the MSMED Act (Vasooli → Recovery file).</small></label>
+      <label class="f">LUT ARN (exports without IGST)<input name="lut" value="${esc(o.lut || '')}" maxlength="60" placeholder="AD080424012345X (2026-27)"><small class="help">Printed on export invoices made under LUT / bond.</small></label>
       <label class="f wide">Address (printed on invoices)<textarea name="address" rows="2">${esc(o.address)}</textarea></label></div>
       <div class="row" style="margin-top:12px"><span class="spacer"></span><button class="btn primary" ${ME.can.settings ? '' : 'disabled'}>Save profile</button></div></form>
     ${vaadaSettings()}

@@ -3011,5 +3011,51 @@ if (process.env.ERP_AI_MOCK) {
   check('a table with an open order cannot be removed', (await DE('DELETE', `/api/dine/tables/${t1.id}`)).status === 400 && (await DE('DELETE', `/api/dine/tables/${t2.id}`)).status === 200);
 }
 
+/* --- exports: a foreign-currency invoice under LUT or with IGST, its shipping bill, GSTR-1 table 6A and 3B 3.1(b) --- */
+{
+  const ip = '203.0.113.161';
+  const su = await rq('POST', '/api/auth/signup', { business: 'Jaipur Crafts Exports', name: 'E', email: `exp${Date.now()}@test.in`, password: 'Export-pass-12345', state: 'Rajasthan' }, { ip });
+  const X = async (m, p, b) => (await rq(m, p, b, { cookie: su.cookie, ip })).data, XE = (m, p, b) => rq(m, p, b, { cookie: su.cookie, ip });
+  await X('PUT', '/api/org', { name: 'Jaipur Crafts Exports', gstin: '08ABCDE1234F1Z5', state: 'Rajasthan', address: '12 MI Road, Jaipur', pincode: '302001', lut: 'AD080424012345X (2026-27)' });
+  const lamp = await X('POST', '/api/items', { name: 'Brass Lamp', sale_price: 2000, gst_rate: 12, hsn: '9405', purchase_price: 1200, opening_qty: 100, unit: 'Pcs' });
+  const acme = await X('POST', '/api/parties', { name: 'Acme Imports LLC', kind: 'customer', state: 'Other Country', country: 'US', address: '5th Ave, New York' });
+  const local = await X('POST', '/api/parties', { name: 'Jaipur Retail', kind: 'customer', state: 'Rajasthan' });
+  check('a customer abroad keeps the country', acme.country === 'US' && acme.state === 'Other Country');
+  const bad1 = await XE('POST', '/api/docs', { type: 'INV', party_id: acme.id, currency: 'XYZ', fx_rate: 1, lines: [{ item_id: lamp.id, qty: 1, rate: 10 }] });
+  const bad2 = await XE('POST', '/api/docs', { type: 'INV', party_id: acme.id, currency: 'USD', lines: [{ item_id: lamp.id, qty: 1, rate: 10 }] });
+  check('an unknown currency, or a currency without its rupee rate, is refused', bad1.status === 400 && bad2.status === 400 && /USD/.test(bad2.data.error || ''), JSON.stringify([bad1.data, bad2.data]));
+  const e1 = await X('POST', '/api/docs', { type: 'INV', party_id: acme.id, currency: 'USD', fx_rate: 83.25, rates_in: 'fc', lines: [{ item_id: lamp.id, qty: 10, rate: 24 }] });
+  check('an export under LUT in dollars: rates typed in USD, no GST, IGST side, exact value in rupees', e1.export_type === 'WOPAY' && e1.currency === 'USD' && e1.fx_rate === 83.25
+    && e1.lines[0].rate === 1998 && e1.lines[0].gst_rate === 0 && e1.taxable === 19980 && e1.igst === 0 && e1.total === 19980 && e1.round_off === 0 && e1.inter_state === 1,
+  JSON.stringify([e1.error, e1.export_type, e1.currency, e1.lines && e1.lines[0].rate, e1.taxable, e1.total, e1.round_off]));
+  const e2 = await X('POST', '/api/docs', { type: 'INV', party_id: acme.id, export_type: 'WPAY', lines: [{ item_id: lamp.id, qty: 2 }] });
+  check('an export with IGST paid in rupees: IGST at the item rate', e2.export_type === 'WPAY' && e2.currency === '' && e2.igst === 480 && e2.cgst === 0 && e2.total === 4480, JSON.stringify([e2.export_type, e2.igst, e2.total]));
+  const d1 = await X('POST', '/api/docs', { type: 'INV', party_id: local.id, lines: [{ item_id: lamp.id, qty: 1 }] });
+  check('a sale at home is untouched', d1.export_type === '' && d1.cgst === 120 && d1.sgst === 120 && d1.currency === '');
+  const per = `month=${new Date(Date.now() + 5.5 * 3600e3).toISOString().slice(0, 7)}`;
+  let g = await X('GET', `/api/gst/gstr1?${per}`);
+  const ex = (t) => (g.json.exp || []).find((x) => x.exp_typ === t);
+  check('GSTR-1 puts exports in table 6A by type, not in B2C or nil', ex('WOPAY') && ex('WOPAY').inv[0].val === 19980 && ex('WOPAY').inv[0].itms[0].rt === 0 && ex('WOPAY').inv[0].itms[0].txval === 19980
+    && ex('WPAY') && ex('WPAY').inv[0].itms[0].iamt === 480 && !g.json.nil && !(g.json.b2cl || []).length && (g.json.b2cs || []).every((r) => r.pos === '08'), JSON.stringify([g.json.exp, g.json.nil, g.json.b2cs]));
+  check('GSTR-3B: exports go to 3.1(b) zero rated; IGST on them is payable; 3.1(a) has only the home sale', g.b3.zero_rated.txval === 23980 && g.b3.zero_rated.igst === 480
+    && g.b3.outward.txval === 2000 && g.b3.payable >= 480, JSON.stringify(g.b3));
+  check('exports without a shipping bill are pointed out', g.problems.some((p) => /No shipping bill/.test(p.text) && p.text.includes(e1.number)));
+  await X('PUT', `/api/docs/${e1.id}/gst-refs`, { irn: '', ack_no: '', ack_date: '', ewb_no: '', ewb_date: '', port_code: 'insa1 ', sb_no: '1234567', sb_date: new Date(Date.now() + 5.5 * 3600e3).toISOString().slice(0, 10) });
+  g = await X('GET', `/api/gst/gstr1?${per}`);
+  check('the shipping bill added later goes into the return', ex('WOPAY').inv[0].sbpcode === 'INSA1' && ex('WOPAY').inv[0].sbnum === '1234567' && /^\d{2}-\d{2}-\d{4}$/.test(ex('WOPAY').inv[0].sbdt)
+    && !g.problems.some((p) => /No shipping bill/.test(p.text) && p.text.includes(e1.number)), JSON.stringify(ex('WOPAY').inv[0]));
+  const conv = await X('GET', `/api/docs/${e1.id}/convert?to=SRET`);
+  const ret = await X('POST', '/api/docs', { type: 'SRET', party_id: acme.id, ref_id: e1.id, lines: conv.lines.map((l) => ({ ...l, qty: 1 })) });
+  g = await X('GET', `/api/gst/gstr1?${per}`);
+  check('a return on an export keeps its terms and is reported as an export credit note', ret.export_type === 'WOPAY' && ret.currency === 'USD' && ret.total === 1998
+    && (g.json.cdnur || []).some((n) => n.typ === 'EXPWOP' && n.val === 1998) && g.b3.zero_rated.txval === 21982, JSON.stringify([ret.error, ret.export_type, ret.total, g.json.cdnur, g.b3.zero_rated]));
+  const ei = await X('GET', `/api/docs/${e1.id}/einvoice`);
+  const j = Array.isArray(ei) ? ei[0] : ei;
+  check('the e-invoice of an export says EXPWOP, buyer URP, place 96, with the shipping bill and currency', j.TranDtls && j.TranDtls.SupTyp === 'EXPWOP' && j.BuyerDtls.Gstin === 'URP'
+    && j.BuyerDtls.Pos === '96' && j.ExpDtls && j.ExpDtls.ForCur === 'USD' && j.ExpDtls.Port === 'INSA1' && j.ExpDtls.CntCode === 'US', JSON.stringify(j).slice(0, 600));
+  const xl = await XE('GET', `/api/gst/gstr1/excel?${per}`);
+  check('the GST workbook has an Exports sheet', xl.status === 200);
+}
+
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

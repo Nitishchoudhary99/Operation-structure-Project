@@ -10,10 +10,16 @@ export const STATES = [
   ['18', 'Assam'], ['19', 'West Bengal'], ['20', 'Jharkhand'], ['21', 'Odisha'], ['22', 'Chhattisgarh'], ['23', 'Madhya Pradesh'],
   ['24', 'Gujarat'], ['26', 'Dadra and Nagar Haveli and Daman and Diu'], ['27', 'Maharashtra'], ['29', 'Karnataka'], ['30', 'Goa'],
   ['31', 'Lakshadweep'], ['32', 'Kerala'], ['33', 'Tamil Nadu'], ['34', 'Puducherry'], ['35', 'Andaman and Nicobar Islands'],
-  ['36', 'Telangana'], ['37', 'Andhra Pradesh'], ['38', 'Ladakh'], ['97', 'Other Territory'],
+  ['36', 'Telangana'], ['37', 'Andhra Pradesh'], ['38', 'Ladakh'], ['97', 'Other Territory'], ['96', 'Other Country'],
 ];
 const norm = (s) => String(s || '').toLowerCase().replace(/&/g, 'and').replace(/[^a-z]/g, '');
-const ALIAS = { up: '09', mp: '23', uk: '05', jk: '01', tn: '33', ap: '37', wb: '19', orissa: '21', pondicherry: '34', newdelhi: '07', uttaranchal: '05' };
+const ALIAS = { up: '09', mp: '23', uk: '05', jk: '01', tn: '33', ap: '37', wb: '19', orissa: '21', pondicherry: '34', newdelhi: '07', uttaranchal: '05',
+  outsideindia: '96', foreign: '96', foreigncountry: '96', abroad: '96', overseas: '96', export: '96' };
+/* currencies an export invoice can be made in (ISO codes); the rate is rupees for one unit */
+export const CURRENCIES = ['USD', 'EUR', 'GBP', 'AED', 'SAR', 'QAR', 'KWD', 'OMR', 'BHD', 'AUD', 'CAD', 'NZD', 'SGD', 'MYR', 'THB', 'HKD', 'JPY', 'CNY', 'CHF', 'ZAR',
+  'NPR', 'BDT', 'LKR', 'RUB', 'KES', 'NGN'];
+/* an export: a sale to a customer whose state is "Other Country" */
+export const isExportParty = (p) => !!p && stateCode(p.state, p.gstin) === '96';
 
 /* Two-digit GST state code from a GSTIN (first two digits) or a state name. '' if unknown. */
 export function stateCode(state, gstin) {
@@ -52,8 +58,9 @@ export function einvoiceJson(d) {
   if (!['INV', 'SRET', 'CNOTE'].includes(d.type)) throw bad('E-invoices are made for sales invoices and credit notes.');
   if (d.status === 'cancelled') throw bad('This document is cancelled.');
   const { o, p, problems } = sellerAndBuyerProblems(d);
-  if (!/^\d{2}[A-Z0-9]{13}$/.test(p.gstin || '')) problems.push(`the customer's GSTIN (e-invoice is only for B2B sales)`);
-  if (!pin(p.pincode)) problems.push(`the customer's PIN code`);
+  const exp = d.export_type ? (d.export_type === 'WPAY' ? 'EXPWP' : 'EXPWOP') : '';
+  if (!exp && !/^\d{2}[A-Z0-9]{13}$/.test(p.gstin || '')) problems.push(`the customer's GSTIN (e-invoice is only for B2B sales and exports)`);
+  if (!exp && !pin(p.pincode)) problems.push(`the customer's PIN code`);
   if (problems.length) throw bad('To make the e-invoice, first fill in: ' + problems.join(', ') + '.');
   const sellerSt = stateCode(o.state, o.gstin), buyerSt = stateCode(p.state, p.gstin);
   const items = d.lines.map((l, i) => {
@@ -68,14 +75,17 @@ export function einvoiceJson(d) {
   });
   return {
     Version: '1.1',
-    TranDtls: { TaxSch: 'GST', SupTyp: 'B2B', RegRev: 'N', IgstOnIntra: 'N' },
+    TranDtls: { TaxSch: 'GST', SupTyp: exp || 'B2B', RegRev: 'N', IgstOnIntra: 'N' },
     DocDtls: { Typ: d.type === 'INV' ? 'INV' : 'CRN', No: d.number, Dt: dmy(d.date) },
     SellerDtls: { Gstin: o.gstin, LglNm: cut(o.name, 100), Addr1: cut(o.address, 100), Loc: cut(o.city || o.state, 50) || 'NA', Pin: pin(o.pincode), Stcd: sellerSt,
       ...(o.phone ? { Ph: String(o.phone).replace(/\D/g, '').slice(-12) } : {}), ...(o.email ? { Em: o.email } : {}) },
-    BuyerDtls: { Gstin: p.gstin, LglNm: cut(p.name, 100), Pos: buyerSt, Addr1: cut(p.address, 100) || cut(p.city, 100) || 'NA', Loc: cut(p.city || p.state, 50) || 'NA',
-      Pin: pin(p.pincode), Stcd: buyerSt, ...(p.phone ? { Ph: String(p.phone).replace(/\D/g, '').slice(-12) } : {}), ...(p.email ? { Em: p.email } : {}) },
+    BuyerDtls: { Gstin: exp ? 'URP' : p.gstin, LglNm: cut(p.name, 100), Pos: exp ? '96' : buyerSt, Addr1: cut(p.address, 100) || cut(p.city, 100) || 'NA', Loc: cut(p.city || p.country || p.state, 50) || 'NA',
+      Pin: exp ? 999999 : pin(p.pincode), Stcd: exp ? '96' : buyerSt, ...(p.phone ? { Ph: String(p.phone).replace(/\D/g, '').slice(-12) } : {}), ...(p.email ? { Em: p.email } : {}) },
     ...(d.parent && d.type !== 'INV' ? { RefDtls: { PrecDocDtls: [{ InvNo: d.parent.number, InvDt: dmy(d.parent.date) }] } } : {}),
     ItemList: items,
+    // exports: shipping bill, port and the invoice's currency (the portal also wants the country code when known)
+    ...(exp ? { ExpDtls: { ...(d.sb_no ? { ShipBNo: d.sb_no } : {}), ...(d.sb_date ? { ShipBDt: dmy(d.sb_date) } : {}), ...(d.port_code ? { Port: d.port_code } : {}),
+      ...(d.currency ? { ForCur: d.currency } : {}), ...(/^[A-Z]{2}$/.test(String(p.country || '').toUpperCase()) ? { CntCode: String(p.country).toUpperCase() } : {}) } } : {}),
     ValDtls: { AssVal: d.taxable, CgstVal: d.cgst, SgstVal: d.sgst, IgstVal: d.igst, CesVal: 0, StCesVal: 0, Discount: 0, OthChrg: 0, RndOffAmt: d.round_off, TotInvVal: d.total },
   };
 }

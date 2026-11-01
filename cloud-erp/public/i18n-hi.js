@@ -212,6 +212,10 @@ export const HI = {
   'of which not sent': 'जिसमें से भेजा नहीं', 'Paid by': 'भुगतान', 'Discount %': 'छूट %', 'Bill and print': 'बिल बनाएँ और प्रिंट करें', 'How many tables': 'कितनी टेबल',
   'Name starts with': 'नाम की शुरुआत', 'Area (optional)': 'जगह (ज़रूरी नहीं)', 'Add tables': 'टेबल जोड़ें', 'To table': 'किस टेबल पर', 'Move': 'बदलें',
   'No KOT on this day.': 'इस दिन कोई KOT नहीं।', 'Waiter / captain (restaurant)': 'वेटर / कैप्टन (रेस्टोरेंट)',
+  'GST on this export': 'इस एक्सपोर्ट पर GST', 'No IGST: under LUT / bond (zero rated)': 'बिना IGST: LUT / बॉन्ड पर (शून्य दर)', 'With IGST paid (refund later)': 'IGST देकर (बाद में रिफ़ंड)',
+  'Currency': 'मुद्रा', 'INR (rupees)': 'INR (रुपये)', 'Port code': 'पोर्ट कोड', 'Shipping bill no.': 'शिपिंग बिल नंबर', 'Shipping bill date': 'शिपिंग बिल तारीख़',
+  'LUT ARN (exports without IGST)': 'LUT ARN (बिना IGST एक्सपोर्ट)', 'Country (customers abroad)': 'देश (विदेशी ग्राहक)',
+  'The rate on the invoice date (customs notified, or your bank\'s).': 'बिल की तारीख़ का रेट (कस्टम या बैंक का)।',
   // months
   'Jan': 'जन॰', 'Feb': 'फ़र॰', 'Mar': 'मार्च', 'Apr': 'अप्रै॰', 'May': 'मई', 'Jun': 'जून', 'Jul': 'जुला॰', 'Aug': 'अग॰', 'Sept': 'सित॰', 'Sep': 'सित॰', 'Oct': 'अक्टू॰', 'Nov': 'नव॰', 'Dec': 'दिस॰',
 };

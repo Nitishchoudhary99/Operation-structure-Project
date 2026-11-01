@@ -3,7 +3,7 @@
    Every business table carries org_id: one database serves many businesses (multi-tenant).
    migrate() runs on the first request after each deploy, so no manual migration step is needed. */
 
-export const SCHEMA_VERSION = 39;
+export const SCHEMA_VERSION = 40;
 
 // document types whose monthly totals doc_month keeps (sales and purchase money documents)
 const MONTH_TYPES = `('INV','SRET','CNOTE','BILL','PRET','DNOTE')`;
@@ -666,6 +666,17 @@ export const MIGRATIONS = {
       rate INTEGER NOT NULL, incl INTEGER NOT NULL DEFAULT 0, gst_rate REAL NOT NULL DEFAULT 0, note TEXT NOT NULL DEFAULT '', kot_id INTEGER,
       status TEXT NOT NULL DEFAULT 'ok', void_kot_id INTEGER, void_reason TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL, created_by INTEGER)`,
     `CREATE INDEX IF NOT EXISTS ix_dine_lines ON dine_lines (order_id)`,
+  ],
+  /* exports: an invoice in a foreign currency at a rupee rate, with or without IGST (LUT), and its shipping bill; the buyer's country; the LUT number */
+  40: [
+    `ALTER TABLE docs ADD COLUMN currency TEXT NOT NULL DEFAULT ''`,
+    `ALTER TABLE docs ADD COLUMN fx_rate REAL NOT NULL DEFAULT 0`,
+    `ALTER TABLE docs ADD COLUMN export_type TEXT NOT NULL DEFAULT ''`,
+    `ALTER TABLE docs ADD COLUMN port_code TEXT NOT NULL DEFAULT ''`,
+    `ALTER TABLE docs ADD COLUMN sb_no TEXT NOT NULL DEFAULT ''`,
+    `ALTER TABLE docs ADD COLUMN sb_date TEXT NOT NULL DEFAULT ''`,
+    `ALTER TABLE parties ADD COLUMN country TEXT NOT NULL DEFAULT ''`,
+    `ALTER TABLE orgs ADD COLUMN lut TEXT NOT NULL DEFAULT ''`,
   ],
 };
 

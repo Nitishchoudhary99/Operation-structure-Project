@@ -9,7 +9,7 @@ import {
 import { requireCan, can, requireCancel, checkBackdate, rulesOf } from './auth.js';
 import { lotState, takeOut, putIn, lotStatements, planBatchText, cleanBatch, cleanSerials } from './lots.js';
 export { loadByIds };
-import { stateCode } from './gst.js';
+import { stateCode, isExportParty, CURRENCIES } from './gst.js';
 import { checkInvoiceLimit, invoiceCap, invoiceCapError, hasFeature, planOf, upgradeError } from './saas.js';
 import { cleanVaada, risk, riskStatements, riskInput } from './vaada.js';
 import { numberSpec, fieldsOf, cleanExtra, LAYOUTS } from './custom.js';
@@ -217,9 +217,12 @@ export async function createDoc(ctx, body) {
   const credited = fromBill || short ? await creditedOf(db, orgId, src.id) : new Map();
 
   const wh = await warehouseOf(ctx, +body.warehouse_id || (src && src.warehouse_id) || 0);
+  // export (the customer's state is "Other Country"): IGST paid (WPAY) or zero-rated under LUT / bond (WOPAY, the usual), in a foreign
+  // currency at the rupee rate given; a return or credit note keeps its invoice's terms. Rates may be typed in that currency.
+  const exp = exportTerms(T, party, body, src);
   // inter-state when the two GST state codes differ (from GSTIN, else state name); falls back to comparing names
   const sc = stateCode(party.state, party.gstin), oc = stateCode(ctx.org.state, ctx.org.gstin);
-  const inter = sc && oc ? sc !== oc : !!(party.state && ctx.org.state && party.state.toLowerCase() !== ctx.org.state.toLowerCase());
+  const inter = exp ? true : sc && oc ? sc !== oc : !!(party.state && ctx.org.state && party.state.toLowerCase() !== ctx.org.state.toLowerCase());
   const lines = Array.isArray(body.lines) ? body.lines : [];
   if (!lines.length) throw bad('Add at least one line.');
   if (lines.length > 200) throw bad('At most 200 lines per document.');
@@ -242,8 +245,10 @@ export async function createDoc(ctx, body) {
     let rate = raw.rate === undefined || raw.rate === '' || raw.rate === null ? fallbackRate : ratePaise(num(raw.rate, `Line ${n} rate`, { min: 0 }));
     let disc = num(raw.discount_pct, `Line ${n} discount`, { min: 0, max: 100, def: 0 });
     let gst = num(raw.gst_rate, `Line ${n} GST rate`, { min: 0, max: 100, def: item ? item.gst_rate : 0 });
+    if (exp && exp.export_type === 'WOPAY') gst = 0;                      // zero-rated under LUT / bond
+    if (exp && exp.fcRates && raw.rate !== undefined && raw.rate !== '' && raw.rate !== null) rate = ratePaise(num(raw.rate, `Line ${n} rate`, { min: 0 }) * exp.fx);
     // a rate typed with GST in it (MRP billing): the line keeps the rate before GST, so the line total is that price again
-    if ((raw.incl === true || raw.incl === 1) && raw.rate !== undefined && raw.rate !== '' && raw.rate !== null) rate = exclOfGst(rate, gst);
+    if (!exp && (raw.incl === true || raw.incl === 1) && raw.rate !== undefined && raw.rate !== '' && raw.rate !== null) rate = exclOfGst(rate, gst);
     const desc = str(raw.description, 300) || (item ? item.name : '');
     if (!item && !desc) throw bad(`Line ${n}: choose an item or type a description.`);
     // a role with a discount limit: the price after rate cut and discount stays at or above the item's price less that %
@@ -308,7 +313,7 @@ export async function createDoc(ctx, body) {
   const taxable = L.reduce((s, l) => s + l.calc.taxable, 0);
   const cgst = L.reduce((s, l) => s + l.calc.cgst, 0), sgst = L.reduce((s, l) => s + l.calc.sgst, 0), igst = L.reduce((s, l) => s + l.calc.igst, 0);
   const exact = taxable + cgst + sgst + igst;
-  const roundOff = T.money && body.round_off !== false ? Math.round(exact / 100) * 100 - exact : 0;
+  const roundOff = T.money && body.round_off !== false && !(exp && exp.currency) ? Math.round(exact / 100) * 100 - exact : 0;   // a foreign-currency bill keeps its exact value
   const total = exact + roundOff;
   const tax = cgst + sgst + igst;
 
@@ -326,12 +331,14 @@ export async function createDoc(ctx, body) {
   st.push(counterStatements(db, orgId, nspec.key));
   // on a capped plan the insert itself checks the monthly count, so parallel requests cannot all slip under the limit
   const docCols = `org_id, type, number, party_id, date, due_date, warehouse_id, ref_id, status, place_of_supply,
-        inter_state, taxable, cgst, sgst, igst, round_off, total, paid, notes, created_by, created_at, txk, extra, design, transit, party_ref, short`;
-  const docVals = `?, ?, ${counterValueSql}, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?, ?, ?, ?, ?`;
+        inter_state, taxable, cgst, sgst, igst, round_off, total, paid, notes, created_by, created_at, txk, extra, design, transit, party_ref, short,
+        currency, fx_rate, export_type, port_code, sb_no, sb_date`;
+  const docVals = `?, ?, ${counterValueSql}, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?`;
   const docArgs = [orgId, type, nspec.fmt, orgId, nspec.key, party.id, d, dueDate, wh.id, src ? src.id : null, initialStatus,
     party.state || ctx.org.state || '', inter ? 1 : 0, taxable, cgst, sgst, igst, roundOff, total,
     str(body.notes, 1000), ctx.user.id, nowIso(), txk, extra, LAYOUTS.includes(body.design) ? body.design : null,
-    transit && L.some((l) => l.stocked) ? 1 : 0, partyRef, short ? 1 : 0];
+    transit && L.some((l) => l.stocked) ? 1 : 0, partyRef, short ? 1 : 0,
+    exp ? exp.currency : '', exp ? exp.fx : 0, exp ? exp.export_type : '', exp ? exp.port_code : '', exp ? exp.sb_no : '', exp ? exp.sb_date : ''];
   st.push(cap
     ? db.prepare(`INSERT INTO docs (${docCols}) SELECT ${docVals} WHERE (SELECT COUNT(*) FROM docs WHERE org_id = ? AND type = 'INV' AND created_at >= ?) < ?`)
       .bind(...docArgs, orgId, cap.since, cap.max)
@@ -498,6 +505,21 @@ export async function createDoc(ctx, body) {
     throw e;
   }
   return db.prepare(`SELECT * FROM docs WHERE txk = ?`).bind(txk).first();
+}
+
+/* The export terms of a sale to a customer abroad: null for any other sale. */
+function exportTerms(T, party, body, src) {
+  if (T.side !== 'sales' || !isExportParty(party)) return null;
+  if (src && src.export_type) {
+    return { export_type: src.export_type, currency: src.currency || '', fx: src.fx_rate || 0, port_code: src.port_code || '', sb_no: src.sb_no || '', sb_date: src.sb_date || '',
+      fcRates: !!src.currency && body.rates_in === 'fc' };
+  }
+  const currency = str(body.currency, 3).toUpperCase();
+  if (currency && !CURRENCIES.includes(currency)) throw bad(`${currency} is not a currency this app knows. Use INR, or one of ${CURRENCIES.slice(0, 6).join(', ')}…`);
+  const fx = currency ? num(body.fx_rate, `Rupees for 1 ${currency}`, { min: 0.0001, max: 100000 }) : 0;
+  return { export_type: body.export_type === 'WPAY' ? 'WPAY' : 'WOPAY', currency, fx: Math.round(fx * 10000) / 10000,
+    port_code: str(body.port_code, 10).toUpperCase().replace(/[^A-Z0-9]/g, ''), sb_no: str(body.sb_no, 20).replace(/[^0-9A-Za-z]/g, ''),
+    sb_date: body.sb_date ? date(body.sb_date, 'Shipping bill date') : '', fcRates: !!currency && body.rates_in === 'fc' };
 }
 
 /* Udhaar check before a credit sale (Vaada Pakka §5.3): old dues, credit limit and broken promises.
