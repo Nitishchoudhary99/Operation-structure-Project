@@ -3139,5 +3139,171 @@ if (process.env.ERP_AI_MOCK) {
   check('API clients that do not send zero_ok work as before', api.status === 200 && api.data.total === 0, JSON.stringify(api.data));
 }
 
+/* --- audit: duplicate saves, saves at the same moment, books and stock agreeing after a mixed day,
+       GST worked out line by line, and one business never reaching another's records --- */
+{
+  const ip = '203.0.113.166';
+  const su = await rq('POST', '/api/auth/signup', { business: 'Audit Traders', name: 'A', email: `audit${Date.now()}@test.in`, password: 'Audit-pass-12345', state: 'Rajasthan' }, { ip });
+  const A = async (m, p, b, h) => (await rq(m, p, b, { cookie: su.cookie, ip, headers: h })).data, AE = (m, p, b, h) => rq(m, p, b, { cookie: su.cookie, ip, headers: h });
+  // a small fixed-seed random source: the same "random" day every run
+  let seed = 20261101; const rnd = () => ((seed = (seed * 1103515245 + 12345) % 2147483648) / 2147483648);
+  const pick = (a) => a[Math.floor(rnd() * a.length)];
+  const rice = await A('POST', '/api/items', { name: 'Rice 25kg', unit: 'bag', sale_price: 1249.5, purchase_price: 1010.25, gst_rate: 5, opening_qty: 60 });
+  const oil = await A('POST', '/api/items', { name: 'Mustard Oil 1L', unit: 'L', sale_price: 168.75, purchase_price: 141.6, gst_rate: 12, opening_qty: 120 });
+  const soap = await A('POST', '/api/items', { name: 'Soap', unit: 'Pcs', sale_price: 37.33, purchase_price: 29.9, gst_rate: 18, opening_qty: 300 });
+  const last = await A('POST', '/api/items', { name: 'Last units', unit: 'Pcs', sale_price: 100, purchase_price: 80, gst_rate: 18, opening_qty: 5 });
+  const items = [rice, oil, soap];
+  const local = await A('POST', '/api/parties', { name: 'Local Kirana', kind: 'customer', state: 'Rajasthan' });
+  const away = await A('POST', '/api/parties', { name: 'Delhi Wholesale', kind: 'customer', state: 'Delhi' });
+  const sup = await A('POST', '/api/parties', { name: 'Supplier Co', kind: 'supplier', state: 'Rajasthan' });
+  const accts = (await A('GET', '/api/accounts')).rows, cash = accts.find((a) => a.sys === 'cash');
+  const expect = new Map(items.map((i) => [i.id, i.qty_on_hand]));
+
+  // 1. the same save sent twice (a lost answer, a second tap): one invoice, stock moved once
+  const key = 'audit-key-' + Date.now();
+  const once = { type: 'INV', party_id: local.id, lines: [{ item_id: soap.id, qty: 2 }] };
+  const r1 = await AE('POST', '/api/docs', once, { 'Idempotency-Key': key }), r2 = await AE('POST', '/api/docs', once, { 'Idempotency-Key': key });
+  expect.set(soap.id, expect.get(soap.id) - 2);
+  check('the same save sent twice makes one invoice (the second gets the first answer back)', r1.status === 200 && r2.status === 200 && r2.data.id === r1.data.id
+    && r2.headers.get('Idempotent-Replay') === 'true', JSON.stringify([r1.status, r2.status, r1.data.id, r2.data.id]));
+  const key2 = 'audit-key2-' + Date.now();
+  const same = await Promise.all([1, 2, 3].map(() => AE('POST', '/api/docs', { type: 'INV', party_id: local.id, lines: [{ item_id: soap.id, qty: 1 }] }, { 'Idempotency-Key': key2 })));
+  const madeIds = new Set(same.filter((r) => r.status === 200).map((r) => r.data.id));
+  expect.set(soap.id, expect.get(soap.id) - 1);
+  check('three taps at the same moment make one invoice; the others wait or get the same answer', madeIds.size === 1 && same.every((r) => r.status === 200 || r.status === 409),
+    JSON.stringify(same.map((r) => [r.status, r.data.id || r.data.error])));
+
+  // 2. two bills for the last 5 units at the same moment: stock never goes below zero
+  const raceRounds = [];
+  for (let k = 0; k < 5; k++) {
+    const lu = await A('POST', '/api/items', { name: 'Last units ' + k, unit: 'Pcs', sale_price: 100, purchase_price: 80, gst_rate: 18, opening_qty: 5 });
+    const race = await Promise.all([1, 2].map(() => AE('POST', '/api/docs', { type: 'INV', party_id: local.id, lines: [{ item_id: lu.id, qty: 4 }] })));
+    const left = (await A('GET', '/api/items')).rows.find((i) => i.id === lu.id).qty_on_hand;
+    raceRounds.push([race.map((r) => r.status).join('+'), left, race.find((r) => r.status >= 400)?.data.error || '']);
+  }
+  check('two bills for the last units at the same moment (5 tries): one is saved each time, the other is told the stock ran out, stock never below zero',
+    raceRounds.every(([st, left, err]) => /^(200\+(400|409)|(400|409)\+200)$/.test(st) && left === 1 && /stock/i.test(err)), JSON.stringify(raceRounds));
+
+  // 3. invoice numbers stay unique and in sequence when bills are made at the same moment
+  const many = await Promise.all([1, 2, 3, 4, 5, 6].map(() => AE('POST', '/api/docs', { type: 'INV', party_id: local.id, lines: [{ item_id: soap.id, qty: 1 }] })));
+  expect.set(soap.id, expect.get(soap.id) - many.filter((r) => r.status === 200).length);
+  const nums = many.filter((r) => r.status === 200).map((r) => r.data.number);
+  check('six invoices made at the same moment get six different numbers', many.every((r) => r.status === 200) && new Set(nums).size === 6, JSON.stringify(nums));
+
+  // 3b. one invoice cancelled twice at the same moment gives its stock back once; two receipts for its whole
+  //     balance at the same moment settle it once; an invoice with a payment against it is not cancelled
+  const box = await A('POST', '/api/items', { name: 'Race box', sale_price: 100, gst_rate: 0, opening_qty: 50 });
+  const rc = await A('POST', '/api/docs', { type: 'INV', party_id: local.id, lines: [{ item_id: box.id, qty: 10 }] });
+  const cc = await Promise.all([1, 2].map(() => AE('POST', `/api/docs/${rc.id}/cancel`)));
+  const boxNow = (await A('GET', '/api/items')).rows.find((i) => i.id === box.id).qty_on_hand;
+  check('one invoice cancelled twice at the same moment: cancelled once, its stock back once', cc.filter((r) => r.status === 200).length === 1 && boxNow === 50, JSON.stringify([cc.map((r) => r.status), boxNow]));
+  // (the race only shows when the two requests really overlap: tried five times)
+  const payRounds = [];
+  let rp = null;
+  for (let k = 0; k < 5; k++) {
+    rp = await A('POST', '/api/docs', { type: 'INV', party_id: away.id, lines: [{ item_id: box.id, qty: 3 }] });
+    const pp = await Promise.all([1, 2].map(() => AE('POST', '/api/payments', { kind: 'receipt', party_id: away.id, account_id: cash.id, amount: 300, allocations: [{ doc_id: rp.id, amount: 300 }] })));
+    const now = await A('GET', `/api/docs/${rp.id}`);
+    payRounds.push([pp.map((r) => r.status).join('+'), now.paid, now.total, now.status]);
+  }
+  check('two receipts for the whole of one invoice at the same moment (5 tries): one is taken each time, never paid twice', payRounds.every(([st, paid, total, status]) => /^(200\+(400|409)|(400|409)\+200)$/.test(st) && paid === total && status === 'paid'),
+    JSON.stringify(payRounds));
+  // two receipts spread over the open bills by themselves: the second goes to what is still open, nothing is paid twice
+  const autoInv = await A('POST', '/api/docs', { type: 'INV', party_id: away.id, lines: [{ item_id: box.id, qty: 2 }] });
+  const ap = await Promise.all([1, 2].map(() => AE('POST', '/api/payments', { kind: 'receipt', party_id: away.id, account_id: cash.id, amount: 200 })));
+  const autoNow = await A('GET', `/api/docs/${autoInv.id}`);
+  check('two receipts allocated by themselves at the same moment: both are kept, the bill is paid once, the rest is an advance', ap.every((r) => r.status === 200) && autoNow.paid === autoNow.total,
+    JSON.stringify([ap.map((r) => r.status), autoNow.paid, autoNow.total]));
+  const paidCancel = await AE('POST', `/api/docs/${rp.id}/cancel`);
+  check('an invoice with a payment against it is not cancelled (the payment is voided first)', paidCancel.status === 400 && (await A('GET', `/api/docs/${rp.id}`)).status === 'paid');
+  // (the receipt of 300 stays: the customer balance check below counts it)
+
+  // 4. a mixed day: purchases, sales in the state and outside it, discounts, a return, a cancellation, receipts
+  const bill = await A('POST', '/api/docs', { type: 'BILL', party_id: sup.id, party_ref: 'SUP/77', lines: items.map((i) => ({ item_id: i.id, qty: 10, rate: i.purchase_price })) });
+  items.forEach((i) => expect.set(i.id, expect.get(i.id) + 10));
+  const sold = [];
+  for (let n = 0; n < 14; n++) {
+    const party = n % 3 ? local : away, ls = [];
+    for (let k = 0; k < 1 + Math.floor(rnd() * 3); k++) {
+      const it = pick(items), qty = it.id === oil.id ? Math.round((0.5 + rnd() * 4) * 1000) / 1000 : 1 + Math.floor(rnd() * 3);
+      ls.push({ item_id: it.id, qty, rate: Math.round((it.sale_price * (0.9 + rnd() * 0.2)) * 100) / 100, discount_pct: pick([0, 0, 2.5, 5, 7.5]) });
+    }
+    const d = await A('POST', '/api/docs', { type: 'INV', party_id: party.id, lines: ls });
+    sold.push(d); d.lines.forEach((l) => expect.set(l.item_id, Math.round((expect.get(l.item_id) - l.qty) * 1000) / 1000));
+  }
+  // every invoice: each line worked out from qty, rate, discount and GST; the totals add up; rounding stays within 50 paise
+  const p2 = (x) => Math.round(x * 100);
+  const bad = [];
+  for (const d of sold) {
+    let tx = 0, cg = 0, sg = 0, ig = 0;
+    for (const l of d.lines) {
+      const taxable = Math.round(Math.round(l.qty * 1000) / 1000 * Math.round(l.rate * 1e4) / 100 * (1 - l.discount_pct / 100));
+      const tax = Math.round(taxable * l.gst_rate / 100), c = d.inter_state ? 0 : Math.round(tax / 2);
+      const want = { taxable, cgst: c, sgst: d.inter_state ? 0 : tax - c, igst: d.inter_state ? tax : 0 };
+      const got = { taxable: p2(l.taxable), cgst: p2(l.cgst), sgst: p2(l.sgst), igst: p2(l.igst) };
+      if (Object.keys(want).some((k) => Math.abs(want[k] - got[k]) > 0)) bad.push([d.number, l.item, want, got]);
+      tx += got.taxable; cg += got.cgst; sg += got.sgst; ig += got.igst;
+    }
+    const exact = tx + cg + sg + ig, total = p2(d.total), ro = p2(d.round_off);
+    if (p2(d.taxable) !== tx || p2(d.cgst) !== cg || p2(d.sgst) !== sg || p2(d.igst) !== ig || total !== exact + ro || Math.abs(ro) > 50 || total % 100 !== 0
+      || (d.inter_state ? cg + sg !== 0 : ig !== 0) || d.inter_state !== (d.party_id === away.id ? 1 : 0)) bad.push([d.number, 'totals', { tx, cg, sg, ig, ro, total }]);
+  }
+  check('14 random invoices: every line and every total matches the GST worked out by hand, CGST/SGST in the state and IGST outside it, rounding within 50 paise', bad.length === 0, JSON.stringify(bad.slice(0, 3)));
+  // a return of part of one invoice, a cancelled invoice, receipts
+  const back = sold[1], conv = await A('GET', `/api/docs/${back.id}/convert?to=SRET`);
+  const ret = await A('POST', '/api/docs', { ...conv, lines: [{ ...conv.lines[0], qty: Math.min(1, conv.lines[0].qty) }] });
+  expect.set(ret.lines[0].item_id, Math.round((expect.get(ret.lines[0].item_id) + ret.lines[0].qty) * 1000) / 1000);
+  const gone = sold[2];
+  await A('POST', `/api/docs/${gone.id}/cancel`);
+  gone.lines.forEach((l) => expect.set(l.item_id, Math.round((expect.get(l.item_id) + l.qty) * 1000) / 1000));
+  await A('POST', '/api/payments', { kind: 'receipt', party_id: local.id, account_id: cash.id, amount: 1000 });
+  await A('POST', '/api/payments', { kind: 'receipt', party_id: away.id, account_id: cash.id, amount: 750.5 });
+  await A('POST', '/api/payments', { kind: 'payment', party_id: sup.id, account_id: cash.id, amount: bill.total });
+
+  // the books and the stock agree with each other and with what happened
+  const now = (await A('GET', '/api/items')).rows;
+  const stockOff = items.map((i) => [i.name, expect.get(i.id), now.find((x) => x.id === i.id).qty_on_hand]).filter(([, e, g]) => Math.abs(e - g) > 0.0005);
+  check('each item\'s stock = opening + bought - sold + returned (a cancelled bill gives its goods back)', stockOff.length === 0, JSON.stringify(stockOff));
+  const movesOff = [];
+  for (const i of [...items, last]) { const mv = (await A('GET', `/api/items/${i.id}/moves`)).rows, cur = now.find((x) => x.id === i.id).qty_on_hand; if (Math.abs((mv.length ? mv[mv.length - 1].balance : 0) - cur) > 0.0005) movesOff.push([i.name, mv.length && mv[mv.length - 1].balance, cur]); }
+  check('the stock card of every item ends at its stock in hand', movesOff.length === 0, JSON.stringify(movesOff));
+  const tb = await A('GET', '/api/reports/trial-balance');
+  check('trial balance: debits = credits after the day', tb.balanced === true && tb.total_debit === tb.total_credit, JSON.stringify([tb.total_debit, tb.total_credit]));
+  const parties = (await A('GET', '/api/parties')).rows, invs = [];
+  for (const r of (await A('GET', '/api/docs?type=INV')).rows) if (r.status !== 'cancelled') invs.push(await A('GET', `/api/docs/${r.id}`));
+  const ledOff = [];
+  for (const p of [local, away]) {
+    const led = await A('GET', `/api/parties/${p.id}/ledger`), bal = parties.find((x) => x.id === p.id).balance;
+    const billed = invs.filter((d) => d.party_id === p.id).reduce((s, d) => s + p2(d.total), 0) - (p.id === back.party_id ? p2(ret.total) : 0);
+    const got = (await A('GET', '/api/payments')).rows.filter((x) => x.party_id === p.id && x.kind === 'receipt').reduce((s, x) => s + p2(x.amount), 0);
+    if (Math.abs(p2(led.closing) - p2(bal)) > 0 || Math.abs(p2(bal) - (billed - got)) > 0) ledOff.push([p.name, led.closing, bal, (billed - got) / 100]);
+  }
+  check('each customer\'s balance = invoices - return - receipts, and the ledger closes at that balance', ledOff.length === 0, JSON.stringify(ledOff));
+  const gst = await A('GET', '/api/reports/gst');
+  const outTax = invs.reduce((s, d) => s + p2(d.cgst) + p2(d.sgst) + p2(d.igst), 0) - (p2(ret.cgst) + p2(ret.sgst) + p2(ret.igst));
+  check('GST report output tax = tax on the invoices less the return (the cancelled bill left out)', p2(gst.outward.total.tax) === outTax, JSON.stringify([gst.outward.total.tax, outTax / 100]));
+
+  // 5. another business reaches none of these records, by any route that takes an id
+  const ipB = '203.0.113.167';
+  const sb = await rq('POST', '/api/auth/signup', { business: 'Other Audit Co', name: 'B', email: `auditb${Date.now()}@test.in`, password: 'Audit-pass-67890', state: 'Rajasthan' }, { ip: ipB });
+  const B = (m, p, b) => rq(m, p, b, { cookie: sb.cookie, ip: ipB });
+  const secret = ['Audit Traders', 'Local Kirana', 'Delhi Wholesale', 'Supplier Co', 'Rice 25kg', back.number];
+  const reads = [`/api/docs/${back.id}`, `/api/docs/${back.id}/convert?to=SRET`, `/api/parties/${local.id}/ledger`, `/api/items/${rice.id}/moves`, `/api/items/${rice.id}/lots`,
+    `/api/items/${rice.id}/bom`, `/api/accounts/${cash.id}/ledger`, `/api/khata/${local.id}`, `/api/loyalty/${local.id}`, `/api/vaade/party/${local.id}`,
+    `/api/parties/${local.id}/recovery`, `/api/docs/${back.id}/einvoice`, `/api/docs/${back.id}/ewaybill`, `/api/rates?party_id=${local.id}`, `/api/docs?party_id=${local.id}`];
+  const leaks = [];
+  for (const path of reads) { const r = await B('GET', path); const body = JSON.stringify(r.data); if (r.status === 200 && secret.some((x) => body.includes(x))) leaks.push([path, r.status, body.slice(0, 120)]); }
+  check(`another business reads none of this business's records (${reads.length} routes tried)`, leaks.length === 0, JSON.stringify(leaks));
+  const writes = [['POST', `/api/docs/${back.id}/cancel`], ['POST', `/api/docs/${back.id}/copy`], ['PUT', `/api/items/${rice.id}`, { name: 'Taken', sale_price: 1 }], ['DELETE', `/api/parties/${away.id}`],
+    ['PUT', `/api/parties/${local.id}`, { name: 'Taken', kind: 'customer' }], ['POST', '/api/payments', { kind: 'receipt', party_id: local.id, account_id: cash.id, amount: 5 }],
+    ['POST', '/api/docs', { type: 'INV', party_id: local.id, lines: [{ item_id: rice.id, qty: 1 }] }]];
+  const wr = [];
+  for (const [m, path, body] of writes) wr.push([m, path, (await B(m, path, body)).status]);
+  // a delete from another business: not found, and nothing goes
+  const after = await A('GET', `/api/docs/${back.id}`), riceNow = (await A('GET', '/api/items')).rows.find((i) => i.id === rice.id), pNow = (await A('GET', '/api/parties')).rows;
+  check('another business can change, cancel, copy or bill against none of them', wr.every(([, , st]) => st >= 400) && after.status !== 'cancelled' && riceNow.name === 'Rice 25kg'
+    && pNow.some((p) => p.id === away.id && p.name === 'Delhi Wholesale') && pNow.some((p) => p.id === local.id && p.name === 'Local Kirana'), JSON.stringify(wr));
+}
+
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

@@ -1680,6 +1680,9 @@ route(/^new\/([A-Z]+)$/, async (el, m, q) => {
     expHelp();
   }
   recalc(); loadRisk();
+  // one Idempotency-Key for this form: a second tap, or a save sent again after its answer was lost on a bad
+  // connection, gets the first invoice back instead of making another (a refused save frees the key)
+  const saveKey = newKey();
   form.onsubmit = async (e) => {
     e.preventDefault();
     const f = form.elements;
@@ -1709,7 +1712,7 @@ route(/^new\/([A-Z]+)$/, async (el, m, q) => {
     const btn = $('#save'); btn.disabled = true;
     const save = async () => {
       try {
-        const d = await POST('/api/docs', body);
+        const d = await POST('/api/docs', body, { key: saveKey });
         if (d.queued) { toast('No internet: saved on this device. It is sent by itself when you are back online.', 'info'); go('outbox'); return; }
         dirty('items', 'parties', 'accounts');
         if (f.repeat && f.repeat.value) {
@@ -1972,7 +1975,7 @@ const TDS_SECT = [['194C', 'Contractor: individual / HUF', 1], ['194C', 'Contrac
   ['194I', 'Rent: land, building, furniture', 10], ['194I', 'Rent: plant & machinery', 2], ['194H', 'Commission / brokerage', 2], ['194Q', 'Purchase of goods', 0.1], ['194A', 'Interest (not bank)', 10]];
 async function paymentForm(kind, { party_id = '', amount = '', doc, date = '', reference = '', account_id = '', after } = {}) {
   const parties = (await master('parties')).filter((p) => kind === 'receipt' ? p.kind !== 'supplier' : p.kind !== 'customer');
-  const accts = await cashOpts();
+  const accts = await cashOpts(), saveKey = newKey();
   const f = modal(kind === 'receipt' ? 'Receive payment' : 'Pay supplier', [
     { k: 'party_id', label: kind === 'receipt' ? 'From customer' : 'To supplier', type: 'select', options: [{ v: '', t: 'Choose…' }, ...opts(parties, (p) => `${p.name} (bal ${inr(p.balance)})`)], value: party_id, required: true },
     { k: 'amount', label: kind === 'receipt' ? 'Amount (₹)' : 'Bill amount settled (₹)', type: 'number', value: amount, required: true },
@@ -1987,7 +1990,7 @@ async function paymentForm(kind, { party_id = '', amount = '', doc, date = '', r
     const body = { ...v, kind, party_id: +v.party_id, account_id: +v.account_id };
     if (v.tds_section) { const [s, r] = v.tds_section.split('|'); body.tds_section = s; body.tds_rate = +v.tds_rate || +r; }
     if (doc) body.allocations = [{ doc_id: doc.id, amount: Math.min(+v.amount, doc.balance) }];
-    const r = await POST('/api/payments', body);
+    const r = await POST('/api/payments', body, { key: saveKey });
     if (r.queued) { toast('No internet: saved on this device, sent when online.', 'info'); return; }
     dirty('accounts', 'parties'); toast(`${r.number} saved${r.tds ? ` · TDS ${inr(r.tds / 100)} kept back` : ''}`);
     if (after) after(r);
@@ -2803,11 +2806,11 @@ function offlinePage(page) {
 async function expenseForm({ amount = '', date = '', notes = '', paid_from = '', head = '' } = {}) {
   // heads the app books by itself (stock, transit loss, depreciation ...) are not typed in by hand
   const exp = (await master('accounts')).filter((a) => a.type === 'expense' && !['cogs', 'stock_adj', 'round_off', 'transit_loss', 'pur_adj', 'depreciation', 'asset_loss'].includes(a.sys));
-  const pick = (head && exp.find((a) => a.name.toLowerCase().includes(head))) || (amount ? exp.find((a) => a.sys === 'misc_exp') : null);
+  const pick = (head && exp.find((a) => a.name.toLowerCase().includes(head))) || (amount ? exp.find((a) => a.sys === 'misc_exp') : null), saveKey = newKey();
   modal('Add expense', [{ k: 'account_id', label: 'Expense head', type: 'select', options: opts(exp, (a) => a.name), value: pick ? pick.id : '' },
     { k: 'amount', label: 'Amount before GST (₹)', type: 'number', required: true, value: amount }, { k: 'gst_amount', label: 'GST paid (input credit, ₹)', type: 'number', value: 0 },
     { k: 'paid_from', label: 'Paid from', type: 'select', options: await cashOpts(), value: paid_from }, { k: 'date', label: 'Date', type: 'date', value: date || ME.today }, { k: 'notes', label: 'Notes', wide: true, value: notes }],
-  async (v) => { const r = await POST('/api/expenses', { ...v, account_id: +v.account_id, paid_from: +v.paid_from }); dirty('accounts'); toast(r.queued ? 'No internet: saved on this device, sent when online.' : 'Expense saved', r.queued ? 'info' : 'ok'); render(); });
+  async (v) => { const r = await POST('/api/expenses', { ...v, account_id: +v.account_id, paid_from: +v.paid_from }, { key: saveKey }); dirty('accounts'); toast(r.queued ? 'No internet: saved on this device, sent when online.' : 'Expense saved', r.queued ? 'info' : 'ok'); render(); });
 }
 route(/^outbox$/, async (el) => {
   const q = await queueAll();
@@ -6326,6 +6329,8 @@ route(/^pos$/, async (el) => {
     if (got.length) { beep(true); toast(`${got.length} item${got.length === 1 ? '' : 's'} added`); }
     draw(); scan.focus();
   });
+  // one Idempotency-Key per bill: a double tap on Done, or a save sent again after a lost answer, makes one bill
+  let billKey = newKey();
   const complete = async () => {
     const lines = cart.filter((l) => l.qty > 0);
     if (!lines.length) return toast('The bill is empty.');
@@ -6338,7 +6343,8 @@ route(/^pos$/, async (el) => {
     body.credit_ok = false; body.zero_ok = false;
     const save = async () => {
       try {
-        const d = await POST('/api/docs', body);
+        const d = await POST('/api/docs', body, { key: billKey });
+        billKey = newKey();                         // the next bill is a new one
         if (d.queued) { cart.length = 0; draw(); scan.focus(); toast('No internet: bill saved on this device, sent when online (Outbox).', 'info'); return; }
         dirty('items', 'accounts', 'parties');
         printReceipt(d, method, +$('#recv').value || 0);

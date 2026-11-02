@@ -642,8 +642,10 @@ router.add('PUT', '/api/parties/:id', async (c) => {
 router.add('DELETE', '/api/parties/:id', async (c) => {
   requireCan(c.user, 'masters');
   const id = +c.params.id;
+  // another business's party: not found (it was never deleted, but "ok" said otherwise, and its khata told whether it had entries)
+  if (!(await c.db.prepare(`SELECT 1 FROM parties WHERE id = ? AND org_id = ?`).bind(id, c.org.id).first())) throw notFound('Party not found.');
   const used = await c.db.prepare(`SELECT EXISTS (SELECT 1 FROM docs WHERE org_id = ?1 AND party_id = ?2) + EXISTS (SELECT 1 FROM journal_lines WHERE org_id = ?1 AND party_id = ?2)
-      + EXISTS (SELECT 1 FROM khata WHERE party_id = ?2) + EXISTS (SELECT 1 FROM payments WHERE org_id = ?1 AND party_id = ?2)
+      + EXISTS (SELECT 1 FROM khata WHERE org_id = ?1 AND party_id = ?2) + EXISTS (SELECT 1 FROM payments WHERE org_id = ?1 AND party_id = ?2)
       + EXISTS (SELECT 1 FROM vaade WHERE org_id = ?1 AND party_id = ?2) AS n`).bind(c.org.id, id).first();
   if (used.n) throw bad('This party has transactions and cannot be deleted.');
   await c.db.prepare(`DELETE FROM parties WHERE id = ? AND org_id = ?`).bind(id, c.org.id).run();
@@ -2473,6 +2475,9 @@ async function respond(request, env, url) {
       return new Response(null, { status: 302, headers: { Location: '/#/settings?drive=' + (e instanceof HttpError && e.status === 401 ? 'signin' : 'fail'), 'Cache-Control': 'no-store' } });
     }
     if (e instanceof HttpError) return json({ error: e.message, ...(e.extra || {}) }, e.status);
+    // a save stopped inside its own write because another one changed the same bill or stock at the same moment
+    if (/NOT NULL constraint failed: (docs\.total|stock\.qty)/.test(String(e && e.message)))
+      return json({ error: 'Another entry was saved at the same moment and changed this bill or stock. Check it and save again.' }, 409);
     console.error(e && e.stack || e);          // logged for the owner; the caller only ever sees this fixed text
     return json({ error: 'Something went wrong on the server. Please try again.' }, 500);
   }
