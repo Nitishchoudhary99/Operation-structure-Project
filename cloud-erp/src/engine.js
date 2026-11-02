@@ -503,9 +503,14 @@ export async function createDoc(ctx, body) {
     throw new HttpError(403, 'Your role makes only bills paid in full: take the whole amount now (cash, UPI or card), or ask the owner to give udhaar.');
   }
   if (type === 'INV') await creditGate(ctx, party, total - paidNow, body, st);
+  // the stock was checked above, but two bills saved at the same moment both pass that check: inside the same
+  // write, an item taken below zero makes the whole save fail (a NULL in a NOT NULL column), nothing is kept
+  if (need.size) st.push(db.prepare(`UPDATE stock SET qty = NULL WHERE org_id = ? AND warehouse_id = ? AND qty < -0.0005 AND item_id IN (${[...need.keys()].map(() => '?').join(',')})`)
+    .bind(orgId, wh.id, ...need.keys()));
   st.push(auditStatement(ctx, `create ${type}`, `${party.name} ${total / 100}`));
   try { await db.batch(st); } catch (e) {
     const msg = String(e && e.message);
+    if (/NOT NULL constraint failed: stock\.qty/.test(msg)) throw new HttpError(409, 'Not enough stock: another bill was saved at the same moment and used it. Check the stock and save again.');
     if (/UNIQUE constraint failed: docs\.org_id, docs\.type, docs\.number/.test(msg)) throw bad('This document number is already used. Change the next number in Settings > Numbering.');
     if (cap && /NOT NULL constraint failed: doc_lines\.doc_id/.test(msg)) throw invoiceCapError(cap);   // the guarded insert added no row: the cap was reached
     if (POINTS_RACE.test(msg)) throw bad(`${party.name}'s points were just used on another bill. Check the points and save again.`);
@@ -574,6 +579,10 @@ export function paymentStatements(ctx, { kind, party, account, date: d, amount, 
     st.push(db.prepare(`UPDATE docs SET paid = paid + ?, status = CASE WHEN paid + ? >= total THEN 'paid' WHEN paid + ? > 0 THEN 'partial' ELSE status END
                         WHERE ${a.txk ? 'txk' : 'id'} = ?`).bind(a.amount, a.amount, a.amount, a.txk || a.doc_id));
   }
+  // the balances were read before this write: two payments saved at the same moment could both settle the same bill.
+  // Inside the write, a bill left paid beyond its total makes the whole save fail (SETTLE_RACE), nothing is kept
+  const settled = allocs.filter((a) => a.amount && !a.txk).map((a) => a.doc_id);
+  if (settled.length) st.push(db.prepare(`UPDATE docs SET total = NULL WHERE org_id = ? AND paid > total AND id IN (${settled.map(() => '?').join(',')})`).bind(ctx.org.id, ...settled));
   const lines = kind === 'receipt'
     ? [D(account, amount - tds), D(sys.tds_recv, tds), C(sys.ar, amount, party.id)]
     : [D(sys.ap, amount, party.id), C(account, amount - tds), C(sys.tds_payable, tds)];
@@ -582,6 +591,7 @@ export function paymentStatements(ctx, { kind, party, account, date: d, amount, 
   return st;
 }
 
+export const SETTLE_RACE = /NOT NULL constraint failed: docs\.total/;
 export async function createPayment(ctx, body) {
   const { db } = ctx;
   const kind = body.kind === 'payment' ? 'payment' : 'receipt';
@@ -600,32 +610,40 @@ export async function createPayment(ctx, body) {
   if (tds && kind === 'payment' && !/^19[0-9A-Z-]{1,6}$/.test(tdsSection)) throw bad('Choose the TDS section (e.g. 194C).');
   if (tds) await ensureSysAccounts(ctx, TDS_ACCOUNTS);
   const docType = kind === 'receipt' ? 'INV' : 'BILL';
-  const { results: open } = await db.prepare(`SELECT id, number, total, paid, due_date FROM docs
-      WHERE org_id = ? AND party_id = ? AND type = ? AND status IN ('unpaid', 'partial') ORDER BY due_date, id`).bind(ctx.org.id, party.id, docType).all();
-  let allocs = [];
-  if (Array.isArray(body.allocations) && body.allocations.length) {
-    let sum = 0;
-    for (const a of body.allocations) {
-      const doc = open.find((o) => o.id === +a.doc_id);
-      if (!doc) throw bad('An allocation points to a document that is not open for this party.');
-      const amt = toPaise(num(a.amount, 'Allocation', { min: 0 }));
-      if (amt > doc.total - doc.paid) throw bad(`Allocation to ${doc.number} is more than its balance.`);
-      sum += amt;
-      allocs.push({ doc_id: doc.id, amount: amt });
+  const auto = !(Array.isArray(body.allocations) && body.allocations.length);
+  // a payment spread over the oldest bills by itself is worked out again once if another payment settled one of them meanwhile
+  for (let attempt = 0; ; attempt++) {
+    const { results: open } = await db.prepare(`SELECT id, number, total, paid, due_date FROM docs
+        WHERE org_id = ? AND party_id = ? AND type = ? AND status IN ('unpaid', 'partial') ORDER BY due_date, id`).bind(ctx.org.id, party.id, docType).all();
+    let allocs = [];
+    if (Array.isArray(body.allocations) && body.allocations.length) {
+      let sum = 0;
+      for (const a of body.allocations) {
+        const doc = open.find((o) => o.id === +a.doc_id);
+        if (!doc) throw bad('An allocation points to a document that is not open for this party.');
+        const amt = toPaise(num(a.amount, 'Allocation', { min: 0 }));
+        if (amt > doc.total - doc.paid) throw bad(`Allocation to ${doc.number} is more than its balance.`);
+        sum += amt;
+        allocs.push({ doc_id: doc.id, amount: amt });
+      }
+      if (sum > amount) throw bad('Allocations add up to more than the amount.');
+    } else {
+      let left = amount;                      // oldest due first
+      for (const o of open) {
+        if (left <= 0) break;
+        const a = Math.min(left, o.total - o.paid);
+        if (a > 0) { allocs.push({ doc_id: o.id, amount: a }); left -= a; }
+      }
     }
-    if (sum > amount) throw bad('Allocations add up to more than the amount.');
-  } else {
-    let left = amount;                      // oldest due first
-    for (const o of open) {
-      if (left <= 0) break;
-      const a = Math.min(left, o.total - o.paid);
-      if (a > 0) { allocs.push({ doc_id: o.id, amount: a }); left -= a; }
+    const st = paymentStatements(ctx, { kind, party, account: acct.id, date: d, amount, reference: str(body.reference, 80), notes: str(body.notes, 300), allocs, tds, tdsSection });
+    st.push(auditStatement(ctx, `create ${kind}`, `${party.name} ${amount / 100}${tds ? ` (TDS ${tdsSection || tdsRate + '%'} ${tds / 100})` : ''}`));
+    try { await db.batch(st); } catch (e) {
+      if (!SETTLE_RACE.test(String(e && e.message))) throw e;
+      if (auto && !attempt) continue;
+      throw new HttpError(409, 'Another payment was saved against this bill at the same moment. Check its balance and save again.');
     }
+    return db.prepare(`SELECT * FROM payments WHERE org_id = ? AND kind = ? ORDER BY id DESC LIMIT 1`).bind(ctx.org.id, kind).first();
   }
-  const st = paymentStatements(ctx, { kind, party, account: acct.id, date: d, amount, reference: str(body.reference, 80), notes: str(body.notes, 300), allocs, tds, tdsSection });
-  st.push(auditStatement(ctx, `create ${kind}`, `${party.name} ${amount / 100}${tds ? ` (TDS ${tdsSection || tdsRate + '%'} ${tds / 100})` : ''}`));
-  await db.batch(st);
-  return db.prepare(`SELECT * FROM payments WHERE org_id = ? AND kind = ? ORDER BY id DESC LIMIT 1`).bind(ctx.org.id, kind).first();
 }
 
 /* Statements that put back every stock movement of a document or production run (refType, refId) exactly: goods,
