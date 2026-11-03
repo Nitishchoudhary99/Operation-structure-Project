@@ -6721,6 +6721,16 @@ async function adminPage(el) {
   $$('[data-o]', el).forEach((b) => b.onclick = () => modal('Set plan', [{ k: 'plan', label: 'Plan', type: 'select', options: planOpts, value: 'growth' },
     { k: 'months', label: 'Months (1200 = lifetime)', type: 'number', value: 12 }], async (v) => { await call('POST', `/api/admin/orgs/${b.dataset.o}/plan`, v); toast('Plan updated'); again(); }));
   $('#lock').onclick = () => { try { sessionStorage.removeItem('st-admin'); } catch (e) { /* ignore */ } if (ME) go('dashboard'); else location.href = '/'; };
+  // data checks: every count should be 0 (they read whole tables, so they run only on request)
+  el.insertAdjacentHTML('beforeend', `<div class="panel" id="integ"><h3>Data checks</h3><p class="muted small">Looks for lines whose document is gone, links to another business's records and journals that do not balance. Every count should be 0.</p><button class="btn" id="integRun">Run data checks</button><div id="integOut"></div></div>`);
+  $('#integRun').onclick = async () => {
+    const out = $('#integOut'); out.innerHTML = '<p class="muted small">Checking…</p>';
+    try {
+      const r = await call('GET', '/api/admin/integrity');
+      out.innerHTML = `<p>${r.ok ? '<b>All clear.</b> Nothing out of place.' : '<b class="err">Some records are out of place.</b> Send this to support.'}</p>` +
+        table([{ h: 'Check', k: 'label' }, { h: 'Count', num: 1, f: (x) => x.count ? `<b class="err">${x.count}</b>` : '0' }], r.checks);
+    } catch (e) { out.innerHTML = `<div class="err">${esc(e.message)}</div>`; }
+  };
   el.insertAdjacentHTML('beforeend', `<div class="panel flush"><div style="padding:14px 16px 0"><h3>Payments</h3></div>${table([
     { h: 'When', f: (r) => fdate((r.paid_at || r.created_at).slice(0, 10)) }, { h: 'Business', f: (r) => `${esc(r.business)}<div class="muted">${esc(r.email || '')}</div>` },
     { h: 'Plan', k: 'plan' }, { h: 'Amount', num: 1, f: (r) => inr(r.amount) }, { h: 'Status', f: (r) => badge(r.status === 'paid' ? 'paid' : 'unpaid') }, { h: 'Payment ID', k: 'payment_id', cls: 'hide-sm' }],

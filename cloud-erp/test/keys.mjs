@@ -5,6 +5,7 @@
 import { DatabaseSync } from 'node:sqlite';
 import { sessionSecret, legacySecret } from '../src/auth.js';
 import { twoStepStart, twoStepEnable, secondStep, totpCode } from '../src/security.js';
+import { mailOrigin } from '../src/lib.js';
 
 let pass = 0, fail = 0;
 const check = (name, ok, extra = '') => { ok ? pass++ : fail++; console.log(`${ok ? 'PASS' : 'FAIL'}  ${name}${ok ? '' : '  ' + extra}`); };
@@ -57,6 +58,11 @@ check('and no longer with the old database key', await open(sealedNew, dbKey).th
 // 4. a wrong code is still refused after the change
 sql.prepare(`UPDATE users SET totp_last = 0 WHERE id = 1`).run();
 check('a wrong code is refused', (await secondStep(after, DB, user(), '000000')) === '' || (await totpCode(secret, step())) === '000000');
+
+// 5. links in e-mails point at the app's own address, whatever host a request came in on
+check('a reset link uses APP_URL, not the request host', mailOrigin({ APP_URL: 'https://erp.docbrisk.com/' }, 'https://evil.example/api/auth/forgot') === 'https://erp.docbrisk.com');
+check('without APP_URL (a fresh install) the request address is used', mailOrigin({}, 'https://my-erp.workers.dev/api/auth/forgot') === 'https://my-erp.workers.dev');
+check('a broken APP_URL falls back to the request address', mailOrigin({ APP_URL: 'not a url' }, 'https://x.example/a') === 'https://x.example');
 
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

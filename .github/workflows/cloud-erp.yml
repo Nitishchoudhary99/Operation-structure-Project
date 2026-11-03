@@ -3,9 +3,9 @@
 name: Cloud ERP
 on:
   push:
-    paths: ['cloud-erp/**', 'tools/secret-scan.mjs', '.github/workflows/cloud-erp.yml']
+    paths: ['cloud-erp/**', 'tools/secret-scan.mjs', 'tools/sbom.mjs', '.github/workflows/cloud-erp.yml']
   pull_request:
-    paths: ['cloud-erp/**', 'tools/secret-scan.mjs', '.github/workflows/cloud-erp.yml']
+    paths: ['cloud-erp/**', 'tools/secret-scan.mjs', 'tools/sbom.mjs', '.github/workflows/cloud-erp.yml']
   workflow_dispatch:
 
 jobs:
@@ -19,12 +19,14 @@ jobs:
       - run: npm ci
       - name: Start the worker locally (local D1 database)
         run: |
-          npx wrangler dev --port 8787 > wrangler.log 2>&1 &
+          npx wrangler dev --port 8787 --var QUERY_COUNT:1 > wrangler.log 2>&1 &
           for i in $(seq 1 60); do curl -sf localhost:8787/api/health && break; sleep 1; done
       - name: End-to-end business test
         run: node test/run.mjs http://localhost:8787
       - if: failure()
         run: cat wrangler.log
+      - name: Speed budgets (D1 calls and rows per screen; no screen reads another business's rows)
+        run: node test/perf.mjs http://localhost:8787
       - name: Adding SESSION_SECRET keeps two-step sign-in working
         run: node test/keys.mjs
       - name: No secrets in the repository
@@ -32,6 +34,11 @@ jobs:
         run: node tools/secret-scan.mjs
       - name: No known high or critical vulnerabilities in dependencies
         run: npm audit --audit-level=high
+      - name: Software bill of materials (CycloneDX)
+        working-directory: .
+        run: node tools/sbom.mjs sbom.json
+      - uses: actions/upload-artifact@v4
+        with: { name: sbom, path: sbom.json }
 
   deploy:
     needs: test

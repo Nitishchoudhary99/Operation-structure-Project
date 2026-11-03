@@ -144,3 +144,10 @@ export function backupHealth(r, now = Date.now()) {
   const days = Math.floor((now - Date.parse(last)) / DAY);
   return days >= 7 ? { key: 'backup_old', n: days, value: null } : null;
 }
+
+/* Links in e-mails (verify, reset) point at APP_URL, the real address of this app, never at whatever host a request
+   came in on, so a link can only ever lead to this app. Without APP_URL (a fresh install) the request's own address. */
+export function mailOrigin(env, requestUrl) {
+  try { if (env && env.APP_URL) return new URL(env.APP_URL).origin; } catch (e) { /* not a URL: fall back */ }
+  return new URL(requestUrl).origin;
+}
