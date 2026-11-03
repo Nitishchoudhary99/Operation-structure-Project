@@ -29,6 +29,8 @@ jobs:
         run: node test/perf.mjs http://localhost:8787
       - name: Adding SESSION_SECRET keeps two-step sign-in working
         run: node test/keys.mjs
+      - name: Bolkar bill reads spoken orders (Hindi, Hinglish, English) as phones send them
+        run: node test/voice.mjs
       - name: No secrets in the repository
         working-directory: .
         run: node tools/secret-scan.mjs

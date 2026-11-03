@@ -6150,7 +6150,7 @@ route(/^kots$/, async (el, m, q) => {
    its quantity, all of which the user can fix before the lines go on the bill. Without speech in the browser the order is typed. */
 const SpeechRec = window.SpeechRecognition || window.webkitSpeechRecognition;
 async function voiceOrder(items, onAdd) {
-  const { parseOrder } = await import('/voice.js');
+  const { parseOrder, heardText } = await import('/voice.js');
   let root = $('#voice-root');
   if (!root) { root = document.createElement('div'); root.id = 'voice-root'; document.body.appendChild(root); }
   const lang = storeGet('st:voice') || (LANG === 'hi' ? 'hi-IN' : 'hi-IN');
@@ -6199,10 +6199,10 @@ async function voiceOrder(items, onAdd) {
     rec = new SpeechRec(); rec.lang = $('#vlang').value; rec.interimResults = true; rec.continuous = true;
     const before = $('#vtext').value.trim();
     rec.onresult = (e) => {
-      let done = '', now = '';
-      for (let i = 0; i < e.results.length; i++) { const r = e.results[i]; if (r.isFinal) done += r[0].transcript.trim() + ', '; else now += r[0].transcript; }
-      $('#vtext').value = (before ? before.replace(/,?\s*$/, ', ') : '') + done + now;
-      if (done) { lines = parseOrder($('#vtext').value, items); draw(); }
+      // each final piece once, even where Android repeats the earlier ones in every result
+      const { done, now } = heardText([...e.results].map((r) => ({ transcript: r[0].transcript, isFinal: r.isFinal })));
+      $('#vtext').value = (before ? before.replace(/,?\s*$/, ', ') : '') + done + (done && now ? ', ' : '') + now;
+      if (done) { lines = parseOrder((before ? before + ', ' : '') + done, items); draw(); }
     };
     rec.onerror = (e) => { if (e.error !== 'aborted' && e.error !== 'no-speech') toast(e.error === 'not-allowed' || e.error === 'service-not-allowed' ? 'Allow the microphone for this site to speak the order.' : 'Could not hear: ' + e.error, 'err'); };
     rec.onend = () => { on = false; if (root.innerHTML) { label(); read(); } };
@@ -6323,7 +6323,7 @@ route(/^pos$/, async (el) => {
     for (const g of got) {
       const it = items.find((i) => i.id === g.item_id); if (!it) continue;
       const line = cart.find((l) => l.item_id === it.id);
-      if (line) line.qty = r2(line.qty + g.qty);
+      if (line) line.qty = Math.round((line.qty + g.qty) * 1000) / 1000;   // 3 decimals, as the bill keeps them (250 g + 125 g = 0.375 kg)
       else cart.push({ item_id: it.id, name: it.name, code: labelCode(it), qty: g.qty, rate: it.price_incl ? it.sale_price_incl : it.sale_price, incl: !!it.price_incl, gst_rate: it.gst_rate, stock: it.qty_on_hand, unit: it.unit });
     }
     if (got.length) { beep(true); toast(`${got.length} item${got.length === 1 ? '' : 's'} added`); }
