@@ -30,7 +30,7 @@ import * as rep from './reports.js';
 import { PLANS, planOut, planOf, usage, checkCount, countError, seatBlocked, seatError, requireFeature, extendPlan, adminKey, trialUntil, hasFeature } from './saas.js';
 import { secure } from './headers.js';
 import { createRecurring, listRecurring, getRecurring, updateRecurring, copyRecurring, skipRecurring, markSent, stopRecurring, resumeRecurring, runDue } from './recurring.js';
-import { buildBackup, driveRoutes, runDriveBackups, listDriveBackups, readDriveBackup } from './gdrive.js';
+import { buildBackup, driveRoutes, runDriveBackups, listDriveBackups, readDriveBackup, driveConfigured } from './gdrive.js';
 import { excelBackup } from './export.js';
 import { restoreBackup, isEmptyOrg } from './restore.js';
 import { LANGS, cleanLang, phrases, PREVIEW, withLang, BRAND, sendLinks, inrW, rs, fd } from './msg.js';
@@ -1485,6 +1485,18 @@ router.add('GET', '/api/admin/payments', async (c) => {
       (SELECT email FROM users WHERE id = b.user_id) AS email FROM billing_orders b JOIN orgs o ON o.id = b.org_id
       WHERE b.status != 'created' ORDER BY b.id DESC LIMIT 300`).all();
   return json({ rows: results.map((r) => ({ ...r, amount: r.paise / 100 })), mode: billingMode(c.env), razorpay: razorpayMode(c.env) });
+}, { public: true });
+
+/* Admin: which secrets this deployment has (yes / no only, never a value). Without SESSION_SECRET the signing key
+   is kept in the database, so whoever can read the database could sign in as anyone. */
+router.add('GET', '/api/admin/config', async (c) => {
+  await requireAdmin(c);
+  const e = c.env;
+  const dbKey = !!(await c.db.prepare(`SELECT 1 AS x FROM meta WHERE k = 'session_secret'`).first());
+  return json({
+    session_secret: !!e.SESSION_SECRET, database_key: dbKey,
+    email: !!e.RESEND_API_KEY, razorpay: !!(e.RAZORPAY_KEY_ID && e.RAZORPAY_KEY_SECRET), whatsapp: waConfigured(e), google_drive: driveConfigured(e),
+  });
 }, { public: true });
 
 /* ======================================================================= gate entry (security gate register)

@@ -5,7 +5,7 @@
    - closing a business: the owner asks, the business waits 7 days (the owner can still sign in, cancel and download a backup),
      then every record of it is deleted. The payment records of its SmartTrader plan are kept, as the law needs. */
 import { HttpError, bad, forbidden, nowIso, str } from './lib.js';
-import { hashPassword, sameText, sessionSecret } from './auth.js';
+import { hashPassword, sameText, sessionSecret, legacySecret } from './auth.js';
 
 const enc = new TextEncoder();
 const b64u = (buf) => btoa(String.fromCharCode(...new Uint8Array(buf))).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
@@ -13,17 +13,28 @@ const unb64u = (s) => Uint8Array.from(atob(s.replace(/-/g, '+').replace(/_/g, '/
 const sha256 = async (t) => [...new Uint8Array(await crypto.subtle.digest('SHA-256', enc.encode(t)))].map((b) => b.toString(16).padStart(2, '0')).join('');
 
 /* the authenticator secret is kept sealed (AES-GCM) with a key made from the session secret, never in plain text */
-async function sealKey(env) {
-  const raw = await crypto.subtle.digest('SHA-256', enc.encode('smarttrader-2fa|' + await sessionSecret(env)));
+async function sealKey(env, secret) {
+  const raw = await crypto.subtle.digest('SHA-256', enc.encode('smarttrader-2fa|' + (secret ?? await sessionSecret(env))));
   return crypto.subtle.importKey('raw', raw, 'AES-GCM', false, ['encrypt', 'decrypt']);
 }
 async function seal(env, text) {
   const iv = crypto.getRandomValues(new Uint8Array(12));
   return b64u(iv) + '.' + b64u(await crypto.subtle.encrypt({ name: 'AES-GCM', iv }, await sealKey(env), enc.encode(text)));
 }
-async function unseal(env, s) {
+async function unseal(env, s, secret) {
   const [iv, ct] = String(s || '').split('.');
-  return new TextDecoder().decode(await crypto.subtle.decrypt({ name: 'AES-GCM', iv: unb64u(iv) }, await sealKey(env), unb64u(ct)));
+  return new TextDecoder().decode(await crypto.subtle.decrypt({ name: 'AES-GCM', iv: unb64u(iv) }, await sealKey(env, secret), unb64u(ct)));
+}
+/* The authenticator secret of this user: opened with today's key, or with the key kept in the database before
+   SESSION_SECRET was added, and then sealed again with today's key (so it keeps working). */
+async function totpSecret(env, db, user) {
+  try { return await unseal(env, user.totp_secret); } catch (e) {
+    const old = await legacySecret(env);
+    if (!old) throw e;
+    const secret = await unseal(env, user.totp_secret, old);
+    await db.prepare(`UPDATE users SET totp_secret = ? WHERE id = ? AND totp_secret = ?`).bind(await seal(env, secret), user.id, user.totp_secret).run();
+    return secret;
+  }
 }
 
 /* ---------------------------------------------------------------- TOTP */
@@ -68,7 +79,7 @@ const codeOf = (v) => str(v, 20).replace(/[\s-]/g, '');
 export async function secondStep(env, db, user, raw) {
   const code = codeOf(raw);
   if (/^\d{6}$/.test(code) && user.totp_secret) {
-    const s = await matchStep(await unseal(env, user.totp_secret), code, user.totp_last || 0);
+    const s = await matchStep(await totpSecret(env, db, user), code, user.totp_last || 0);
     if (s) {
       const r = await db.prepare(`UPDATE users SET totp_last = ? WHERE id = ? AND totp_last < ?`).bind(s, user.id, s).run();
       return r.meta.changes ? 'code' : '';             // two sign-ins racing with the same code: only one gets through
@@ -101,7 +112,7 @@ export async function twoStepEnable(c) {
   const u = await freshUser(c);
   if (u.totp_on) throw bad('Two-step sign-in is already on.');
   if (!u.totp_secret) throw bad('Start again: tap "Turn on two-step sign-in".');
-  const s = await matchStep(await unseal(c.env, u.totp_secret), codeOf(c.body.code), 0);
+  const s = await matchStep(await totpSecret(c.env, c.db, u), codeOf(c.body.code), 0);
   if (!s) throw bad('That code is not right. Type the 6-digit code your authenticator app shows now.');
   const codes = backupCodes();
   await c.db.batch([

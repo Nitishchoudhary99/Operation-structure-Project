@@ -3,9 +3,9 @@
 name: Cloud ERP
 on:
   push:
-    paths: ['cloud-erp/**', '.github/workflows/cloud-erp.yml']
+    paths: ['cloud-erp/**', 'tools/secret-scan.mjs', '.github/workflows/cloud-erp.yml']
   pull_request:
-    paths: ['cloud-erp/**']
+    paths: ['cloud-erp/**', 'tools/secret-scan.mjs', '.github/workflows/cloud-erp.yml']
   workflow_dispatch:
 
 jobs:
@@ -25,6 +25,13 @@ jobs:
         run: node test/run.mjs http://localhost:8787
       - if: failure()
         run: cat wrangler.log
+      - name: Adding SESSION_SECRET keeps two-step sign-in working
+        run: node test/keys.mjs
+      - name: No secrets in the repository
+        working-directory: .
+        run: node tools/secret-scan.mjs
+      - name: No known high or critical vulnerabilities in dependencies
+        run: npm audit --audit-level=high
 
   deploy:
     needs: test

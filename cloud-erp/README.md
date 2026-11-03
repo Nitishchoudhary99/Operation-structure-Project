@@ -149,7 +149,10 @@ You need a free Cloudflare account and this GitHub repository.
 4. Deploy. Open the `*.workers.dev` URL and click **Create a free account**. The tables are created
    automatically on the first visit.
 5. Recommended: in the worker's **Settings → Variables and Secrets**, add a secret `SESSION_SECRET`
-   (any long random text). Without it, a secret is generated and kept in the database.
+   (any long random text). Without it, a secret is generated and kept in the database, and anyone who can read the
+   database could sign in as any user; the Admin page (`#/admin`) says which one this deployment uses. Adding it
+   later is safe: everyone signs in once more, and two-step sign-in and Google Drive backups keep working (their
+   secrets, sealed with the old key, are sealed again with the new one the first time they are used).
 6. Optional: under **Settings → Domains & Routes**, add your own domain, e.g. `erp.docbrisk.com`.
 
 Every push to the branch now redeploys automatically.
@@ -372,8 +375,8 @@ straight to the folder and to the latest Excel (on a phone, they open in the Dri
    (type Secret). The hourly cron in wrangler.toml does the backups.
 
 If a customer comes back from Google to Settings with a note, it says what happened (permission not given, signed out
-while Google was open, link too old) and what to do. Keep `SESSION_SECRET` fixed: the stored Google tokens are encrypted with a key made from it, so changing it means
-every business has to connect Drive again.
+while Google was open, link too old) and what to do. Keep `SESSION_SECRET` fixed once it is set: the stored Google tokens are encrypted with a key made from it, so
+changing it means every business has to connect Drive again. (Going from no `SESSION_SECRET` to one is handled; see step 5 above.)
 
 ### Backup to a folder on a computer, and backup reminders
 
