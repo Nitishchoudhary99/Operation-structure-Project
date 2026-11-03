@@ -39,8 +39,10 @@ export function passwordProblem(pw) {
   return null;
 }
 
-/* The signing secret: SESSION_SECRET if set, otherwise one generated once and kept in the database. */
-let secretCache = null;
+/* The signing secret: SESSION_SECRET if set, otherwise one generated once and kept in the database.
+   Kept in the database, anyone who can read the database could sign a session and open the sealed two-step and
+   Google Drive secrets, so the worker says so in its log (and Admin shows it) until SESSION_SECRET is added. */
+let secretCache = null, warned = false;
 export async function sessionSecret(env) {
   if (env.SESSION_SECRET) return env.SESSION_SECRET;
   if (secretCache) return secretCache;
@@ -49,7 +51,21 @@ export async function sessionSecret(env) {
     await env.DB.prepare(`INSERT OR IGNORE INTO meta (k, v) VALUES ('session_secret', ?)`).bind(randomHex(32)).run();
     row = await env.DB.prepare(`SELECT v FROM meta WHERE k = 'session_secret'`).first();
   }
+  if (!warned) { warned = true; console.warn('SESSION_SECRET is not set: sessions and sealed secrets use a key kept in the database. Add SESSION_SECRET as a worker secret.'); }
   return (secretCache = row.v);
+}
+/* After SESSION_SECRET is added, the key that was kept in the database (if there was one). Two-step and Google Drive
+   secrets sealed with it still open, and are sealed again with the new key the first time they are used, so adding
+   the secret locks nobody out; sessions are not carried over (everyone signs in once more). */
+let legacyCache;
+export async function legacySecret(env) {
+  if (!env.SESSION_SECRET || !env.DB) return null;
+  if (legacyCache !== undefined) return legacyCache;
+  try {
+    const row = await env.DB.prepare(`SELECT v FROM meta WHERE k = 'session_secret'`).first();
+    legacyCache = row && row.v && row.v !== env.SESSION_SECRET ? row.v : null;
+  } catch (e) { legacyCache = null; }
+  return legacyCache;
 }
 
 let keyCache = null;          // the imported HMAC key, kept for the life of this isolate

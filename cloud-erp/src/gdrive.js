@@ -7,7 +7,7 @@
    GDRIVE_CLIENT_ID and GDRIVE_CLIENT_SECRET settings (Google Cloud OAuth client, web type, redirect URI
    https://<erp host>/api/gdrive/callback); without them Drive backup shows as "not set up". */
 import { HttpError, bad, forbidden, str, today, nowIso } from './lib.js';
-import { sessionSecret } from './auth.js';
+import { sessionSecret, legacySecret } from './auth.js';
 import { auditStatement } from './engine.js';
 import { isEmptyOrg } from './restore.js';
 import { excelBackup } from './export.js';
@@ -57,8 +57,8 @@ const redirectUri = (url) => url.origin + '/api/gdrive/callback';
 const enc = new TextEncoder();
 const b64u = (buf) => btoa(String.fromCharCode(...new Uint8Array(buf))).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
 const unb64u = (s) => Uint8Array.from(atob(s.replace(/-/g, '+').replace(/_/g, '/') + '==='.slice((s.length + 3) % 4)), (ch) => ch.charCodeAt(0));
-async function keyFor(env, use) {
-  const raw = await crypto.subtle.digest('SHA-256', enc.encode('smarttrader-gdrive|' + use + '|' + await sessionSecret(env)));
+async function keyFor(env, use, secret) {
+  const raw = await crypto.subtle.digest('SHA-256', enc.encode('smarttrader-gdrive|' + use + '|' + (secret ?? await sessionSecret(env))));
   return use === 'seal'
     ? crypto.subtle.importKey('raw', raw, 'AES-GCM', false, ['encrypt', 'decrypt'])
     : crypto.subtle.importKey('raw', raw, { name: 'HMAC', hash: 'SHA-256' }, false, ['sign', 'verify']);
@@ -68,10 +68,21 @@ async function seal(env, text) {
   const ct = await crypto.subtle.encrypt({ name: 'AES-GCM', iv }, await keyFor(env, 'seal'), enc.encode(text));
   return b64u(iv) + '.' + b64u(ct);
 }
-async function unseal(env, s) {
+async function unseal(env, s, secret) {
   const [iv, ct] = String(s || '').split('.');
-  const pt = await crypto.subtle.decrypt({ name: 'AES-GCM', iv: unb64u(iv) }, await keyFor(env, 'seal'), unb64u(ct));
+  const pt = await crypto.subtle.decrypt({ name: 'AES-GCM', iv: unb64u(iv) }, await keyFor(env, 'seal', secret), unb64u(ct));
   return new TextDecoder().decode(pt);
+}
+/* The business's Google refresh token: opened with today's key, or with the key kept in the database before
+   SESSION_SECRET was added, and then sealed again with today's key (so backups keep running). */
+async function refreshToken(env, orgId, sealed) {
+  try { return await unseal(env, sealed); } catch (e) {
+    const old = await legacySecret(env);
+    if (!old) throw e;
+    const token = await unseal(env, sealed, old);
+    await env.DB.prepare(`UPDATE drive_links SET refresh_enc = ? WHERE org_id = ? AND refresh_enc = ?`).bind(await seal(env, token), orgId, sealed).run();
+    return token;
+  }
 }
 /* state = payload.signature, bound to the org and the user who started the connect, valid for 10 minutes */
 async function signState(env, o) {
@@ -161,7 +172,7 @@ export async function backupToDrive(env, orgId, by) {
   if (!by && await isEmptyOrg(db, orgId)) return { ok: true, skipped: true };
   try {
     let refresh;
-    try { refresh = await unseal(env, link.refresh_enc); } catch (e) { const g = new Error('sealed'); g.gone = true; throw g; }   // the session secret changed
+    try { refresh = await refreshToken(env, orgId, link.refresh_enc); } catch (e) { const g = new Error('sealed'); g.gone = true; throw g; }   // the session secret changed
     const tok = await tokenCall(env, { grant_type: 'refresh_token', refresh_token: refresh });
     const folder = await ensureFolder(env, tok.access_token, link, org.name);
     const b = await buildBackup(db, orgId), bytes = enc.encode(b.json);
@@ -195,7 +206,7 @@ async function driveToken(env, orgId) {
   const link = await env.DB.prepare(`SELECT refresh_enc FROM drive_links WHERE org_id = ?`).bind(orgId).first();
   if (!link) throw bad('Connect Google Drive first.');
   let refresh;
-  try { refresh = await unseal(env, link.refresh_enc); } catch (e) { throw bad('Google access was removed. Connect Google Drive again.'); }
+  try { refresh = await refreshToken(env, orgId, link.refresh_enc); } catch (e) { throw bad('Google access was removed. Connect Google Drive again.'); }
   try { return (await tokenCall(env, { grant_type: 'refresh_token', refresh_token: refresh })).access_token; }
   catch (e) { throw bad(e.gone ? 'Google access was removed. Connect Google Drive again.' : 'Could not reach Google Drive. Please try again.'); }
 }
@@ -291,7 +302,7 @@ export function driveRoutes(router) {
     owner(c);
     const l = await c.db.prepare(`SELECT refresh_enc FROM drive_links WHERE org_id = ?`).bind(c.org.id).first();
     if (l) {
-      try { await fetch(G(c.env).revoke, { method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, body: new URLSearchParams({ token: await unseal(c.env, l.refresh_enc) }) }); } catch (e) { /* already gone */ }
+      try { await fetch(G(c.env).revoke, { method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, body: new URLSearchParams({ token: await refreshToken(c.env, c.org.id, l.refresh_enc) }) }); } catch (e) { /* already gone */ }
       await c.db.batch([c.db.prepare(`DELETE FROM drive_links WHERE org_id = ?`).bind(c.org.id), auditStatement(c, 'drive disconnected', '')]);
     }
     return new Response(JSON.stringify({ ok: true }), { headers: { 'Content-Type': 'application/json' } });

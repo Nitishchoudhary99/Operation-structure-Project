@@ -6703,7 +6703,11 @@ async function adminPage(el) {
     el.innerHTML = head('Admin') + `<div class="err">${esc(e.message)}</div>`; if (e.status === 401) ask(); return;
   }
   const pays = await call('GET', '/api/admin/payments').catch(() => ({ rows: [], mode: '?' }));
-  el.innerHTML = head('Admin: businesses', `<button class="btn" id="lock">Lock</button>`) + `
+  const cfg = await call('GET', '/api/admin/config').catch(() => null);
+  const keyNote = !cfg ? '' : !cfg.session_secret
+    ? `<div class="panel warnbox"><b>SESSION_SECRET is not set.</b> Sign-ins and the sealed two-step and Google Drive secrets use a key kept in the database, so anyone who could read the database could sign in as any user. Add a secret <b>SESSION_SECRET</b> (any long random text) in the worker's Settings → Variables and Secrets. Everyone signs in once more; two-step sign-in and Google Drive backups keep working.</div>`
+    : `<div class="panel">Session secret: <b>set</b>.${cfg.database_key ? ' An older key is still kept in the database: two-step and Google Drive secrets sealed with it are sealed again with the new one the first time they are used.' : ''}</div>`;
+  el.innerHTML = head('Admin: businesses', `<button class="btn" id="lock">Lock</button>`) + keyNote + `
     <div class="panel ${pays.mode === 'off' ? 'warnbox' : ''}">Online payments: <b>${pays.mode === 'upi' ? 'on (DocBrisk Pay, automatic UPI)' : pays.mode === 'order' ? 'on (Razorpay order + signature)' : pays.mode === 'webhook' ? 'on (Razorpay webhook)' : 'OFF: set PAYHUB_URL and the PAYHUB_SECRET secret (DocBrisk Pay) on the worker'}</b>.
       ${pays.mode === 'upi' ? `Card (Razorpay): <b>${pays.razorpay && pays.razorpay !== 'off' ? 'on' : 'off'}</b>.` : ''}
       Paid: ${inr(pays.rows.filter((r) => r.status === 'paid').reduce((t, r) => t + r.amount, 0))} from ${pays.rows.filter((r) => r.status === 'paid').length} payment(s).</div>

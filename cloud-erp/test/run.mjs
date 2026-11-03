@@ -734,6 +734,12 @@ if (orgsRes.status === 404) console.log('SKIP  admin tests (no ADMIN_KEY configu
 else {
   const orgs = await orgsRes.json();
   check('admin lists businesses', orgs.rows.some((o) => o.name === 'Sharma Traders'));
+  // which secrets the deployment has: yes / no only, never a value, and only with the admin key
+  const cfgBad = await fetch(BASE + '/api/admin/config', { headers: { 'X-Admin-Key': 'wrong-key-wrong-key' } });
+  const cfgRes = await adm('GET', '/api/admin/config'), cfg = await cfgRes.json();
+  check('admin config needs the admin key', cfgBad.status === 401 && cfgRes.status === 200, cfgBad.status + ' ' + cfgRes.status);
+  check('admin config says only yes or no for each secret', Object.values(cfg).every((v) => typeof v === 'boolean') && 'session_secret' in cfg && 'database_key' in cfg, JSON.stringify(cfg));
+  check('without SESSION_SECRET the admin config says so (the key is in the database)', process.env.SESSION_SECRET ? true : cfg.session_secret === false && cfg.database_key === true, JSON.stringify(cfg));
   const mine = orgs.rows.find((o) => o.id === me.org.id);       // by id: a restored copy of this business has the same name
   await adm('POST', `/api/admin/orgs/${mine.id}/plan`, { plan: 'free', months: 1 });
   const capped = await api('POST', '/api/warehouses', { name: 'Godown 3' }, true);
