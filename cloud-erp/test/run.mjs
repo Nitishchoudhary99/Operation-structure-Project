@@ -3311,5 +3311,19 @@ if (process.env.ERP_AI_MOCK) {
     && pNow.some((p) => p.id === away.id && p.name === 'Delhi Wholesale') && pNow.some((p) => p.id === local.id && p.name === 'Local Kirana'), JSON.stringify(wr));
 }
 
+/* After everything above (sales, returns, cancels, deletes, restores, races, other businesses): nothing is left out
+   of place. The schema has no foreign keys, so this is what keeps the links honest. */
+{
+  const res = await fetch(BASE + '/api/admin/integrity', { headers: { 'X-Admin-Key': ADMIN } });
+  if (res.status === 404) console.log('SKIP  data checks (no ADMIN_KEY configured)');
+  else {
+    const r = await res.json();
+    check('data checks: no orphan lines, no links across businesses, every journal balances', r.ok === true && r.checks.length >= 12,
+      JSON.stringify((r.checks || []).filter((x) => x.count)));
+    const noKey = await fetch(BASE + '/api/admin/integrity');
+    check('data checks need the admin key', noKey.status === 401);
+  }
+}
+
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

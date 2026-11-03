@@ -1,5 +1,5 @@
 /* Speed budgets: D1 calls and rows per screen, for a small business sharing the database with a big one.
-     node test/perf.mjs [http://localhost:8787]        (needs QUERY_COUNT=1 in .dev.vars)
+     node test/perf.mjs [http://localhost:8787]        (the worker needs QUERY_COUNT=1: .dev.vars or --var QUERY_COUNT:1)
    A screen fails when it makes more D1 calls than its budget, reads more rows than its cap, or reads
    more rows after the OTHER business grows (that means some query scans every business's data). */
 const BASE = process.argv[2] || process.env.ERP_URL || 'http://localhost:8787';
@@ -53,7 +53,7 @@ const SCREENS = (a) => {
     ['GET /api/warehouses', 2, 40],
     ['GET /api/accounts', 2, 80],
     ['GET /api/docs?type=INV', 2, 50],
-    [`GET /api/docs/${inv}`, 6, 30],
+    [`GET /api/docs/${inv}`, 3, 30],                // the document and one batch for its lines, party, links, payments, points
     ['GET /api/payments/open?kind=receipt&party_id=' + party, 2, 25],
     ['GET /api/reports/stock', 3, 50],
     ['GET /api/reports/daybook', 2, 450],
@@ -68,7 +68,8 @@ const SCREENS = (a) => {
     [`GET /api/parties/${party}/ledger`, 4, 120],
     ['GET /api/audit', 2, 80],
     ['GET /api/plan', 3, 30],
-    ['GET /api/today', 2, 60],
+    // the Munim cards read this week's invoice lines and 120 days of invoices of THIS business (never another's: see below)
+    ['GET /api/today', 2, 140],
     ['GET /api/receive', 2, 40],
   ];
 };
@@ -85,9 +86,9 @@ async function writes(a) {
   const out = {};
   const lines = [0, 1].map((k) => ({ item_id: a.items[k].id, qty: 1 }));
   const save = await a.api('POST', '/api/docs', { type: 'INV', party_id: a.parties[0].id, lines });
-  out['POST /api/docs'] = { q: save.q, read: save.read, maxQ: 12, maxRows: 150, write: true };
+  out['POST /api/docs'] = { q: save.q, read: save.read, maxQ: 9, maxRows: 150, write: true };
   const cancel = await a.api('POST', `/api/docs/${save.data.id}/cancel`, {});
-  out['POST /api/docs/:id/cancel'] = { q: cancel.q, read: cancel.read, maxQ: 14, maxRows: 150, write: true };
+  out['POST /api/docs/:id/cancel'] = { q: cancel.q, read: cancel.read, maxQ: 11, maxRows: 150, write: true };
   return out;
 }
 

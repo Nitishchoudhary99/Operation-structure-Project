@@ -4,7 +4,7 @@
 import { migrate, DEFAULT_ACCOUNTS } from './schema.js';
 import {
   HttpError, bad, notFound, forbidden, json, readJson, str, reqStr, num, int, date, nowIso, oneOf, toPaise, Router, GST_RATES, today, counterStatements, counterValueSql,
-  addDays, uid, own, backupHealth, ratePaise, exclOfGst,
+  addDays, uid, own, backupHealth, ratePaise, exclOfGst, mailOrigin,
 } from './lib.js';
 import {
   hashPassword, randomHex, sameText, passwordProblem, issueSession, sessionCookie, clearCookie, sessionFromRequest, sessionValid, USER_SQL, REVOKED_SQL, ROLES, can, requireCan, rateLimit,
@@ -100,7 +100,7 @@ router.add('POST', '/api/auth/signup', async (c) => {
   const fields = { business, name, email, hash, salt, gstin: b.gstin, state: b.state, phone: b.phone, address: b.address };
   if (verifyOn(c.env)) {
     await rateLimit(c.env, 'signup-mail:' + email, 3, 3600);
-    const origin = new URL(c.request.url).origin;
+    const origin = mailOrigin(c.env, c.request.url);
     if (taken) {
       await sendMail(c, 'exists', { to: email, name, origin });
       return json({ ok: true, verify: true });
@@ -215,7 +215,7 @@ router.add('POST', '/api/auth/forgot', async (c) => {
       c.db.prepare(`DELETE FROM pw_resets WHERE user_id = ? OR expires_at < ?`).bind(user.id, now),
       c.db.prepare(`INSERT INTO pw_resets (token_hash, user_id, expires_at) VALUES (?, ?, ?)`).bind(await sha256Hex(token), user.id, now + 30 * 60000),
     ]);
-    const origin = new URL(c.request.url).origin, link = `${origin}/#/reset/${token}`;
+    const origin = mailOrigin(c.env, c.request.url), link = `${origin}/#/reset/${token}`;
     if (!c.env.RESEND_API_KEY) {   // send through docbrisk.com (docbrisk-api builds and sends the same e-mail)
       await hubFetch(c.env, 'POST', '/api/pay/svc/erp-reset-mail', { to: user.email, name: user.name, org: user.org, token, origin });
       return json({ ok: true, mail: true });
@@ -786,21 +786,35 @@ router.add('GET', '/api/today', async (c) => {
   add('lost_customers', 'sales', `SELECT COUNT(*) AS n, 0 AS v, GROUP_CONCAT(name, '|') AS names FROM (SELECT p.name FROM docs d JOIN parties p ON p.id = d.party_id
     WHERE d.org_id = ?1 AND d.type = 'INV' AND d.status != 'cancelled' AND d.date > ?2 AND p.name != 'Walk-in Customer' GROUP BY d.party_id
     HAVING SUM(CASE WHEN d.date <= ?3 THEN 1 ELSE 0 END) >= 3 AND SUM(CASE WHEN d.date > ?3 THEN 1 ELSE 0 END) = 0 LIMIT 50)`, o, addDays(t, -120), addDays(t, -30));
-  if (seesCosts(u)) add('below_cost', 'sales', `SELECT COUNT(DISTINCT d.id) AS n, COALESCE(SUM(l.cost - l.taxable), 0) AS v FROM doc_lines l JOIN docs d ON d.id = l.doc_id
-    WHERE d.org_id = ? AND d.type = 'INV' AND d.status != 'cancelled' AND d.date > ? AND l.item_id IS NOT NULL AND l.cost > l.taxable`, o, wk);
+  // this week's invoice lines are read once for both checks: sold below cost, and 20% or more discount
+  const wantBelow = seesCosts(u) && sees('sales'), wantDisc = ['owner', 'admin'].includes(u.role) && sees('sales');
+  if (wantBelow || wantDisc) want.push(['lines7', db.prepare(`SELECT
+      COUNT(DISTINCT CASE WHEN l.item_id IS NOT NULL AND l.cost > l.taxable THEN d.id END) AS below_n,
+      COALESCE(SUM(CASE WHEN l.item_id IS NOT NULL AND l.cost > l.taxable THEN l.cost - l.taxable ELSE 0 END), 0) AS below_v,
+      COUNT(DISTINCT CASE WHEN l.discount_pct >= 20 THEN d.id END) AS disc_n
+    FROM doc_lines l JOIN docs d ON d.id = l.doc_id WHERE d.org_id = ? AND d.type = 'INV' AND d.status != 'cancelled' AND d.date > ?`).bind(o, wk)]);
   add('cash_short', 'finance', `SELECT CASE WHEN due > 0 AND due > cash THEN 1 ELSE 0 END AS n, due - cash AS v FROM (
     SELECT (SELECT COALESCE(SUM(total - paid), 0) FROM docs WHERE org_id = ?1 AND type = 'BILL' AND status IN ('unpaid','partial') AND due_date <= ?2) AS due,
       (SELECT COALESCE(SUM(dr - cr), 0) FROM acct_month WHERE org_id = ?1 AND account_id IN (SELECT id FROM accounts WHERE org_id = ?1 AND is_cash = 1)) AS cash)`, o, addDays(t, 7));
-  if (['owner', 'admin'].includes(u.role)) add('big_discount', 'sales', `SELECT COUNT(DISTINCT d.id) AS n, 0 AS v FROM doc_lines l JOIN docs d ON d.id = l.doc_id
-    WHERE d.org_id = ? AND d.type = 'INV' AND d.status != 'cancelled' AND d.date > ? AND l.discount_pct >= 20`, o, wk);
   if (sees('finance')) want.push(...todayStaffQueries(db, o));
   // the owner's data is safe somewhere: a download (also to a folder: orgs.backup_at), or Google Drive
   if (u.role === 'owner') want.push(['backup', db.prepare(`SELECT (SELECT last_backup_at FROM drive_links WHERE org_id = ?) AS d,
     (SELECT last_error FROM drive_links WHERE org_id = ?) AS e, EXISTS (SELECT 1 FROM docs WHERE org_id = ?) AS docs`).bind(o, o, o)]);
   const rs = want.length ? await db.batch(want.map(([, q]) => q)) : [];
   const costs = seesCosts(u), rows = [];
+  // the discount card keeps its place: after the cash card when there is one, otherwise after the below-cost card
+  let discRow = null;
+  const hasCash = want.some(([k]) => k === 'cash_short');
   want.forEach(([key], i) => {
     if (key === 'backup') { const b = backupHealth({ ...rs[i].results[0], a: c.org.backup_at, since: c.org.created_at }); if (b) rows.push(b); return; }
+    if (key === 'lines7') {
+      const r = rs[i].results[0] || {};
+      if (wantBelow && r.below_n) rows.push({ key: 'below_cost', n: r.below_n, value: costs ? R(r.below_v) : null });
+      if (wantDisc && r.disc_n) discRow = { key: 'big_discount', n: r.disc_n, value: costs ? R(0) : null };
+      if (discRow && !hasCash) { rows.push(discRow); discRow = null; }
+      return;
+    }
+    if (key === 'cash_short' && discRow) { const r0 = rs[i].results[0] || { n: 0 }; if (r0.n) rows.push({ key, n: r0.n, value: R(r0.v) }); rows.push(discRow); discRow = null; return; }
     const r = rs[i].results[0] || { n: 0, v: 0 };
     if (!r.n) return;
     const money = ['overdue', 'promises', 'bills_due', 'approve', 'claims', 'tds_due', 'sales_drop', 'cash_short'].includes(key) || costs;
@@ -1169,21 +1183,26 @@ async function docDetail(c, id) {
   const d = await c.db.prepare(`SELECT d.*, w.name AS warehouse FROM docs d LEFT JOIN warehouses w ON w.id = d.warehouse_id WHERE d.id = ? AND d.org_id = ?`).bind(id, c.org.id).first();
   if (!d) throw notFound('Document not found.');
   if (c.user && !canView(c.user, DOC_TYPES[d.type].side)) throw forbidden('Your role cannot see this document.');
-  const [lines, party, children, parent, pays, wos, pts] = await Promise.all([
-    c.db.prepare(`SELECT l.*, i.name AS item, i.unit, i.hsn, i.is_service, i.location, i.track_batch, i.track_serial, i.extra AS item_extra FROM doc_lines l LEFT JOIN items i ON i.id = l.item_id WHERE l.doc_id = ? ORDER BY l.id`).bind(id).all(),
-    c.db.prepare(`SELECT * FROM parties WHERE id = ?`).bind(d.party_id).first(),
-    c.db.prepare(`SELECT id, type, number, date, status, total FROM docs WHERE ref_id = ? AND org_id = ? ORDER BY id`).bind(id, c.org.id).all(),
-    d.ref_id ? c.db.prepare(`SELECT id, type, number, date, status FROM docs WHERE id = ?`).bind(d.ref_id).first() : null,
+  // everything else about the document in one D1 call (it was seven separate calls)
+  const st = [
+    c.db.prepare(`SELECT l.*, i.name AS item, i.unit, i.hsn, i.is_service, i.location, i.track_batch, i.track_serial, i.extra AS item_extra FROM doc_lines l LEFT JOIN items i ON i.id = l.item_id WHERE l.doc_id = ? ORDER BY l.id`).bind(id),
+    c.db.prepare(`SELECT * FROM parties WHERE id = ?`).bind(d.party_id),
+    c.db.prepare(`SELECT id, type, number, date, status, total FROM docs WHERE ref_id = ? AND org_id = ? ORDER BY id`).bind(id, c.org.id),
     c.db.prepare(`SELECT pa.amount, pa.note_id, p.id, p.number, p.date, p.kind, n.number AS note_number FROM payment_allocs pa
-        LEFT JOIN payments p ON p.id = pa.payment_id LEFT JOIN docs n ON n.id = pa.note_id WHERE pa.doc_id = ?`).bind(id).all(),
-    // goods of a bill-first bill written off (damaged / lost on the way)
-    d.type === 'BILL' && d.transit ? c.db.prepare(`SELECT * FROM write_offs WHERE bill_id = ? AND org_id = ? ORDER BY id`).bind(id, c.org.id).all() : { results: [] },
-    // loyalty points this invoice earned and used, and the customer's balance now (printed on the bill)
-    ['INV', 'SRET'].includes(d.type) ? c.db.prepare(`SELECT SUM(CASE WHEN kind = 'earn' THEN points ELSE 0 END) AS earned,
+        LEFT JOIN payments p ON p.id = pa.payment_id LEFT JOIN docs n ON n.id = pa.note_id WHERE pa.doc_id = ?`).bind(id),
+  ];
+  const at = {};
+  if (d.ref_id) at.parent = st.push(c.db.prepare(`SELECT id, type, number, date, status FROM docs WHERE id = ?`).bind(d.ref_id)) - 1;
+  // goods of a bill-first bill written off (damaged / lost on the way)
+  if (d.type === 'BILL' && d.transit) at.wos = st.push(c.db.prepare(`SELECT * FROM write_offs WHERE bill_id = ? AND org_id = ? ORDER BY id`).bind(id, c.org.id)) - 1;
+  // loyalty points this invoice earned and used, and the customer's balance now (printed on the bill)
+  if (['INV', 'SRET'].includes(d.type)) at.pts = st.push(c.db.prepare(`SELECT SUM(CASE WHEN kind = 'earn' THEN points ELSE 0 END) AS earned,
         -SUM(CASE WHEN kind IN ('redeem', 'unredeem') THEN points ELSE 0 END) AS used, SUM(CASE WHEN kind = 'return' THEN -points ELSE 0 END) AS taken,
         (SELECT COALESCE(SUM(points), 0) FROM loyalty_points WHERE org_id = ?1 AND party_id = ?3) AS balance, COUNT(*) AS n
-      FROM loyalty_points WHERE org_id = ?1 AND doc_id = ?2`).bind(c.org.id, id, d.party_id).first() : null,
-  ]);
+      FROM loyalty_points WHERE org_id = ?1 AND doc_id = ?2`).bind(c.org.id, id, d.party_id)) - 1;
+  const rs = await c.db.batch(st), one = (k) => (k === undefined ? null : rs[k].results[0] ?? null);
+  const [lines, partyRes, children, pays] = rs, party = partyRes.results[0] ?? null;
+  const parent = one(at.parent), wos = at.wos === undefined ? { results: [] } : rs[at.wos], pts = one(at.pts);
   const money = (x) => R(x), defs = fieldsOf(c.org), side = DOC_TYPES[d.type].side;
   return {
     ...d, extra: extraOf(d.extra), print_fields: [...printExtra(defs, 'doc', d.extra, side), ...printExtra(defs, 'party', party && party.extra)], taxable: money(d.taxable), cgst: money(d.cgst), sgst: money(d.sgst), igst: money(d.igst), round_off: money(d.round_off),
@@ -1497,6 +1516,38 @@ router.add('GET', '/api/admin/config', async (c) => {
     session_secret: !!e.SESSION_SECRET, database_key: dbKey,
     email: !!e.RESEND_API_KEY, razorpay: !!(e.RAZORPAY_KEY_ID && e.RAZORPAY_KEY_SECRET), whatsapp: waConfigured(e), google_drive: driveConfigured(e),
   });
+}, { public: true });
+
+/* Admin: data checks. The schema has no foreign keys (rebuilding 75 tables to add them would be a risky migration),
+   so these queries look for what keys would have stopped: rows whose parent is gone, rows linked to another
+   business's party or account, and journals whose debits and credits differ. Every count should be 0. They scan
+   whole tables, so they run only when the admin asks. */
+const INTEGRITY = [
+  ['doc_lines', 'Document lines without their document', `SELECT COUNT(*) AS n FROM doc_lines l WHERE NOT EXISTS (SELECT 1 FROM docs d WHERE d.id = l.doc_id)`],
+  // a credit note set against an invoice is kept as payment_id 0 with note_id: then the note must exist instead
+  ['payment_allocs', 'Payment links without their payment, credit note or document', `SELECT COUNT(*) AS n FROM payment_allocs pa
+     WHERE NOT EXISTS (SELECT 1 FROM docs d WHERE d.id = pa.doc_id)
+        OR (pa.note_id IS NULL AND NOT EXISTS (SELECT 1 FROM payments p WHERE p.id = pa.payment_id))
+        OR (pa.note_id IS NOT NULL AND NOT EXISTS (SELECT 1 FROM docs n WHERE n.id = pa.note_id))
+        OR (pa.payment_id != 0 AND NOT EXISTS (SELECT 1 FROM payments p WHERE p.id = pa.payment_id))`],
+  ['journal_lines', 'Journal lines without their journal', `SELECT COUNT(*) AS n FROM journal_lines jl WHERE NOT EXISTS (SELECT 1 FROM journals j WHERE j.id = jl.journal_id)`],
+  ['journal_org', 'Journal lines of another business than their journal', `SELECT COUNT(*) AS n FROM journal_lines jl JOIN journals j ON j.id = jl.journal_id WHERE j.org_id != jl.org_id`],
+  ['journal_account', 'Journal lines on another business\'s account', `SELECT COUNT(*) AS n FROM journal_lines jl JOIN accounts a ON a.id = jl.account_id WHERE a.org_id != jl.org_id`],
+  ['unbalanced', 'Journals whose debits and credits differ', `SELECT COUNT(*) AS n FROM (SELECT journal_id FROM journal_lines GROUP BY journal_id HAVING SUM(debit) != SUM(credit))`],
+  ['stock', 'Stock rows for a missing or another business\'s item or godown', `SELECT COUNT(*) AS n FROM stock s WHERE NOT EXISTS (SELECT 1 FROM items i WHERE i.id = s.item_id AND i.org_id = s.org_id) OR NOT EXISTS (SELECT 1 FROM warehouses w WHERE w.id = s.warehouse_id AND w.org_id = s.org_id)`],
+  ['stock_moves', 'Stock movements for a missing or another business\'s item', `SELECT COUNT(*) AS n FROM stock_moves m WHERE NOT EXISTS (SELECT 1 FROM items i WHERE i.id = m.item_id AND i.org_id = m.org_id)`],
+  ['doc_party', 'Documents linked to another business\'s party', `SELECT COUNT(*) AS n FROM docs d JOIN parties p ON p.id = d.party_id WHERE p.org_id != d.org_id`],
+  ['payment_party', 'Payments linked to another business\'s party', `SELECT COUNT(*) AS n FROM payments x JOIN parties p ON p.id = x.party_id WHERE p.org_id != x.org_id`],
+  ['khata_party', 'Khata entries for a missing or another business\'s party', `SELECT COUNT(*) AS n FROM khata k WHERE NOT EXISTS (SELECT 1 FROM parties p WHERE p.id = k.party_id AND p.org_id = k.org_id)`],
+  ['other_lines', 'Recipe, write-off and restaurant lines without their parent', `SELECT (SELECT COUNT(*) FROM bom_lines b WHERE NOT EXISTS (SELECT 1 FROM boms x WHERE x.id = b.bom_id))
+     + (SELECT COUNT(*) FROM write_off_lines w WHERE NOT EXISTS (SELECT 1 FROM write_offs x WHERE x.id = w.write_off_id))
+     + (SELECT COUNT(*) FROM dine_lines l WHERE NOT EXISTS (SELECT 1 FROM dine_orders x WHERE x.id = l.order_id)) AS n`],
+];
+router.add('GET', '/api/admin/integrity', async (c) => {
+  await requireAdmin(c);
+  const rs = await c.db.batch(INTEGRITY.map(([, , q]) => c.db.prepare(q)));
+  const checks = INTEGRITY.map(([key, label], i) => ({ key, label, count: Number((rs[i].results[0] || {}).n || 0) }));
+  return json({ ok: checks.every((x) => !x.count), checks, at: nowIso() });
 }, { public: true });
 
 /* ======================================================================= gate entry (security gate register)
