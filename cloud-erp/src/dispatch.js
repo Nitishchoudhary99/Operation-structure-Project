@@ -33,6 +33,10 @@ export function cleanWorkflow(b) {
     dispatch: b.dispatch === true,                  // the Sales Order → Delivery Note flow and the Dispatch Desk, even in Simple mode
     confirm_cod: b.confirm_cod === true,            // a COD order waits for the customer's confirmation before packing
     default_pay: PAY_MODES.includes(b.default_pay) ? b.default_pay : '',
+    /* how orders are picked: 'scan' = on the phone by scanning each piece (no printed pick list, no "picked by / checked by"
+       sheet; the scan is the check, and a delivery note from an order is saved only from the scan screen); 'paper' = a
+       printed pick list; 'both' = either (the default) */
+    pick_mode: ['scan', 'paper', 'both'].includes(b.pick_mode) ? b.pick_mode : 'both',
     couriers,
     msg_confirm: text(b.msg_confirm, MSG_CONFIRM),
     msg_ship: text(b.msg_ship, MSG_SHIP),
@@ -59,10 +63,11 @@ export async function dispatchBoard(c) {
     c.db.prepare(`SELECT d.id, d.number, d.date, d.total, d.status, d.pay_mode, d.ship, d.paid, d.party_id, ${PARTY}
         FROM docs d LEFT JOIN parties p ON p.id = d.party_id
         WHERE d.org_id = ? AND d.type = 'SO' AND d.status IN ('open', 'partial') ORDER BY d.date, d.id LIMIT 500`).bind(c.org.id),
-    c.db.prepare(`SELECT l.doc_id, i.name AS item, l.qty, l.done_qty, i.is_service FROM doc_lines l JOIN docs d ON d.id = l.doc_id LEFT JOIN items i ON i.id = l.item_id
+    c.db.prepare(`SELECT l.doc_id, i.name AS item, l.qty, l.done_qty, l.picked_qty, i.is_service FROM doc_lines l JOIN docs d ON d.id = l.doc_id LEFT JOIN items i ON i.id = l.item_id
         WHERE d.org_id = ? AND ((d.type = 'SO' AND d.status IN ('open', 'partial'))
           OR (d.type = 'DN' AND ((d.status != 'cancelled' AND d.ship IN ('', 'shipped')) OR (d.ship IN ('delivered', 'rto') AND d.ship_at >= ?))))`).bind(c.org.id, since),
     c.db.prepare(`SELECT d.id, d.number, d.date, d.total, d.status, d.pay_mode, d.ship, d.courier, d.awb, d.ship_at, d.ship_ref, d.ref_id, s.number AS order_no, ${PARTY},
+        d.packed_at, (SELECT u.name FROM users u WHERE u.id = d.packed_by AND u.org_id = d.org_id) AS packed_by,
         (SELECT x.number FROM docs x WHERE x.ref_id = d.id AND x.org_id = d.org_id AND x.type = 'INV' AND x.status != 'cancelled' LIMIT 1) AS invoice
         FROM docs d LEFT JOIN parties p ON p.id = d.party_id LEFT JOIN docs s ON s.id = d.ref_id
         WHERE d.org_id = ? AND d.type = 'DN' AND ((d.status != 'cancelled' AND d.ship IN ('', 'shipped')) OR (d.ship IN ('delivered', 'rto') AND d.ship_at >= ?))
@@ -72,24 +77,31 @@ export async function dispatchBoard(c) {
   for (const l of lines.results) { if (!byDoc.has(l.doc_id)) byDoc.set(l.doc_id, []); byDoc.get(l.doc_id).push(l); }
   const summary = (id, left) => (byDoc.get(id) || []).filter((l) => !l.is_service && (left ? l.qty - l.done_qty : l.qty) > 0.0005)
     .map((l) => ({ item: l.item || '', qty: Math.round((left ? l.qty - l.done_qty : l.qty) * 1000) / 1000 }));
+  // pieces picked by scan (src/picking.js) of what is still to go out on an order
+  const pickedOf = (id) => (byDoc.get(id) || []).filter((l) => !l.is_service).reduce((s, l) => s + Math.min(Math.max(0, l.qty - l.done_qty), Math.max(0, l.picked_qty || 0)), 0);
   const out = (r, left) => {
-    const items = summary(r.id, left);
+    const items = summary(r.id, left), pcs = items.reduce((s, x) => s + x.qty, 0);
     return { id: r.id, number: r.number, date: r.date, age: ageDays(r.date, t), total: R(r.total), paid: R(r.paid || 0), pay_mode: r.pay_mode || '',
-      ship: r.ship || '', party: r.party || '', phone: r.phone || '', address: addressOf(r), city: r.city || '', items, pcs: items.reduce((s, x) => s + x.qty, 0) };
+      ship: r.ship || '', party: r.party || '', phone: r.phone || '', address: addressOf(r), city: r.city || '', items, pcs,
+      ...(left ? { picked: Math.round(pickedOf(r.id) * 1000) / 1000 } : {}) };
   };
   const so = orders.results.map((r) => out(r, true));
+  const fullyPicked = (r) => r.pcs > 0 && r.picked >= r.pcs - 0.0005;
   // waits for the customer: a COD (or not-said) order with nothing delivered yet that nobody confirmed
   const waits = (r) => w.confirm_cod && r.pay_mode !== 'prepaid' && r.ship !== 'confirmed' && r.status === 'open';
   const dn = notes.results.map((r) => ({ ...out(r, false), status: r.status, courier: r.courier || '', awb: r.awb || '', ship_at: r.ship_at || '',
-    order_id: r.ref_id, order_no: r.order_no || '', invoice: r.invoice || '', sr: shipRef(r.ship_ref) }));
+    order_id: r.ref_id, order_no: r.order_no || '', invoice: r.invoice || '', sr: shipRef(r.ship_ref), packed_at: r.packed_at || '', packed_by: r.packed_by || '' }));
   const board = {
     confirm: so.filter((r, i) => waits(orders.results[i])),
-    pack: so.filter((r, i) => !waits(orders.results[i])),
+    pack: so.filter((r, i) => !waits(orders.results[i]) && !fullyPicked(r)),
+    picked: so.filter((r, i) => !waits(orders.results[i]) && fullyPicked(r)),
     packed: dn.filter((r) => r.status !== 'cancelled' && !r.ship),
     shipped: dn.filter((r) => r.status !== 'cancelled' && r.ship === 'shipped'),
     done: dn.filter((r) => r.ship === 'delivered' || r.ship === 'rto').reverse(),
   };
-  return { ...board, workflow: w, shop: c.org.name, counts: Object.fromEntries(Object.entries(board).map(([k, v]) => [k, v.length])) };
+  // paid in advance (prepaid) and still not handed to a courier: orders not packed yet and packed parcels not shipped
+  const paidWaiting = [...board.confirm, ...board.pack, ...board.picked, ...board.packed].filter((r) => r.pay_mode === 'prepaid').length;
+  return { ...board, workflow: w, shop: c.org.name, counts: { ...Object.fromEntries(Object.entries(board).map(([k, v]) => [k, v.length])), paid_waiting: paidWaiting } };
 }
 
 /* PUT /api/dispatch/:id  { action: confirm | pay_mode | ship | delivered | rto, ... } */

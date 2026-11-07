@@ -14,6 +14,7 @@ import { checkInvoiceLimit, invoiceCap, invoiceCapError, hasFeature, planOf, upg
 import { cleanVaada, risk, riskStatements, riskInput } from './vaada.js';
 import { numberSpec, fieldsOf, cleanExtra, LAYOUTS } from './custom.js';
 import { workflowOf, PAY_MODES } from './dispatch.js';
+import { setupOf } from './setup.js';
 import { invoicePoints, invoicePointStatements, returnPointStatement, cancelPointStatement, unredeemStatements, LOYALTY_ACCOUNTS, POINTS_RACE } from './loyalty.js';
 
 export const DOC_TYPES = {
@@ -34,7 +35,9 @@ export const DOC_TYPES = {
 export const NOTE_TYPES = ['SRET', 'PRET', 'CNOTE', 'DNOTE'];
 /* The price a sale starts from: the item's wholesale price for a wholesale customer, or from the item's wholesale quantity up;
    else its sale price. Both are kept before GST. */
-export const listPrice = (item, party, qty) => (item.wholesale_price > 0 && ((party && party.price_level === 'wholesale') || (item.wholesale_min > 0 && qty >= item.wholesale_min))
+/* orderQty / orderMin: the whole order's pieces, and the business's "wholesale from N pieces in one order" (Settings) */
+export const listPrice = (item, party, qty, orderQty = 0, orderMin = 0) => (item.wholesale_price > 0 && ((party && party.price_level === 'wholesale') || (item.wholesale_min > 0 && qty >= item.wholesale_min)
+    || (orderMin > 0 && orderQty >= orderMin))
   ? item.wholesale_price : item.sale_price);
 
 /* ---------------------------------------------------------------- context */
@@ -181,6 +184,9 @@ export async function createDoc(ctx, body) {
   const dispatchOnly = type === 'DN' && body.ref_id && !limits.no_dispatch && can(ctx.user, 'stock') && !can(ctx.user, 'sales');
   if (!dispatchOnly) requireCan(ctx.user, T.side === 'sales' ? 'sales' : 'purchase');
   if (type === 'DN' && limits.must_scan && body.packed_check !== true) throw bad('Scan every item before dispatch: open the Sales Order and use Pack & check.');
+  // scan picking for the whole business (Settings → Orders & dispatch): an order's goods leave only through the scan screen
+  if (type === 'DN' && body.ref_id && body.packed_check !== true && workflowOf(ctx.org).pick_mode === 'scan')
+    throw bad('This business picks by scan: open the order on the Dispatch Desk and use Pick & pack (scan).');
   const cap = type === 'INV' ? invoiceCap(ctx.org) : null;
   if (cap) await checkInvoiceLimit(db, ctx.org);
   const orgId = ctx.org.id;
@@ -240,6 +246,9 @@ export async function createDoc(ctx, body) {
 
   const L = [];
   const need = new Map();   // item -> qty leaving the warehouse
+  // wholesale for the whole order from N pieces (Settings → Business type & menu → New items): pieces of stock items
+  const orderMin = +(setupOf(ctx.org).item_defaults.wholesale_order_min || 0);
+  const orderPcs = orderMin ? lines.reduce((s, l) => { const it = getItem(+l.item_id || 0); return s + (it && !it.is_service ? Math.max(0, +l.qty || 0) : 0); }, 0) : 0;
   for (const [i, raw] of lines.entries()) {
     const n = i + 1;
     const item = raw.item_id ? await getItem(+raw.item_id) : null;
@@ -249,7 +258,7 @@ export async function createDoc(ctx, body) {
     const alt = item && item.alt_unit && item.alt_factor > 0 && str(raw.uom, 12).toLowerCase() === item.alt_unit.toLowerCase() ? item : null;
     const inAlt = !!(alt && raw.uom_qty !== undefined && raw.uom_qty !== null && raw.uom_qty !== '');
     const qty = inAlt ? roundQty(num(raw.uom_qty, `Line ${n} quantity`, { min: 0.001, max: 1e9 }) * alt.alt_factor) : roundQty(num(raw.qty, `Line ${n} quantity`, { min: 0.001, max: 1e9 }));
-    const list = item && T.side === 'sales' ? listPrice(item, party, qty) : 0;
+    const list = item && T.side === 'sales' ? listPrice(item, party, qty, orderPcs, orderMin) : 0;
     const fallbackRate = item && !T.note ? (T.side === 'sales' ? list : item.purchase_price) : 0;   // notes: the user types the difference
     let rate = raw.rate === undefined || raw.rate === '' || raw.rate === null ? fallbackRate : ratePaise(num(raw.rate, `Line ${n} rate`, { min: 0 }));
     let disc = num(raw.discount_pct, `Line ${n} discount`, { min: 0, max: 100, def: 0 });
@@ -363,6 +372,8 @@ export async function createDoc(ctx, body) {
     ? db.prepare(`INSERT INTO docs (${docCols}) SELECT ${docVals} WHERE (SELECT COUNT(*) FROM docs WHERE org_id = ? AND type = 'INV' AND created_at >= ?) < ?`)
       .bind(...docArgs, orgId, cap.since, cap.max)
     : db.prepare(`INSERT INTO docs (${docCols}) VALUES (${docVals})`).bind(...docArgs));
+  // the packing confirmation: who packed this delivery note (scanned or confirmed on Pack & check) and when
+  if (type === 'DN' && body.packed_check === true) st.push(db.prepare(`UPDATE docs SET packed_by = ?, packed_at = ? WHERE txk = ?`).bind(ctx.user.id, nowIso(), txk));
 
   // lines + stock + per-line cost; bins and batches: src/lots.js
   const incoming = moves && T.stock === 'in' ? L.flatMap((l) => l.serials) : [];
@@ -411,7 +422,9 @@ export async function createDoc(ctx, body) {
       .bind(txk, l.item ? l.item.id : null, l.desc, l.qty, l.rate, l.disc, l.gst, l.calc.taxable, l.calc.cgst, l.calc.sgst, l.calc.igst, l.calc.total,
         l.srcLine ? l.srcLine.id : null, cost, l.batch.no, l.batch.expiry, l.serials.join(', '), l.uom, l.uomF));
     const col = fromBill ? 'recv_qty' : short ? 'short_qty' : 'done_qty';
-    if (l.srcLine) st.push(db.prepare(`UPDATE doc_lines SET ${col} = ROUND(${col} + ?, 3) WHERE id = ?`).bind(l.qty, l.srcLine.id));
+    // pieces picked for an order line (src/picking.js) leave the "picked" count once they are on a delivery note or invoice
+    if (l.srcLine) st.push(db.prepare(col === 'done_qty' ? `UPDATE doc_lines SET done_qty = ROUND(done_qty + ?1, 3), picked_qty = MAX(0, ROUND(picked_qty - ?1, 3)) WHERE id = ?2`
+      : `UPDATE doc_lines SET ${col} = ROUND(${col} + ?1, 3) WHERE id = ?2`).bind(l.qty, l.srcLine.id));
   }
   if (fromBill || short) st.push(db.prepare(TRANSIT_SQL).bind(src.id));
 

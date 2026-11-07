@@ -8,6 +8,7 @@
    - Write-offs: goods of a bill-first bill damaged or lost on the way (write_offs). Our loss (Transit Loss & Damage) or a
      claim on the transporter / insurer (Transit & Insurance Claims). GST input cannot be kept on goods lost or destroyed
      (CGST Act s.17(5)(h)), so it is reversed: Dr loss or claim (value + GST) / Cr Goods in Transit, Cr GST Input. */
+import { codeKey } from './codes.js';
 import { bad, notFound, forbidden, str, nowIso, roundQty, loadByIds, date, today, oneOf, uid, counterStatements, counterValueSql } from './lib.js';
 import { can, requireCan, requireCancel, checkBackdate } from './auth.js';
 import { auditStatement, journalStatements, creditedOf, partOf, TRANSIT_SQL, onceGuard } from './engine.js';
@@ -57,7 +58,7 @@ export async function matchBill(db, orgId, partyId, ref, value) {
 /* POST /api/items/:id/codes { code, pack_qty }: a code scanned while receiving belongs to this item */
 export async function learnCode(c, itemId, body) {
   if (!can(c.user, 'items') && !can(c.user, 'purchase')) throw forbidden();
-  const code = str(body.code, 48).replace(/\s+/g, '');
+  const code = codeKey(str(body.code, 500));          // a long QR text is kept under a short key (src/codes.js)
   if (!code) throw bad('Scan or type the code.');
   const pack = roundQty(+body.pack_qty || 1);
   if (!(pack >= 1 && pack <= 100000)) throw bad('Pieces in one pack: 1 to 100000.');

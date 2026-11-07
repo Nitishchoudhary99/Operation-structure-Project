@@ -1492,6 +1492,7 @@ route(/^new\/([A-Z]+)$/, async (el, m, q) => {
         ${fromDoc ? `<input value="${esc((parties.find((p) => p.id === draft.party_id) || {}).name || '')}" disabled><input type="hidden" name="party_id" value="${draft.party_id}">`
           : `<select name="party_id" required><option value="">Choose…</option>${plist.map((p) => `<option value="${p.id}" ${p.id === +draft.party_id ? 'selected' : ''}>${esc(p.name)}</option>`).join('')}</select>`}</label>
       ${fromDoc ? '' : `<label class="f">&nbsp;<button type="button" class="btn" id="newparty">+ New ${side}</button></label>`}
+      ${isSale && !isNote && !fromDoc ? `<label class="f">Price<select name="price_mode"><option value="">Auto (customer's list${wholesaleMin() ? `, wholesale from ${wholesaleMin()} pcs` : ''})</option><option value="retail">Retail</option><option value="wholesale">Wholesale</option></select></label>` : ''}
       <label class="f">Date<input type="date" name="date" value="${esc(draft.date)}"${minDate() ? ` min="${minDate()}"` : ''}></label>
       ${refField ? `<label class="f">${type === 'GRN' ? 'Supplier challan / bill no.' : 'Supplier bill no.'}<input name="party_ref" maxlength="40" value="${esc(draft.party_ref || '')}" autocomplete="off"></label>` : ''}
       ${billFirst ? `<label class="f check wide"><input type="checkbox" name="transit"> <span>Goods not received yet (on the way)<small class="help">Stock comes in when the goods arrive: Purchase → Receive Goods.</small></span></label>` : ''}
@@ -1510,6 +1511,8 @@ route(/^new\/([A-Z]+)$/, async (el, m, q) => {
       <label class="f">Shipping bill date<input name="sb_date" type="date"></label></div><p class="muted small" data-exphelp></p></div>` : ''}
     ${fromDoc && draft.export_type ? `<div class="panel muted small">&#127760; Export ${draft.export_type === 'WPAY' ? 'with IGST' : 'under LUT, no IGST'}${draft.currency ? ` in ${esc(draft.currency)} at ₹${draft.fx_rate}` : ''}: the same terms as ${esc(draft.ref_number)}. Rates below are in rupees.</div>` : ''}
     ${isNote ? '' : `<label class="check incl-all"><input type="checkbox" id="inclall" ${(draft.incl ?? (isSale && !draft.lines.some((l) => l.rate) && (inclPref() || items.some((x) => x.price_incl)))) ? 'checked' : ''}> Rates include GST (MRP)</label>`}
+    ${fromDoc || isNote ? '' : `<div class="panel scanbar no-print"><div class="row"><input id="dscan" placeholder="Scan QR / barcode to add an item (or type its code)" autocomplete="off" enterkeyhint="done" style="flex:1;min-width:0" aria-label="Scan item code">${canCamera() ? '<button type="button" class="btn primary" id="dcam">&#128247; Scan</button>' : ''}</div>
+      <div id="dslog" class="pk-log small" aria-live="polite"></div>${isSale && wholesaleMin() ? `<div class="muted small" id="wsnote">Wholesale price on every item once the order has ${wholesaleMin()} pieces or more.</div>` : ''}</div>`}
     <div class="panel flush"><div class="tbl-wrap"><table class="t lines"><thead><tr><th>Item</th><th>Qty</th><th>${isNote ? 'Rate diff (₹/unit)' : 'Rate (₹)'}</th><th>Disc %</th><th>GST</th><th class="num">Amount</th><th></th></tr></thead>
       <tbody id="lines">${draft.lines.map(lineRow).join('')}</tbody></table></div>
       ${fromDoc ? '' : '<div style="padding:10px"><button type="button" class="btn sm" id="addline">+ Add line</button></div>'}</div>
@@ -1608,8 +1611,16 @@ route(/^new\/([A-Z]+)$/, async (el, m, q) => {
   /* the price a line starts from: the wholesale price for a wholesale customer or from the item's wholesale quantity, else the selling price
      (the same rule the server uses when a rate is left out); and what this customer paid for it last */
   const partyNow = () => parties.find((x) => x.id === +((form.elements.party_id || {}).value || 0)) || {};
+  // pieces of stock items on this document (a box counts its pieces), for "wholesale from N pieces in one order"
+  const orderPcs = () => $$('tr', tbody).reduce((sum, tr) => {
+    const it = items.find((i) => i.id === +(($('[name=item_id]', tr) || {}).value || 0));
+    return sum + (it && !it.is_service ? (+(($('[name=qty]', tr) || {}).value) || 0) * altF(tr) : 0);
+  }, 0);
+  const priceMode = () => ((form.elements.price_mode || {}).value || '');
   const listRate = (it, qty, on = incl()) => {
-    const whole = it.wholesale_price > 0 && (partyNow().price_level === 'wholesale' || (it.wholesale_min > 0 && qty >= it.wholesale_min));
+    const pm = priceMode();
+    const whole = it.wholesale_price > 0 && (pm === 'wholesale' || (pm !== 'retail' && (partyNow().price_level === 'wholesale' || (it.wholesale_min > 0 && qty >= it.wholesale_min)
+      || (isSale && wholesaleMin() > 0 && orderPcs() >= wholesaleMin()))));
     return whole ? (on ? it.wholesale_price_incl : it.wholesale_price) : (on ? it.sale_price_incl : it.sale_price);
   };
   let lastRates = {};
@@ -1747,6 +1758,84 @@ route(/^new\/([A-Z]+)$/, async (el, m, q) => {
     if (del) del.onclick = () => { if ($$('tr', tbody).length > 1) { tr.remove(); recalc(); } };
   };
   $$('tr', tbody).forEach(wireRow);
+  // the whole order crossed (or fell below) the wholesale step: every rate the app filled follows; typed rates stay
+  let wasWhole = null;
+  const reprice = () => $$('tr', tbody).forEach((tr) => {
+    const it = items.find((i) => i.id === +(($('[name=item_id]', tr) || {}).value || 0)), f = altF(tr);
+    if (it && tr.dataset.auto === '1') $('[name=rate]', tr).value = shown(r2(listRate(it, (+$('[name=qty]', tr).value || 0) * f) * f));
+  });
+  if (form.elements.price_mode) form.elements.price_mode.addEventListener('change', () => { reprice(); stockWarn(); recalc(); });
+  // a sales order or quotation asks for more than is in stock: a warning on the line (stock goes out only on the delivery note)
+  const stockWarn = () => {
+    if (!isSale || isNote || !['SO', 'QUOTE', 'INV'].includes(type)) return;
+    const want = new Map();
+    $$('tr', tbody).forEach((tr) => { const id = +(($('[name=item_id]', tr) || {}).value || 0); if (id) want.set(id, (want.get(id) || 0) + (+(($('[name=qty]', tr) || {}).value) || 0) * altF(tr)); });
+    $$('tr', tbody).forEach((tr) => {
+      const id = +(($('[name=item_id]', tr) || {}).value || 0), it = items.find((i) => i.id === id), cell = $('.c-item', tr);
+      let w = $('.stockwarn', tr);
+      const short = it && !it.is_service && want.get(id) > (it.qty_on_hand || 0) + 0.0005;
+      if (!short) { if (w) w.remove(); return; }
+      if (!w) { cell.insertAdjacentHTML('beforeend', '<div class="stockwarn neg small" role="status"></div>'); w = $('.stockwarn', tr); }
+      w.textContent = `⚠ Only ${qtyf(Math.max(0, it.qty_on_hand || 0))} ${it.unit || ''} in stock (asked ${qtyf(want.get(id))})`;
+    });
+  };
+  form.addEventListener('input', () => stockWarn());
+  form.addEventListener('change', () => stockWarn());
+  const wholeStep = () => {
+    if (!isSale || isNote || !wholesaleMin() || priceMode()) return;
+    const now = orderPcs() >= wholesaleMin();
+    if (now === wasWhole) return;
+    wasWhole = now;
+    $$('tr', tbody).forEach((tr) => {
+      const it = items.find((i) => i.id === +(($('[name=item_id]', tr) || {}).value || 0)), f = altF(tr);
+      if (it && tr.dataset.auto === '1') $('[name=rate]', tr).value = shown(r2(listRate(it, (+$('[name=qty]', tr).value || 0) * f) * f));
+    });
+    const n = $('#wsnote'); if (n) n.innerHTML = now ? `<b class="pos">Wholesale price applied: ${qtyf(orderPcs())} pieces in this order.</b>` : `Wholesale price on every item once the order has ${wholesaleMin()} pieces or more (now ${qtyf(orderPcs())}).`;
+  };
+  form.addEventListener('input', wholeStep);
+  form.addEventListener('change', wholeStep);
+  // scanning: each scan adds the item, or one more piece of it when it is already on a line (one QR per design, colour, size)
+  const scanLog = [];
+  const scanned = async (raw) => {
+    const code = String(raw || '').trim();
+    if (!code) return false;
+    const say = (ok, t) => { scanLog.push({ ok, t }); const b = $('#dslog'); if (b) b.innerHTML = scanLog.slice(-4).reverse().map((x) => `<div class="${x.ok ? 'pos' : 'neg'}">${esc(x.t)}</div>`).join(''); beep(ok); };
+    let it;
+    try { it = await GET('/api/items/lookup?code=' + encodeURIComponent(code)); }
+    catch (e) {
+      if (e.status !== 404) { say(false, `✗ ${e.message}`); return false; }
+      it = await teachCode(code, (e.data && e.data.candidates) || [], items);
+      if (!it) { say(false, `✗ ${code.slice(0, 60)}: not added`); return false; }
+    }
+    if (!items.some((i) => i.id === it.id)) {             // an item made after this screen opened
+      items.push(it);
+      $$('select[name=item_id]', tbody).forEach((sl) => sl.insertAdjacentHTML('beforeend', `<option value="${it.id}">${esc(it.name)}</option>`));
+    }
+    const n = it.pack_qty || 1;
+    let tr = $$('tr', tbody).find((r) => +((($('select[name=item_id]', r) || {}).value) || 0) === it.id && !(($('[name=uom]', r) || {}).value));
+    if (tr) {
+      const q = $('[name=qty]', tr);
+      q.value = Math.round(((+q.value || 0) + n) * 1000) / 1000;
+      q.dispatchEvent(new Event('input', { bubbles: true }));
+    } else {
+      tr = $$('tr', tbody).find((r) => !(($('select[name=item_id]', r) || {}).value) && !(($('[name=description]', r) || {}).value));
+      if (!tr) { tbody.insertAdjacentHTML('beforeend', lineRow({})); tr = tbody.lastElementChild; wireRow(tr); enhanceSelects(tr); }
+      $('[name=qty]', tr).value = n;
+      const sl = $('select[name=item_id]', tr); sl.value = it.id; sl.dispatchEvent(new Event('change', { bubbles: true }));
+    }
+    wholeStep(); recalc();
+    tr.classList.remove('scan-hit'); void tr.offsetWidth; tr.classList.add('scan-hit');
+    stockWarn();
+    say(true, `✓ ${it.name} — ${qtyf(+$('[name=qty]', tr).value)} on this ${T.label.toLowerCase()}${it.qty_on_hand !== undefined ? ` · ${qtyf(it.qty_on_hand)} in stock` : ''}`);
+    return true;
+  };
+  if ($('#dscan')) $('#dscan').addEventListener('keydown', async (e) => {
+    if (e.key !== 'Enter') return;
+    e.preventDefault();
+    const v = e.target.value; e.target.value = '';
+    await scanned(v); e.target.focus();
+  });
+  if ($('#dcam')) $('#dcam').onclick = () => cameraScan(scanned);
   form.addEventListener('input', recalc);
   form.addEventListener('change', recalc);
   if ($('#addline')) $('#addline').onclick = () => { tbody.insertAdjacentHTML('beforeend', lineRow({})); wireRow(tbody.lastElementChild); enhanceSelects(tbody.lastElementChild); recalc(); };
@@ -2229,6 +2318,8 @@ function inclPref(set) {
   return !!(cache.items && cache.items.some && cache.items.some((x) => x.price_incl));
 }
 const itemDefs = () => ((ME.org.setup || {}).item_defaults || {});
+/* wholesale price for every item of an order with this many pieces or more (Settings → Business type & menu); 0 = off */
+const wholesaleMin = () => +(itemDefs().wholesale_order_min || 0);
 const altQty = (r) => (r.alt_unit && r.alt_factor > 0 && Math.abs(r.qty_on_hand) >= r.alt_factor ? ` <span class="muted small">= ${qtyf(Math.floor(r.qty_on_hand / r.alt_factor))} ${esc(r.alt_unit)}${r.qty_on_hand % r.alt_factor ? ` + ${qtyf(Math.round(r.qty_on_hand % r.alt_factor * 1000) / 1000)}` : ''}</span>` : '');
 function itemForm(i = {}) {
   modal(i.id ? 'Edit ' + i.name : 'New item', [
@@ -3143,9 +3234,10 @@ route(/^putaway$/, async (el, m, q) => {
   };
 });
 route(/^wave$/, async (el, m, q) => {
+  if (q.get('ids') && q.get('print') !== '1') return wavePick(el, q.get('ids'));
   if (q.get('ids')) {
     const w = await GET('/api/picklist?ids=' + q.get('ids'));
-    el.innerHTML = head('Wave pick list', '<a class="btn" href="#/wave">Change orders</a><button class="btn primary" data-act="print">Print</button>') + `
+    el.innerHTML = head('Wave pick list', `<a class="btn" href="#/wave?ids=${esc(q.get('ids'))}">Pick by scan</a><a class="btn" href="#/wave">Change orders</a><button class="btn primary" data-act="print">Print</button>`) + `
       <div class="doc-paper"><div class="hdr"><div><div style="font-size:18px;font-weight:700">PICK LIST · ${w.docs.length} ORDERS</div><div>Godown: ${esc(w.warehouse)} · ${fdate(ME.today)}</div></div>
         <div style="text-align:right" class="small">${w.docs.map((d) => `${esc(d.number)} ${esc(d.party || '')}`).join('<br>')}</div></div>
         <div class="tbl-wrap"><table class="dl"><thead><tr><th>✓</th><th>Bin</th><th>Item</th><th>Batch (first to expire)</th><th class="num">Pick</th><th>For order</th></tr></thead>
@@ -3157,16 +3249,57 @@ route(/^wave$/, async (el, m, q) => {
   }
   const [so, dn] = await Promise.all([GET('/api/docs?type=SO'), GET('/api/docs?type=DN')]);
   const open = [...so.rows.filter((d) => ['open', 'partial'].includes(d.status)), ...dn.rows.filter((d) => d.status === 'open')];
-  el.innerHTML = head('Wave pick list') + `<div class="panel muted">Pick many orders in one walk through the godown: choose the orders, get one list sorted bin by bin, with how much goes to each order.</div>
+  el.innerHTML = head('Combined pick list') + `<div class="panel muted">Pick many orders in one walk through the godown: choose the orders, then scan each piece. The app says which order each piece goes to, and refuses a wrong design, colour or size or one too many.</div>
     ${open.length ? `<div class="panel flush">${table([{ h: '<input type="checkbox" id="wall" aria-label="All">', f: (d) => `<input type="checkbox" class="wsel" value="${d.id}" aria-label="${esc(d.number)}">` },
       { h: 'Order', k: 'number' }, { h: 'Customer', k: 'party' }, { h: 'Date', f: (d) => fdate(d.date) }, { h: 'Amount', num: 1, f: (d) => inr(d.total) }], open)}</div>
-      <div class="row savebar"><span class="muted" id="wcount">0 chosen</span><span class="spacer"></span><button class="btn primary" id="wgo" disabled>Make pick list</button></div>`
+      <div class="row savebar"><span class="muted" id="wcount">0 chosen</span><span class="spacer"></span>${wfOf().pick_mode === 'scan' ? '<span id="wprint" hidden></span>' : '<button class="btn" id="wprint" disabled>Print list</button>'}<button class="btn primary" id="wgo" disabled>Pick by scan</button></div>`
       : `<div class="panel">${emptyCta('No open sales orders or delivery notes to pick.')}</div>`}`;
-  const upd = () => { const n = $$('.wsel:checked', el).length; $('#wcount').textContent = `${n} chosen`; $('#wgo').disabled = !n; };
+  const upd = () => { const n = $$('.wsel:checked', el).length; $('#wcount').textContent = `${n} chosen`; $('#wgo').disabled = !n; $('#wprint').disabled = !n; };
   if ($('#wall')) $('#wall').onchange = (e) => { $$('.wsel', el).forEach((x) => { x.checked = e.target.checked; }); upd(); };
   el.onchange = (e) => { if (e.target.matches('.wsel')) upd(); };
   if ($('#wgo')) $('#wgo').onclick = () => go('wave?ids=' + $$('.wsel:checked', el).map((x) => x.value).join(','));
+  if ($('#wprint')) $('#wprint').onclick = () => go('wave?print=1&ids=' + $$('.wsel:checked', el).map((x) => x.value).join(','));
 });
+async function wavePick(el, ids) {
+  let st = await GET('/api/pick?ids=' + encodeURIComponent(ids));
+  const log = [];
+  let lastTo = null;
+  const paint = () => {
+    $('#wtop').innerHTML = `<b>${qtyf(st.picked)}</b> of <b>${qtyf(st.need)}</b> pieces picked · ${st.orders.filter((o) => o.done).length} of ${st.orders.length} orders complete`;
+    $('#wto').innerHTML = lastTo ? `<div class="put-to ${lastTo.ok ? 'pos' : 'neg'}">${lastTo.html}</div>` : '<div class="put-to muted">Scan a piece: the order it goes to shows here.</div>';
+    $('#witems').innerHTML = st.items.map((r) => `<tr class="${r.picked >= r.want - 0.0005 ? 'pk-ok' : r.picked ? 'pk-part' : ''}"><td>${r.location ? `<b>${esc(r.location)}</b>` : '<span class="muted">—</span>'}</td>
+      <td>${esc(r.name)}<div class="muted small">${esc(r.code)}</div></td><td class="num"><b>${qtyf(r.picked)}</b> / ${qtyf(r.want)}</td>
+      <td class="small">${r.orders.map((o) => `${esc(o.number)} <span class="muted">${qtyf(o.picked)}/${qtyf(o.want)}</span>`).join('<br>')}</td></tr>`).join('');
+    $('#worders').innerHTML = st.orders.map((o) => `<div class="wo ${o.done ? 'done' : ''}"><div><b>${esc(o.number)}</b> · ${esc(o.party)}${o.city ? ` <span class="muted">${esc(o.city)}</span>` : ''}
+      <div class="muted small">${qtyf(o.picked)} of ${qtyf(o.need)} picked</div></div>${o.done ? `<a class="btn sm primary" href="#/pack/${o.id}">Pack ✓</a>` : '<span class="pchip none">picking</span>'}</div>`).join('');
+    $('#wlog').innerHTML = log.slice(-5).reverse().map((x) => `<div class="${x.ok ? 'pos' : 'neg'}">${esc(x.t)}</div>`).join('');
+  };
+  const onCode = async (code) => {
+    code = String(code || '').trim();
+    if (!code) return false;
+    try {
+      const r = await POST('/api/pick/scan', { ids: st.orders.map((o) => o.id), code });
+      st = r.state;
+      lastTo = { ok: true, html: `Put <b>${esc(r.item)}</b> in <b class="put-big">${esc(r.order.number)}</b> · ${esc(r.order.party)}${r.order.done ? ' <span class="pchip pre">order complete ✓</span>' : ''}` };
+      log.push({ ok: true, t: `✓ ${r.item} → ${r.order.number} (${r.order.party})` }); beep(true); paint(); return true;
+    } catch (e) { lastTo = { ok: false, html: esc(e.message) }; log.push({ ok: false, t: e.message }); beep(false); paint(); return false; }
+  };
+  el.innerHTML = head('Combined pick list', `<a class="btn" href="#/wave">Change orders</a>${wfOf().pick_mode === 'scan' ? '' : `<a class="btn" href="#/wave?print=1&ids=${esc(ids)}">Print</a>`}`) + `
+    <div class="panel"><div id="wtop"></div>
+      <div class="row" style="margin-top:8px"><input id="wscan" placeholder="Scan or type item code…" autocomplete="off" enterkeyhint="done" style="flex:1;min-width:0">${canCamera() ? '<button class="btn primary" id="wcam">📷 Scan</button>' : ''}</div>
+      <div id="wto"></div><div id="wlog" class="pk-log" aria-live="polite"></div></div>
+    <div class="panel"><h3 style="margin-top:0">Orders</h3><div id="worders" class="worders"></div></div>
+    <div class="panel flush"><div class="tbl-wrap"><table class="t"><thead><tr><th>Bin</th><th>Item</th><th class="num">Picked / to pick</th><th>For order</th></tr></thead><tbody id="witems"></tbody></table></div></div>
+    <div class="row sticky-act"><button class="btn sm" id="wreset">Start again</button><span class="spacer"></span><a class="btn" href="#/dispatch?tab=picked">Dispatch Desk</a></div>`;
+  const inp = $('#wscan');
+  inp.addEventListener('keydown', async (e) => { if (e.key === 'Enter') { e.preventDefault(); const v = inp.value; inp.value = ''; await onCode(v); inp.focus(); } });
+  if ($('#wcam')) $('#wcam').onclick = () => cameraScan(onCode);
+  $('#wreset').onclick = async () => {
+    if (!confirm('Start picking these orders again from nothing?')) return;
+    try { st = await POST('/api/pick/reset', { ids: st.orders.map((o) => o.id) }); lastTo = null; log.length = 0; paint(); } catch (er) { toast(er.message, 'err'); }
+  };
+  paint(); inp.focus();
+}
 
 /* ======================================================================= khata */
 route(/^khata$/, async (el, m, q) => {
@@ -3319,11 +3452,12 @@ async function docPdf(d) {
 }
 /* pages: [{ bytes (JPEG), w, h }] -> PDF bytes, one A4 page each, the image across the width inside the margins */
 const PDF_W = 595.28, PDF_H = 841.89, PDF_M = 24;
-function jpegPdf(pages) {
+/* size: { w, h, m } in points for another page size (a 4 × 6 inch label is 288 × 432, no margin) */
+function jpegPdf(pages, size = null) {
   const enc = new TextEncoder(), parts = [], offs = [];
   let len = 0;
   const put = (x) => { const b = typeof x === 'string' ? enc.encode(x) : x; parts.push(b); len += b.length; };
-  const A4W = PDF_W, A4H = PDF_H, M = PDF_M, n = pages.length;
+  const A4W = size ? size.w : PDF_W, A4H = size ? size.h : PDF_H, M = size ? size.m : PDF_M, n = pages.length;
   put('%PDF-1.4\n');
   const obj = (id, body, stream) => {
     offs[id] = len;
@@ -4442,6 +4576,7 @@ route(/^settings\/print$/, async (el) => {
         <label class="f check"><input type="checkbox" name="ship_phone" ${P.ship_phone !== false ? 'checked' : ''}> Show customer phone</label>
         <label class="f check"><input type="checkbox" name="ship_cod" ${P.ship_cod !== false ? 'checked' : ''}> Show COD amount when unpaid</label>
         <label class="f check"><input type="checkbox" name="ship_items" ${P.ship_items ? 'checked' : ''}> List the items on the label</label>
+        <label class="f check wide"><input type="checkbox" name="ship_plain" ${P.ship_plain ? 'checked' : ''}> <span><b>Address only</b>: customer name, phone and address and your name, phone and address. No order number, pieces, amount (COD / prepaid) or items.</span></label>
       </div>
       <div class="row sticky-act"><span class="spacer"></span><button class="btn primary" ${canEdit ? '' : 'disabled'}>Save</button></div>
     </form>
@@ -4451,7 +4586,7 @@ route(/^settings\/print$/, async (el) => {
     const f = form.elements;
     return { ...P, layout: $('#lay .on').dataset.l, font: f.font.value, color: f.color.value, title: f.title.value, signatory: f.signatory.value, show_upi: f.show_upi.checked,
       bank_name: f.bank_name.value, bank_account: f.bank_account.value, bank_ifsc: f.bank_ifsc.value.toUpperCase(), bank_branch: f.bank_branch.value, terms: f.terms.value, footer: f.footer.value,
-      ship_size: f.ship_size.value, ship_note: f.ship_note.value, ship_from: f.ship_from.value, ship_phone: f.ship_phone.checked, ship_cod: f.ship_cod.checked, ship_items: f.ship_items.checked };
+      ship_size: f.ship_size.value, ship_note: f.ship_note.value, ship_from: f.ship_from.value, ship_phone: f.ship_phone.checked, ship_cod: f.ship_cod.checked, ship_items: f.ship_items.checked, ship_plain: f.ship_plain.checked };
   };
   const preview = () => { P = read(); $('#pv').innerHTML = docPaper(sample()); fitPapers($('#pv')); };
   const box = (kind, title, url) => `<div class="imgbox"><b>${title}</b><div class="pv">${url ? `<img src="${esc(url)}" alt="">` : `<span class="muted">No ${title.toLowerCase()}</span>`}</div>
@@ -5982,46 +6117,57 @@ route(/^picklist\/(\d+)$/, async (el, m) => {
    colour or size is refused at once; when the counts match, the Delivery Note is saved from here (stock goes out then). */
 route(/^pack\/(\d+)$/, async (el, m) => {
   const so = await GET('/api/docs/' + m[1]);
-  const draft = await GET(`/api/docs/${so.id}/convert?to=DN`);
-  const lines = draft.lines.map((l, i) => ({ ...l, i, want: l.qty, got: 0 }));
-  const goods = lines.filter((l) => l.item_id && !l.is_service);
-  const log = [];
+  let draft, st;
+  try { [draft, st] = await Promise.all([GET(`/api/docs/${so.id}/convert?to=DN`), GET('/api/pick?ids=' + so.id)]); }
+  catch (e) { throw new Error(so.status === 'closed' || so.status === 'converted' ? `${so.number} is already packed and sent.` : e.message); }
+  const order = st.orders[0] || { lines: [] }, log = [];
+  const lineOf = (id) => order.lines.find((l) => l.line_id === id);
   const paint = () => {
-    const done = goods.every((l) => l.got >= l.want - 0.0005), any = goods.some((l) => l.got > 0);
-    $('#plines').innerHTML = goods.map((l) => `<tr class="${l.got >= l.want - 0.0005 ? 'pk-ok' : l.got ? 'pk-part' : ''}"><td>${esc(l.item)}${l.location ? `<div class="muted">bin ${esc(l.location)}</div>` : ''}</td>
-      <td class="num"><b>${qtyf(l.got)}</b> / ${qtyf(l.want)} ${esc(l.unit || '')}</td><td>${l.got >= l.want - 0.0005 ? '✅' : l.got ? '…' : ''}</td>
-      <td>${l.got ? `<button class="btn sm" data-minus="${l.i}">−1</button>` : ''}</td></tr>`).join('');
+    const goods = order.lines, done = goods.length && goods.every((l) => l.picked >= l.want - 0.0005), any = goods.some((l) => l.picked > 0);
+    $('#plines').innerHTML = goods.map((l) => `<tr class="${l.picked >= l.want - 0.0005 ? 'pk-ok' : l.picked ? 'pk-part' : ''}"><td>${esc(l.name)}<div class="muted small">${esc(l.code)}</div></td>
+      <td class="num"><b>${qtyf(l.picked)}</b> / ${qtyf(l.want)} ${esc(l.unit || '')}</td><td>${l.picked >= l.want - 0.0005 ? '✅' : l.picked ? '…' : ''}</td>
+      <td>${l.picked ? `<button class="btn sm" data-minus="${l.line_id}" title="Put one back">−1</button>` : ''}</td></tr>`).join('');
     $('#plog').innerHTML = log.slice(-6).reverse().map((x) => `<div class="${x.ok ? 'pos' : 'neg'}">${esc(x.t)}</div>`).join('');
+    $('#pstate').innerHTML = done ? '<span class="pchip pre">Picking complete ✓ ready to pack</span>' : `<span class="pchip none">Picked ${qtyf(order.picked)} of ${qtyf(order.need)}</span>`;
     $('#psave').disabled = !any;
-    $('#psave').textContent = done ? 'All checked — save Delivery Note' : any ? 'Save packed part (rest stays on the order)' : 'Scan items to start';
-    $$('[data-minus]', el).forEach((b) => b.onclick = () => { const l = lines[+b.dataset.minus]; l.got = Math.max(0, r2(l.got - 1)); paint(); });
+    $('#psave').textContent = done ? 'Packed ✓ — save Delivery Note' : any ? 'Pack what is picked (rest stays on the order)' : 'Scan items to start';
   };
+  const take = (s2) => { st = s2; Object.assign(order, s2.orders.find((o) => o.id === so.id) || { lines: [], picked: 0, need: 0 }); };
   const onCode = async (code) => {
     code = String(code || '').trim();
     if (!code) return false;
-    let it;
-    try { it = await GET('/api/items/lookup?code=' + encodeURIComponent(code)); }
-    catch (e) { log.push({ ok: false, t: `✗ ${code}: not a known item` }); beep(false); paint(); return false; }
-    const n = it.pack_qty || 1, l = goods.find((x) => x.item_id === it.id && x.got < x.want - 0.0005) || goods.find((x) => x.item_id === it.id);
-    if (!l) { log.push({ ok: false, t: `✗ WRONG ITEM: ${it.name} is not on this order` }); beep(false); paint(); return false; }
-    if (l.got + n > l.want + 0.0005) { log.push({ ok: false, t: `✗ EXTRA: ${it.name} — only ${qtyf(l.want)} ordered` }); beep(false); paint(); return false; }
-    l.got = r2(l.got + n); log.push({ ok: true, t: `✓ ${it.name}${n > 1 ? ` ×${n}` : ''}` }); beep(true); paint(); return true;
+    try {
+      const r = await POST('/api/pick/scan', { ids: [so.id], code });
+      take(r.state); log.push({ ok: true, t: `✓ ${r.item}${r.qty > 1 ? ` ×${r.qty}` : ''} — ${qtyf(r.line.picked)} of ${qtyf(r.line.want)}` }); beep(true); paint(); return true;
+    } catch (e) { log.push({ ok: false, t: e.message }); beep(false); paint(); return false; }
   };
-  el.innerHTML = head(`Pack &amp; check · ${esc(so.number)}`, `<a class="btn" href="#/doc/${so.id}">Back</a><a class="btn" href="#/shiplabel/${so.id}">Shipping label</a>`) + `
-    <div class="panel"><p><b>${esc((so.party || {}).name || '')}</b>${(so.party || {}).city ? ' · ' + esc(so.party.city) : ''} · ${fdate(so.date)} · ${payChip(so)}</p>
-      <p class="muted">Scan each piece's QR / barcode label. Wrong design, colour or size is refused. Stock goes out only when the Delivery Note is saved.</p>
-      <div class="row"><input id="pscan" placeholder="Scan or type item code…" autocomplete="off" style="flex:1;min-width:0">${'BarcodeDetector' in window ? '<button class="btn" id="pcam">📷 Camera</button>' : ''}</div>
-      <div id="plog" class="pk-log"></div></div>
-    <div class="panel flush"><div class="tbl-wrap"><table class="t"><thead><tr><th>Item</th><th class="num">Scanned / ordered</th><th></th><th></th></tr></thead><tbody id="plines"></tbody></table></div></div>
-    <div class="row sticky-act"><span class="spacer"></span><button class="btn primary" id="psave" disabled>Scan items to start</button></div>`;
+  el.innerHTML = head(`Pick &amp; pack · ${esc(so.number)}`, `<a class="btn" href="#/doc/${so.id}">Back</a><a class="btn" href="#/shiplabel/${so.id}">Shipping label</a>`) + `
+    <div class="panel"><p><b>${esc((so.party || {}).name || '')}</b>${(so.party || {}).city ? ' · ' + esc(so.party.city) : ''} · ${fdate(so.date)} · ${payChip(so)} <span id="pstate"></span></p>
+      <p class="muted">Scan each piece's QR label as you pick it. Wrong design, colour or size, or more than ordered, is refused. What you scan is saved at once (the owner sees it too); stock goes out only when the Delivery Note is saved.</p>
+      <div class="row"><input id="pscan" placeholder="Scan or type item code…" autocomplete="off" enterkeyhint="done" style="flex:1;min-width:0">${canCamera() ? '<button class="btn primary" id="pcam">📷 Scan</button>' : ''}</div>
+      <div id="plog" class="pk-log" aria-live="polite"></div></div>
+    <div class="panel flush"><div class="tbl-wrap"><table class="t"><thead><tr><th>Item</th><th class="num">Picked / ordered</th><th></th><th></th></tr></thead><tbody id="plines"></tbody></table></div></div>
+    <div class="row sticky-act"><button class="btn sm" id="preset">Start again</button><span class="spacer"></span><button class="btn primary" id="psave" disabled>Scan items to start</button></div>`;
   const inp = $('#pscan');
   inp.addEventListener('keydown', async (e) => { if (e.key === 'Enter') { e.preventDefault(); const v = inp.value; inp.value = ''; await onCode(v); inp.focus(); } });
   if ($('#pcam')) $('#pcam').onclick = () => cameraScan(onCode);
+  $('#plines').onclick = async (e) => {
+    const b = e.target.closest('[data-minus]'); if (!b) return;
+    try { take(await POST('/api/pick/undo', { line_id: +b.dataset.minus, ids: [so.id] })); paint(); } catch (er) { toast(er.message, 'err'); }
+  };
+  $('#preset').onclick = async () => {
+    if (!confirm('Start picking this order again from nothing?')) return;
+    try { take(await POST('/api/pick/reset', { ids: [so.id] })); log.length = 0; paint(); } catch (er) { toast(er.message, 'err'); }
+  };
   $('#psave').onclick = async () => {
-    const short = goods.filter((l) => l.got < l.want - 0.0005);
-    if (short.length && !confirm(`${short.length} item${short.length === 1 ? ' is' : 's are'} not fully packed. Save only what is packed?`)) return;
-    const keep = lines.filter((l) => !l.item_id || l.is_service ? !short.length : l.got > 0.0005)
-      .map(({ i, want, got, ...l }) => ({ ...l, qty: l.item_id && !l.is_service ? got : l.qty, serials: l.item_id && got < want - 0.0005 ? '' : l.serials }));
+    const short = order.lines.filter((l) => l.picked < l.want - 0.0005);
+    if (short.length && !confirm(`${short.length} item${short.length === 1 ? ' is' : 's are'} not fully picked. Pack and send only what is picked?`)) return;
+    // the delivery note: each goods line at what was picked; service lines go only with a complete order
+    const keep = draft.lines.map((l) => {
+      if (!l.item_id || l.is_service) return short.length ? null : l;
+      const p = lineOf(+l.src_line_id);
+      return p && p.picked > 0.0005 ? { ...l, qty: p.picked, serials: p.picked < p.want - 0.0005 ? '' : l.serials } : null;
+    }).filter(Boolean);
     try {
       const d = await POST('/api/docs', { ...draft, lines: keep, packed_check: true });
       toast(`Delivery Note ${d.number} saved — stock reduced`); go(`shiplabel/${d.id}?packed=1`);
@@ -6040,9 +6186,12 @@ route(/^shiplabel\/(\d+)$/, async (el, m, q) => {
   const mode = payModeOf(d), due = d.type === 'INV' ? d.balance : d.total;
   const pay = mode === 'prepaid' || due <= 0.5 ? '<div class="ship-cod prepaid">PREPAID</div>' : P.ship_cod !== false ? `<div class="ship-cod">COD ${inr(due)}</div>` : '';
   const pcs = d.lines.filter((l) => l.item_id && !l.is_service).reduce((s, l) => s + (+l.qty || 0), 0);
-  const one = `<div class="ship ship-${size}">
-    <div class="ship-to"><div class="muted small">SHIP TO</div><b class="ship-name">${esc(p.name || '')}</b><div class="ship-addr">${esc(to).replace(/\n/g, '<br>')}</div>
-      ${P.ship_phone !== false && p.phone ? `<div class="ship-ph">📞 ${esc(p.phone)}</div>` : ''}</div>
+  const toBox = `<div class="ship-to"><div class="muted small">SHIP TO</div><b class="ship-name">${esc(p.name || '')}</b><div class="ship-addr">${esc(to).replace(/\n/g, '<br>')}</div>
+      ${P.ship_plain || P.ship_phone !== false ? (p.phone ? `<div class="ship-ph">📞 ${esc(p.phone)}</div>` : '') : ''}</div>`;
+  // address only (Settings → Branding & print): nothing about what is inside or what it costs
+  const one = P.ship_plain ? `<div class="ship ship-${size} ship-plain">${toBox}
+    <div class="ship-from"><div class="muted small">FROM</div>${esc(from).replace(/\n/g, '<br>')}</div></div>` : `<div class="ship ship-${size}">
+    ${toBox}
     <div class="ship-mid"><div><b>${esc(d.number)}</b><div class="muted small">${fdate(d.date)} · ${qtyf(pcs)} pcs${d.awb ? ` · ${esc(d.courier)} ${esc(d.awb)}` : ''}</div></div>${pay}</div>
     ${P.ship_items ? `<div class="ship-items">${d.lines.filter((l) => l.item_id).map((l) => `${esc(l.item)} × ${qtyf(l.qty)}`).join('<br>')}</div>` : ''}
     ${P.ship_note ? `<div class="ship-note">${esc(P.ship_note)}</div>` : ''}
@@ -6053,7 +6202,24 @@ route(/^shiplabel\/(\d+)$/, async (el, m, q) => {
     `${q.get('packed') ? `<div class="panel okbox no-print"><b>Packed ✓ ${esc(d.number)} saved, stock reduced.</b> Print this label and stick it on the parcel.
       <div class="row" style="margin-top:8px">${desk ? '<a class="btn sm primary" href="#/dispatch?tab=packed">Next: hand to courier</a><a class="btn sm" href="#/dispatch">Pack the next order</a>' : ''}<a class="btn sm" href="#/doc/${d.id}">Open delivery note</a></div></div>` : ''}
     ${to ? '' : `<div class="panel no-print"><p class="neg">This customer has no address yet. ${p.id ? `<a href="#/party/${p.id}">Add it on the customer’s page</a>` : 'Add it on the customer’s page'} so it prints here.</p></div>`}
-    <div class="doc-paper ship-sheet">${one}</div>`;
+    <div class="doc-paper ship-sheet">${one}</div>${size === '4x6' ? '<style>@media print{@page{size:4in 6in;margin:0}}</style>' : size === '100x50' ? '<style>@media print{@page{size:100mm 50mm;margin:0}}</style>' : ''}`;
+  const head2 = $('.page-head', el);
+  if (head2) head2.insertAdjacentHTML('beforeend', '<button class="btn" id="lblpdf">Label PDF</button>');
+  $('#lblpdf').onclick = async (e) => {
+    e.target.disabled = true;
+    try {
+      await loadScript('/vendor/html-to-image.js');
+      const node = $('.ship', el), pt = { '4x6': [288, 432], '100x50': [283.46, 141.73] }[size] || [288, 432];
+      const canvas = await window.htmlToImage.toCanvas(node, { pixelRatio: 3, backgroundColor: '#ffffff', skipFonts: true });
+      const blob = await new Promise((ok) => canvas.toBlob(ok, 'image/jpeg', 0.92));
+      const pdf = jpegPdf([{ bytes: new Uint8Array(await blob.arrayBuffer()), w: canvas.width, h: canvas.height }], { w: pt[0], h: pt[1], m: 0 });
+      const file = new File([pdf], `label-${String(d.number).replace(/[^\w.-]+/g, '-')}.pdf`, { type: 'application/pdf' });
+      // a phone opens its share sheet (the label printer's app, WhatsApp, Files); a computer saves the file
+      if (canShareFiles()) await navigator.share({ files: [file], title: `Label ${d.number}` }).catch(() => {});
+      else saveFile(file);
+    } catch (er) { toast('The label PDF could not be made: ' + er.message, 'err'); }
+    e.target.disabled = false;
+  };
 });
 
 /* Book a packed parcel with a courier through Shiprocket: weight and size, the couriers that reach the pincode with
@@ -6138,6 +6304,8 @@ route(/^settings\/business$/, async (el, m, q) => {
         <label class="f">GST rate<select name="d_gst" ${can2 ? '' : 'disabled'}><option value="">Choose on each item</option>${ME.gst_rates.map((g) => `<option value="${g}" ${D.gst_rate === g ? 'selected' : ''}>${g}%</option>`).join('')}</select></label>
         <label class="f check"><input type="checkbox" name="d_batch" ${D.track_batch ? 'checked' : ''} ${can2 ? '' : 'disabled'}> Track batch &amp; expiry</label>
         <label class="f check"><input type="checkbox" name="d_serial" ${D.track_serial ? 'checked' : ''} ${can2 ? '' : 'disabled'}> Track serial / IMEI</label>
+        <label class="f">Wholesale price for the whole order from<span class="row"><input type="number" name="d_wsmin" min="0" step="1" inputmode="numeric" value="${D.wholesale_order_min || ''}" placeholder="e.g. 15" style="max-width:110px" ${can2 ? '' : 'disabled'}> <span class="muted">pieces</span></span>
+          <small class="help">Every item of an order with this many pieces or more (mixed designs, colours, sizes) gets its wholesale price. Empty = off.</small></label>
       </div>
       <label class="check" id="dashrow" hidden><input type="checkbox" name="dash" checked> Also set my dashboard for this kind of business</label>
       <div class="row sticky-act"><span class="muted small" id="bfsum"></span><span class="spacer"></span><button class="btn primary" ${can2 ? '' : 'disabled'}>Save</button></div>
@@ -6163,7 +6331,8 @@ route(/^settings\/business$/, async (el, m, q) => {
     const E = f.elements, p = PACKS.find((x) => x.k === pick), changed = !!p && pick !== S.biz;
     try {
       await api('PUT', '/api/settings/setup', { biz: pick, modules: Object.fromEntries(MODULES.map(([k]) => [k, E['m_' + k].checked])),
-        item_defaults: { unit: E.d_unit.value.trim(), gst_rate: E.d_gst.value === '' ? null : +E.d_gst.value, track_batch: E.d_batch.checked, track_serial: E.d_serial.checked } });
+        item_defaults: { unit: E.d_unit.value.trim(), gst_rate: E.d_gst.value === '' ? null : +E.d_gst.value, track_batch: E.d_batch.checked, track_serial: E.d_serial.checked,
+          wholesale_order_min: E.d_wsmin.value === '' ? 0 : +E.d_wsmin.value } });
       if (changed && p.workflow) await api('PUT', '/api/settings/workflow', p.workflow);
       if (changed && E.dash.checked && DASH_TEMPLATES[p.dash]) { try { await POST('/api/dashboards', { name: p.t.split(' / ')[0].split(' (')[0], layout: { range: '30d', widgets: DASH_TEMPLATES[p.dash][1] }, is_default: true }); } catch (er) { /* a nicety */ } }
       ME = await GET('/api/me'); shell(); wireInstall();
@@ -6284,24 +6453,30 @@ const fillMsg = (tpl, r) => String(tpl || '').replace(/\{(\w+)\}/g, (m0, k) => {
   return v === undefined ? m0 : v || '';
 }).replace(/\n{3,}/g, '\n\n').trim();
 const waTo = (phone, text) => `https://wa.me/${phone ? waNum(phone) : ''}?text=${encodeURIComponent(text)}`;
-const DESK_TABS = [['confirm', 'To confirm'], ['pack', 'To pack'], ['packed', 'Packed'], ['shipped', 'On the way'], ['done', 'Done (30 days)']];
+const DESK_TABS = [['confirm', 'To confirm'], ['pack', 'To pick'], ['picked', 'Picked'], ['packed', 'Packed'], ['shipped', 'On the way'], ['done', 'Done (30 days)']];
 route(/^dispatch$/, async (el, m, q) => {
+  clearTimeout(window.__dkT);
   const [B, CR] = await Promise.all([GET('/api/dispatch'), GET('/api/courier').catch(() => ({ connected: false }))]), W = B.workflow;
   ME.org.workflow = W;
+  // "paid, not dispatched": only the prepaid orders, in every tab
+  const paidOnly = q.get('paid') === '1';
+  if (paidOnly) for (const [k] of DESK_TABS) if (Array.isArray(B[k])) { B[k] = B[k].filter((r) => r.pay_mode === 'prepaid'); B.counts[k] = B[k].length; }
+  const pq = paidOnly ? '&paid=1' : '';
   const tabs = DESK_TABS.filter(([k]) => k !== 'confirm' || W.confirm_cod || B.counts.confirm);
   let tab = q.get('tab') && tabs.some(([k]) => k === q.get('tab')) ? q.get('tab') : (tabs.find(([k]) => B.counts[k] && k !== 'done') || tabs.find(([k]) => k === 'pack'))[0];
   const canPack = ME.can.sales || (ME.can.stock && !limits().no_dispatch);
   const courierOpts = (cur) => `<option value="">Courier…</option>${W.couriers.map((c) => `<option ${c.name === cur ? 'selected' : ''}>${esc(c.name)}</option>`).join('')}`;
   const card = (r) => {
     const head2 = `<div class="dk-top"><div><b>${esc(r.party || 'Customer')}</b>${r.city ? ` <span class="muted">· ${esc(r.city)}</span>` : ''}
-        <div class="muted small">${tab === 'pack' || tab === 'confirm' ? `<a href="#/doc/${r.id}">${esc(r.number)}</a>` : `<a href="#/doc/${r.id}">${esc(r.number)}</a>${r.order_no ? ' · order ' + esc(r.order_no) : ''}`} · ${r.age ? r.age + ' day' + (r.age > 1 ? 's' : '') + ' old' : 'today'}${r.phone ? ' · ' + esc(r.phone) : ''}</div></div>
+        <div class="muted small">${tab === 'pack' || tab === 'picked' || tab === 'confirm' ? `<a href="#/doc/${r.id}">${esc(r.number)}</a>` : `<a href="#/doc/${r.id}">${esc(r.number)}</a>${r.order_no ? ' · order ' + esc(r.order_no) : ''}`} · ${r.age ? r.age + ' day' + (r.age > 1 ? 's' : '') + ' old' : 'today'}${r.phone ? ' · ' + esc(r.phone) : ''}</div></div>
       <div class="dk-pay">${tab === 'done' ? (r.ship === 'rto' ? '<span class="pchip none">RTO</span>' : '<span class="pchip pre">Delivered</span>') : `<select data-pm="${r.id}" aria-label="Payment" class="pm-${r.pay_mode || 'none'}">${PAY_OPTS.map(([v, t]) => `<option value="${v}" ${r.pay_mode === v ? 'selected' : ''}>${v === 'cod' ? 'COD ' + inr(r.total) : v === 'prepaid' ? 'Prepaid' : 'Payment?'}</option>`).join('')}</select>`}</div></div>
       <div class="dk-items">${r.items.slice(0, 4).map((x) => `${esc(x.item)} <b>× ${qtyf(x.qty)}</b>`).join(' · ')}${r.items.length > 4 ? ` · +${r.items.length - 4} more` : ''} <span class="muted">(${qtyf(r.pcs)} pcs)</span></div>
       ${r.address ? `<div class="muted small">📍 ${esc(r.address)}</div>` : '<div class="neg small">No address yet: add it on the customer page before shipping.</div>'}`;
     const acts = {
       confirm: `<a class="btn sm got" target="_blank" rel="noopener" href="${waTo(r.phone, fillMsg(W.msg_confirm, r))}">WhatsApp to confirm</a><button class="btn sm primary" data-ok="${r.id}">Customer confirmed ✓</button>`,
-      pack: `${canPack ? `<a class="btn sm primary" href="#/pack/${r.id}">Pack &amp; check (scan)</a>` : ''}<a class="btn sm" href="#/picklist/${r.id}">Pick list</a><a class="btn sm" href="#/shiplabel/${r.id}">Label</a>`,
-      packed: `${CR.connected ? `<button class="btn sm primary" data-book="${r.id}">Book courier (Shiprocket)</button><span class="muted small">or hand it yourself:</span>` : ''}<div class="dk-ship"><select data-cr="${r.id}" aria-label="Courier">${courierOpts(r.courier)}</select><input data-awb="${r.id}" placeholder="Tracking / AWB no." value="${esc(r.awb)}" autocomplete="off">
+      pack: `${canPack ? `<a class="btn sm primary" href="#/pack/${r.id}">Pick &amp; pack (scan)</a>` : ''}${W.pick_mode === 'scan' ? '' : `<a class="btn sm" href="#/picklist/${r.id}">${W.pick_mode === 'paper' ? 'Print pick list' : 'Pick list'}</a>`}<a class="btn sm" href="#/shiplabel/${r.id}">Label</a>${r.picked ? `<span class="pchip none">picked ${qtyf(r.picked)}/${qtyf(r.pcs)}</span>` : ''}`,
+      picked: `${canPack ? `<a class="btn sm primary" href="#/pack/${r.id}">Pack ✓ (save Delivery Note)</a>` : ''}<span class="pchip pre">all ${qtyf(r.pcs)} picked</span><a class="btn sm" href="#/shiplabel/${r.id}">Label</a>`,
+      packed: `${r.packed_by || r.packed_at ? `<div class="muted small" style="flex-basis:100%">Packed${r.packed_by ? ' by ' + esc(r.packed_by) : ''}${r.packed_at ? ' · ' + fdate(r.packed_at.slice(0, 10)) + ' ' + esc(new Date(r.packed_at).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' })) : ''}</div>` : ''}${CR.connected ? `<button class="btn sm primary" data-book="${r.id}">Book courier (Shiprocket)</button><span class="muted small">or hand it yourself:</span>` : ''}<div class="dk-ship"><select data-cr="${r.id}" aria-label="Courier">${courierOpts(r.courier)}</select><input data-awb="${r.id}" placeholder="Tracking / AWB no." value="${esc(r.awb)}" autocomplete="off">
         <button class="btn sm primary" data-ship="${r.id}">Shipped</button></div><a class="btn sm" href="#/shiplabel/${r.id}">Label</a>${r.invoice ? `<span class="muted small">Invoiced ${esc(r.invoice)}</span>` : ''}`,
       shipped: `${r.sr && r.sr.track_url ? `<a class="btn sm" target="_blank" rel="noopener" href="${esc(r.sr.track_url)}">Track</a>` : trackLink(r) ? `<a class="btn sm" target="_blank" rel="noopener" href="${esc(trackLink(r))}">Track</a>` : ''}
         ${r.sr && r.sr.label_url ? `<a class="btn sm" target="_blank" rel="noopener" href="${esc(r.sr.label_url)}">Courier label</a>` : ''}${r.sr && CR.connected ? `<button class="btn sm" data-trk="${r.id}">Refresh tracking</button>` : ''}<a class="btn sm got" target="_blank" rel="noopener" href="${waTo(r.phone, fillMsg(W.msg_ship, r))}">Send tracking on WhatsApp</a>
@@ -6312,14 +6487,25 @@ route(/^dispatch$/, async (el, m, q) => {
     return `<div class="dk-card" data-find="${esc([r.party, r.phone, r.number, r.order_no, r.awb, r.city].join(' ').toLowerCase())}">${head2}<div class="dk-acts">${acts}</div></div>`;
   };
   const list = B[tab];
-  const empty = { confirm: 'No order is waiting for the customer’s confirmation.', pack: 'Nothing to pack. New orders show up here.', packed: 'No packed parcel is waiting for the courier.',
+  const empty = { confirm: 'No order is waiting for the customer’s confirmation.', pack: 'Nothing to pick. New orders show up here by themselves.', picked: 'No order is fully picked yet. Pick by scan: an order shows here when its last piece is scanned.', packed: 'No packed parcel is waiting for the courier.',
     shipped: 'No parcel is on the way.', done: 'Nothing delivered or returned in the last 30 days.' }[tab];
-  el.innerHTML = head('Dispatch Desk', `${ME.can.sales ? '<a class="btn primary" href="#/new/SO">+ New order</a>' : ''}${tab === 'pack' && list.length > 1 ? `<a class="btn" href="#/wave?ids=${list.map((r) => r.id).join(',')}">One pick list for all</a>` : ''}${CR.connected && B.shipped.some((r) => r.sr) ? '<button class="btn" id="dksync">Refresh tracking</button>' : ''}${CR.connected && tab === 'shipped' ? '<button class="btn" id="dkndr">Failed deliveries</button>' : ''}${ME.can.settings ? '<a class="btn" href="#/settings/workflow">Set up</a>' : ''}`) + `
+  el.innerHTML = head('Dispatch Desk', `${ME.can.sales ? '<a class="btn primary" href="#/new/SO">+ New order</a>' : ''}${tab === 'pack' && list.length > 1 && canPack ? `<a class="btn" href="#/wave?ids=${list.map((r) => r.id).join(',')}">Pick all together (scan)</a>` : ''}${CR.connected && B.shipped.some((r) => r.sr) ? '<button class="btn" id="dksync">Refresh tracking</button>' : ''}${CR.connected && tab === 'shipped' ? '<button class="btn" id="dkndr">Failed deliveries</button>' : ''}${ME.can.settings ? '<a class="btn" href="#/settings/workflow">Set up</a>' : ''}`) + `
+    ${paidOnly ? `<div class="panel okbox">Showing only orders paid in advance (prepaid) that are not with the courier yet. <a href="#/dispatch?tab=${tab}">Show all orders</a></div>`
+      : B.counts.paid_waiting ? `<div class="panel dk-paid"><a href="#/dispatch?paid=1&tab=${tab}">💰 <b>${B.counts.paid_waiting}</b> paid order${B.counts.paid_waiting === 1 ? '' : 's'} not dispatched yet</a></div>` : ''}
     <div class="seg seg-wrap dk-tabs">${tabs.map(([k, t]) => `<button type="button" data-tab="${k}" class="${k === tab ? 'on' : ''}">${t}${k !== 'done' ? ` <span class="badge">${B.counts[k]}</span>` : ''}</button>`).join('')}</div>
     ${list.length > 5 ? '<div class="panel"><input id="dkq" placeholder="Find by name, phone, order or tracking no…" autocomplete="off"></div>' : ''}
     ${!ordersOn() && ME.can.settings ? '<div class="panel warnbox">Orders &amp; dispatch is not switched on, so Sales Orders stay hidden from the menu in Simple mode. <a href="#/settings/workflow">Set it up (1 minute)</a></div>' : ''}
     <div class="dk-list">${list.length ? list.map(card).join('') : `<div class="panel muted">${empty}</div>`}</div>`;
-  $$('[data-tab]', el).forEach((b) => b.onclick = () => go('dispatch?tab=' + b.dataset.tab));
+  $$('[data-tab]', el).forEach((b) => b.onclick = () => go('dispatch?tab=' + b.dataset.tab + pq));
+  // new orders show up by themselves: the desk reads itself again every 45 seconds while it is open and nobody is typing
+  const again = () => {
+    window.__dkT = setTimeout(() => {
+      if (!location.hash.startsWith('#/dispatch')) return;
+      const busy = document.hidden || $('.modal-bg') || (document.activeElement && document.activeElement.matches('input, select, textarea'));
+      if (busy) again(); else render();
+    }, 45000);
+  };
+  again();
   if ($('#dkq')) $('#dkq').oninput = (e) => { const f = e.target.value.toLowerCase().trim(); $$('.dk-card', el).forEach((x) => { x.hidden = f && !x.dataset.find.includes(f); }); };
   const step = async (id, body, msg) => { try { await api('PUT', '/api/dispatch/' + id, body); if (msg) toast(msg); render(); } catch (e) { toast(e.message, 'err'); } };
   const row = (id) => list.find((r) => r.id === +id);
@@ -6390,7 +6576,7 @@ route(/^dispatch$/, async (el, m, q) => {
 /* Settings → Orders & dispatch: the whole set-up on one page, in plain words. Each answer maps to the switches the app
    already has (the flow, the Store role's limits and menu, courier list, WhatsApp messages); Settings → Roles is still
    there for anything finer. */
-const WF_PRESET = { dispatch: true, confirm_cod: true, default_pay: 'cod', st_scan: true, st_costs: true, st_cancel: true, st_dispatch: true, st_menu: true };
+const WF_PRESET = { dispatch: true, confirm_cod: true, default_pay: 'cod', pick_mode: 'scan', st_scan: true, st_costs: true, st_cancel: true, st_dispatch: true, st_menu: true };
 route(/^settings\/workflow$/, async (el, m, q) => {
   const W = { ...wfOf() }, can2 = ME.can.settings, canU = ME.can.users;
   const roles = canU ? await GET('/api/roles').catch(() => null) : null;
@@ -6417,6 +6603,8 @@ route(/^settings\/workflow$/, async (el, m, q) => {
       ${chk('dispatch', 'We take orders first and dispatch them later', 'Sales Order → pack → courier. Shows Sales Orders, Delivery Notes and the Dispatch Desk, even in Simple mode.')}
       ${chk('confirm_cod', 'Confirm COD orders with the customer on WhatsApp before packing', 'Fewer parcels come back (RTO): a COD order waits in “To confirm” until the customer says yes.')}
       <label class="f">Most orders are<select name="default_pay" ${can2 ? '' : 'disabled'}>${[['cod', 'COD (cash on delivery)'], ['prepaid', 'Prepaid (UPI / bank first)'], ['', 'Ask on each order']].map(([k, t]) => `<option value="${k}" ${(v.default_pay || '') === k ? 'selected' : ''}>${t}</option>`).join('')}</select></label>
+      <label class="f wide">How orders are picked<select name="pick_mode" ${can2 ? '' : 'disabled'}>${[['scan', 'Scan on the phone: open the order, scan each piece as it is picked (no printed pick list)'], ['paper', 'Printed pick list (ticked by hand, “picked by / checked by”)'], ['both', 'Either, as the staff like']].map(([k, t]) => `<option value="${k}" ${(v.pick_mode || 'both') === k ? 'selected' : ''}>${t}</option>`).join('')}</select>
+        <small class="help">Scan: the app checks design, colour and size against the order, counts each piece, shows the order complete, and the delivery note is saved from that screen. No paper, no second check.</small></label>
       <h3 class="rh">2. Godown / packing staff</h3>
       ${store ? `<p class="muted small">For users with the <b>Store / godown</b> role (${store.users} now). Other roles: Settings → Roles.</p>
       ${chk('st_dispatch', 'They can pack and dispatch orders', 'Save the Delivery Note from a Sales Order the office entered. They still cannot make orders or invoices.')}
@@ -6457,7 +6645,7 @@ route(/^settings\/workflow$/, async (el, m, q) => {
     const E = f.elements;
     try {
       const couriers = E.couriers.value.split('\n').map((l) => l.trim()).filter(Boolean).map((l) => { const [name, url = ''] = l.split('|').map((x) => x.trim()); return { name, url }; });
-      const r = await api('PUT', '/api/settings/workflow', { dispatch: E.dispatch.checked, confirm_cod: E.confirm_cod.checked, default_pay: E.default_pay.value, couriers, msg_confirm: E.msg_confirm.value, msg_ship: E.msg_ship.value });
+      const r = await api('PUT', '/api/settings/workflow', { dispatch: E.dispatch.checked, confirm_cod: E.confirm_cod.checked, default_pay: E.default_pay.value, pick_mode: E.pick_mode.value, couriers, msg_confirm: E.msg_confirm.value, msg_ship: E.msg_ship.value });
       if (store && !store.locked) {
         const ui = E.st_menu.checked ? { job: 'packer', home: 'dispatch' } : store.ui.job === 'packer' ? {} : store.ui;
         await api('PUT', '/api/roles/builtin/store', { perms: store.changed ? store.perms : null, ui,
@@ -6477,7 +6665,8 @@ function variantMaker() {
     { k: 'colours', label: 'Colours (comma between)', placeholder: 'Red, Blue, Black', wide: true },
     { k: 'sizes', label: 'Sizes (comma between)', placeholder: 'S, M, L, XL', wide: true },
     { k: 'sale_price', label: 'Sale price / MRP (₹)', type: 'number', required: true }, { k: 'price_incl', label: 'Price includes GST (MRP)', type: 'checkbox', value: true },
-    { k: 'purchase_price', label: 'Purchase price (₹)', type: 'number' },
+    { k: 'wholesale_price', label: 'Wholesale price (₹)', type: 'number', help: wholesaleMin() ? `For orders of ${wholesaleMin()} pieces or more, and wholesale customers.` : 'For wholesale customers, or set "wholesale from N pieces in one order" in Settings → Business type & menu.' },
+    { k: 'purchase_price', label: 'Purchase / cost price (₹)', type: 'number' },
     { k: 'gst_rate', label: 'GST %', type: 'select', value: '5', options: [0, 5, 12, 18].map((x) => ({ v: String(x), t: x + '%' })) }, { k: 'hsn', label: 'HSN', placeholder: 'e.g. 6204' },
     { k: 'opening_qty', label: 'Opening stock of each (pcs)', type: 'number', value: 0 }, { k: 'code', label: 'Code prefix', placeholder: 'from the design: K101', more: true }],
   async (v) => {
@@ -6490,7 +6679,7 @@ function variantMaker() {
     const rows = [];
     for (const c of cols.length ? cols : ['']) for (const z of sizes.length ? sizes : ['']) {
       rows.push({ name: [base, c, z].filter(Boolean).join(' - '), sku: [pre, short(c), short(z)].filter(Boolean).join('-'), category: base, unit: 'Pcs', sale_price: v.sale_price, price_incl: !!v.price_incl,
-        purchase_price: v.purchase_price || '', gst_rate: v.gst_rate, hsn: v.hsn, opening_qty: +v.opening_qty || 0 });
+        purchase_price: v.purchase_price || '', wholesale_price: v.wholesale_price || '', gst_rate: v.gst_rate, hsn: v.hsn, opening_qty: +v.opening_qty || 0 });
     }
     if (rows.length > 200) throw new Error(`That makes ${rows.length} items; 200 at a time at most.`);
     const r = await POST('/api/import/items', { rows });
@@ -7016,7 +7205,7 @@ route(/^pos$/, async (el) => {
           <label class="f grow">Customer<select id="cust">${customers.map((p) => `<option value="${p.id}" ${p.id === (walkin && walkin.id) ? 'selected' : ''}>${esc(p.name)}</option>`).join('')}</select></label>
           <label class="f">Godown<select id="wh">${whs.map((w) => `<option value="${w.id}">${esc(w.name)}</option>`).join('')}</select></label></div>
           <div class="row" style="margin-top:10px"><input id="scan" class="grow scan" list="pos-items" placeholder="Scan barcode or type item name, then Enter" autocomplete="off" autofocus>
-            ${'BarcodeDetector' in window ? '<button class="btn" id="cam" title="Scan with camera">📷 Camera</button>' : ''}<button class="btn" id="voice" title="Speak the order">&#127908; Bolkar</button></div>
+            ${canCamera() ? '<button class="btn" id="cam" title="Scan with camera">📷 Camera</button>' : ''}<button class="btn" id="voice" title="Speak the order">&#127908; Bolkar</button></div>
           <datalist id="pos-items">${items.map((i) => `<option value="${esc(i.name)}">${esc(labelCode(i))} · ${inr(shownPrice(i))}</option>`).join('')}</datalist></div>
         <div class="panel flush" id="cart"></div>
       </div>
@@ -7163,29 +7352,78 @@ function beep(ok) {
     if (navigator.vibrate) navigator.vibrate(ok ? 40 : [80, 40, 80]);
   } catch (e) { /* no audio */ }
 }
+/* a scanned label the app does not know yet (the shop's own QR with the product written in it, a supplier barcode):
+   choose the item once; the label is remembered and works from then on in orders, picking and receiving */
+function teachCode(code, candidates, all) {
+  return new Promise((done) => {
+    const close = $('#cam-root'); if (close) close.innerHTML = '';
+    const list = all.filter((i) => !i.is_service);
+    const f = modal('Which item is this label?', [{ k: 'item_id', label: 'Item', type: 'select', value: candidates.length ? candidates[0].id : '',
+      options: [{ v: '', t: 'Choose…' }, ...candidates.map((c) => ({ v: c.id, t: '★ ' + c.name })), ...list.filter((i) => !candidates.some((c) => c.id === i.id)).map((i) => ({ v: i.id, t: i.name }))] }],
+    async (v) => {
+      if (!+v.item_id) throw new Error('Choose the item.');
+      try { await POST(`/api/items/${+v.item_id}/codes`, { code, pack_qty: 1 }); } catch (e) { if (e.status !== 400) throw e; }
+      const it = await GET('/api/items/lookup?code=' + encodeURIComponent(code)).catch(() => list.find((i) => i.id === +v.item_id));
+      done(it);
+    }, { submit: 'Use this item', intro: `<p class="muted">The label says: <b>${esc(code.slice(0, 200))}</b>. ${candidates.length ? 'The items marked ★ match its words best.' : 'No item name matches its words.'} Choose it once; this label is then known everywhere.</p>` });
+    const cancel = f.closest('.modal-bg'), btn = cancel && cancel.querySelector('.actions .btn:not(.primary)');
+    if (btn) btn.addEventListener('click', () => done(null));
+  });
+}
+/* a camera to scan with: any phone or computer browser that can open the camera (iPhone Safari included) */
+const canCamera = () => !!(navigator.mediaDevices && navigator.mediaDevices.getUserMedia);
+/* reads one frame: the browser's own BarcodeDetector where it has one (Android Chrome: QR and barcodes), else jsQR
+   (iPhone and iPad Safari, Firefox: QR codes; the app prints QR labels). Loaded only when the camera is opened. */
+async function codeReader() {
+  if ('BarcodeDetector' in window) {
+    try {
+      const formats = await window.BarcodeDetector.getSupportedFormats();
+      if (formats.includes('qr_code')) { const det = new window.BarcodeDetector(); return async (v) => { const c = await det.detect(v); return c.length ? c[0].rawValue : ''; }; }
+    } catch (e) { /* fall back to jsQR */ }
+  }
+  await loadScript('/vendor/jsqr/jsQR.js');
+  const cv = document.createElement('canvas'), g = cv.getContext('2d', { willReadFrequently: true });
+  return async (v) => {
+    const w = v.videoWidth, h = v.videoHeight;
+    if (!w || !h) return '';
+    const k = Math.min(1, 800 / Math.max(w, h));
+    cv.width = Math.round(w * k); cv.height = Math.round(h * k);
+    g.drawImage(v, 0, 0, cv.width, cv.height);
+    const r = window.jsQR(g.getImageData(0, 0, cv.width, cv.height).data, cv.width, cv.height, { inversionAttempts: 'dontInvert' });
+    return r ? r.data : '';
+  };
+}
 async function cameraScan(onCode, { once = false } = {}) {
   // its own layer, so it can open over a form without replacing it
   let root = $('#cam-root');
   if (!root) { root = document.createElement('div'); root.id = 'cam-root'; document.body.appendChild(root); }
-  root.innerHTML = `<div class="modal-bg"><div class="modal"><h2>Point the camera at a barcode</h2><video id="cv" playsinline muted style="width:100%;border-radius:8px;background:#000"></video>
-    <div class="actions"><button class="btn" id="cx">Done</button></div></div></div>`;
+  root.innerHTML = `<div class="modal-bg"><div class="modal cam-modal"><h2>Point the camera at the QR label</h2><div class="cam-box"><video id="cv" playsinline muted autoplay></video><div class="cam-aim"></div></div>
+    <p class="cam-msg" id="cmsg" aria-live="polite">Hold the label inside the square. Each piece adds one; scan the same label again for more.</p>
+    <div class="actions"><button class="btn primary" id="cx">Done</button></div></div></div>`;
   let stream, stop = false, last = '', lastAt = 0;
   const close = () => { stop = true; if (stream) stream.getTracks().forEach((t) => t.stop()); root.innerHTML = ''; };
   $('#cx').onclick = close;
   try {
-    stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'environment' } });
+    stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'environment', width: { ideal: 1280 }, height: { ideal: 720 } }, audio: false });
     const v = $('#cv'); v.srcObject = stream; await v.play();
-    const det = new window.BarcodeDetector();
+    const read = await codeReader();
     const tick = async () => {
       if (stop) return;
       try {
-        const codes = await det.detect(v);
-        if (codes.length && (codes[0].rawValue !== last || Date.now() - lastAt > 1500)) { last = codes[0].rawValue; lastAt = Date.now(); if ((await onCode(last)) && once) return close(); }
+        const code = await read(v);
+        // the same label held still is read once; scanning it again needs a moment's gap
+        if (code && (code !== last || Date.now() - lastAt > 1500)) {
+          last = code; lastAt = Date.now();
+          const ok = await onCode(code), m = $('#cmsg');
+          if (m) { m.className = 'cam-msg ' + (ok ? 'pos' : 'neg'); m.textContent = ok ? `✓ ${code}` : `✗ ${code}: see the message on the screen`; }
+          if (navigator.vibrate) navigator.vibrate(ok ? 60 : [80, 60, 80]);
+          if (ok && once) return close();
+        }
       } catch (e) { /* frame not ready */ }
-      setTimeout(tick, 250);
+      setTimeout(tick, 200);
     };
     tick();
-  } catch (e) { close(); alert('Camera not available: ' + e.message); }
+  } catch (e) { close(); alert('Camera not available: ' + e.message + '. Allow the camera for this site in the browser settings, or type / scan the code with a barcode scanner.'); }
 }
 function printReceipt(d, method, received) {
   const o = d.org;
