@@ -524,11 +524,16 @@ function renderVerify(token) {
 /* ======================================================================= shell & router */
 /* Modules most small shops do not need. Simple mode (the default) hides them; Settings → Advanced shows them.
    Nothing is deleted: the screens and data stay, only the menu and buttons change. */
-const ADVANCED = new Set(['sales/SO', 'sales/DN', 'sales/QUOTE', 'purchase/PO', 'gate/in', 'purchase/GRN', 'gate/out', 'stockcount', 'pending', 'wave']);
+const ADVANCED = new Set(['sales/SO', 'sales/DN', 'sales/QUOTE', 'purchase/PO', 'gate/in', 'purchase/GRN', 'gate/out', 'stockcount', 'pending', 'wave', 'dispatch']);
 const ADV_DOCS = ['QUOTE', 'SO', 'DN', 'PO', 'GRN'];
 const simple = () => !ME || (ME.org.mode || 'simple') !== 'advanced';
+/* Settings → Orders & dispatch turns on the order flow (Sales Order → pack → courier) even in Simple mode */
+const dispatchOn = () => !!(ME && ME.org && ME.org.workflow && ME.org.workflow.dispatch);
+const DISP = new Set(['sales/SO', 'sales/DN', 'pending', 'wave', 'dispatch']);
+const flowOk = (h) => !simple() || (dispatchOn() && DISP.has(h));
+const docFlowOk = (k) => !simple() || !ADV_DOCS.includes(k) || (dispatchOn() && ['SO', 'DN'].includes(k));
 /* which permission area a menu entry needs (custom roles may not see every area); the gate register also opens with 'gate' */
-const navArea = (h) => /^(receipts|payments|expenses|accounts|journal|staff|bankrec|assets|tds)$/.test(h) ? 'finance' : /^(sales\/|pos$|recurring$|channels$|shop$|loyalty$|tables$|table\/|kots$)/.test(h) ? 'sales' : /^(purchase\/|receive$)/.test(h) ? 'purchase'
+const navArea = (h) => h === 'dispatch' ? ['items', 'sales'] : /^(receipts|payments|expenses|accounts|journal|staff|bankrec|assets|tds)$/.test(h) ? 'finance' : /^(sales\/|pos$|recurring$|channels$|shop$|loyalty$|tables$|table\/|kots$)/.test(h) ? 'sales' : /^(purchase\/|receive$)/.test(h) ? 'purchase'
   : /^gate\/in$/.test(h) ? ['purchase', 'gate'] : /^gate\/out$/.test(h) ? ['items', 'gate'] : h === 'claims' ? ['purchase', 'finance'] : h === 'wa-inbox' ? ['sales', 'khata', 'finance']
   : /^(items|stock|stockcount|pending|bins|expiry|stock-ageing|serials|production|wave|putaway)$/.test(h) ? 'items' : /^(parties|reminders)$/.test(h) ? 'masters' : /^(khata|vaade)$/.test(h) ? 'khata'
   : /^(reports\/|tally$|daybook$|gstr$)/.test(h) ? 'reports' : h === 'plan' ? 'settings' : '';
@@ -543,8 +548,9 @@ const seen = (h) => {
 const JOBS = {
   all: { t: 'Owner / manager: everything', home: 'dashboard' },
   counter: { t: 'Billing counter', home: 'pos', screens: ['pos', 'sales/INV', 'sales/SRET', 'receipts', 'khata', 'parties', 'items', 'stock', 'serials', 'wa-inbox'] },
-  store: { t: 'Godown / store keeper', home: 'receive', screens: ['receive', 'gate/in', 'purchase/GRN', 'purchase/PO', 'purchase/PRET', 'putaway', 'bins', 'items', 'stock', 'expiry', 'serials',
+  store: { t: 'Godown / store keeper', home: 'receive', screens: ['receive', 'dispatch', 'gate/in', 'purchase/GRN', 'purchase/PO', 'purchase/PRET', 'putaway', 'bins', 'items', 'stock', 'expiry', 'serials',
     'production', 'stockcount', 'wave', 'pending', 'gate/out', 'stock-ageing', 'claims'] },
+  packer: { t: 'Packing & dispatch (godown)', home: 'dispatch', screens: ['dispatch', 'pending', 'wave', 'sales/SO', 'sales/DN', 'items', 'stock', 'bins', 'receive', 'putaway', 'stockcount'] },
   gate: { t: 'Gate / security guard', home: 'gate/in', screens: ['gate/in', 'gate/out'] },
   waiter: { t: 'Waiter / captain (restaurant)', home: 'tables', screens: ['tables', 'kots', 'pos'] },
   accounts: { t: 'Accountant', home: 'dashboard', screens: ['dashboard', 'sales/INV', 'sales/SRET', 'sales/CNOTE', 'receipts', 'purchase/BILL', 'purchase/PRET', 'purchase/DNOTE', 'payments',
@@ -555,7 +561,7 @@ const JOBS = {
 };
 const ROLE_JOB = { owner: 'all', admin: 'all', accountant: 'accounts', store: 'store', sales: 'sales' };
 /* screens that follow a document flow the business may have switched off (Simple mode) */
-const FLOW = new Set(['sales/SO', 'sales/DN', 'sales/QUOTE', 'purchase/PO', 'wave', 'pending']);
+const FLOW = new Set(['sales/SO', 'sales/DN', 'sales/QUOTE', 'purchase/PO', 'wave', 'pending', 'dispatch']);
 /* the menu in force: the user's own (Settings → Users → Menu), else the role's (Settings → Roles), else the role's usual job */
 const myUi = () => {
   const u = ME.ui || {}, r = ME.role_ui || {}, own = !!(u.job || u.screens);
@@ -567,8 +573,8 @@ function onMenu(h) {
   const ui = myUi();
   if (ui.screens) return ui.screens.includes(h);
   const job = JOBS[jobOf(ui)];
-  if (!job.screens) return !simple() || !ADVANCED.has(h);
-  return job.screens.includes(h) && (!simple() || !FLOW.has(h));
+  if (!job.screens) return !ADVANCED.has(h) || flowOk(h);
+  return job.screens.includes(h) && (!FLOW.has(h) || flowOk(h));
 }
 const myHome = () => { const ui = myUi(); const h = ui.home || JOBS[jobOf(ui)].home; return h === 'dashboard' || seen(h) ? h : 'dashboard'; };
 const limits = () => (ME && ME.rules) || {};
@@ -581,7 +587,7 @@ const minDate = () => {
 };
 const NAV = [
   ['', [['dashboard', 'Dashboard']]],
-  ['Sales', [['pos', 'Quick Bill (POS)'], ['tables', 'Tables (Restaurant)'], ['sales/INV', 'Invoices'], ['shop', 'Online Catalogue'], ['loyalty', 'Loyalty Points'], ['channels', 'Online Orders (Amazon…)'], ['recurring', 'Recurring Bills'], ['sales/SO', 'Sales Orders'], ['sales/DN', 'Delivery Notes'], ['sales/QUOTE', 'Quotations'], ['sales/SRET', 'Sales Returns'], ['sales/CNOTE', 'Credit Notes (rate diff)'], ['receipts', 'Receipts']]],
+  ['Sales', [['pos', 'Quick Bill (POS)'], ['tables', 'Tables (Restaurant)'], ['sales/INV', 'Invoices'], ['shop', 'Online Catalogue'], ['loyalty', 'Loyalty Points'], ['channels', 'Online Orders (Amazon…)'], ['recurring', 'Recurring Bills'], ['sales/SO', 'Sales Orders'], ['dispatch', 'Dispatch Desk'], ['sales/DN', 'Delivery Notes'], ['sales/QUOTE', 'Quotations'], ['sales/SRET', 'Sales Returns'], ['sales/CNOTE', 'Credit Notes (rate diff)'], ['receipts', 'Receipts']]],
   ['Purchase', [['receive', 'Receive Goods (scan)'], ['purchase/PO', 'Purchase Orders'], ['gate/in', 'Gate Entry (inward)'], ['purchase/GRN', 'Goods Receipts (GRN)'], ['purchase/BILL', 'Purchase Bills'], ['purchase/PRET', 'Purchase Returns'], ['purchase/DNOTE', 'Debit Notes (rate diff)'], ['claims', 'Transit Claims'], ['payments', 'Payments']]],
   ['Inventory', [['items', 'Items'], ['stock', 'Stock & Godowns'], ['stock-ageing', 'Stock Ageing'], ['bins', 'Bins & Racks'], ['expiry', 'Batch & Expiry'], ['serials', 'Serial / IMEI'], ['production', 'Production (BOM)'], ['wave', 'Wave Pick List'], ['stockcount', 'Stock Count'], ['gate/out', 'Gate Pass (outward)'], ['pending', 'Pending Orders']]],
   ['Contacts', [['parties', 'Customers & Suppliers'], ['khata', 'Khata Book'], ['reminders', 'Vasooli (Collections)'], ['vaade', 'Vaade (Promises)'], ['wa-inbox', 'WhatsApp Inbox']]],
@@ -591,7 +597,7 @@ const NAV = [
 ];
 
 /* the + New menu: the everyday actions, only those the user's role may do */
-const NEW_MENU = [['new/INV', 'Sales invoice', 'sales', 'sales/INV', 'doc'], ['pos', 'Quick bill (POS)', 'sales', 'pos', 'bolt'], ['new/BILL', 'Purchase bill', 'purchase', 'purchase/BILL', 'cart'],
+const NEW_MENU = [['new/INV', 'Sales invoice', 'sales', 'sales/INV', 'doc'], ['new/SO', 'Sales order', 'sales', 'sales/SO', 'doc'], ['pos', 'Quick bill (POS)', 'sales', 'pos', 'bolt'], ['new/BILL', 'Purchase bill', 'purchase', 'purchase/BILL', 'cart'],
   ['receive', 'Receive goods', 'purchase', 'receive', 'box'], ['gate/in?new=1', 'Gate entry', 'gate', 'gate/in', 'truck'], ['receipts?new=1', 'Receive payment', 'finance', 'receipts', 'in'],
   ['payments?new=1', 'Pay a supplier', 'finance', 'payments', 'out'], ['expenses?new=1', 'Expense', 'finance', 'expenses', 'wallet'], ['khata?new=1', 'Khata entry', 'khata', 'khata', 'book'],
   ['items?new=1', 'Product / item', 'items', 'items', 'tag'], ['parties?new=1', 'Customer / supplier', 'masters', 'parties', 'user'], ['stock', 'See stock', 'items', 'stock', 'layers']];
@@ -982,6 +988,7 @@ const DASH_TEMPLATES = {
 };
 /* first run: the kind of business picks the dashboard and the screens worth knowing about first */
 const BIZ = [
+  ['online', 'Online seller (Instagram / WhatsApp)', 'retail', [['settings/workflow', 'Set up orders & dispatch'], ['items?variants=1', 'Add sizes & colours'], ['dispatch', 'Dispatch Desk']]],
   ['retail', 'Kirana / retail shop', 'retail', [['pos', 'Quick Bill with barcode and Bolkar'], ['loyalty', 'Loyalty points'], ['shop', 'Online catalogue on WhatsApp']]],
   ['wholesale', 'Wholesale / distributor', 'wholesale', [['parties', 'Wholesale price lists for customers'], ['reminders', 'Vasooli (collections)'], ['receive', 'Receive goods by scanning']]],
   ['restaurant', 'Restaurant / cafe / dhaba', 'retail', [['tables', 'Tables and KOT'], ['pos', 'Quick Bill'], ['loyalty', 'Loyalty points']]],
@@ -1080,7 +1087,8 @@ route(/^dashboard$/, async (el, m, q) => {
       const k = b.dataset.biz; storeSet(bizKey, k);
       if (k !== 'skip') {
         const got = BIZ.find((x) => x[0] === k);
-        try { await POST('/api/dashboards', { name: got[1].split(' / ')[0], layout: { range: '30d', widgets: allowed(DASH_TEMPLATES[got[2]][1]) }, is_default: true }); toast('Dashboard set for your business'); } catch (er) { toast(er.message, 'err'); }
+        try { await POST('/api/dashboards', { name: got[1].split(' / ')[0].split(' (')[0], layout: { range: '30d', widgets: allowed(DASH_TEMPLATES[got[2]][1]) }, is_default: true }); toast('Dashboard set for your business'); } catch (er) { toast(er.message, 'err'); }
+        if (k === 'online' && ME.can.settings) { go('settings/workflow?preset=online'); return; }
       }
       render(); return;
     }
@@ -1219,6 +1227,8 @@ const TODAY = {
   expiring: ['amber', (n) => `${n} batch${n > 1 ? 'es' : ''} expire within 30 days`, '#/expiry', 'Sell first'],
   low_stock: ['amber', (n) => `${n} item${n > 1 ? 's' : ''} at reorder level`, '#/new/PO?reorder=1', 'Order'],
   to_deliver: ['blue', (n) => `${n} sales order${n > 1 ? 's' : ''} to deliver`, '#/pending', 'Open'],
+  to_pack: ['blue', (n) => `${n} order${n > 1 ? 's' : ''} to pack`, '#/dispatch', 'Pack'],
+  to_ship: ['amber', (n) => `${n} parcel${n > 1 ? 's' : ''} packed, not handed to the courier`, '#/dispatch?tab=packed', 'Ship'],
   to_receive: ['blue', (n) => `${n} purchase order${n > 1 ? 's' : ''} to receive`, '#/pending', 'Open'],
   at_gate: ['amber', (n) => `${n} vehicle${n > 1 ? 's' : ''} at the gate, goods not received`, '#/receive', 'Receive'],
   in_transit: ['blue', (n) => `${n} bill${n > 1 ? 's' : ''} booked, goods still on the way`, '#/receive', 'Receive'],
@@ -1240,6 +1250,7 @@ const TODAY = {
 };
 /* the same lines in Hindi (Hindi screens): the text and the button; the link stays */
 const TODAY_HI = {
+  to_pack: [(n) => `${n} ऑर्डर पैक करने हैं`, 'पैक करें'], to_ship: [(n) => `${n} पार्सल पैक, कूरियर को नहीं दिए`, 'भेजें'],
   overdue: [(n) => `${n} बिल की तारीख निकल गई`, 'याद दिलाएँ'], promises: [(n) => `${n} वादे का भुगतान आज तक`, 'देखें'], disputed: [(n) => `${n} ग्राहकों ने बाकी पर आपत्ति की`, 'देखें'],
   expired: [(n) => `${n} बैच एक्सपायर, फिर भी स्टॉक में`, 'देखें'], recurring: [(n) => `${n} दोहराने वाले बिल नहीं बन सके`, 'ठीक करें'], recurring_send: [(n) => `${n} नए दोहराने वाले बिल ग्राहकों को भेजने हैं`, 'भेजें'],
   approve: [(n) => `${n} खरीद ऑर्डर आपकी मंज़ूरी के लिए`, 'मंज़ूर करें'], bills_due: [(n) => `${n} सप्लायर बिल 7 दिन में देय`, 'चुकाएँ'], expiring: [(n) => `${n} बैच 30 दिन में एक्सपायर`, 'पहले बेचें'],
@@ -1258,6 +1269,7 @@ function todayCard(t) {
   if (!rows.length) return `<div class="panel today ok"><b>Aaj ke kaam</b> <span class="muted">· Nothing pending today. Sab theek hai ✓</span></div>`;
   return `<div class="panel today"><div class="row"><h3 style="margin:0">Aaj ke kaam <span class="muted">· Today</span></h3><span class="spacer"></span><span class="muted">${rows.length} ${LANG === 'hi' ? 'काम' : 'to do'}</span></div>
     <div class="todo">${rows.map((r) => { let [tone, text, href, cta] = TODAY[r.key]; if (LANG === 'hi' && TODAY_HI[r.key]) [text, cta] = TODAY_HI[r.key];
+      if (r.key === 'to_deliver' && dispatchOn()) href = '#/dispatch';
       return `<a class="t-${tone}" href="${href}"><i></i><span>${esc(text(r.n, r))}${r.value ? ` <b>${inr0(r.value)}</b>` : ''}</span><em>${cta} &rsaquo;</em></a>`; }).join('')}</div></div>`;
 }
 
@@ -1865,7 +1877,7 @@ route(/^doc\/(\d+)$/, async (el, m) => {
   const d = await GET('/api/docs/' + m[1]);
   const T = ME.doc_types[d.type], o = d.org, p = d.party || {};
   // a receipt (GRN) is made from a bill only when the bill was booked before its goods (Receive Goods screen)
-  const next = Object.entries(ME.doc_types).filter(([k, v]) => v.from.includes(d.type) && !(simple() && ADV_DOCS.includes(k)) && !(k === 'GRN' && d.type === 'BILL'));
+  const next = Object.entries(ME.doc_types).filter(([k, v]) => v.from.includes(d.type) && docFlowOk(k) && !(k === 'GRN' && d.type === 'BILL'));
   const toCome = d.transit === 1 ? d.lines.reduce((s, l) => s + (l.to_receive || 0), 0) : 0;
   const hasOpen = d.lines.some((l) => l.remaining > 0.0005);
   const main = [], more = [];   // main: the few big buttons; more: everything else, in a menu
@@ -1881,7 +1893,9 @@ route(/^doc\/(\d+)$/, async (el, m) => {
     for (const [k, v] of next) if (!waiting && (hasOpen || v.note)) more.push(`<a class="btn" href="#/new/${k}?from=${d.id}">${['SRET', 'PRET'].includes(k) ? 'Return goods' : v.note ? (k === 'CNOTE' ? 'Credit note' : 'Debit note') : 'Make ' + esc(v.label)}</a>`);
     if (d.type === 'SO' && hasOpen && !waiting && (ME.can.sales || (ME.can.stock && !limits().no_dispatch))) main.push(`<a class="btn primary" href="#/pack/${d.id}">Pack &amp; check (scan)</a>`);
     if (['SO', 'DN', 'INV'].includes(d.type)) more.push(`<a class="btn" href="#/shiplabel/${d.id}">Shipping label</a>`);
-    if (!simple() && ['SO', 'DN'].includes(d.type)) more.push(`<a class="btn" href="#/picklist/${d.id}">Pick list</a>`);
+    if ((!simple() || dispatchOn()) && ['SO', 'DN'].includes(d.type)) more.push(`<a class="btn" href="#/picklist/${d.id}">Pick list</a>`);
+    if (dispatchOn() && ['SO', 'DN'].includes(d.type) && onMenu('dispatch')) more.push('<a class="btn" href="#/dispatch">Dispatch Desk</a>');
+    if (['BILL', 'GRN', 'PO'].includes(d.type) && ME.can.items) more.push(`<a class="btn" href="#/labels-doc/${d.id}">Print item labels (QR / barcode)</a>`);
     if (!simple() && ['INV', 'SRET', 'CNOTE'].includes(d.type)) more.push(`<a class="btn" href="/api/docs/${d.id}/einvoice" id="einv">E-invoice JSON</a>`);
     if (!simple() && ['INV', 'DN'].includes(d.type)) more.push(`<button class="btn" id="ewb">E-way bill</button>`);
     if (!simple() && ['INV', 'SRET', 'DN'].includes(d.type)) more.push(`<button class="btn" id="refs">${d.irn || d.ewb_no ? 'Edit' : 'Add'} IRN / EWB no.${d.export_type ? ' / shipping bill' : ''}</button>`);
@@ -1906,11 +1920,17 @@ route(/^doc\/(\d+)$/, async (el, m) => {
     <div class="panel no-print"><div class="row">
       ${d.parent ? `<span>From <a href="#/doc/${d.parent.id}">${esc(d.parent.number)}</a></span>` : ''}
       ${d.children.length ? `<span>Follow-ups: ${d.children.map((c) => `<a href="#/doc/${c.id}">${esc(c.number)}</a> ${badge(c.status)}`).join(' ')}</span>` : ''}
+      ${['SO', 'DN', 'INV'].includes(d.type) && d.status !== 'cancelled' ? `<label class="f inline-f">Payment<select id="paymode" ${ME.can.sales || ME.can.stock ? '' : 'disabled'}>${PAY_OPTS.map(([v, t]) => `<option value="${v}" ${(d.pay_mode || '') === v ? 'selected' : ''}>${t}</option>`).join('')}</select></label>` : ''}
+      ${d.type === 'SO' && d.ship === 'confirmed' ? '<span class="badge b-paid">Confirmed by customer</span>' : ''}
+      ${d.type === 'DN' && d.ship ? `<span>${shipText(d)}</span>` : ''}
       ${['INV', 'BILL'].includes(d.type) ? `<span class="spacer"></span><span>Paid <b>${inr(d.paid)}</b> &middot; Balance <b>${inr(d.balance)}</b></span>` : ''}
       <label class="f inline-f">Design<select id="design">${designOptions(d.design || '', true)}</select></label>
     </div>${d.settlements.length ? `<div class="muted" style="margin-top:8px">Settled by: ${d.settlements.map((s) => `${esc(s.number)} (${inr(s.amount)})`).join(', ')}</div>` : ''}</div>
     ${docPaper(d)}`;
   fitPapers(el);
+  if ($('#paymode')) $('#paymode').onchange = async (e) => {
+    try { await api('PUT', '/api/dispatch/' + d.id, { action: 'pay_mode', pay_mode: e.target.value }); toast(e.target.value ? `Marked ${e.target.value === 'cod' ? 'COD' : 'prepaid'}` : 'Saved'); } catch (err) { toast(err.message, 'err'); render(); }
+  };
   if (d.type === 'INV' && o.upi_id && d.balance > 0 && o.print.show_upi !== false) upiQr($('#upiqr'), o, d.balance, d.number, 'Scan to pay with any UPI app');
   $('#design').onchange = async (e) => {
     try { await api('PUT', `/api/docs/${d.id}/design`, { design: e.target.value }); toast('Design changed'); render(); } catch (err) { toast(err.message, 'err'); }
@@ -2151,7 +2171,7 @@ route(/^items$/, async (el, m, q) => {
   const cols = [{ h: 'Item', k: 'name' }, { h: 'SKU', k: 'sku', cls: 'hide-sm' }, { h: 'Category', k: 'category', cls: 'hide-sm' }, { h: 'GST', k: 'gst_rate', f: (r) => r.gst_rate + '%', cls: 'hide-sm' },
     { h: 'Sale price', k: 'sale_price', num: 1, f: (r) => inr(shownPrice(r)) + (r.price_incl ? ' <span class="muted small">incl. GST</span>' : '') }, ...(ME.costs === false ? [] : [{ h: 'Avg cost', k: 'avg_cost', num: 1, f: (r) => inr(r.avg_cost), cls: 'hide-sm' }]),
     { h: 'In stock', k: 'qty_on_hand', num: 1, f: (r) => r.is_service ? '<span class="muted">service</span>' : `${qtyf(r.qty_on_hand)} ${esc(r.unit)}` }, ...(ME.costs === false ? [] : [{ h: 'Value', k: 'stock_value', num: 1, f: (r) => inr(r.stock_value) }]), ...cfCols('item')];
-  el.innerHTML = head('Items', `${ME.can.items ? '<a class="btn" href="#/import/items">Import from Excel</a>' : ''}<button class="btn" id="csv">Export CSV</button><button class="btn primary" id="new">+ New item</button>`) +
+  el.innerHTML = head('Items', `${ME.can.items ? '<a class="btn" href="#/import/items">Import from Excel</a><button class="btn" id="variants">+ Sizes &amp; colours</button>' : ''}<button class="btn" id="csv">Export CSV</button><button class="btn primary" id="new">+ New item</button>`) +
     `<div class="panel"><input id="search" placeholder="Search items…" style="max-width:320px"></div><div class="panel flush" id="list"></div>`;
   const draw = (f) => { const r = rows.filter((x) => !f || (x.name + ' ' + x.sku + ' ' + x.category + ' ' + Object.values(x.extra || {}).join(' ')).toLowerCase().includes(f));
     $('#list').innerHTML = table(cols, r, { onRow: true, empty: f ? 'No item matches your search.' : emptyCta('Add the products you sell. Then they come up in bills with price and GST filled in.', ME.can.items ? '<button class="btn primary" data-newitem>+ Add your first item</button> <a class="btn" href="#/import/items">Import from Excel</a>' : '') });
@@ -2159,7 +2179,9 @@ route(/^items$/, async (el, m, q) => {
   draw('');
   $('#search').oninput = (e) => draw(e.target.value.toLowerCase());
   $('#new').onclick = () => itemForm();
+  if ($('#variants')) $('#variants').onclick = variantMaker;
   if (takeNew(q)) itemForm();
+  else if (q.get('variants') && ME.can.items) variantMaker();
   $('#csv').onclick = () => download('items.csv', toCsv(cols.map((c) => ({ ...c })), rows));
 });
 /* ======================================================================= import items / contacts from Excel or CSV
@@ -4159,7 +4181,7 @@ route(/^reports\/([a-z-]+)$/, async (el, m, q) => {
 });
 
 /* ======================================================================= settings */
-const SET_TABS = [['settings', 'Business & users'], ['settings/security', 'Security & privacy'], ['settings/print', 'Branding & print'], ['settings/numbering', 'Numbering'], ['settings/fields', 'Custom fields'], ['settings/roles', 'Roles']];
+const SET_TABS = [['settings', 'Business & users'], ['settings/security', 'Security & privacy'], ['settings/print', 'Branding & print'], ['settings/numbering', 'Numbering'], ['settings/fields', 'Custom fields'], ['settings/workflow', 'Orders & dispatch'], ['settings/roles', 'Roles']];
 const setTabs = (cur) => `<div class="tabs">${SET_TABS.filter(([h]) => h !== 'settings/roles' || ME.can.users).map(([h, t]) => `<a href="#/${h}" class="${h === cur ? 'on' : ''}">${t}</a>`).join('')}</div>`;
 
 /* Shrink a photo on this device (canvas) so it fits the 64 KB limit; nothing is uploaded until it is small. */
@@ -4269,7 +4291,7 @@ route(/^settings\/print$/, async (el) => {
 route(/^settings\/numbering$/, async (el) => {
   const { rows, fy } = await GET('/api/settings/series');
   const canEdit = ME.can.settings;
-  const shown = rows.filter((r) => !(simple() && ADV_DOCS.includes(r.type)));
+  const shown = rows.filter((r) => docFlowOk(r.type));
   const [fy1] = fy.split('-');
   const expand = (p) => p.replace(/\{FY\}/g, fy).replace(/\{YYYY\}/g, '20' + fy1).replace(/\{YY\}/g, fy1);
   const pv = (f) => expand(f.prefix.value) + String(Math.max(1, +f.next.value || 1)).padStart(Math.min(8, Math.max(1, +f.pad.value || 1)), '0');
@@ -4346,6 +4368,7 @@ const ROLE_STARTS = {
   counter: { t: 'Billing counter', perms: { view: ['sales', 'items', 'masters', 'khata'], edit: ['sales', 'masters', 'khata'] },
     rules: { no_cancel: true, hide_costs: true, max_discount: 5, backdate_days: 0 }, ui: { job: 'counter' } },
   godown: { t: 'Godown / receiving', perms: { view: ['purchase', 'items', 'masters', 'gate'], edit: ['purchase', 'items', 'gate'] }, rules: { no_cancel: true }, ui: { job: 'store' } },
+  packer: { t: 'Packing & dispatch (godown)', perms: { view: ['sales', 'items', 'masters'], edit: ['items'] }, rules: { no_cancel: true, hide_costs: true, must_scan: true }, ui: { job: 'packer' } },
   field: { t: 'Field salesman', perms: { view: ['sales', 'items', 'masters', 'khata'], edit: ['sales', 'masters', 'khata'] },
     rules: { no_cancel: true, hide_costs: true, max_discount: 10, backdate_days: 1 }, ui: { job: 'sales' } },
 };
@@ -5789,7 +5812,7 @@ route(/^pack\/(\d+)$/, async (el, m) => {
     l.got = r2(l.got + n); log.push({ ok: true, t: `✓ ${it.name}${n > 1 ? ` ×${n}` : ''}` }); beep(true); paint(); return true;
   };
   el.innerHTML = head(`Pack &amp; check · ${esc(so.number)}`, `<a class="btn" href="#/doc/${so.id}">Back</a><a class="btn" href="#/shiplabel/${so.id}">Shipping label</a>`) + `
-    <div class="panel"><p><b>${esc((so.party || {}).name || '')}</b> · ${fdate(so.date)}</p>
+    <div class="panel"><p><b>${esc((so.party || {}).name || '')}</b>${(so.party || {}).city ? ' · ' + esc(so.party.city) : ''} · ${fdate(so.date)} · ${payChip(so)}</p>
       <p class="muted">Scan each piece's QR / barcode label. Wrong design, colour or size is refused. Stock goes out only when the Delivery Note is saved.</p>
       <div class="row"><input id="pscan" placeholder="Scan or type item code…" autocomplete="off" style="flex:1;min-width:0">${'BarcodeDetector' in window ? '<button class="btn" id="pcam">📷 Camera</button>' : ''}</div>
       <div id="plog" class="pk-log"></div></div>
@@ -5805,7 +5828,7 @@ route(/^pack\/(\d+)$/, async (el, m) => {
       .map(({ i, want, got, ...l }) => ({ ...l, qty: l.item_id && !l.is_service ? got : l.qty, serials: l.item_id && got < want - 0.0005 ? '' : l.serials }));
     try {
       const d = await POST('/api/docs', { ...draft, lines: keep, packed_check: true });
-      toast(`Delivery Note ${d.number} saved — stock reduced`); go('doc/' + d.id);
+      toast(`Delivery Note ${d.number} saved — stock reduced`); go(`shiplabel/${d.id}?packed=1`);
     } catch (e) { toast(e.message, 'err'); }
   };
   paint(); inp.focus();
@@ -5813,24 +5836,249 @@ route(/^pack\/(\d+)$/, async (el, m) => {
 
 /* Shipping label for a courier parcel: the customer's name, address and phone, the sender, the order number and COD.
    Size and what it shows are set by the owner in Settings → Branding & print. */
-route(/^shiplabel\/(\d+)$/, async (el, m) => {
+route(/^shiplabel\/(\d+)$/, async (el, m, q) => {
   const d = await GET('/api/docs/' + m[1]);
   const o = d.org || ME.org, P = o.print || {}, p = d.party || {}, size = P.ship_size || '4x6';
   const to = [p.ship_address || p.address, [p.city, p.state, p.pincode].filter(Boolean).join(', ')].filter(Boolean).join('\n');
   const from = P.ship_from || [o.name, o.address, o.phone].filter(Boolean).join('\n');
-  const cod = P.ship_cod !== false && d.type !== 'DN' && (d.balance > 0.5 || (d.type === 'SO' && !(d.paid > 0))) ? (d.type === 'INV' ? d.balance : d.total) : 0;
+  const mode = payModeOf(d), due = d.type === 'INV' ? d.balance : d.total;
+  const pay = mode === 'prepaid' || due <= 0.5 ? '<div class="ship-cod prepaid">PREPAID</div>' : P.ship_cod !== false ? `<div class="ship-cod">COD ${inr(due)}</div>` : '';
   const pcs = d.lines.filter((l) => l.item_id && !l.is_service).reduce((s, l) => s + (+l.qty || 0), 0);
   const one = `<div class="ship ship-${size}">
     <div class="ship-to"><div class="muted small">SHIP TO</div><b class="ship-name">${esc(p.name || '')}</b><div class="ship-addr">${esc(to).replace(/\n/g, '<br>')}</div>
       ${P.ship_phone !== false && p.phone ? `<div class="ship-ph">📞 ${esc(p.phone)}</div>` : ''}</div>
-    <div class="ship-mid"><div><b>${esc(d.number)}</b><div class="muted small">${fdate(d.date)} · ${qtyf(pcs)} pcs</div></div>
-      ${cod ? `<div class="ship-cod">COD ${inr(cod)}</div>` : '<div class="ship-cod prepaid">PREPAID</div>'}</div>
+    <div class="ship-mid"><div><b>${esc(d.number)}</b><div class="muted small">${fdate(d.date)} · ${qtyf(pcs)} pcs${d.awb ? ` · ${esc(d.courier)} ${esc(d.awb)}` : ''}</div></div>${pay}</div>
     ${P.ship_items ? `<div class="ship-items">${d.lines.filter((l) => l.item_id).map((l) => `${esc(l.item)} × ${qtyf(l.qty)}`).join('<br>')}</div>` : ''}
     ${P.ship_note ? `<div class="ship-note">${esc(P.ship_note)}</div>` : ''}
     <div class="ship-from"><div class="muted small">FROM</div>${esc(from).replace(/\n/g, '<br>')}</div></div>`;
-  el.innerHTML = head(`Shipping label · ${esc(d.number)}`, `<a class="btn" href="#/doc/${d.id}">Back</a>${ME.can.settings ? '<a class="btn" href="#/settings/print">Label settings</a>' : ''}<button class="btn primary" data-act="print">Print</button>`) +
-    `${to ? '' : '<div class="panel"><p class="neg">This customer has no address yet. Add it on the customer’s page so it prints here.</p></div>'}
-    <div class="doc-paper ship-sheet ${size === 'a4-4' ? 'ship-a4' : ''}">${one}</div>`;
+  const desk = onMenu('dispatch') && seen('dispatch');
+  el.innerHTML = head(`Shipping label · ${esc(d.number)}`, `<a class="btn" href="#/${desk && q.get('packed') ? 'dispatch?tab=packed' : 'doc/' + d.id}">Back</a>${ME.can.settings ? '<a class="btn" href="#/settings/print">Label settings</a>' : ''}<button class="btn primary" data-act="print">Print</button>`) +
+    `${q.get('packed') ? `<div class="panel okbox no-print"><b>Packed ✓ ${esc(d.number)} saved, stock reduced.</b> Print this label and stick it on the parcel.
+      <div class="row" style="margin-top:8px">${desk ? '<a class="btn sm primary" href="#/dispatch?tab=packed">Next: hand to courier</a><a class="btn sm" href="#/dispatch">Pack the next order</a>' : ''}<a class="btn sm" href="#/doc/${d.id}">Open delivery note</a></div></div>` : ''}
+    ${to ? '' : `<div class="panel no-print"><p class="neg">This customer has no address yet. ${p.id ? `<a href="#/party/${p.id}">Add it on the customer’s page</a>` : 'Add it on the customer’s page'} so it prints here.</p></div>`}
+    <div class="doc-paper ship-sheet">${one}</div>`;
+});
+
+/* ======================================================================= orders & dispatch (src/dispatch.js)
+   The Dispatch Desk: every order on its way out, one tap per step. Confirm a COD order with the customer on WhatsApp,
+   pack it (Pack & check makes the Delivery Note), hand it to the courier with the tracking number (the customer gets it
+   on WhatsApp), then delivered or returned (RTO: the stock comes back). Set up in Settings → Orders & dispatch. */
+const PAY_OPTS = [['', 'Not said'], ['cod', 'COD (cash on delivery)'], ['prepaid', 'Prepaid']];
+const payModeOf = (d) => d.pay_mode || (d.type === 'INV' ? (d.balance > 0.5 ? 'cod' : 'prepaid') : d.paid > 0 && d.paid >= d.total - 0.5 ? 'prepaid' : '');
+const payChip = (d) => { const m = payModeOf(d); return m === 'prepaid' ? '<span class="pchip pre">PREPAID</span>' : m === 'cod' ? `<span class="pchip cod">COD ${inr(d.type === 'INV' ? d.balance : d.total)}</span>` : '<span class="pchip none">Payment not said</span>'; };
+const shipText = (d) => (d.ship === 'shipped' ? `🚚 Shipped${d.courier ? ' via ' + esc(d.courier) : ''}${d.awb ? ' · ' + esc(d.awb) : ''}` : d.ship === 'delivered' ? '✅ Delivered' : d.ship === 'rto' ? '↩️ Returned by courier (RTO)' : '📦 Packed, not shipped');
+const wfOf = () => (ME.org.workflow || {});
+const trackLink = (r) => { const c = (wfOf().couriers || []).find((x) => x.name === r.courier); return c && c.url && r.awb ? c.url.replace(/\{awb\}/g, encodeURIComponent(r.awb)) : ''; };
+const fillMsg = (tpl, r) => String(tpl || '').replace(/\{(\w+)\}/g, (m0, k) => {
+  const v = { name: r.party, order: r.order_no || r.number, shop: ME.org.name, items: (r.items || []).map((x) => `• ${x.item} × ${qtyf(x.qty)}`).join('\n'), amount: inr(r.total),
+    pay: r.pay_mode === 'prepaid' ? 'prepaid' : r.pay_mode === 'cod' ? 'cash on delivery' : 'payment to confirm', address: r.address, courier: r.courier, awb: r.awb, link: trackLink(r) }[k];
+  return v === undefined ? m0 : v || '';
+}).replace(/\n{3,}/g, '\n\n').trim();
+const waTo = (phone, text) => `https://wa.me/${phone ? waNum(phone) : ''}?text=${encodeURIComponent(text)}`;
+const DESK_TABS = [['confirm', 'To confirm'], ['pack', 'To pack'], ['packed', 'Packed'], ['shipped', 'On the way'], ['done', 'Done (30 days)']];
+route(/^dispatch$/, async (el, m, q) => {
+  const B = await GET('/api/dispatch'), W = B.workflow;
+  ME.org.workflow = W;
+  const tabs = DESK_TABS.filter(([k]) => k !== 'confirm' || W.confirm_cod || B.counts.confirm);
+  let tab = q.get('tab') && tabs.some(([k]) => k === q.get('tab')) ? q.get('tab') : (tabs.find(([k]) => B.counts[k] && k !== 'done') || tabs.find(([k]) => k === 'pack'))[0];
+  const canPack = ME.can.sales || (ME.can.stock && !limits().no_dispatch);
+  const courierOpts = (cur) => `<option value="">Courier…</option>${W.couriers.map((c) => `<option ${c.name === cur ? 'selected' : ''}>${esc(c.name)}</option>`).join('')}`;
+  const card = (r) => {
+    const head2 = `<div class="dk-top"><div><b>${esc(r.party || 'Customer')}</b>${r.city ? ` <span class="muted">· ${esc(r.city)}</span>` : ''}
+        <div class="muted small">${tab === 'pack' || tab === 'confirm' ? `<a href="#/doc/${r.id}">${esc(r.number)}</a>` : `<a href="#/doc/${r.id}">${esc(r.number)}</a>${r.order_no ? ' · order ' + esc(r.order_no) : ''}`} · ${r.age ? r.age + ' day' + (r.age > 1 ? 's' : '') + ' old' : 'today'}${r.phone ? ' · ' + esc(r.phone) : ''}</div></div>
+      <div class="dk-pay">${tab === 'done' ? (r.ship === 'rto' ? '<span class="pchip none">RTO</span>' : '<span class="pchip pre">Delivered</span>') : `<select data-pm="${r.id}" aria-label="Payment" class="pm-${r.pay_mode || 'none'}">${PAY_OPTS.map(([v, t]) => `<option value="${v}" ${r.pay_mode === v ? 'selected' : ''}>${v === 'cod' ? 'COD ' + inr(r.total) : v === 'prepaid' ? 'Prepaid' : 'Payment?'}</option>`).join('')}</select>`}</div></div>
+      <div class="dk-items">${r.items.slice(0, 4).map((x) => `${esc(x.item)} <b>× ${qtyf(x.qty)}</b>`).join(' · ')}${r.items.length > 4 ? ` · +${r.items.length - 4} more` : ''} <span class="muted">(${qtyf(r.pcs)} pcs)</span></div>
+      ${r.address ? `<div class="muted small">📍 ${esc(r.address)}</div>` : '<div class="neg small">No address yet: add it on the customer page before shipping.</div>'}`;
+    const acts = {
+      confirm: `<a class="btn sm got" target="_blank" rel="noopener" href="${waTo(r.phone, fillMsg(W.msg_confirm, r))}">WhatsApp to confirm</a><button class="btn sm primary" data-ok="${r.id}">Customer confirmed ✓</button>`,
+      pack: `${canPack ? `<a class="btn sm primary" href="#/pack/${r.id}">Pack &amp; check (scan)</a>` : ''}<a class="btn sm" href="#/picklist/${r.id}">Pick list</a><a class="btn sm" href="#/shiplabel/${r.id}">Label</a>`,
+      packed: `<div class="dk-ship"><select data-cr="${r.id}" aria-label="Courier">${courierOpts(r.courier)}</select><input data-awb="${r.id}" placeholder="Tracking / AWB no." value="${esc(r.awb)}" autocomplete="off">
+        <button class="btn sm primary" data-ship="${r.id}">Shipped</button></div><a class="btn sm" href="#/shiplabel/${r.id}">Label</a>${r.invoice ? `<span class="muted small">Invoiced ${esc(r.invoice)}</span>` : ''}`,
+      shipped: `${trackLink(r) ? `<a class="btn sm" target="_blank" rel="noopener" href="${esc(trackLink(r))}">Track</a>` : ''}<a class="btn sm got" target="_blank" rel="noopener" href="${waTo(r.phone, fillMsg(W.msg_ship, r))}">Send tracking on WhatsApp</a>
+        <button class="btn sm primary" data-dl="${r.id}">Delivered</button><button class="btn sm danger" data-rto="${r.id}">Returned (RTO)</button><div class="muted small" style="flex-basis:100%">${shipText(r)}</div>`,
+      done: `<span class="muted small">${shipText(r)} · ${fdate((r.ship_at || '').slice(0, 10))}</span>`,
+    }[tab];
+    return `<div class="dk-card" data-find="${esc([r.party, r.phone, r.number, r.order_no, r.awb, r.city].join(' ').toLowerCase())}">${head2}<div class="dk-acts">${acts}</div></div>`;
+  };
+  const list = B[tab];
+  const empty = { confirm: 'No order is waiting for the customer’s confirmation.', pack: 'Nothing to pack. New orders show up here.', packed: 'No packed parcel is waiting for the courier.',
+    shipped: 'No parcel is on the way.', done: 'Nothing delivered or returned in the last 30 days.' }[tab];
+  el.innerHTML = head('Dispatch Desk', `${ME.can.sales ? '<a class="btn primary" href="#/new/SO">+ New order</a>' : ''}${tab === 'pack' && list.length > 1 ? `<a class="btn" href="#/wave?ids=${list.map((r) => r.id).join(',')}">One pick list for all</a>` : ''}${ME.can.settings ? '<a class="btn" href="#/settings/workflow">Set up</a>' : ''}`) + `
+    <div class="seg seg-wrap dk-tabs">${tabs.map(([k, t]) => `<button type="button" data-tab="${k}" class="${k === tab ? 'on' : ''}">${t}${k !== 'done' ? ` <span class="badge">${B.counts[k]}</span>` : ''}</button>`).join('')}</div>
+    ${list.length > 5 ? '<div class="panel"><input id="dkq" placeholder="Find by name, phone, order or tracking no…" autocomplete="off"></div>' : ''}
+    ${!W.dispatch && ME.can.settings ? '<div class="panel warnbox">Orders &amp; dispatch is not switched on, so Sales Orders stay hidden from the menu in Simple mode. <a href="#/settings/workflow">Set it up (1 minute)</a></div>' : ''}
+    <div class="dk-list">${list.length ? list.map(card).join('') : `<div class="panel muted">${empty}</div>`}</div>`;
+  $$('[data-tab]', el).forEach((b) => b.onclick = () => go('dispatch?tab=' + b.dataset.tab));
+  if ($('#dkq')) $('#dkq').oninput = (e) => { const f = e.target.value.toLowerCase().trim(); $$('.dk-card', el).forEach((x) => { x.hidden = f && !x.dataset.find.includes(f); }); };
+  const step = async (id, body, msg) => { try { await api('PUT', '/api/dispatch/' + id, body); if (msg) toast(msg); render(); } catch (e) { toast(e.message, 'err'); } };
+  const row = (id) => list.find((r) => r.id === +id);
+  $$('[data-pm]', el).forEach((s) => s.onchange = () => step(s.dataset.pm, { action: 'pay_mode', pay_mode: s.value }, s.value ? `Marked ${s.value === 'cod' ? 'COD' : 'prepaid'}` : ''));
+  $$('[data-ok]', el).forEach((b) => b.onclick = () => step(b.dataset.ok, { action: 'confirm' }, 'Confirmed: moved to To pack'));
+  $$('[data-dl]', el).forEach((b) => b.onclick = () => step(b.dataset.dl, { action: 'delivered' }, 'Marked delivered'));
+  $$('[data-ship]', el).forEach((b) => b.onclick = async () => {
+    const id = b.dataset.ship, r = row(id), courier = $(`[data-cr="${id}"]`, el).value, awb = $(`[data-awb="${id}"]`, el).value.trim();
+    try {
+      await api('PUT', '/api/dispatch/' + id, { action: 'ship', courier, awb });
+      const msg = fillMsg(W.msg_ship, { ...r, courier, awb });
+      if (r.phone && confirm(`Shipped. Send the tracking number to ${r.party} on WhatsApp now?`)) window.open(waTo(r.phone, msg), '_blank', 'noopener');
+      toast('Marked shipped'); render();
+    } catch (e) { toast(e.message, 'err'); }
+  });
+  $$('[data-rto]', el).forEach((b) => b.onclick = () => {
+    const r = row(b.dataset.rto);
+    modal(`Returned by courier: ${r.number}`, [{ k: 'note', label: 'Reason (optional)', placeholder: 'e.g. customer refused, address not found', wide: true },
+      { k: 'keep', label: 'The order', type: 'select', options: [{ v: '', t: 'Close it (customer does not want it)' }, { v: '1', t: 'Keep it open to send again' }] }],
+    async (v) => { const x = await api('PUT', '/api/dispatch/' + r.id, { action: 'rto', note: v.note, keep_order: v.keep === '1' }); toast(`Stock is back in the godown${x.order_closed ? '; order closed' : ''}`); render(); },
+    { submit: 'Mark returned', intro: `<p class="muted">The goods come back into stock: ${r.items.map((x) => `${esc(x.item)} × ${qtyf(x.qty)}`).join(', ')}.</p>` });
+  });
+});
+
+/* Settings → Orders & dispatch: the whole set-up on one page, in plain words. Each answer maps to the switches the app
+   already has (the flow, the Store role's limits and menu, courier list, WhatsApp messages); Settings → Roles is still
+   there for anything finer. */
+const WF_PRESET = { dispatch: true, confirm_cod: true, default_pay: 'cod', st_scan: true, st_costs: true, st_cancel: true, st_dispatch: true, st_menu: true };
+route(/^settings\/workflow$/, async (el, m, q) => {
+  const W = { ...wfOf() }, can2 = ME.can.settings, canU = ME.can.users;
+  const roles = canU ? await GET('/api/roles').catch(() => null) : null;
+  const store = roles && roles.builtin.find((r) => r.key === 'store');
+  const packers = roles ? roles.rows.filter((r) => r.ui && r.ui.job === 'packer') : [];
+  const items = await master('items').catch(() => []);
+  const sr = (store && store.rules) || {};
+  const v = q.get('preset') === 'online' ? { ...W, ...WF_PRESET } : { ...W, st_scan: !!sr.must_scan, st_costs: !!sr.hide_costs, st_cancel: !!sr.no_cancel, st_dispatch: !sr.no_dispatch, st_menu: !!(store && store.ui && store.ui.job === 'packer') };
+  const chk = (k, t, help = '') => `<label class="check wf-q"><input type="checkbox" name="${k}" ${v[k] ? 'checked' : ''} ${can2 ? '' : 'disabled'}> <span><b>${t}</b>${help ? `<br><span class="muted small">${help}</span>` : ''}</span></label>`;
+  const sample = { party: 'Riya Devi', number: 'SO-00012', total: 1050, pay_mode: 'cod', address: 'House 12, Paltan Bazar, Imphal, Manipur, 795001', courier: 'India Post', awb: 'EK123456789IN',
+    items: [{ item: 'Kurti 101 - Red - M', qty: 1 }, { item: 'Kurti 205 - Blue - L', qty: 1 }] };
+  const steps = [
+    [W.dispatch, 'Orders & dispatch switched on', 'settings/workflow'],
+    [store ? store.users > 0 || packers.some((r) => r.users) : null, 'A login for the godown / packing staff', ''],
+    [items.length > 0, 'Items added (each size & colour)', 'items?variants=1'],
+    [null, 'QR / barcode labels stuck on each piece', 'items'],
+  ];
+  el.innerHTML = head('Settings') + setTabs('settings/workflow') + `
+    ${q.get('preset') === 'online' ? '<div class="panel okbox">Recommended answers for an online seller with a godown are filled in below. Check them and tap <b>Save</b>.</div>' : ''}
+    <form class="panel" id="wf"><div class="err" hidden></div>
+      <div class="row"><h2 style="margin:0">Orders &amp; dispatch</h2><span class="spacer"></span>${can2 ? '<button type="button" class="btn sm" id="wfpre">Fill recommended for online seller</button>' : ''}</div>
+      <p class="muted">For orders that come by Instagram, WhatsApp, phone or the shop and are packed in a godown. Answer in plain words; change anything any time.</p>
+      <h3 class="rh">1. How you work</h3>
+      ${chk('dispatch', 'We take orders first and dispatch them later', 'Sales Order → pack → courier. Shows Sales Orders, Delivery Notes and the Dispatch Desk, even in Simple mode.')}
+      ${chk('confirm_cod', 'Confirm COD orders with the customer on WhatsApp before packing', 'Fewer parcels come back (RTO): a COD order waits in “To confirm” until the customer says yes.')}
+      <label class="f">Most orders are<select name="default_pay" ${can2 ? '' : 'disabled'}>${[['cod', 'COD (cash on delivery)'], ['prepaid', 'Prepaid (UPI / bank first)'], ['', 'Ask on each order']].map(([k, t]) => `<option value="${k}" ${(v.default_pay || '') === k ? 'selected' : ''}>${t}</option>`).join('')}</select></label>
+      <h3 class="rh">2. Godown / packing staff</h3>
+      ${store ? `<p class="muted small">For users with the <b>Store / godown</b> role (${store.users} now). Other roles: Settings → Roles.</p>
+      ${chk('st_dispatch', 'They can pack and dispatch orders', 'Save the Delivery Note from a Sales Order the office entered. They still cannot make orders or invoices.')}
+      ${chk('st_scan', 'They must scan every piece before dispatch', 'Wrong design, colour or size is refused. No Delivery Note without Pack & check.')}
+      ${chk('st_costs', 'Hide purchase price, cost and profit from them')}
+      ${chk('st_cancel', 'They cannot cancel bills or entries')}
+      ${chk('st_menu', 'Their app opens on the Dispatch Desk, with only godown screens')}
+      <div class="row"><button type="button" class="btn sm" id="wfuser">+ Add a godown staff login</button><a class="btn sm" href="#/settings/roles">More control: Roles</a></div>` : '<p class="muted">Only the owner or an admin sets what staff may do.</p>'}
+      <h3 class="rh">3. Courier &amp; WhatsApp messages</h3>
+      <label class="f wide">Couriers you use<textarea name="couriers" rows="4" ${can2 ? '' : 'disabled'} placeholder="India Post&#10;Delhivery | https://tracking-page/{awb}">${esc(W.couriers.map((c) => c.name + (c.url ? ' | ' + c.url : '')).join('\n'))}</textarea>
+        <small class="help">One per line. To give customers a tracking link, add “ | ” and the courier’s tracking address with {awb} where the number goes.</small></label>
+      <div class="grid g2">
+        <label class="f">Message to confirm an order<textarea name="msg_confirm" rows="6" ${can2 ? '' : 'disabled'}>${esc(W.msg_confirm)}</textarea></label>
+        <div><div class="muted small">Customer sees:</div><div class="wa-prev" id="pv1"></div></div>
+        <label class="f">Message when shipped<textarea name="msg_ship" rows="6" ${can2 ? '' : 'disabled'}>${esc(W.msg_ship)}</textarea></label>
+        <div><div class="muted small">Customer sees:</div><div class="wa-prev" id="pv2"></div></div></div>
+      <p class="muted small">Words in {curly brackets} are filled in: {name} {order} {shop} {items} {amount} {pay} {address} {courier} {awb} {link}</p>
+      <h3 class="rh">4. Labels</h3>
+      <p>Courier label: <b>${esc({ '4x6': '4 × 6 inch', '100x50': '100 × 50 mm', 'a4-4': 'A4 quarter' }[(ME.org.print || {}).ship_size] || '4 × 6 inch')}</b>${(ME.org.print || {}).ship_cod === false ? ', COD amount hidden' : ', COD amount shown'}. <a href="#/settings/print">Change</a></p>
+      <p>Item labels with QR or barcode: open an item → <b>Labels</b>, or a purchase bill → More → <b>Print item labels</b>.</p>
+      <div class="row sticky-act"><span class="spacer"></span><button class="btn primary" ${can2 ? '' : 'disabled'}>Save</button></div>
+    </form>
+    <div class="panel"><h2>Ready for orders?</h2><ol class="gs">${steps.map(([ok, t, h], i) => `<li class="${ok ? 'done' : ''}"><span class="tick">${ok ? '&#10003;' : i + 1}</span><div><b>${t}</b></div>${h && !ok ? `<a class="btn sm" href="#/${h}">Open</a>` : ''}</li>`).join('')}</ol>
+      <div class="row">${ME.can.sales ? '<a class="btn primary" href="#/new/SO">Enter the first order</a>' : ''}<a class="btn" href="#/dispatch">Open Dispatch Desk</a></div></div>`;
+  const f = $('#wf');
+  const preview = () => { $('#pv1').textContent = fillMsg(f.elements.msg_confirm.value, sample); $('#pv2').textContent = fillMsg(f.elements.msg_ship.value, { ...sample, link: '' }); };
+  f.addEventListener('input', preview); preview();
+  if ($('#wfpre')) $('#wfpre').onclick = () => { for (const [k, x] of Object.entries(WF_PRESET)) { const e = f.elements[k]; if (!e) continue; if (e.type === 'checkbox') e.checked = x; else e.value = x; } toast('Recommended answers filled in. Tap Save.', 'info'); };
+  if ($('#wfuser')) $('#wfuser').onclick = () => modal('Add a godown staff login', [{ k: 'name', label: 'Name', required: true }, { k: 'email', label: 'Email (their login)', type: 'email', required: true },
+    { k: 'password', label: 'Temporary password (8+ chars)', type: 'password', required: true }],
+  async (x) => { await POST('/api/users', { ...x, role: 'store' }); toast('Login made. Share the email and password with them.'); render(); },
+  { submit: 'Add login', intro: '<p class="muted">Role: Store / godown. They see what you set above.</p>' });
+  f.onsubmit = async (e) => {
+    e.preventDefault();
+    const box = $('.err', f); box.hidden = true;
+    const E = f.elements;
+    try {
+      const couriers = E.couriers.value.split('\n').map((l) => l.trim()).filter(Boolean).map((l) => { const [name, url = ''] = l.split('|').map((x) => x.trim()); return { name, url }; });
+      const r = await api('PUT', '/api/settings/workflow', { dispatch: E.dispatch.checked, confirm_cod: E.confirm_cod.checked, default_pay: E.default_pay.value, couriers, msg_confirm: E.msg_confirm.value, msg_ship: E.msg_ship.value });
+      if (store && !store.locked) {
+        const ui = E.st_menu.checked ? { job: 'packer', home: 'dispatch' } : store.ui.job === 'packer' ? {} : store.ui;
+        await api('PUT', '/api/roles/builtin/store', { perms: store.changed ? store.perms : null, ui,
+          rules: { ...sr, must_scan: E.st_scan.checked, hide_costs: E.st_costs.checked, no_cancel: E.st_cancel.checked, no_dispatch: !E.st_dispatch.checked } });
+      }
+      ME = await GET('/api/me'); ME.org.workflow = r.workflow; shell(); wireInstall();
+      toast('Saved. Staff see the change the next time they open the app.'); go('settings/workflow');
+    } catch (err) { box.hidden = false; box.textContent = err.message; }
+  };
+});
+
+/* Sizes & colours in one go (clothing, footwear): Design × Colour × Size items, each with its own code, so a scan tells
+   one variant from another. Made through the Excel import (one request, the same checks), then their labels print. */
+function variantMaker() {
+  const f = modal('Add sizes & colours', [
+    { k: 'design', label: 'Design / style name', placeholder: 'e.g. Kurti 101', required: true, wide: true },
+    { k: 'colours', label: 'Colours (comma between)', placeholder: 'Red, Blue, Black', wide: true },
+    { k: 'sizes', label: 'Sizes (comma between)', placeholder: 'S, M, L, XL', wide: true },
+    { k: 'sale_price', label: 'Sale price / MRP (₹)', type: 'number', required: true }, { k: 'price_incl', label: 'Price includes GST (MRP)', type: 'checkbox', value: true },
+    { k: 'purchase_price', label: 'Purchase price (₹)', type: 'number' },
+    { k: 'gst_rate', label: 'GST %', type: 'select', value: '5', options: [0, 5, 12, 18].map((x) => ({ v: String(x), t: x + '%' })) }, { k: 'hsn', label: 'HSN', placeholder: 'e.g. 6204' },
+    { k: 'opening_qty', label: 'Opening stock of each (pcs)', type: 'number', value: 0 }, { k: 'code', label: 'Code prefix', placeholder: 'from the design: K101', more: true }],
+  async (v) => {
+    const list = (x) => String(x || '').split(',').map((y) => y.trim()).filter(Boolean);
+    const cols = list(v.colours), sizes = list(v.sizes), base = v.design.trim();
+    if (!cols.length && !sizes.length) throw new Error('Type at least one colour or one size.');
+    // code prefix: typed, else the design's initials and numbers ("Kurti 101" → K101, "Anarkali Suit" → AS)
+    const pre = (v.code ? v.code : base.split(/\s+/).map((w) => (/\d/.test(w) ? w : w[0] || '')).join('')).toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, 10) || 'ITEM';
+    const short = (x) => x.toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, 4);
+    const rows = [];
+    for (const c of cols.length ? cols : ['']) for (const z of sizes.length ? sizes : ['']) {
+      rows.push({ name: [base, c, z].filter(Boolean).join(' - '), sku: [pre, short(c), short(z)].filter(Boolean).join('-'), category: base, unit: 'Pcs', sale_price: v.sale_price, price_incl: !!v.price_incl,
+        purchase_price: v.purchase_price || '', gst_rate: v.gst_rate, hsn: v.hsn, opening_qty: +v.opening_qty || 0 });
+    }
+    if (rows.length > 200) throw new Error(`That makes ${rows.length} items; 200 at a time at most.`);
+    const r = await POST('/api/import/items', { rows });
+    dirty('items');
+    const made = (await master('items')).filter((i) => rows.some((x) => x.name === i.name));
+    toast(`${r.added} item${r.added === 1 ? '' : 's'} made${r.skipped.length ? `, ${r.skipped.length} already there` : ''}${r.errors.length ? `, ${r.errors.length} with errors` : ''}`);
+    if (r.errors.length) throw new Error(r.errors.map((e) => e.error).join(' '));
+    go(`labels-many?ids=${made.map((i) => i.id).join(',')}&n=${Math.max(1, +v.opening_qty || 1)}`);
+  }, { submit: 'Make items', intro: '<p class="muted">One item for every colour × size, e.g. “Kurti 101 - Red - M”, each with its own code (K101-RED-M) for the QR label. Leave colours or sizes empty if there are none.</p>' });
+  const count = () => { const n = (k) => Math.max(1, String(f.elements[k].value || '').split(',').filter((x) => x.trim()).length); const t = n('colours') * n('sizes'); f.querySelector('.actions .primary').textContent = `Make ${t} item${t === 1 ? '' : 's'}`; };
+  f.addEventListener('input', count);
+}
+
+/* Item labels: QR code or barcode, name (design - colour - size), code and price. One item, several items, or one label
+   per piece of a purchase bill / GRN / order. Both kinds scan in Pack & check, POS and Receive Goods. */
+const labelKind = () => { try { return localStorage.getItem('st_label_kind') || 'qr'; } catch (e) { return 'qr'; } };
+async function drawLabels(el, title, list, backHref) {
+  const kind = labelKind();
+  el.innerHTML = head(esc(title), `<a class="btn" href="#/${backHref}">Back</a><div class="seg" id="lk"><button type="button" data-k="qr" class="${kind === 'qr' ? 'on' : ''}">QR</button><button type="button" data-k="bar" class="${kind === 'bar' ? 'on' : ''}">Barcode</button></div><button class="btn primary" data-act="print">Print ${list.length} label${list.length === 1 ? '' : 's'}</button>`) +
+    `<p class="muted no-print">Each label carries the item's own code, so a scan tells design, colour and size apart. Use A4 label sheets or a label printer.</p>
+    <div class="labels">${list.map((it) => `<div class="label ${kind === 'qr' ? 'lq' : ''}">${kind === 'qr' ? `<div class="lqr" data-code="${esc(labelCode(it))}"></div>` : '<svg class="bc"></svg>'}<div class="lt"><div class="ln">${esc(it.name)}</div><div class="lc">${esc(labelCode(it))}</div><div class="lp">MRP ${inr(it.sale_price_incl ?? it.sale_price)}</div></div></div>`).join('')}</div>`;
+  $$('#lk [data-k]', el).forEach((b) => b.onclick = () => { try { localStorage.setItem('st_label_kind', b.dataset.k); } catch (e) { /* private mode */ } render(); });
+  if (kind === 'qr') {
+    const { default: qrcode } = await import('/vendor/qrcode.mjs');
+    const cache = {};
+    $$('.lqr', el).forEach((x) => { const c = x.dataset.code; if (!cache[c]) { const qr = qrcode(0, 'M'); qr.addData(c); qr.make(); cache[c] = qr.createSvgTag({ cellSize: 2, margin: 0, scalable: true }); } x.innerHTML = cache[c]; });
+  } else {
+    await loadScript('/vendor/JsBarcode.all.min.js');
+    $$('.labels .bc', el).forEach((svg, i) => window.JsBarcode(svg, labelCode(list[i]), { format: 'CODE128', width: 1.3, height: 34, fontSize: 0, displayValue: false, margin: 0 }));
+  }
+}
+route(/^labels-many$/, async (el, m, q) => {
+  dirty('items');
+  const all = await master('items'), ids = String(q.get('ids') || '').split(',').map(Number), n = Math.min(50, Math.max(1, +q.get('n') || 1));
+  const its = ids.map((id) => all.find((x) => x.id === id)).filter(Boolean);
+  if (!its.length) throw new Error('No items to print.');
+  await drawLabels(el, `Labels: ${its.length} item${its.length === 1 ? '' : 's'}`, its.flatMap((it) => Array(n).fill(it)).slice(0, 600), 'items');
+});
+route(/^labels-doc\/(\d+)$/, async (el, m) => {
+  dirty('items');
+  const [d, all] = await Promise.all([GET('/api/docs/' + m[1]), master('items')]);
+  const list = d.lines.filter((l) => l.item_id && !l.is_service).flatMap((l) => { const it = all.find((x) => x.id === l.item_id); return it ? Array(Math.max(0, Math.min(500, Math.ceil(l.qty)))).fill(it) : []; }).slice(0, 600);
+  if (!list.length) throw new Error('This document has no stock items.');
+  await drawLabels(el, `Labels for ${d.number} · one per piece`, list, 'doc/' + d.id);
 });
 
 /* ======================================================================= bins & racks (src/lots.js)
@@ -6507,13 +6755,10 @@ route(/^labels\/(\d+)$/, async (el, m, q) => {
   dirty('items');
   const it = (await master('items')).find((x) => x.id === +m[1]);
   if (!it) throw new Error('Item not found.');
-  const n = Math.min(200, Math.max(1, +q.get('n') || 24)), code = labelCode(it);
-  el.innerHTML = head(`Labels: ${esc(it.name)}`, `<form class="row" id="lf"><input name="n" type="number" min="1" max="200" value="${n}" aria-label="Number of labels" style="width:90px"><button class="btn">Update</button></form><button class="btn primary" data-act="print">Print labels</button>`) +
-    `<p class="muted no-print">Code <b>${esc(code)}</b>. ${it.barcode || it.sku ? '' : 'This item has no barcode, so the label uses its built-in code; the POS screen recognises it.'} Use A4 label sheets or a label printer.</p>
-    <div class="labels">${Array.from({ length: n }, () => `<div class="label"><div class="ln">${esc(it.name)}</div><svg class="bc"></svg><div class="lp">MRP ${inr(it.sale_price_incl ?? it.sale_price)}</div></div>`).join('')}</div>`;
+  const n = Math.min(200, Math.max(1, +q.get('n') || 24));
+  await drawLabels(el, `Labels: ${it.name}`, Array(n).fill(it), 'item/' + it.id);
+  $('.page-head', el).insertAdjacentHTML('beforeend', `<form class="row no-print" id="lf"><input name="n" type="number" min="1" max="200" value="${n}" aria-label="Number of labels" style="width:80px"><button class="btn">Update</button></form>`);
   $('#lf').onsubmit = (e) => { e.preventDefault(); go(`labels/${it.id}?n=${e.target.n.value}`); };
-  await loadScript('/vendor/JsBarcode.all.min.js');
-  window.JsBarcode('.labels .bc', code, { format: 'CODE128', width: 1.3, height: 34, fontSize: 11, margin: 0, textMargin: 1 });
 });
 
 /* ======================================================================= Tally export */

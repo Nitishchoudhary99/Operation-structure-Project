@@ -3,7 +3,7 @@
    Every business table carries org_id: one database serves many businesses (multi-tenant).
    migrate() runs on the first request after each deploy, so no manual migration step is needed. */
 
-export const SCHEMA_VERSION = 41;
+export const SCHEMA_VERSION = 42;
 
 // document types whose monthly totals doc_month keeps (sales and purchase money documents)
 const MONTH_TYPES = `('INV','SRET','CNOTE','BILL','PRET','DNOTE')`;
@@ -684,6 +684,18 @@ export const MIGRATIONS = {
       layout TEXT NOT NULL DEFAULT '{}', shared INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL, updated_at TEXT NOT NULL)`,
     `CREATE INDEX IF NOT EXISTS ix_dashboards ON dashboards (org_id, user_id)`,
     `CREATE TABLE IF NOT EXISTS dash_pick (org_id INTEGER NOT NULL, user_id INTEGER NOT NULL, dash_id INTEGER NOT NULL, PRIMARY KEY (org_id, user_id)) WITHOUT ROWID`,
+  ],
+  /* orders & dispatch (src/dispatch.js): the owner's set-up, COD / prepaid, confirmation, courier and tracking number.
+     Delivery notes made before this are taken as delivered, so the Dispatch Desk starts clean. */
+  42: [
+    `ALTER TABLE orgs ADD COLUMN workflow TEXT NOT NULL DEFAULT '{}'`,
+    `ALTER TABLE docs ADD COLUMN pay_mode TEXT NOT NULL DEFAULT ''`,
+    `ALTER TABLE docs ADD COLUMN ship TEXT NOT NULL DEFAULT ''`,
+    `ALTER TABLE docs ADD COLUMN courier TEXT NOT NULL DEFAULT ''`,
+    `ALTER TABLE docs ADD COLUMN awb TEXT NOT NULL DEFAULT ''`,
+    `ALTER TABLE docs ADD COLUMN ship_at TEXT NOT NULL DEFAULT ''`,
+    `UPDATE docs SET ship = 'delivered' WHERE type = 'DN' AND ship = ''`,
+    `CREATE INDEX IF NOT EXISTS ix_docs_ship ON docs (org_id, type, ship)`,
   ],
 };
 

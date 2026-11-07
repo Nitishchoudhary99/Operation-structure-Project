@@ -375,6 +375,81 @@ check('store role cannot record receipts', denied.status === 403);
   const sp = await api('PUT', '/api/settings/print', { ...pr.print, ship_size: '100x50', ship_cod: false, ship_items: true, ship_note: 'Handle with care', ship_from: 'Shillong office' });
   check('shipping label settings are saved', sp.print.ship_size === '100x50' && sp.print.ship_cod === false && sp.print.ship_items === true && sp.print.ship_from === 'Shillong office');
   check('a wrong label size falls back to 4x6', (await api('PUT', '/api/settings/print', { ...sp.print, ship_size: 'huge' })).print.ship_size === '4x6');
+
+  /* --- the customer's whole flow: an Instagram clothing seller, office in Shillong, stock and packing staff in Imphal --- */
+  const stock = async (id) => (await api('GET', '/api/items')).rows.find((i) => i.id === id).qty_on_hand;
+  const store403 = await (async () => { await storeLogin(); const r = await api('PUT', '/api/settings/workflow', { dispatch: true }, true); cookie = ownerCookie; return r.status; })();
+  check('only the owner / admin sets up orders & dispatch', store403 === 403);
+  const wf = await api('PUT', '/api/settings/workflow', { dispatch: true, confirm_cod: true, default_pay: 'cod',
+    couriers: [{ name: 'India Post' }, { name: 'Delhivery', url: 'https://track.example.in/{awb}' }, { name: 'Bad', url: 'javascript:alert(1)' }] });
+  check('orders & dispatch set-up is saved', wf.workflow.dispatch && wf.workflow.confirm_cod && wf.workflow.default_pay === 'cod' && wf.workflow.couriers.length === 3
+    && wf.workflow.couriers[1].url === 'https://track.example.in/{awb}' && wf.workflow.couriers[2].url === '' && /\{awb\}/.test(wf.workflow.msg_ship), JSON.stringify(wf).slice(0, 300));
+  check('the app knows dispatch is on', (await api('GET', '/api/me')).org.workflow.dispatch === true);
+  const vr = await api('POST', '/api/import/items', { rows: ['Red', 'Blue'].flatMap((c) => ['M', 'L'].map((z) => ({ name: `Kurti 101 - ${c} - ${z}`, sku: `K101-${c.toUpperCase()}-${z}`,
+    category: 'Kurti 101', unit: 'Pcs', sale_price: 525, gst_rate: 5, opening_qty: 5 }))) });
+  check('sizes & colours: one item per colour × size, each with its own code', vr.added === 4, JSON.stringify(vr));
+  const redM = await api('GET', '/api/items/lookup?code=K101-RED-M'), blueL = await api('GET', '/api/items/lookup?code=K101-BLUE-L');
+  check('a variant code scans to that exact design, colour and size', redM.name === 'Kurti 101 - Red - M' && blueL.name === 'Kurti 101 - Blue - L');
+  const riya = await api('POST', '/api/parties', { name: 'Riya Devi', kind: 'customer', phone: '9876500011', address: 'House 12, Paltan Bazar', city: 'Imphal', state: 'Manipur', pincode: '795001' });
+  const o1 = await api('POST', '/api/docs', { type: 'SO', party_id: riya.id, lines: [{ item_id: redM.id, qty: 2, rate: 500 }] });
+  check('a new order takes the usual payment (COD)', (await api('GET', `/api/docs/${o1.id}`)).pay_mode === 'cod');
+  let B = await api('GET', '/api/dispatch');
+  check('a COD order waits for the customer to confirm', B.confirm.some((r) => r.id === o1.id) && !B.pack.some((r) => r.id === o1.id)
+    && B.confirm.find((r) => r.id === o1.id).address.includes('795001') && B.confirm.find((r) => r.id === o1.id).pcs === 2, JSON.stringify(B.counts));
+  const o2 = await api('POST', '/api/docs', { type: 'SO', party_id: riya.id, pay_mode: 'prepaid', lines: [{ item_id: blueL.id, qty: 1, rate: 500 }] });
+  B = await api('GET', '/api/dispatch');
+  check('a prepaid order goes straight to packing', B.pack.some((r) => r.id === o2.id) && B.pack.find((r) => r.id === o2.id).pay_mode === 'prepaid');
+  // the godown in Imphal
+  await storeLogin();
+  check('godown staff confirm the order after the customer says yes', (await api('PUT', `/api/dispatch/${o1.id}`, { action: 'confirm' })).ship === 'confirmed');
+  B = await api('GET', '/api/dispatch');
+  check('...and it moves to To pack', B.pack.some((r) => r.id === o1.id) && !B.confirm.some((r) => r.id === o1.id));
+  const before = await stock(redM.id);
+  const dn1Draft = await api('GET', `/api/docs/${o1.id}/convert?to=DN`);
+  const dn1 = await api('POST', '/api/docs', { ...dn1Draft, packed_check: true });
+  const dn1d = await api('GET', `/api/docs/${dn1.id}`);
+  check('packing saves the Delivery Note: stock goes down then', /^DN/.test(String(dn1.number)) && await stock(redM.id) === before - 2, `${before} -> ${await stock(redM.id)}`);
+  check('the Delivery Note keeps the order\'s COD', dn1d.pay_mode === 'cod');
+  B = await api('GET', '/api/dispatch');
+  check('a packed parcel waits for the courier', B.packed.some((r) => r.id === dn1.id && r.order_no === o1.number) && !B.pack.some((r) => r.id === o1.id));
+  check('Today tells the godown what is packed and not shipped', (await api('GET', '/api/today')).rows.some((r) => r.key === 'to_ship' && r.n >= 1));
+  const noAwb = await api('PUT', `/api/dispatch/${dn1.id}`, { action: 'ship', courier: 'Delhivery' }, true);
+  check('shipping needs the tracking number', noAwb.status === 400 && /AWB/.test(noAwb.error));
+  check('delivered before shipped is refused', (await api('PUT', `/api/dispatch/${dn1.id}`, { action: 'delivered' }, true)).status === 400);
+  const sh = await api('PUT', `/api/dispatch/${dn1.id}`, { action: 'ship', courier: 'Delhivery', awb: ' 1234 5678 ' });
+  B = await api('GET', '/api/dispatch');
+  check('shipped with courier and tracking number', sh.ship === 'shipped' && sh.awb === '12345678' && B.shipped.some((r) => r.id === dn1.id && r.courier === 'Delhivery' && r.awb === '12345678'));
+  check('delivered', (await api('PUT', `/api/dispatch/${dn1.id}`, { action: 'delivered' })).ship === 'delivered' && (await api('GET', '/api/dispatch')).done.some((r) => r.id === dn1.id));
+  // a parcel the courier brings back
+  const dnR = await api('POST', '/api/docs', { ...(await api('GET', `/api/docs/${o2.id}/convert?to=DN`)), packed_check: true });
+  const blue0 = await stock(blueL.id);
+  await api('PUT', `/api/dispatch/${dnR.id}`, { action: 'ship', courier: 'India Post', awb: 'EK1IN' });
+  const rto = await api('PUT', `/api/dispatch/${dnR.id}`, { action: 'rto', note: 'customer refused' });
+  const dn2d = await api('GET', `/api/docs/${dnR.id}`), o2d = await api('GET', `/api/docs/${o2.id}`);
+  check('RTO: the stock comes back and the order is closed', rto.ship === 'rto' && rto.order_closed === true && await stock(blueL.id) === blue0 + 1
+    && dn2d.status === 'cancelled' && dn2d.ship === 'rto' && o2d.status === 'cancelled', JSON.stringify([rto, dn2d.status, o2d.status]));
+  check('RTO twice is refused', (await api('PUT', `/api/dispatch/${dnR.id}`, { action: 'rto' }, true)).status === 400);
+  check('godown staff still cannot change the set-up', (await api('PUT', '/api/settings/workflow', { dispatch: false }, true)).status === 403);
+  cookie = ownerCookie;
+  await api('PUT', '/api/roles/builtin/store', { rules: { no_dispatch: true } });
+  await storeLogin();
+  check('"no dispatch" role cannot mark parcels shipped or returned either', (await api('PUT', `/api/dispatch/${dn1.id}`, { action: 'delivered' }, true)).status === 403);
+  cookie = ownerCookie;
+  await api('DELETE', '/api/roles/builtin/store');
+  await storeLogin();
+  // the office bills the delivered parcel: no second stock cut; an invoiced parcel that comes back goes through Return goods
+  cookie = ownerCookie;
+  const red1 = await stock(redM.id);
+  const inv1 = await api('POST', '/api/docs', { ...(await api('GET', `/api/docs/${dn1.id}/convert?to=INV`)), pay_mode: '' });
+  check('the invoice from the Delivery Note does not cut stock again', /^INV/.test(String(inv1.number)) && await stock(redM.id) === red1);
+  check('the invoice keeps COD from the delivery', (await api('GET', `/api/docs/${inv1.id}`)).pay_mode === 'cod');
+  const late = await api('PUT', `/api/dispatch/${dn1.id}`, { action: 'rto' }, true);
+  check('an invoiced parcel is returned through the invoice, not RTO', late.status === 400 && /Return goods/.test(late.error), JSON.stringify(late));
+  check('payment mode can be changed on an order', (await api('PUT', `/api/dispatch/${o1.id}`, { action: 'pay_mode', pay_mode: 'prepaid' })).pay_mode === 'prepaid'
+    && (await api('PUT', `/api/dispatch/${o1.id}`, { action: 'pay_mode', pay_mode: 'cash' }, true)).status === 400);
+  check('an unknown order is not found', (await api('PUT', '/api/dispatch/99999999', { action: 'confirm' }, true)).status === 404);
+  await api('PUT', '/api/settings/workflow', { dispatch: false, confirm_cod: false, default_pay: '' });
+  check('with dispatch off, Today shows no parcels to ship', !(await api('GET', '/api/today')).rows.some((r) => r.key === 'to_ship'));
   await storeLogin();
 }
 check('only the owner can download a full backup', (await api('GET', '/api/export/backup', null, true)).status === 403);
