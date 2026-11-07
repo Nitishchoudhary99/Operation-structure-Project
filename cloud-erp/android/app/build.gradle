@@ -55,7 +55,7 @@ android {
     namespace "com.docbrisk.smarttrader"
     defaultConfig {
         applicationId "com.docbrisk.smarttrader"
-        minSdkVersion 21
+        minSdkVersion 24
         targetSdkVersion 36
         versionCode 1
         versionName "1.0.0"
