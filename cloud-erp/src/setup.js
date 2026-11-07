@@ -35,7 +35,10 @@ export function cleanSetup(b) {
   return {
     biz: PACK_KEYS.includes(b.biz) ? b.biz : '',
     modules,
-    item_defaults: { unit: str(d.unit, 12), gst_rate: gst, track_batch: d.track_batch === true, track_serial: d.track_serial === true },
+    item_defaults: { unit: str(d.unit, 12), gst_rate: gst, track_batch: d.track_batch === true, track_serial: d.track_serial === true,
+      // the wholesale price for every item of an order from this many pieces in the whole order (0 = off)
+      wholesale_order_min: d.wholesale_order_min === undefined || d.wholesale_order_min === null || d.wholesale_order_min === '' ? 0
+        : Math.round(num(d.wholesale_order_min, 'Wholesale from pieces in one order', { min: 0, max: 100000 })) },
     payroll,
   };
 }

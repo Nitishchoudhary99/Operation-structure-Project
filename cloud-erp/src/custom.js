@@ -21,6 +21,9 @@ export function printOf(org) {
     title: p.title || '', terms: p.terms || '', footer: p.footer || '', signatory: p.signatory || '', show_upi: p.show_upi !== false,
     bank_name: p.bank_name || '', bank_account: p.bank_account || '', bank_ifsc: p.bank_ifsc || '', bank_branch: p.bank_branch || '',
     logo: /^[0-9a-f]{16}$/.test(p.logo || '') ? p.logo : '', signature: /^[0-9a-f]{16}$/.test(p.signature || '') ? p.signature : '',
+    // the shipping label settings (they were saved but not read back, so the label always fell back to the defaults)
+    ship_size: SHIP_SIZES.includes(p.ship_size) ? p.ship_size : '4x6', ship_from: String(p.ship_from || ''), ship_cod: p.ship_cod !== false,
+    ship_items: p.ship_items === true, ship_plain: p.ship_plain === true, ship_phone: p.ship_phone !== false, ship_note: String(p.ship_note || ''),
   };
 }
 
@@ -45,6 +48,8 @@ export function cleanPrint(b, cur) {
     // courier / parcel label (Print shipping label on an order or delivery note)
     ship_size: SHIP_SIZES.includes(b.ship_size) ? b.ship_size : '4x6', ship_from: String(b.ship_from ?? '').replace(/\r/g, '').slice(0, 200).trim(),
     ship_cod: b.ship_cod !== false && b.ship_cod !== 'false' && b.ship_cod !== 0, ship_items: b.ship_items === true || b.ship_items === 'true' || b.ship_items === 1,
+    // address only: the customer's name, phone and address and the sender; no order number, pieces, amount or items
+    ship_plain: b.ship_plain === true || b.ship_plain === 'true' || b.ship_plain === 1,
     ship_phone: b.ship_phone !== false && b.ship_phone !== 'false' && b.ship_phone !== 0, ship_note: str(b.ship_note, 80),
   };
 }

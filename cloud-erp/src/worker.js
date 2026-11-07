@@ -32,6 +32,8 @@ import { courierStatus, courierConnect, courierPickup, courierPickups, courierDi
 import { botReady, botLink, verifyWebhook, receiveWebhook, setBot, inbox, thread, reply as waReply, markDone } from './wabot.js';
 import { listStaff, saveStaff, markAttendance, staffDetail, giveAdvance, paySalary, cancelStaffTxn, payslip, todayStaffQueries, statutoryMonth, ecrFile, esiFile, payChallan as payStatChallan, cancelChallan as cancelStatChallan, ratesOf, salaryTdsStatement } from './payroll.js';
 import { ptStates } from './paytax.js';
+import { pickState, pickScan, pickUndo, pickReset } from './picking.js';
+import { findItem, codeKey } from './codes.js';
 import * as rep from './reports.js';
 import { PLANS, planOut, planOf, usage, checkCount, countError, seatBlocked, seatError, requireFeature, extendPlan, adminKey, trialUntil, hasFeature } from './saas.js';
 import { secure } from './headers.js';
@@ -374,6 +376,10 @@ router.add('GET', '/api/courier/rates/:id', async (c) => json(await courierRates
 router.add('POST', '/api/courier/book', async (c) => json(await courierBook(c, c.body)));
 router.add('POST', '/api/courier/track/:id', async (c) => json(await courierTrack(c, +c.params.id)));
 router.add('POST', '/api/courier/sync', async (c) => json(await courierSync(c)));
+router.add('GET', '/api/pick', async (c) => json(await pickState(c, c.url.searchParams.get('ids'))));
+router.add('POST', '/api/pick/scan', async (c) => json(await pickScan(c, c.body)));
+router.add('POST', '/api/pick/undo', async (c) => json(await pickUndo(c, c.body)));
+router.add('POST', '/api/pick/reset', async (c) => json(await pickReset(c, c.body)));
 router.add('GET', '/api/courier/ndr', async (c) => json(await courierNdr(c)));
 router.add('POST', '/api/courier/ndr/:id', async (c) => json(await courierNdrAction(c, +c.params.id, c.body)));
 router.add('POST', '/api/courier/return', async (c) => json(await courierReturn(c, c.body)));
@@ -1177,17 +1183,12 @@ const roundQ = (q) => Math.round((+q || 0) * 1000) / 1000;
 router.add('POST', '/api/items/:id/codes', async (c) => json(await learnCode(c, +c.params.id, c.body)));
 /* Scanner lookup: barcode, SKU, the printed label code ST<id>, or a code learnt while receiving */
 router.add('GET', '/api/items/lookup', async (c) => {
-  const code = str(c.url.searchParams.get('code'), 60).replace(/\s+/g, '');
+  const code = String(c.url.searchParams.get('code') || '').trim();
   if (!code) throw bad('Scan or type a code.');
-  const m = code.toUpperCase().match(/^ST(\d+)$/);
-  const it = await c.db.prepare(`SELECT * FROM items WHERE org_id = ? AND (barcode = ? OR (sku != '' AND sku = ?) OR id = ?) ORDER BY barcode = ? DESC LIMIT 1`)
-    .bind(c.org.id, code, code, m ? +m[1] : -1, code).first();
-  if (it) return json({ ...itemOut(it, c), pack_qty: 1 });
-  // a code learnt while receiving (a supplier's barcode, a carton)
-  const x = await c.db.prepare(`SELECT i.*, x.pack_qty AS pack FROM item_codes x JOIN items i ON i.id = x.item_id WHERE x.org_id = ? AND x.code = ?`).bind(c.org.id, code).first();
-  if (!x) throw notFound(`No item with code ${code}.`);
-  const { pack, ...row } = x;
-  return json({ ...itemOut(row, c), pack_qty: pack });
+  // the app's code, a learnt code, or a QR with the product written in it (src/codes.js)
+  const f = await findItem(c, code);
+  if (!f.item) throw new HttpError(404, `No item matches “${code.slice(0, 80)}”.`, { candidates: f.candidates, code: codeKey(code) });
+  return json({ ...itemOut(f.item, c), pack_qty: f.pack, matched_by: f.how });
 });
 router.add('GET', '/api/items/:id/moves', async (c) => {
   const rows = await rep.itemMoves(c.db, c.org, +c.params.id);
