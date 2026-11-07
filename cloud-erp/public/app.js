@@ -1879,6 +1879,8 @@ route(/^doc\/(\d+)$/, async (el, m) => {
     if (['INV', 'BILL'].includes(d.type) && d.balance > 0) main.push(`<button class="btn" id="pay">${d.type === 'INV' ? 'Receive payment' : 'Record payment'}</button>`);
     if (['INV', 'SRET', 'CNOTE', 'QUOTE', 'SO'].includes(d.type)) { main.push(`<button class="btn got" id="wa">WhatsApp</button>`); more.push(...(p.phone ? ['<button class="btn" id="sms">Send SMS</button>'] : []), `<button class="btn" id="link">Copy customer link</button>`, ...(ME.can.sales ? ['<button class="btn" id="unshare">Stop sharing link</button>'] : [])); }
     for (const [k, v] of next) if (!waiting && (hasOpen || v.note)) more.push(`<a class="btn" href="#/new/${k}?from=${d.id}">${['SRET', 'PRET'].includes(k) ? 'Return goods' : v.note ? (k === 'CNOTE' ? 'Credit note' : 'Debit note') : 'Make ' + esc(v.label)}</a>`);
+    if (d.type === 'SO' && hasOpen && !waiting && (ME.can.sales || (ME.can.stock && !limits().no_dispatch))) main.push(`<a class="btn primary" href="#/pack/${d.id}">Pack &amp; check (scan)</a>`);
+    if (['SO', 'DN', 'INV'].includes(d.type)) more.push(`<a class="btn" href="#/shiplabel/${d.id}">Shipping label</a>`);
     if (!simple() && ['SO', 'DN'].includes(d.type)) more.push(`<a class="btn" href="#/picklist/${d.id}">Pick list</a>`);
     if (!simple() && ['INV', 'SRET', 'CNOTE'].includes(d.type)) more.push(`<a class="btn" href="/api/docs/${d.id}/einvoice" id="einv">E-invoice JSON</a>`);
     if (!simple() && ['INV', 'DN'].includes(d.type)) more.push(`<button class="btn" id="ewb">E-way bill</button>`);
@@ -4214,6 +4216,15 @@ route(/^settings\/print$/, async (el) => {
         <label class="f wide">Terms &amp; conditions<textarea name="terms" rows="3" maxlength="600" placeholder="1. Goods once sold will not be taken back.">${v('terms')}</textarea></label>
         <label class="f wide">Footer note<input name="footer" value="${v('footer')}" maxlength="160" placeholder="Thank you for your business!"></label>
       </div>
+      <h2>Shipping label (courier parcel)</h2>
+      <div class="form">
+        <label class="f">Label size<select name="ship_size">${[['4x6', '4 × 6 inch (courier thermal)'], ['100x50', '100 × 50 mm (small sticker)'], ['a4-4', 'A4 sheet, 4 labels']].map(([k, t]) => `<option value="${k}" ${(P.ship_size || '4x6') === k ? 'selected' : ''}>${t}</option>`).join('')}</select></label>
+        <label class="f">Note on label<input name="ship_note" value="${v('ship_note')}" maxlength="80" placeholder="e.g. Handle with care"></label>
+        <label class="f wide">From (return address)<textarea name="ship_from" rows="2" maxlength="200" placeholder="Leave empty to use the business name and address">${v('ship_from')}</textarea></label>
+        <label class="f check"><input type="checkbox" name="ship_phone" ${P.ship_phone !== false ? 'checked' : ''}> Show customer phone</label>
+        <label class="f check"><input type="checkbox" name="ship_cod" ${P.ship_cod !== false ? 'checked' : ''}> Show COD amount when unpaid</label>
+        <label class="f check"><input type="checkbox" name="ship_items" ${P.ship_items ? 'checked' : ''}> List the items on the label</label>
+      </div>
       <div class="row sticky-act"><span class="spacer"></span><button class="btn primary" ${canEdit ? '' : 'disabled'}>Save</button></div>
     </form>
     <div><h2 class="no-print">Preview</h2><div id="pv"></div></div></div>`;
@@ -4221,7 +4232,8 @@ route(/^settings\/print$/, async (el) => {
   const read = () => {
     const f = form.elements;
     return { ...P, layout: $('#lay .on').dataset.l, font: f.font.value, color: f.color.value, title: f.title.value, signatory: f.signatory.value, show_upi: f.show_upi.checked,
-      bank_name: f.bank_name.value, bank_account: f.bank_account.value, bank_ifsc: f.bank_ifsc.value.toUpperCase(), bank_branch: f.bank_branch.value, terms: f.terms.value, footer: f.footer.value };
+      bank_name: f.bank_name.value, bank_account: f.bank_account.value, bank_ifsc: f.bank_ifsc.value.toUpperCase(), bank_branch: f.bank_branch.value, terms: f.terms.value, footer: f.footer.value,
+      ship_size: f.ship_size.value, ship_note: f.ship_note.value, ship_from: f.ship_from.value, ship_phone: f.ship_phone.checked, ship_cod: f.ship_cod.checked, ship_items: f.ship_items.checked };
   };
   const preview = () => { P = read(); $('#pv').innerHTML = docPaper(sample()); fitPapers($('#pv')); };
   const box = (kind, title, url) => `<div class="imgbox"><b>${title}</b><div class="pv">${url ? `<img src="${esc(url)}" alt="">` : `<span class="muted">No ${title.toLowerCase()}</span>`}</div>
@@ -4321,8 +4333,10 @@ const AREA_LABEL = { sales: 'Sales & POS', purchase: 'Purchase', items: 'Items &
 /* Settings → Roles: every role made to measure. What it may see and change, limits it works under, and the menu its
    users get (a user's own menu, set in Settings → Users, still wins). The server enforces the rights and limits. */
 const LIMIT_TEXT = [['no_cancel', 'Cannot cancel bills, payments or entries'], ['no_credit', 'No udhaar: every sale is paid in full'],
-  ['hide_costs', 'Cannot see purchase rates, cost or profit']];
-const limitSummary = (r) => [r.no_cancel && 'no cancelling', r.no_credit && 'no udhaar', r.hide_costs && 'no costs',
+  ['hide_costs', 'Cannot see purchase rates, cost or profit'],
+  ['no_dispatch', 'Cannot save Delivery Notes (godown staff without the selling right)'],
+  ['must_scan', 'Must scan every item before dispatch (Pack & check)']];
+const limitSummary = (r) => [r.no_cancel && 'no cancelling', r.no_credit && 'no udhaar', r.hide_costs && 'no costs', r.no_dispatch && 'no dispatch', r.must_scan && 'scan to dispatch',
   r.max_discount !== null && r.max_discount !== undefined && `max ${r.max_discount}% off`,
   r.backdate_days === 0 ? 'today\'s date only' : r.backdate_days ? `${r.backdate_days} days back at most` : ''].filter(Boolean).join(' · ') || '—';
 const uiSummary = (ui) => (ui.screens ? `${ui.screens.length} screens` : ui.job ? JOBS[ui.job].t.split(':')[0] : '—') + (ui.home ? ` → opens on ${(NAV.flatMap(([, x]) => x).find(([h]) => h === ui.home) || ['', ui.home])[1]}` : '');
@@ -5743,6 +5757,80 @@ route(/^picklist\/(\d+)$/, async (el, m) => {
       <div class="tbl-wrap"><table class="dl"><thead><tr><th>✓</th><th>Bin / rack</th><th>Item</th><th>Batch</th><th class="num">Qty to pick</th><th>Picked by</th></tr></thead>
       <tbody>${lines.map((l) => `<tr><td style="width:28px">☐</td><td>${where(l)}</td><td>${esc(l.item)}</td><td>${batchOf(l)}</td><td class="num"><b>${qtyf(l.pick)}</b> ${esc(l.unit || '')}</td><td style="width:120px"></td></tr>`).join('')}</tbody></table></div>
       <div class="foot"><div>Total lines: ${lines.length}</div><div class="sign">Checked by ____________</div></div></div>`;
+});
+
+/* Pack & check: the packer scans every piece (item QR label, barcode or SKU) against the Sales Order. A wrong design,
+   colour or size is refused at once; when the counts match, the Delivery Note is saved from here (stock goes out then). */
+route(/^pack\/(\d+)$/, async (el, m) => {
+  const so = await GET('/api/docs/' + m[1]);
+  const draft = await GET(`/api/docs/${so.id}/convert?to=DN`);
+  const lines = draft.lines.map((l, i) => ({ ...l, i, want: l.qty, got: 0 }));
+  const goods = lines.filter((l) => l.item_id && !l.is_service);
+  const log = [];
+  const paint = () => {
+    const done = goods.every((l) => l.got >= l.want - 0.0005), any = goods.some((l) => l.got > 0);
+    $('#plines').innerHTML = goods.map((l) => `<tr class="${l.got >= l.want - 0.0005 ? 'pk-ok' : l.got ? 'pk-part' : ''}"><td>${esc(l.item)}${l.location ? `<div class="muted">bin ${esc(l.location)}</div>` : ''}</td>
+      <td class="num"><b>${qtyf(l.got)}</b> / ${qtyf(l.want)} ${esc(l.unit || '')}</td><td>${l.got >= l.want - 0.0005 ? '✅' : l.got ? '…' : ''}</td>
+      <td>${l.got ? `<button class="btn sm" data-minus="${l.i}">−1</button>` : ''}</td></tr>`).join('');
+    $('#plog').innerHTML = log.slice(-6).reverse().map((x) => `<div class="${x.ok ? 'pos' : 'neg'}">${esc(x.t)}</div>`).join('');
+    $('#psave').disabled = !any;
+    $('#psave').textContent = done ? 'All checked — save Delivery Note' : any ? 'Save packed part (rest stays on the order)' : 'Scan items to start';
+    $$('[data-minus]', el).forEach((b) => b.onclick = () => { const l = lines[+b.dataset.minus]; l.got = Math.max(0, r2(l.got - 1)); paint(); });
+  };
+  const onCode = async (code) => {
+    code = String(code || '').trim();
+    if (!code) return false;
+    let it;
+    try { it = await GET('/api/items/lookup?code=' + encodeURIComponent(code)); }
+    catch (e) { log.push({ ok: false, t: `✗ ${code}: not a known item` }); beep(false); paint(); return false; }
+    const n = it.pack_qty || 1, l = goods.find((x) => x.item_id === it.id && x.got < x.want - 0.0005) || goods.find((x) => x.item_id === it.id);
+    if (!l) { log.push({ ok: false, t: `✗ WRONG ITEM: ${it.name} is not on this order` }); beep(false); paint(); return false; }
+    if (l.got + n > l.want + 0.0005) { log.push({ ok: false, t: `✗ EXTRA: ${it.name} — only ${qtyf(l.want)} ordered` }); beep(false); paint(); return false; }
+    l.got = r2(l.got + n); log.push({ ok: true, t: `✓ ${it.name}${n > 1 ? ` ×${n}` : ''}` }); beep(true); paint(); return true;
+  };
+  el.innerHTML = head(`Pack &amp; check · ${esc(so.number)}`, `<a class="btn" href="#/doc/${so.id}">Back</a><a class="btn" href="#/shiplabel/${so.id}">Shipping label</a>`) + `
+    <div class="panel"><p><b>${esc((so.party || {}).name || '')}</b> · ${fdate(so.date)}</p>
+      <p class="muted">Scan each piece's QR / barcode label. Wrong design, colour or size is refused. Stock goes out only when the Delivery Note is saved.</p>
+      <div class="row"><input id="pscan" placeholder="Scan or type item code…" autocomplete="off" style="flex:1;min-width:0">${'BarcodeDetector' in window ? '<button class="btn" id="pcam">📷 Camera</button>' : ''}</div>
+      <div id="plog" class="pk-log"></div></div>
+    <div class="panel flush"><div class="tbl-wrap"><table class="t"><thead><tr><th>Item</th><th class="num">Scanned / ordered</th><th></th><th></th></tr></thead><tbody id="plines"></tbody></table></div></div>
+    <div class="row sticky-act"><span class="spacer"></span><button class="btn primary" id="psave" disabled>Scan items to start</button></div>`;
+  const inp = $('#pscan');
+  inp.addEventListener('keydown', async (e) => { if (e.key === 'Enter') { e.preventDefault(); const v = inp.value; inp.value = ''; await onCode(v); inp.focus(); } });
+  if ($('#pcam')) $('#pcam').onclick = () => cameraScan(onCode);
+  $('#psave').onclick = async () => {
+    const short = goods.filter((l) => l.got < l.want - 0.0005);
+    if (short.length && !confirm(`${short.length} item${short.length === 1 ? ' is' : 's are'} not fully packed. Save only what is packed?`)) return;
+    const keep = lines.filter((l) => !l.item_id || l.is_service ? !short.length : l.got > 0.0005)
+      .map(({ i, want, got, ...l }) => ({ ...l, qty: l.item_id && !l.is_service ? got : l.qty, serials: l.item_id && got < want - 0.0005 ? '' : l.serials }));
+    try {
+      const d = await POST('/api/docs', { ...draft, lines: keep, packed_check: true });
+      toast(`Delivery Note ${d.number} saved — stock reduced`); go('doc/' + d.id);
+    } catch (e) { toast(e.message, 'err'); }
+  };
+  paint(); inp.focus();
+});
+
+/* Shipping label for a courier parcel: the customer's name, address and phone, the sender, the order number and COD.
+   Size and what it shows are set by the owner in Settings → Branding & print. */
+route(/^shiplabel\/(\d+)$/, async (el, m) => {
+  const d = await GET('/api/docs/' + m[1]);
+  const o = d.org || ME.org, P = o.print || {}, p = d.party || {}, size = P.ship_size || '4x6';
+  const to = [p.ship_address || p.address, [p.city, p.state, p.pincode].filter(Boolean).join(', ')].filter(Boolean).join('\n');
+  const from = P.ship_from || [o.name, o.address, o.phone].filter(Boolean).join('\n');
+  const cod = P.ship_cod !== false && d.type !== 'DN' && (d.balance > 0.5 || (d.type === 'SO' && !(d.paid > 0))) ? (d.type === 'INV' ? d.balance : d.total) : 0;
+  const pcs = d.lines.filter((l) => l.item_id && !l.is_service).reduce((s, l) => s + (+l.qty || 0), 0);
+  const one = `<div class="ship ship-${size}">
+    <div class="ship-to"><div class="muted small">SHIP TO</div><b class="ship-name">${esc(p.name || '')}</b><div class="ship-addr">${esc(to).replace(/\n/g, '<br>')}</div>
+      ${P.ship_phone !== false && p.phone ? `<div class="ship-ph">📞 ${esc(p.phone)}</div>` : ''}</div>
+    <div class="ship-mid"><div><b>${esc(d.number)}</b><div class="muted small">${fdate(d.date)} · ${qtyf(pcs)} pcs</div></div>
+      ${cod ? `<div class="ship-cod">COD ${inr(cod)}</div>` : '<div class="ship-cod prepaid">PREPAID</div>'}</div>
+    ${P.ship_items ? `<div class="ship-items">${d.lines.filter((l) => l.item_id).map((l) => `${esc(l.item)} × ${qtyf(l.qty)}`).join('<br>')}</div>` : ''}
+    ${P.ship_note ? `<div class="ship-note">${esc(P.ship_note)}</div>` : ''}
+    <div class="ship-from"><div class="muted small">FROM</div>${esc(from).replace(/\n/g, '<br>')}</div></div>`;
+  el.innerHTML = head(`Shipping label · ${esc(d.number)}`, `<a class="btn" href="#/doc/${d.id}">Back</a>${ME.can.settings ? '<a class="btn" href="#/settings/print">Label settings</a>' : ''}<button class="btn primary" data-act="print">Print</button>`) +
+    `${to ? '' : '<div class="panel"><p class="neg">This customer has no address yet. Add it on the customer’s page so it prints here.</p></div>'}
+    <div class="doc-paper ship-sheet ${size === 'a4-4' ? 'ship-a4' : ''}">${one}</div>`;
 });
 
 /* ======================================================================= bins & racks (src/lots.js)

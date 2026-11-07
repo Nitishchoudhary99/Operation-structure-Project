@@ -1257,7 +1257,7 @@ router.add('GET', '/api/docs/:id/convert', async (c) => {
     item_id: l.item_id, item: l.item, unit: l.unit, description: l.description, qty: left(l), rate: l.rate,
     discount_pct: l.discount_pct, gst_rate: l.gst_rate, src_line_id: l.id, batch_no: l.batch_no || '', expiry: l.expiry || '',
     serials: l.serials && Math.abs(left(l) - l.qty) < 0.0005 ? l.serials : '', src_serials: l.serials || '',
-    track_batch: l.track_batch, track_serial: l.track_serial, location: l.location,
+    track_batch: l.track_batch, track_serial: l.track_serial, location: l.location, is_service: l.is_service ? 1 : 0,
   }));
   if (!lines.length) throw bad(`Nothing left to ${['SRET', 'PRET'].includes(to) ? 'return' : receiving ? 'receive' : 'process'} on ${src.number}.`);
   return json({ type: to, party_id: src.party_id, ref_id: src.id, ref_number: src.number, ref_type: src.type, warehouse_id: src.warehouse_id, date: today(), extra: src.extra,

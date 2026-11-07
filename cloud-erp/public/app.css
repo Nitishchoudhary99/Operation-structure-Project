@@ -1104,3 +1104,13 @@ input.need { border-color: var(--danger); box-shadow: 0 0 0 2px color-mix(in srg
 .bizchips { display: flex; gap: 8px; flex-wrap: wrap; }
 .bizchips .chip.ghost { border-style: dashed; color: var(--muted); }
 .biztips { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+/* Pack & check + shipping label */
+.pk-ok td{background:color-mix(in srgb,#16a34a 12%,transparent)}.pk-part td{background:color-mix(in srgb,#f59e0b 12%,transparent)}
+.pk-log{margin-top:8px;font-weight:600;line-height:1.5}
+.ship{border:2px solid #000;color:#000;background:#fff;padding:12px;display:flex;flex-direction:column;gap:10px;font-size:14px;box-sizing:border-box;max-width:100%}
+.ship-4x6{width:4in;min-height:6in}.ship-100x50{width:100mm;min-height:50mm;font-size:11px;padding:6px;gap:4px}.ship-a4-4{width:100mm;min-height:140mm}
+.ship-name{font-size:1.4em;display:block}.ship-addr{font-size:1.1em;line-height:1.35}.ship-ph{font-weight:700}
+.ship-mid{display:flex;justify-content:space-between;align-items:center;border-top:1px dashed #000;border-bottom:1px dashed #000;padding:6px 0}
+.ship-cod{font-size:1.3em;font-weight:800;border:2px solid #000;padding:2px 8px}.ship-cod.prepaid{font-size:1em}
+.ship-items,.ship-note{font-size:.9em}.ship-from{margin-top:auto;font-size:.85em}
+@media print{.ship-sheet{border:0!important;box-shadow:none!important;padding:0!important}}
