@@ -34,6 +34,7 @@ import { listStaff, saveStaff, markAttendance, staffDetail, giveAdvance, paySala
 import { ptStates } from './paytax.js';
 import { pickState, pickScan, pickUndo, pickReset } from './picking.js';
 import { findItem, codeKey } from './codes.js';
+import { reservedStatement, withReserved } from './engine.js';
 import * as rep from './reports.js';
 import { PLANS, planOut, planOf, usage, checkCount, countError, seatBlocked, seatError, requireFeature, extendPlan, adminKey, trialUntil, hasFeature } from './saas.js';
 import { secure } from './headers.js';
@@ -1031,9 +1032,11 @@ router.add('GET', '/api/rates', async (c) => {
 });
 router.add('GET', '/api/items', async (c) => {
   const q = c.url.searchParams.get('q') || '', cf = extraFilter(fieldsOf(c.org), 'item', c.url.searchParams, 'extra');
-  const { results } = await c.db.prepare(`SELECT * FROM items WHERE org_id = ? AND (? = '' OR name LIKE ? OR sku LIKE ?)${cf.sql} ORDER BY name LIMIT 2000`)
-    .bind(c.org.id, q, `%${q}%`, `%${q}%`, ...cf.args).all();
-  return json({ rows: results.map((i) => itemOut(i, c)) });
+  const [items, res] = await c.db.batch([c.db.prepare(`SELECT * FROM items WHERE org_id = ? AND (? = '' OR name LIKE ? OR sku LIKE ?)${cf.sql} ORDER BY name LIMIT 2000`)
+    .bind(c.org.id, q, `%${q}%`, `%${q}%`, ...cf.args), reservedStatement(c.db, c.org.id)]);
+  // reserved: still to go out on open sales orders; available = in stock − reserved (what a new order can promise)
+  const r = new Map(res.results.map((x) => [x.item_id, x.qty]));
+  return json({ rows: items.results.map((i) => withReserved(itemOut(i, c), r.get(i.id))) });
 });
 router.add('POST', '/api/items', async (c) => {
   requireCan(c.user, 'items');
@@ -1188,7 +1191,8 @@ router.add('GET', '/api/items/lookup', async (c) => {
   // the app's code, a learnt code, or a QR with the product written in it (src/codes.js)
   const f = await findItem(c, code);
   if (!f.item) throw new HttpError(404, `No item matches “${code.slice(0, 80)}”.`, { candidates: f.candidates, code: codeKey(code) });
-  return json({ ...itemOut(f.item, c), pack_qty: f.pack, matched_by: f.how });
+  const rv = await reservedStatement(c.db, c.org.id, f.item.id).first();
+  return json({ ...withReserved(itemOut(f.item, c), rv && rv.qty), pack_qty: f.pack, matched_by: f.how });
 });
 router.add('GET', '/api/items/:id/moves', async (c) => {
   const rows = await rep.itemMoves(c.db, c.org, +c.params.id);

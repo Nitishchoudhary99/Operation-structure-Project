@@ -37,6 +37,8 @@ export function cleanWorkflow(b) {
        sheet; the scan is the check, and a delivery note from an order is saved only from the scan screen); 'paper' = a
        printed pick list; 'both' = either (the default) */
     pick_mode: ['scan', 'paper', 'both'].includes(b.pick_mode) ? b.pick_mode : 'both',
+    // a sales order asking for more than is free (in stock − on open orders): 'warn' (default), 'block', or 'off'
+    stock_check: ['warn', 'block', 'off'].includes(b.stock_check) ? b.stock_check : 'warn',
     couriers,
     msg_confirm: text(b.msg_confirm, MSG_CONFIRM),
     msg_ship: text(b.msg_ship, MSG_SHIP),

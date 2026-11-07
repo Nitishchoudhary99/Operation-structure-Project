@@ -1767,16 +1767,18 @@ route(/^new\/([A-Z]+)$/, async (el, m, q) => {
   if (form.elements.price_mode) form.elements.price_mode.addEventListener('change', () => { reprice(); stockWarn(); recalc(); });
   // a sales order or quotation asks for more than is in stock: a warning on the line (stock goes out only on the delivery note)
   const stockWarn = () => {
-    if (!isSale || isNote || !['SO', 'QUOTE', 'INV'].includes(type)) return;
+    if (!isSale || isNote || !['SO', 'QUOTE', 'INV'].includes(type) || wfOf().stock_check === 'off') return;
     const want = new Map();
     $$('tr', tbody).forEach((tr) => { const id = +(($('[name=item_id]', tr) || {}).value || 0); if (id) want.set(id, (want.get(id) || 0) + (+(($('[name=qty]', tr) || {}).value) || 0) * altF(tr)); });
     $$('tr', tbody).forEach((tr) => {
       const id = +(($('[name=item_id]', tr) || {}).value || 0), it = items.find((i) => i.id === id), cell = $('.c-item', tr);
       let w = $('.stockwarn', tr);
-      const short = it && !it.is_service && want.get(id) > (it.qty_on_hand || 0) + 0.0005;
+      // free to sell = in stock − already promised to open orders
+      const free = it ? (it.available ?? it.qty_on_hand ?? 0) : 0;
+      const short = it && !it.is_service && want.get(id) > free + 0.0005;
       if (!short) { if (w) w.remove(); return; }
       if (!w) { cell.insertAdjacentHTML('beforeend', '<div class="stockwarn neg small" role="status"></div>'); w = $('.stockwarn', tr); }
-      w.textContent = `⚠ Only ${qtyf(Math.max(0, it.qty_on_hand || 0))} ${it.unit || ''} in stock (asked ${qtyf(want.get(id))})`;
+      w.textContent = `⚠ Only ${qtyf(Math.max(0, free))} ${it.unit || ''} free (asked ${qtyf(want.get(id))})${it.reserved ? ` · ${qtyf(it.qty_on_hand)} in stock, ${qtyf(it.reserved)} on other orders` : ''}`;
     });
   };
   form.addEventListener('input', () => stockWarn());
@@ -1826,7 +1828,7 @@ route(/^new\/([A-Z]+)$/, async (el, m, q) => {
     wholeStep(); recalc();
     tr.classList.remove('scan-hit'); void tr.offsetWidth; tr.classList.add('scan-hit');
     stockWarn();
-    say(true, `✓ ${it.name} — ${qtyf(+$('[name=qty]', tr).value)} on this ${T.label.toLowerCase()}${it.qty_on_hand !== undefined ? ` · ${qtyf(it.qty_on_hand)} in stock` : ''}`);
+    say(true, `✓ ${it.name} — ${qtyf(+$('[name=qty]', tr).value)} on this ${T.label.toLowerCase()}${it.qty_on_hand !== undefined ? ` · ${qtyf(it.available ?? it.qty_on_hand)} free${it.reserved ? ` (${qtyf(it.reserved)} on orders)` : ''}` : ''}`);
     return true;
   };
   if ($('#dscan')) $('#dscan').addEventListener('keydown', async (e) => {
@@ -2362,7 +2364,10 @@ route(/^items$/, async (el, m, q) => {
   const rows = await master('items');
   const cols = [{ h: 'Item', k: 'name' }, { h: 'SKU', k: 'sku', cls: 'hide-sm' }, { h: 'Category', k: 'category', cls: 'hide-sm' }, { h: 'GST', k: 'gst_rate', f: (r) => r.gst_rate + '%', cls: 'hide-sm' },
     { h: 'Sale price', k: 'sale_price', num: 1, f: (r) => inr(shownPrice(r)) + (r.price_incl ? ' <span class="muted small">incl. GST</span>' : '') }, ...(ME.costs === false ? [] : [{ h: 'Avg cost', k: 'avg_cost', num: 1, f: (r) => inr(r.avg_cost), cls: 'hide-sm' }]),
-    { h: 'In stock', k: 'qty_on_hand', num: 1, f: (r) => r.is_service ? '<span class="muted">service</span>' : `${qtyf(r.qty_on_hand)} ${esc(r.unit)}${altQty(r)}` }, ...(ME.costs === false ? [] : [{ h: 'Value', k: 'stock_value', num: 1, f: (r) => inr(r.stock_value) }]), ...cfCols('item')];
+    { h: 'In stock', k: 'qty_on_hand', num: 1, f: (r) => r.is_service ? '<span class="muted">service</span>' : `${qtyf(r.qty_on_hand)} ${esc(r.unit)}${altQty(r)}` },
+    // promised to open sales orders, and what is still free to sell (shown once any order holds stock)
+    ...(rows.some((r) => r.reserved > 0) ? [{ h: 'On orders', k: 'reserved', num: 1, f: (r) => (r.reserved ? qtyf(r.reserved) : '<span class="muted">—</span>'), cls: 'hide-sm' },
+      { h: 'Free to sell', k: 'available', num: 1, f: (r) => (r.is_service ? '' : `<b class="${r.available < 0 ? 'neg' : ''}">${qtyf(r.available)}</b>`) }] : []), ...(ME.costs === false ? [] : [{ h: 'Value', k: 'stock_value', num: 1, f: (r) => inr(r.stock_value) }]), ...cfCols('item')];
   el.innerHTML = head('Items', `${ME.can.items ? '<a class="btn" href="#/import/items">Import from Excel</a><button class="btn" id="variants">+ Sizes &amp; colours</button>' : ''}<button class="btn" id="csv">Export CSV</button><button class="btn primary" id="new">+ New item</button>`) +
     `<div class="panel"><input id="search" placeholder="Search items…" style="max-width:320px"></div><div class="panel flush" id="list"></div>`;
   const draw = (f) => { const r = rows.filter((x) => !f || (x.name + ' ' + x.sku + ' ' + x.category + ' ' + Object.values(x.extra || {}).join(' ')).toLowerCase().includes(f));
@@ -6605,6 +6610,8 @@ route(/^settings\/workflow$/, async (el, m, q) => {
       <label class="f">Most orders are<select name="default_pay" ${can2 ? '' : 'disabled'}>${[['cod', 'COD (cash on delivery)'], ['prepaid', 'Prepaid (UPI / bank first)'], ['', 'Ask on each order']].map(([k, t]) => `<option value="${k}" ${(v.default_pay || '') === k ? 'selected' : ''}>${t}</option>`).join('')}</select></label>
       <label class="f wide">How orders are picked<select name="pick_mode" ${can2 ? '' : 'disabled'}>${[['scan', 'Scan on the phone: open the order, scan each piece as it is picked (no printed pick list)'], ['paper', 'Printed pick list (ticked by hand, “picked by / checked by”)'], ['both', 'Either, as the staff like']].map(([k, t]) => `<option value="${k}" ${(v.pick_mode || 'both') === k ? 'selected' : ''}>${t}</option>`).join('')}</select>
         <small class="help">Scan: the app checks design, colour and size against the order, counts each piece, shows the order complete, and the delivery note is saved from that screen. No paper, no second check.</small></label>
+      <label class="f wide">An order asking for more than is free to sell<select name="stock_check" ${can2 ? '' : 'disabled'}>${[['warn', 'Warn, but let it be saved'], ['block', 'Do not allow it'], ['off', 'Say nothing']].map(([k, t]) => `<option value="${k}" ${(v.stock_check || 'warn') === k ? 'selected' : ''}>${t}</option>`).join('')}</select>
+        <small class="help">Free to sell = in stock − pieces already on open sales orders. Stock itself goes out only with the delivery note.</small></label>
       <h3 class="rh">2. Godown / packing staff</h3>
       ${store ? `<p class="muted small">For users with the <b>Store / godown</b> role (${store.users} now). Other roles: Settings → Roles.</p>
       ${chk('st_dispatch', 'They can pack and dispatch orders', 'Save the Delivery Note from a Sales Order the office entered. They still cannot make orders or invoices.')}
@@ -6645,7 +6652,7 @@ route(/^settings\/workflow$/, async (el, m, q) => {
     const E = f.elements;
     try {
       const couriers = E.couriers.value.split('\n').map((l) => l.trim()).filter(Boolean).map((l) => { const [name, url = ''] = l.split('|').map((x) => x.trim()); return { name, url }; });
-      const r = await api('PUT', '/api/settings/workflow', { dispatch: E.dispatch.checked, confirm_cod: E.confirm_cod.checked, default_pay: E.default_pay.value, pick_mode: E.pick_mode.value, couriers, msg_confirm: E.msg_confirm.value, msg_ship: E.msg_ship.value });
+      const r = await api('PUT', '/api/settings/workflow', { dispatch: E.dispatch.checked, confirm_cod: E.confirm_cod.checked, default_pay: E.default_pay.value, pick_mode: E.pick_mode.value, stock_check: E.stock_check.value, couriers, msg_confirm: E.msg_confirm.value, msg_ship: E.msg_ship.value });
       if (store && !store.locked) {
         const ui = E.st_menu.checked ? { job: 'packer', home: 'dispatch' } : store.ui.job === 'packer' ? {} : store.ui;
         await api('PUT', '/api/roles/builtin/store', { perms: store.changed ? store.perms : null, ui,
