@@ -212,7 +212,7 @@ export function checkBackdate(user, d, today, what = 'an entry') {
 
 /* Each user's own menu (users.ui): a job that picks the screens (the role decides when there is none), or screens the owner
    ticked one by one, and the screen the app opens on. Only what is shown changes: what a user may do stays with the role. */
-export const JOBS = ['all', 'counter', 'store', 'gate', 'accounts', 'sales'];
+export const JOBS = ['all', 'counter', 'store', 'packer', 'gate', 'accounts', 'sales'];
 const SCREEN = /^[a-z][a-zA-Z0-9/-]{0,40}$/;
 export function uiOf(raw) {
   let u = {};

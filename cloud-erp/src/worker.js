@@ -24,6 +24,7 @@ import { waConfigured, runAutoReminders, remindOrg } from './autowa.js';
 import { listHooks, addHook, deleteHook, receiveHook } from './hooks.js';
 import { receivePending, matchBill, learnCode, autoBins, writeOff, cancelWriteOff, writeOffOut } from './receive.js';
 import { listClaims, claimDetail, saveClaim, claimReceipt, closeClaim, cancelClaimEntry } from './claims.js';
+import { dispatchBoard, dispatchStep, workflowOf, cleanWorkflow } from './dispatch.js';
 import { botReady, botLink, verifyWebhook, receiveWebhook, setBot, inbox, thread, reply as waReply, markDone } from './wabot.js';
 import { listStaff, saveStaff, markAttendance, staffDetail, giveAdvance, paySalary, cancelStaffTxn, payslip, todayStaffQueries } from './payroll.js';
 import * as rep from './reports.js';
@@ -320,7 +321,7 @@ router.add('PUT', '/api/org/mode', async (c) => {
   return json({ ok: true, mode });
 });
 /* business row for the app: settings JSON parsed, image URLs ready for <img> */
-const orgOut = (o) => ({ ...o, print: printOf(o), series: seriesOf(o), fields: fieldsOf(o), vaada: cleanVaada(o.vaada), approvals: approvalsOf(o), loyalty: loyaltyOf(o) });
+const orgOut = (o) => ({ ...o, workflow: workflowOf(o), print: printOf(o), series: seriesOf(o), fields: fieldsOf(o), vaada: cleanVaada(o.vaada), approvals: approvalsOf(o), loyalty: loyaltyOf(o) });
 /* approval rules: purchase orders above po_above rupees made by anyone but the owner or an admin wait for approval */
 router.add('PUT', '/api/settings/approvals', async (c) => {
   requireCan(c.user, 'settings');
@@ -333,6 +334,16 @@ const fileUrls = (P, base) => ({ logo_url: P.logo ? `${base}/logo?v=${P.logo}` :
 
 /* Branding & print: layout, colour, title, terms, bank, UPI on bill, signatory, footer */
 router.add('GET', '/api/settings/print', async (c) => { const P = printOf(c.org); return json({ print: P, ...fileUrls(P, '/api/org/files') }); });
+/* Settings → Orders & dispatch (src/dispatch.js) */
+router.add('PUT', '/api/settings/workflow', async (c) => {
+  requireCan(c.user, 'settings');
+  const W = cleanWorkflow({ ...workflowOf(c.org), ...c.body });
+  await c.db.batch([c.db.prepare(`UPDATE orgs SET workflow = ? WHERE id = ?`).bind(JSON.stringify(W), c.org.id),
+    auditStatement(c, 'orders & dispatch settings', `dispatch ${W.dispatch ? 'on' : 'off'}, confirm COD ${W.confirm_cod ? 'on' : 'off'}, usual payment ${W.default_pay || 'not said'}`)]);
+  return json({ workflow: W });
+});
+router.add('GET', '/api/dispatch', async (c) => json(await dispatchBoard(c)));
+router.add('PUT', '/api/dispatch/:id', async (c) => json(await dispatchStep(c, +c.params.id, c.body)));
 router.add('PUT', '/api/settings/print', async (c) => {
   requireCan(c.user, 'settings');
   const P = cleanPrint(c.body, printOf(c.org));
@@ -758,6 +769,10 @@ router.add('GET', '/api/today', async (c) => {
   add('bills_due', 'finance', `SELECT COUNT(*) AS n, COALESCE(SUM(total - paid), 0) AS v FROM docs WHERE org_id = ? AND type = 'BILL' AND status IN ('unpaid','partial') AND due_date <= ?`, o, addDays(t, 7));
   add('approve', 'settings', `SELECT COUNT(*) AS n, COALESCE(SUM(total), 0) AS v FROM docs WHERE org_id = ? AND type = 'PO' AND status = 'pending'`, o);
   add('to_deliver', 'sales', `SELECT COUNT(*) AS n, 0 AS v FROM docs WHERE org_id = ? AND type = 'SO' AND status IN ('open','partial')`, o);
+  if (workflowOf(c.org).dispatch) {        // orders & dispatch: the godown sees what to pack and what to hand to the courier
+    if (!can(u, 'sales')) add('to_pack', 'items', `SELECT COUNT(*) AS n, 0 AS v FROM docs WHERE org_id = ? AND type = 'SO' AND status IN ('open','partial')`, o);
+    add('to_ship', 'items', `SELECT COUNT(*) AS n, 0 AS v FROM docs WHERE org_id = ? AND type = 'DN' AND status != 'cancelled' AND ship = ''`, o);
+  }
   add('to_receive', 'purchase', `SELECT COUNT(*) AS n, 0 AS v FROM docs WHERE org_id = ? AND type = 'PO' AND status IN ('open','partial')`, o);
   add('at_gate', 'purchase', `SELECT COUNT(*) AS n, 0 AS v FROM gate_entries WHERE org_id = ? AND kind = 'in' AND status = 'open'`, o);
   add('in_transit', 'purchase', `SELECT COUNT(*) AS n, COALESCE(SUM(total), 0) AS v FROM docs WHERE org_id = ? AND type = 'BILL' AND transit = 1 AND status != 'cancelled'`, o);

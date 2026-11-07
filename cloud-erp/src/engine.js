@@ -13,6 +13,7 @@ import { stateCode, isExportParty, CURRENCIES } from './gst.js';
 import { checkInvoiceLimit, invoiceCap, invoiceCapError, hasFeature, planOf, upgradeError } from './saas.js';
 import { cleanVaada, risk, riskStatements, riskInput } from './vaada.js';
 import { numberSpec, fieldsOf, cleanExtra, LAYOUTS } from './custom.js';
+import { workflowOf, PAY_MODES } from './dispatch.js';
 import { invoicePoints, invoicePointStatements, returnPointStatement, cancelPointStatement, unredeemStatements, LOYALTY_ACCOUNTS, POINTS_RACE } from './loyalty.js';
 
 export const DOC_TYPES = {
@@ -343,13 +344,16 @@ export async function createDoc(ctx, body) {
   // on a capped plan the insert itself checks the monthly count, so parallel requests cannot all slip under the limit
   const docCols = `org_id, type, number, party_id, date, due_date, warehouse_id, ref_id, status, place_of_supply,
         inter_state, taxable, cgst, sgst, igst, round_off, total, paid, notes, created_by, created_at, txk, extra, design, transit, party_ref, short,
-        currency, fx_rate, export_type, port_code, sb_no, sb_date`;
-  const docVals = `?, ?, ${counterValueSql}, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?`;
+        currency, fx_rate, export_type, port_code, sb_no, sb_date, pay_mode`;
+  const docVals = `?, ?, ${counterValueSql}, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?`;
+  // COD or prepaid (src/dispatch.js): said on the order, else the order's, else the business's usual one for a new order
+  const payMode = !['SO', 'DN', 'INV'].includes(type) ? '' : PAY_MODES.includes(body.pay_mode) && body.pay_mode ? body.pay_mode
+    : src && src.pay_mode ? src.pay_mode : type === 'SO' ? workflowOf(ctx.org).default_pay : '';
   const docArgs = [orgId, type, nspec.fmt, orgId, nspec.key, party.id, d, dueDate, wh.id, src ? src.id : null, initialStatus,
     party.state || ctx.org.state || '', inter ? 1 : 0, taxable, cgst, sgst, igst, roundOff, total,
     str(body.notes, 1000), ctx.user.id, nowIso(), txk, extra, LAYOUTS.includes(body.design) ? body.design : null,
     transit && L.some((l) => l.stocked) ? 1 : 0, partyRef, short ? 1 : 0,
-    exp ? exp.currency : '', exp ? exp.fx : 0, exp ? exp.export_type : '', exp ? exp.port_code : '', exp ? exp.sb_no : '', exp ? exp.sb_date : ''];
+    exp ? exp.currency : '', exp ? exp.fx : 0, exp ? exp.export_type : '', exp ? exp.port_code : '', exp ? exp.sb_no : '', exp ? exp.sb_date : '', payMode];
   st.push(cap
     ? db.prepare(`INSERT INTO docs (${docCols}) SELECT ${docVals} WHERE (SELECT COUNT(*) FROM docs WHERE org_id = ? AND type = 'INV' AND created_at >= ?) < ?`)
       .bind(...docArgs, orgId, cap.since, cap.max)
@@ -700,12 +704,16 @@ export async function reverseStock(ctx, { refType, refId, date: d, label }) {
 
 /* ---------------------------------------------------------------- cancellation */
 /* Reverses a document's journal and stock exactly, and undoes its effect on the source document. */
-export async function cancelDoc(ctx, id) {
+/* opts.dispatch: a parcel the courier brought back (RTO, src/dispatch.js), for a Delivery Note or its Sales Order;
+   the Dispatch Desk checked the user may work on orders */
+export async function cancelDoc(ctx, id, opts = {}) {
   const { db } = ctx;
   const doc = await db.prepare(`SELECT * FROM docs WHERE id = ? AND org_id = ?`).bind(id, ctx.org.id).first();
   if (!doc) throw notFound('Document not found.');
-  requireCan(ctx.user, DOC_TYPES[doc.type].side === 'sales' ? 'sales' : 'purchase');
-  requireCancel(ctx.user);
+  if (!(opts.dispatch && ['DN', 'SO'].includes(doc.type))) {
+    requireCan(ctx.user, DOC_TYPES[doc.type].side === 'sales' ? 'sales' : 'purchase');
+    requireCancel(ctx.user);
+  }
   if (doc.status === 'cancelled') throw bad('Already cancelled.');
   const child = await db.prepare(`SELECT number FROM docs WHERE ref_id = ?1 AND org_id = ?2 AND status != 'cancelled'
       UNION ALL SELECT number FROM write_offs WHERE bill_id = ?1 AND org_id = ?2 AND status = 'done' LIMIT 1`).bind(doc.id, ctx.org.id).first();

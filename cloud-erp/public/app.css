@@ -1114,3 +1114,31 @@ input.need { border-color: var(--danger); box-shadow: 0 0 0 2px color-mix(in srg
 .ship-cod{font-size:1.3em;font-weight:800;border:2px solid #000;padding:2px 8px}.ship-cod.prepaid{font-size:1em}
 .ship-items,.ship-note{font-size:.9em}.ship-from{margin-top:auto;font-size:.85em}
 @media print{.ship-sheet{border:0!important;box-shadow:none!important;padding:0!important}}
+/* QR item labels: code beside the text */
+.label.lq { display: flex; gap: 6px; align-items: center; text-align: left; }
+.label .lqr { flex: 0 0 64px; width: 64px; }
+.label .lqr svg { width: 64px; height: 64px; display: block; }
+.label .lt { min-width: 0; flex: 1; }
+.label.lq .ln { white-space: normal; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
+.label .lc { font-size: 10px; font-family: ui-monospace, monospace; }
+@media print { .label.lq { height: 34mm; } .label .lqr, .label .lqr svg { width: 26mm; height: 26mm; flex-basis: 26mm; } }
+/* Dispatch Desk */
+.dk-tabs { margin-bottom: 12px; }
+.dk-tabs .badge { margin-left: 4px; }
+.dk-list { display: grid; gap: 10px; }
+.dk-card { background: var(--card, #fff); border: 1px solid var(--line, #e5e7eb); border-radius: 12px; padding: 12px 14px; display: grid; gap: 6px; min-width: 0; }
+.dk-top { display: flex; gap: 10px; justify-content: space-between; align-items: flex-start; }
+.dk-top > div:first-child { min-width: 0; }
+.dk-items { font-size: 14px; overflow-wrap: anywhere; }
+.dk-acts { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin-top: 4px; }
+.dk-ship { display: flex; flex-wrap: wrap; gap: 6px; flex: 1 1 100%; }
+.dk-ship select { flex: 0 1 150px; min-width: 0; }
+.dk-ship input { flex: 1 1 150px; min-width: 0; }
+.dk-pay { flex: 0 0 auto; }
+.dk-pay select { font-weight: 700; max-width: 200px; padding-right: 26px; }
+.dk-pay select.pm-cod { color: #b45309; } .dk-pay select.pm-prepaid { color: #047857; }
+.pchip { display: inline-block; padding: 2px 8px; border-radius: 99px; font-size: 12px; font-weight: 700; white-space: nowrap; }
+.pchip.cod { background: #fef3c7; color: #92400e; } .pchip.pre { background: #d1fae5; color: #065f46; } .pchip.none { background: var(--soft, #f1f5f9); color: var(--muted, #64748b); }
+.wf-q { display: flex; gap: 8px; align-items: flex-start; margin: 8px 0; }
+.wf-q input { margin-top: 3px; }
+.wa-prev { white-space: pre-wrap; background: #dcf8c6; color: #111; border-radius: 10px; padding: 10px 12px; font-size: 14px; margin-top: 4px; overflow-wrap: anywhere; }
