@@ -1183,3 +1183,4 @@ tr.scan-hit td{animation:scanhit 1.2s ease-out}
 .worders{display:grid;gap:8px}.wo{display:flex;justify-content:space-between;align-items:center;gap:8px;padding:8px 10px;border:1px solid var(--line);border-radius:10px}
 .wo.done{border-color:#16a34a;background:color-mix(in srgb,#16a34a 8%,transparent)}
 .dk-paid{padding:10px 14px}
+.pqty{display:flex;align-items:center;gap:6px;font-weight:600}.pqty input{width:70px}
