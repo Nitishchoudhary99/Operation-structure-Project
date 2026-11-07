@@ -375,6 +375,8 @@ check('store role cannot record receipts', denied.status === 403);
   const pr = await api('GET', '/api/settings/print');
   const sp = await api('PUT', '/api/settings/print', { ...pr.print, ship_size: '100x50', ship_cod: false, ship_items: true, ship_note: 'Handle with care', ship_from: 'Shillong office' });
   check('shipping label settings are saved', sp.print.ship_size === '100x50' && sp.print.ship_cod === false && sp.print.ship_items === true && sp.print.ship_from === 'Shillong office');
+  const back = (await api('GET', '/api/settings/print')).print;
+  check('and read back after saving (the label used to fall back to the defaults)', back.ship_size === '100x50' && back.ship_cod === false && back.ship_items === true && back.ship_from === 'Shillong office', JSON.stringify(back));
   check('a wrong label size falls back to 4x6', (await api('PUT', '/api/settings/print', { ...sp.print, ship_size: 'huge' })).print.ship_size === '4x6');
 
   /* --- the customer's whole flow: an Instagram clothing seller, office in Shillong, stock and packing staff in Imphal --- */
@@ -3646,6 +3648,123 @@ if (process.env.ERP_AI_MOCK) {
   check('an asset sold twice at the same moment is sold once', sells.every((s) => s.split('+').filter((x) => x === '200').length === 1), JSON.stringify(sells));
   check('a khata entry reversed twice at the same moment is reversed once', revs.every((s) => s.split('+').filter((x) => x === '200').length === 1), JSON.stringify(revs));
   check('the books still balance', (await T.get('/api/reports/trial-balance')).data.balanced);
+}
+
+/* --- an online clothing seller (owner in Shillong, agent in Imphal): orders by scan, wholesale from 15 pieces in an
+       order, picking by scan for one order or many together, packing, stock out only on the delivery note --- */
+{
+  const ip = '203.0.113.' + (120 + Math.floor(Math.random() * 20));
+  const em = `chanura${Date.now()}@test.in`;
+  const su = await rq('POST', '/api/auth/signup', { business: 'Chanura', name: 'Admin', email: em, password: 'Owner-pass-123', state: 'Meghalaya' }, { ip });
+  const as = (cookie) => ({ get: (p) => rq('GET', p, undefined, { cookie, ip }), post: (p, b) => rq('POST', p, b || {}, { cookie, ip }), put: (p, b) => rq('PUT', p, b || {}, { cookie, ip }) });
+  const A = as(su.cookie);
+  await A.put('/api/settings/setup', { biz: 'online', modules: { orders: true }, item_defaults: { wholesale_order_min: 15 } });
+  check('the whole-order wholesale step is kept', (await A.get('/api/me')).data.org.setup.item_defaults.wholesale_order_min === 15);
+  // design × colour × size, retail ₹400, wholesale ₹300, cost ₹200, no GST for the sums
+  const rows = ['Red', 'Blue'].flatMap((c) => ['M', 'L'].map((z) => ({ name: `Kurti 101 - ${c} - ${z}`, sku: `K101-${c.toUpperCase()}-${z}`, unit: 'Pcs', sale_price: 400, wholesale_price: 300, purchase_price: 200, gst_rate: 0 })));
+  await A.post('/api/import/items', { rows });
+  const items = (await A.get('/api/items')).data.rows, by = (sku) => items.find((i) => i.sku === sku);
+  const RM = by('K101-RED-M'), RL = by('K101-RED-L'), BM = by('K101-BLUE-M'), BL = by('K101-BLUE-L');
+  check('every design, colour and size is its own item with its own code', RM && RL && BM && BL && RM.wholesale_price === 300 && RM.purchase_price === 200);
+  // stock in by scan, without a purchase order
+  const sup = (await A.post('/api/parties', { name: 'Own workshop', kind: 'supplier', state: 'Meghalaya' })).data;
+  const grn = await A.post('/api/docs', { type: 'GRN', party_id: sup.id, lines: [RM, RL, BM, BL].map((i) => ({ item_id: i.id, qty: 20, rate: 200 })) });
+  const stockOf = async (it) => (await A.get('/api/items')).data.rows.find((i) => i.id === it.id).qty_on_hand;
+  check('goods received without a purchase order: stock 20 each', grn.status === 200 && await stockOf(RM) === 20, JSON.stringify(grn.data.error || ''));
+  const look = await A.get('/api/items/lookup?code=K101-RED-M');
+  check('a scanned QR (the item code) finds design, colour and size', look.status === 200 && look.data.id === RM.id && look.data.name === 'Kurti 101 - Red - M');
+  // the shop's own QR codes carry the product written in them (name, colour, size), not our code and not the price
+  const q1 = await A.get('/api/items/lookup?code=' + encodeURIComponent('Kurti 101, Colour: Red, Size: M'));
+  check('a QR with "Kurti 101, Colour: Red, Size: M" finds that exact item', q1.status === 200 && q1.data.id === RM.id && q1.data.matched_by === 'text' && q1.data.sale_price === 400, JSON.stringify(q1.data).slice(0, 200));
+  const q2 = await A.get('/api/items/lookup?code=' + encodeURIComponent('{"name":"Kurti 101","color":"Blue","size":"L"}'));
+  check('a QR holding JSON finds the item too', q2.status === 200 && q2.data.id === BL.id);
+  const q3 = await A.get('/api/items/lookup?code=' + encodeURIComponent('Kurti 101 Red'));
+  check('a QR that fits more than one size is not guessed: the matching items are offered', q3.status === 404 && q3.data.candidates.length === 2 && q3.data.candidates.every((x) => /Red/.test(x.name)), JSON.stringify(q3.data));
+  const odd = 'CHANURA-LOT-7781 / design K101 / shade 4';
+  await A.post(`/api/items/${RL.id}/codes`, { code: odd, pack_qty: 1 });
+  check('a label chosen once is known from then on', (await A.get('/api/items/lookup?code=' + encodeURIComponent(odd))).data.id === RL.id);
+  // orders: retail below 15 pieces, wholesale for every line from 15 pieces in the whole order (mixed sizes and colours)
+  const cust = (await A.post('/api/parties', { name: 'Riya Devi', kind: 'customer', phone: '9876500000', address: 'Paona Bazar', city: 'Imphal', state: 'Manipur', pincode: '795001' })).data;
+  const small = (await A.post('/api/docs', { type: 'SO', party_id: cust.id, pay_mode: 'prepaid', lines: [{ item_id: RM.id, qty: 2 }, { item_id: BL.id, qty: 1 }] })).data;
+  check('a small order is at the retail price ₹400', small.lines.every((l) => l.rate === 400) && small.total === 1200, JSON.stringify(small.lines.map((l) => l.rate)));
+  const bulk = (await A.post('/api/docs', { type: 'SO', party_id: cust.id, lines: [{ item_id: RM.id, qty: 5 }, { item_id: RL.id, qty: 5 }, { item_id: BM.id, qty: 5 }] })).data;
+  check('15 pieces in one order (5 + 5 + 5, different sizes): ₹300 wholesale on every line', bulk.lines.every((l) => l.rate === 300) && bulk.total === 4500, JSON.stringify(bulk.lines.map((l) => l.rate)));
+  check('a sales order does not touch stock', await stockOf(RM) === 20);
+
+  // the agent (Imphal): godown login that picks and packs but cannot make orders
+  await A.post('/api/users', { email: 'agent' + em, name: 'Imphal Agent', role: 'store', password: 'Agent-pass-123' });
+  const li = await rq('POST', '/api/auth/login', { email: 'agent' + em, password: 'Agent-pass-123' }, { ip });
+  const G = as(li.cookie);
+  check('the agent cannot make a sales order', (await G.post('/api/docs', { type: 'SO', party_id: cust.id, lines: [{ item_id: RM.id, qty: 1 }] })).status === 403);
+  const desk = (await G.get('/api/dispatch')).data;
+  check('the agent sees the new orders to pick at once', desk.pack.some((r) => r.id === small.id) && desk.pack.some((r) => r.id === bulk.id), JSON.stringify(desk.counts));
+  check('the owner sees paid orders not yet dispatched', (await A.get('/api/dispatch')).data.counts.paid_waiting === 1);
+
+  // picking one order by scan
+  const s1 = await G.post('/api/pick/scan', { ids: [small.id], code: 'Kurti 101 Red M' });
+  check('scan while picking: the piece counts on the order', s1.status === 200 && s1.data.line.picked === 1 && s1.data.order.number === small.number, JSON.stringify(s1.data));
+  const wrong = await G.post('/api/pick/scan', { ids: [small.id], code: 'K101-BLUE-M' });
+  check('a wrong colour / size is refused', wrong.status === 400 && /WRONG ITEM/.test(wrong.data.error), JSON.stringify(wrong.data));
+  const unknown = await G.post('/api/pick/scan', { ids: [small.id], code: 'NOPE-1' });
+  check('an unknown code is refused', unknown.status === 400 && /no item/.test(unknown.data.error));
+  await G.post('/api/pick/scan', { ids: [small.id], code: 'K101-RED-M' });
+  const extra = await G.post('/api/pick/scan', { ids: [small.id], code: 'K101-RED-M' });
+  check('more than ordered is refused', extra.status === 400 && /EXTRA/.test(extra.data.error), JSON.stringify(extra.data));
+  const last = await G.post('/api/pick/scan', { ids: [small.id], code: 'K101-BLUE-L' });
+  check('the last piece: picking complete', last.data.order.done === true && last.data.state.done === true);
+  const desk2 = (await A.get('/api/dispatch')).data;
+  check('the owner sees it as Picked (ready to pack)', desk2.picked.some((r) => r.id === small.id) && !desk2.pack.some((r) => r.id === small.id), JSON.stringify(desk2.counts));
+  check('still no stock out while picking', await stockOf(RM) === 20);
+  // packing: the agent confirms; the delivery note is when stock goes out, and who packed it is kept
+  const conv = (await G.get(`/api/docs/${small.id}/convert?to=DN`)).data;
+  // direct QR picking for the business: no printed pick list, the scan is the check
+  await A.put('/api/settings/workflow', { dispatch: true, pick_mode: 'scan' });
+  check('scan picking is the business setting', (await A.get('/api/dispatch')).data.workflow.pick_mode === 'scan');
+  const noScan = await A.post('/api/docs', { ...conv });
+  check('with scan picking on, a delivery note cannot skip the scan screen (even for the owner)', noScan.status === 400 && /picks by scan/.test(noScan.data.error), JSON.stringify(noScan.data));
+  const dn = await G.post('/api/docs', { ...conv, packed_check: true });
+  check('the agent saves the delivery note after packing', dn.status === 200, JSON.stringify(dn.data.error || ''));
+  check('stock goes out on the delivery note: 20 → 18', await stockOf(RM) === 18 && await stockOf(BL) === 19);
+  const desk3 = (await A.get('/api/dispatch')).data, packedRow = desk3.packed.find((r) => r.id === dn.data.id);
+  check('the packing confirmation shows who packed it and when', packedRow && packedRow.packed_by === 'Imphal Agent' && !!packedRow.packed_at, JSON.stringify(packedRow));
+  const inv = await A.post('/api/docs', (await A.get(`/api/docs/${dn.data.id}/convert?to=INV`)).data);
+  check('the invoice from the delivery note does not take stock out again', inv.status === 200 && await stockOf(RM) === 18, JSON.stringify(inv.data.error || ''));
+  await G.put('/api/dispatch/' + dn.data.id, { action: 'ship', courier: 'India Post', awb: 'EK123IN' });
+  check('courier and tracking number recorded; paid-not-dispatched clears', (await A.get('/api/dispatch')).data.shipped.some((r) => r.id === dn.data.id && r.awb === 'EK123IN')
+    && (await A.get('/api/dispatch')).data.counts.paid_waiting === 0);
+
+  // picking many orders together: each piece goes to the oldest order still short of it
+  const o2 = (await A.post('/api/docs', { type: 'SO', party_id: cust.id, lines: [{ item_id: RL.id, qty: 1 }] })).data;
+  const both = [bulk.id, o2.id];
+  const st0 = (await G.get('/api/pick?ids=' + both.join(','))).data;
+  check('one combined list: Red L wanted 6 (5 + 1) across two orders', st0.items.find((r) => r.item_id === RL.id).want === 6 && st0.orders.length === 2);
+  for (let k = 0; k < 5; k++) await G.post('/api/pick/scan', { ids: both, code: 'K101-RED-L' });
+  const sixth = await G.post('/api/pick/scan', { ids: both, code: 'K101-RED-L' });
+  check('the 6th Red L goes to the second order', sixth.data.order.id === o2.id && sixth.data.order.done === true, JSON.stringify(sixth.data.order));
+  check('then a 7th is refused across both orders', /EXTRA/.test((await G.post('/api/pick/scan', { ids: both, code: 'K101-RED-L' })).data.error || ''));
+  // two phones scanning the last piece at the same moment: only one counts
+  for (let k = 0; k < 4; k++) await G.post('/api/pick/scan', { ids: [bulk.id], code: 'K101-RED-M' });
+  const race = await Promise.all([1, 2].map(() => G.post('/api/pick/scan', { ids: [bulk.id], code: 'K101-RED-M' })));
+  const redM = (await G.get('/api/pick?ids=' + bulk.id)).data.orders[0].lines.find((l) => l.item_id === RM.id);
+  check('two phones scanning the last piece at once: it is counted once', race.filter((r) => r.status === 200).length === 1 && redM.picked === 5, JSON.stringify([race.map((r) => r.status), redM]));
+  const undo = await G.post('/api/pick/undo', { line_id: redM.line_id, ids: [bulk.id] });
+  check('a piece can be put back (−1)', undo.data.orders[0].lines.find((l) => l.item_id === RM.id).picked === 4);
+  const reset = await G.post('/api/pick/reset', { ids: [bulk.id] });
+  check('picking an order can start again', reset.data.picked === 0);
+  // a partial delivery note keeps the rest on the order, picked count follows
+  for (let k = 0; k < 3; k++) await G.post('/api/pick/scan', { ids: [bulk.id], code: 'K101-BLUE-M' });
+  const c2 = (await G.get(`/api/docs/${bulk.id}/convert?to=DN`)).data;
+  const part = await G.post('/api/docs', { ...c2, lines: c2.lines.filter((l) => l.item_id === BM.id).map((l) => ({ ...l, qty: 3 })), packed_check: true });
+  const after = (await G.get('/api/pick?ids=' + bulk.id)).data.orders[0];
+  check('a part sent: the rest stays on the order, its picked count back to what is still unsent', part.status === 200 && after.lines.find((l) => l.item_id === BM.id).want === 2
+    && after.lines.find((l) => l.item_id === BM.id).picked === 0 && await stockOf(BM) === 17, JSON.stringify(after.lines));
+  // other businesses cannot touch these orders
+  const T = await tenant('Pickother', '203.0.113.' + (140 + Math.floor(Math.random() * 10)));
+  check('another business cannot pick these orders', [400, 404].includes((await T.post('/api/pick/scan', { ids: [bulk.id], code: 'K101-RED-M' })).status)
+    && (await T.get('/api/pick?ids=' + bulk.id)).status === 404);
+  // the shipping label with addresses only
+  const pr = await A.put('/api/settings/print', { ship_plain: true, ship_size: '4x6' });
+  check('the address-only label setting is kept', pr.status === 200 && pr.data.print.ship_plain === true && (await A.get('/api/settings/print')).data.print.ship_plain === true, JSON.stringify(pr.data).slice(0, 200));
 }
 
 /* After everything above (sales, returns, cancels, deletes, restores, races, other businesses): nothing is left out
