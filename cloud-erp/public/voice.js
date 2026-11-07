@@ -277,26 +277,44 @@ export function parseOrder(text, items) {
 }
 
 /* What the speech service has heard so far, from its list of results. Chrome on a computer gives one result per pause; Chrome
-   on Android repeats what it already gave in each new result ("2 किलो चीनी", then "2 किलो चीनी 1 लीटर तेल"), and can give the
-   same result twice. Each final piece is kept once: one that starts with the previous piece replaces it, one already
-   contained in it is dropped. results: [{ transcript, isFinal }]. Returns the final text (pieces joined by ", ") and the
-   words still being heard. */
+   on Android repeats what it already gave in each new result ("2 किलो चीनी", then "2 किलो चीनी 1 लीटर तेल"), can give the
+   same result twice, can repeat only the end of the earlier words ("1 लीटर तेल 5 साबुन"), and can write a number as a word
+   once and as a digit the next time ("do kilo" / "2 kilo"). So the words are compared, not the pieces: a final piece
+   already said (anywhere in what is final) is dropped, and one that begins with the end of what is final adds only its
+   new words. results: [{ transcript, isFinal }]. Returns the final text (pieces joined by ", ") and the words still being
+   heard. */
+const NUMW = { ek: 1, do: 2, teen: 3, tin: 3, char: 4, chaar: 4, paanch: 5, panch: 5, chhe: 6, che: 6, saat: 7, sat: 7, aath: 8, ath: 8, nau: 9, das: 10,
+  one: 1, two: 2, three: 3, four: 4, five: 5, six: 6, seven: 7, eight: 8, nine: 9, ten: 10,
+  'एक': 1, 'दो': 2, 'तीन': 3, 'चार': 4, 'पांच': 5, 'पाँच': 5, 'छह': 6, 'छः': 6, 'सात': 7, 'आठ': 8, 'नौ': 9, 'दस': 10 };
+const wordKey = (w) => { const k = String(w).normalize('NFC').toLowerCase().replace(/[,.।!?]+/g, ''); return NUMW[k] !== undefined ? String(NUMW[k]) : k; };
+const toks = (t) => String(t || '').trim().split(/\s+/).filter((w) => wordKey(w));
+const hasRun = (hay, run) => {
+  if (!run.length || run.length > hay.length) return !run.length;
+  for (let i = 0; i + run.length <= hay.length; i++) if (run.every((w, k) => hay[i + k] === w)) return true;
+  return false;
+};
+const overlap = (done, w) => { for (let k = Math.min(done.length, w.length); k > 0; k--) if (w.slice(0, k).every((x, j) => x === done[done.length - k + j])) return k; return 0; };
 export function heardText(results) {
-  const done = [];
+  const pieces = [];                                   // each: original words
   let now = '';
-  const norm = (t) => String(t || '').normalize('NFC').toLowerCase().replace(/[\s,.।]+/g, ' ').trim();
+  const keys = () => pieces.flat().map(wordKey);
   for (const r of results) {
     const t = String(r.transcript || '').trim();
     if (!t) continue;
     if (!r.isFinal) { now = t; continue; }
-    const last = done.length ? norm(done[done.length - 1]) : '', n = norm(t);
-    if (last && n.startsWith(last)) done[done.length - 1] = t;
-    else if (last && last.includes(n)) continue;
-    else done.push(t);
+    const w = toks(t), wk = w.map(wordKey), dk = keys();
+    if (!w.length || hasRun(dk, wk)) continue;          // already said
+    const k = overlap(dk, wk);
+    if (k) { const rest = w.slice(k); if (rest.length) pieces.push(rest); continue; }
+    // the recogniser re-wrote the last piece and went on ("2 मैगी" → "2 मैगी 1 ब्रेड" with a word changed): keep the longer one
+    const last = pieces.length ? pieces[pieces.length - 1].map(wordKey) : [];
+    if (last.length && wk.length > last.length && last.filter((x, j) => x === wk[j]).length >= Math.ceil(last.length * 0.6)) { pieces[pieces.length - 1] = w; continue; }
+    pieces.push(w);
   }
-  // an unfinished piece that only repeats what is already final adds nothing
-  const all = norm(done.join(' '));
-  if (now && all && all.endsWith(norm(now))) now = '';
-  else if (now && done.length && norm(now).startsWith(norm(done[done.length - 1]))) now = now.slice(done[done.length - 1].length).trim();
-  return { done: done.join(', '), now };
+  // the words still being heard: only what is new after the final ones
+  if (now) {
+    const w = toks(now), wk = w.map(wordKey), dk = keys();
+    now = hasRun(dk, wk) ? '' : w.slice(overlap(dk, wk)).join(' ');
+  }
+  return { done: pieces.map((p) => p.join(' ')).join(', '), now };
 }
