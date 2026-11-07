@@ -184,6 +184,18 @@ export async function createDoc(ctx, body) {
   const dispatchOnly = type === 'DN' && body.ref_id && !limits.no_dispatch && can(ctx.user, 'stock') && !can(ctx.user, 'sales');
   if (!dispatchOnly) requireCan(ctx.user, T.side === 'sales' ? 'sales' : 'purchase');
   if (type === 'DN' && limits.must_scan && body.packed_check !== true) throw bad('Scan every item before dispatch: open the Sales Order and use Pack & check.');
+  // a sales order beyond what is free to promise (in stock − already on open orders), when the owner chose to stop it
+  if (type === 'SO' && workflowOf(ctx.org).stock_check === 'block') {
+    const want = new Map();
+    for (const l of Array.isArray(body.lines) ? body.lines : []) if (+l.item_id) want.set(+l.item_id, (want.get(+l.item_id) || 0) + (+l.qty || 0) * (+l.uom_factor > 0 && l.uom ? +l.uom_factor : 1));
+    if (want.size) {
+      const ids = [...want.keys()];
+      const [its, rs] = await db.batch([db.prepare(`SELECT id, name, qty_on_hand, is_service FROM items WHERE org_id = ? AND id IN (${ids.map(() => '?').join(',')})`).bind(ctx.org.id, ...ids), reservedStatement(db, ctx.org.id)]);
+      const r = new Map(rs.results.map((x) => [x.item_id, x.qty]));
+      const short = its.results.filter((i) => !i.is_service && want.get(i.id) > i.qty_on_hand - (r.get(i.id) || 0) + 0.0005);
+      if (short.length) throw bad(`Not enough free stock: ${short.map((i) => `${i.name} (free ${Math.max(0, Math.round((i.qty_on_hand - (r.get(i.id) || 0)) * 1000) / 1000)}, asked ${want.get(i.id)})`).join('; ')}. Stock already promised to open orders is not free.`);
+    }
+  }
   // scan picking for the whole business (Settings → Orders & dispatch): an order's goods leave only through the scan screen
   if (type === 'DN' && body.ref_id && body.packed_check !== true && workflowOf(ctx.org).pick_mode === 'scan')
     throw bad('This business picks by scan: open the order on the Dispatch Desk and use Pick & pack (scan).');
@@ -617,6 +629,10 @@ export function paymentStatements(ctx, { kind, party, account, date: d, amount, 
   return st;
 }
 
+/* stock promised to open sales orders and not sent yet (a sales order moves no stock; the delivery note does) */
+export const reservedStatement = (db, orgId, itemId = 0) => db.prepare(`SELECT l.item_id, ROUND(SUM(MAX(0, l.qty - l.done_qty)), 3) AS qty FROM doc_lines l JOIN docs d ON d.id = l.doc_id
+    WHERE d.org_id = ? AND d.type = 'SO' AND d.status IN ('open', 'partial') AND l.item_id IS NOT NULL${itemId ? ' AND l.item_id = ?' : ''} GROUP BY l.item_id`).bind(...(itemId ? [orgId, itemId] : [orgId]));
+export const withReserved = (o, r) => ({ ...o, reserved: r || 0, available: Math.round(((o.qty_on_hand || 0) - (r || 0)) * 1000) / 1000 });
 export const SETTLE_RACE = /NOT NULL constraint failed: docs\.total/;
 /* put first in a write that must happen once: when the SELECT finds it already done (two taps, two people at the same
    moment), the write fails as a whole and nothing in it is kept; the person sees ONCE_TEXT (src/worker.js) */

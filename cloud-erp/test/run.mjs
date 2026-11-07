@@ -3690,6 +3690,19 @@ if (process.env.ERP_AI_MOCK) {
   const bulk = (await A.post('/api/docs', { type: 'SO', party_id: cust.id, lines: [{ item_id: RM.id, qty: 5 }, { item_id: RL.id, qty: 5 }, { item_id: BM.id, qty: 5 }] })).data;
   check('15 pieces in one order (5 + 5 + 5, different sizes): ₹300 wholesale on every line', bulk.lines.every((l) => l.rate === 300) && bulk.total === 4500, JSON.stringify(bulk.lines.map((l) => l.rate)));
   check('a sales order does not touch stock', await stockOf(RM) === 20);
+  // stock promised to open orders: in stock 20, on orders 2 + 5, free to sell 13
+  const rmRow = (await A.get('/api/items')).data.rows.find((i) => i.id === RM.id);
+  check('items show stock on open orders and what is free to sell', rmRow.qty_on_hand === 20 && rmRow.reserved === 7 && rmRow.available === 13, JSON.stringify([rmRow.reserved, rmRow.available]));
+  check('a scan tells what is free too', (await A.get('/api/items/lookup?code=K101-RED-M')).data.available === 13);
+  await A.put('/api/settings/workflow', { dispatch: true, stock_check: 'block' });
+  const over = await A.post('/api/docs', { type: 'SO', party_id: cust.id, lines: [{ item_id: RM.id, qty: 14 }] });
+  check('with "do not allow", an order beyond what is free is refused, naming the item', over.status === 400 && /Not enough free stock: Kurti 101 - Red - M \(free 13, asked 14\)/.test(over.data.error), JSON.stringify(over.data));
+  const fits = await A.post('/api/docs', { type: 'SO', party_id: cust.id, lines: [{ item_id: RM.id, qty: 13 }] });
+  check('an order within what is free is saved', fits.status === 200);
+  await A.post(`/api/docs/${fits.data.id}/cancel`);
+  check('a cancelled order frees its stock again', (await A.get('/api/items')).data.rows.find((i) => i.id === RM.id).available === 13);
+  await A.put('/api/settings/workflow', { dispatch: true, stock_check: 'warn' });
+  check('with "warn" (the default) the order is saved', (await A.get('/api/dispatch')).data.workflow.stock_check === 'warn');
 
   // the agent (Imphal): godown login that picks and packs but cannot make orders
   await A.post('/api/users', { email: 'agent' + em, name: 'Imphal Agent', role: 'store', password: 'Agent-pass-123' });
