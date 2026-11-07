@@ -174,7 +174,9 @@ export async function createDoc(ctx, body) {
   const type = str(body.type, 10).toUpperCase();
   const T = own(DOC_TYPES, type);
   if (!T) throw bad('Unknown document type.');
-  requireCan(ctx.user, T.side === 'sales' ? 'sales' : 'purchase');
+  // godown staff (stock right) dispatch: a Delivery Note made from a Sales Order someone else entered
+  const dispatchOnly = type === 'DN' && body.ref_id && can(ctx.user, 'stock') && !can(ctx.user, 'sales');
+  if (!dispatchOnly) requireCan(ctx.user, T.side === 'sales' ? 'sales' : 'purchase');
   const cap = type === 'INV' ? invoiceCap(ctx.org) : null;
   if (cap) await checkInvoiceLimit(db, ctx.org);
   const orgId = ctx.org.id;

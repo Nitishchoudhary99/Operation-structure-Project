@@ -342,6 +342,16 @@ const ownerCookie = cookie;
 await api('POST', '/api/auth/login', { email: 'store' + email, password: 'Store-pass-1' });
 const denied = await api('POST', '/api/payments', { kind: 'receipt', party_id: cust.id, account_id: accts.cash.id, amount: 1 }, true);
 check('store role cannot record receipts', denied.status === 403);
+{ // godown staff dispatch: a Delivery Note from a Sales Order the office entered; no Sales Order or invoice of their own
+  cookie = ownerCookie;
+  const so2 = await api('POST', '/api/docs', { type: 'SO', party_id: cust.id, lines: [{ item_id: rice.id, qty: 1, rate: 2200 }] });
+  const draft = await api('GET', `/api/docs/${so2.id}/convert?to=DN`);
+  await api('POST', '/api/auth/login', { email: 'store' + email, password: 'Store-pass-1' });
+  const dn2 = await api('POST', '/api/docs', draft, true);
+  check('store staff can save a Delivery Note made from a Sales Order', dn2 && /^DN/.test(String(dn2.number)), JSON.stringify(dn2).slice(0, 300));
+  check('store staff still cannot make a Sales Order', (await api('POST', '/api/docs', { type: 'SO', party_id: cust.id, lines: [{ item_id: rice.id, qty: 1, rate: 1 }] }, true)).status === 403);
+  check('store staff cannot make a Delivery Note out of nothing', (await api('POST', '/api/docs', { type: 'DN', party_id: cust.id, lines: [{ item_id: rice.id, qty: 1 }] }, true)).status === 403);
+}
 check('only the owner can download a full backup', (await api('GET', '/api/export/backup', null, true)).status === 403);
 check('only the owner can download the Excel backup', (await api('GET', '/api/export/excel', null, true)).status === 403);
 check('only the owner can restore a backup', (await api('POST', '/api/restore', { format: 'smarttrader-backup', version: 1, tables: {} }, true)).status === 403);
