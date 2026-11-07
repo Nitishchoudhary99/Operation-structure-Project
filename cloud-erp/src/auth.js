@@ -185,11 +185,13 @@ export function requireCan(user, area) { if (!can(user, area)) throw forbidden()
 /* Limits a role works under (role_rules.rules), set by the owner in Settings → Roles. The owner has none.
    no_cancel: cannot cancel bills, payments or other entries; no_credit: a sale must be paid in full (no udhaar);
    hide_costs: no purchase rates or profit; max_discount: the lowest price is the item's price less this % (rate cuts
-   and discounts together); backdate_days: how many days back a bill or payment may be dated (0 = today only). */
+   and discounts together); no_dispatch: godown staff (stock right, no sales right) may not save a Delivery Note
+   from a Sales Order; must_scan: a Delivery Note is saved only from Pack & check, every item scanned; backdate_days: how many days back a bill or payment may be dated (0 = today only). */
 export function cleanRules(r) {
   const n = (x, max) => (x === '' || x === null || x === undefined || !Number.isFinite(+x) ? null : Math.max(0, Math.min(max, +x)));
   const d = n(r && r.backdate_days, 3650), m = n(r && r.max_discount, 100);
   return { no_cancel: !!(r && r.no_cancel), no_credit: !!(r && r.no_credit), hide_costs: !!(r && r.hide_costs),
+    no_dispatch: !!(r && r.no_dispatch), must_scan: !!(r && r.must_scan),
     max_discount: m === null ? null : Math.round(m * 100) / 100, backdate_days: d === null ? null : Math.round(d) };
 }
 export function rulesOf(user) {

@@ -25,6 +25,7 @@ export function printOf(org) {
 }
 
 /* validate a PUT body; the image hashes are kept from the current settings (they change only through file upload) */
+export const SHIP_SIZES = ['4x6', '100x50', 'a4-4'];
 export function cleanPrint(b, cur) {
   const layout = b.layout || 'classic';
   if (!LAYOUTS.includes(layout)) throw bad(`Layout must be one of: ${LAYOUTS.join(', ')}.`);
@@ -41,6 +42,10 @@ export function cleanPrint(b, cur) {
     footer: str(b.footer, 160), signatory: str(b.signatory, 60), show_upi: b.show_upi !== false && b.show_upi !== 'false' && b.show_upi !== 0,
     bank_name: str(b.bank_name, 60), bank_account: account, bank_ifsc: ifsc, bank_branch: str(b.bank_branch, 60),
     logo: cur.logo, signature: cur.signature,
+    // courier / parcel label (Print shipping label on an order or delivery note)
+    ship_size: SHIP_SIZES.includes(b.ship_size) ? b.ship_size : '4x6', ship_from: String(b.ship_from ?? '').replace(/\r/g, '').slice(0, 200).trim(),
+    ship_cod: b.ship_cod !== false && b.ship_cod !== 'false' && b.ship_cod !== 0, ship_items: b.ship_items === true || b.ship_items === 'true' || b.ship_items === 1,
+    ship_phone: b.ship_phone !== false && b.ship_phone !== 'false' && b.ship_phone !== 0, ship_note: str(b.ship_note, 80),
   };
 }
 

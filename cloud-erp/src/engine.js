@@ -174,12 +174,16 @@ export async function createDoc(ctx, body) {
   const type = str(body.type, 10).toUpperCase();
   const T = own(DOC_TYPES, type);
   if (!T) throw bad('Unknown document type.');
-  requireCan(ctx.user, T.side === 'sales' ? 'sales' : 'purchase');
+  // godown staff (stock right) dispatch: a Delivery Note made from a Sales Order someone else entered
+  // (the owner can switch this off per role: Settings → Roles → "Cannot save Delivery Notes")
+  const limits = rulesOf(ctx.user);       // what the owner allows this role (Settings → Roles)
+  const dispatchOnly = type === 'DN' && body.ref_id && !limits.no_dispatch && can(ctx.user, 'stock') && !can(ctx.user, 'sales');
+  if (!dispatchOnly) requireCan(ctx.user, T.side === 'sales' ? 'sales' : 'purchase');
+  if (type === 'DN' && limits.must_scan && body.packed_check !== true) throw bad('Scan every item before dispatch: open the Sales Order and use Pack & check.');
   const cap = type === 'INV' ? invoiceCap(ctx.org) : null;
   if (cap) await checkInvoiceLimit(db, ctx.org);
   const orgId = ctx.org.id;
   const d = date(body.date);
-  const limits = rulesOf(ctx.user);       // what the owner allows this role (Settings → Roles)
   checkBackdate(ctx.user, d, today(), `a ${T.label.toLowerCase()}`);
 
   const party = await db.prepare(`SELECT * FROM parties WHERE id = ? AND org_id = ?`).bind(+body.party_id || 0, orgId).first();
