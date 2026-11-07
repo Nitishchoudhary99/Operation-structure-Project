@@ -295,3 +295,26 @@ receiving step at all; Tally and Zoho receive by typing quantities; WMS products
 
 **Still behind (honest list):** live Amazon / Flipkart API sync (needs developer registration with each marketplace),
 statutory payroll (PF / ESI / TDS), a handheld (HHT) warehouse app with put-away rules per zone, and QC hold at GRN.
+
+## 9. Root problems by kind of business, and our answer (Nov 2026)
+
+Most Indian small and mid businesses do not lack features; they lack **one app that fits how their kind of business
+works**, and their staff cannot be trusted with a generic menu of 60 screens. Billing apps (Vyapar, myBillBook) offer one
+menu for everyone with a few feature switches; desktop ERPs (Tally, Busy, Marg) are configurable but need a dealer or CA
+to set up; Marg is strongest only in pharma. Sources: vendor comparison pages ([Vyapar](https://vyaparapp.in/comparison-with-other-apps),
+[Busy](https://busy.in/compare/)), MSME adoption surveys ([DQ India](https://dqindia.com/features/how-indias-msmes-are-embracing-tech-and-whats-holding-them-back-9648759),
+[Zoho POS buying tips](https://www.zoho.com/en-in/pos/pos-buying-tips.html)), repair-shop tools ([Vyapar automobile](https://vyaparapp.in/free/billing-software-for-retail-shop/automobile),
+[myBillBook auto repair](https://mybillbook.in/s/auto-repair-shop-invoice-software/), [GimBooks mobile shop guide](https://www.gimbooks.com/blog/best-mobile-shop-billing-software-india/)). Most are vendor claims.
+
+| Root problem | Who feels it | Vyapar / myBillBook | Tally / Busy / Marg | SmartTrader (ours) |
+|---|---|---|---|---|
+| The app does not fit my kind of business; staff get lost in menus | Everyone | One menu; some feature toggles in settings | Configurable (F11 features, TDL) but needs a dealer / CA | **12 business packs** (kirana, wholesale, clothing, online seller, pharmacy, mobile/electronics, repair, hardware, restaurant, manufacturer, services, exporter) set the tools, menu, dashboard and new-item defaults in one tap; every tool switchable on/off for the whole business; each role / user can still get its own smaller menu |
+| Selling in boxes and pieces (1 Box = 12 Pcs; bag / kg; strip / tablet) | Kirana, wholesale, hardware, pharmacy | Primary + secondary unit | Alternate units | **Second unit per item**: bill in Box or Pcs per line, stock always in pieces, the bill prints "2 Box (24 Pcs)" with the rate per box; orders and deliveries keep the box size |
+| Repair jobs on paper slips: lost devices, no status, angry calls | Mobile / electronics / AC / bike / computer repair | Vyapar: job card for automobile; myBillBook: "job card style billing" | Not built in (TDL add-ons) | **Job cards**: intake with IMEI / vehicle no., accessories and condition, estimate and advance (a real receipt), promised date; received → checking → waiting for parts → ready → delivered; one-tap WhatsApp update at each step; printable job slip; bill from the job with parts from stock; Today flags late and ready jobs |
+| Online orders: wrong size packed, COD parcels come back (RTO) | Instagram / WhatsApp / D2C sellers | Order forms; no scan-to-pack, no RTO flow | Not built for it | Dispatch Desk (confirm COD on WhatsApp, scan-to-pack, courier label, AWB + tracking message, delivered / RTO with stock back) |
+| Owner away, staff misuse | Every business with staff | Basic roles | Roles, but desktop | Per-role rights and limits (discount cap, no cancel, no udhaar, hide costs, backdate days, must-scan, no dispatch), per-role menus, audit trail |
+| Udhaar not recovered | Kirana, wholesale, services | Khata + reminders | Outstanding reports | Khata, smart reminder queue, vaade (promises), balance-confirmation link, MSMED interest file |
+| Data entry too slow | Everyone | OCR on top plans | Manual | Bolkar (voice) bill, POS with camera scan, bill photo → purchase bill on the phone, sizes × colours maker |
+
+**Still behind (honest):** live courier booking (Shiprocket / Delhivery APIs), statutory payroll (PF / ESI), and a
+native Android app (we are a PWA). Pack screens and job cards are in English; the Hindi toggle does not cover them yet.

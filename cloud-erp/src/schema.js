@@ -3,7 +3,7 @@
    Every business table carries org_id: one database serves many businesses (multi-tenant).
    migrate() runs on the first request after each deploy, so no manual migration step is needed. */
 
-export const SCHEMA_VERSION = 42;
+export const SCHEMA_VERSION = 43;
 
 // document types whose monthly totals doc_month keeps (sales and purchase money documents)
 const MONTH_TYPES = `('INV','SRET','CNOTE','BILL','PRET','DNOTE')`;
@@ -696,6 +696,21 @@ export const MIGRATIONS = {
     `ALTER TABLE docs ADD COLUMN ship_at TEXT NOT NULL DEFAULT ''`,
     `UPDATE docs SET ship = 'delivered' WHERE type = 'DN' AND ship = ''`,
     `CREATE INDEX IF NOT EXISTS ix_docs_ship ON docs (org_id, type, ship)`,
+  ],
+  /* business type & menu (src/setup.js); a second unit per item (1 Box = 12 Pcs) remembered on bill lines for printing;
+     repair / service job cards (src/jobs.js) */
+  43: [
+    `ALTER TABLE orgs ADD COLUMN setup TEXT NOT NULL DEFAULT '{}'`,
+    `ALTER TABLE items ADD COLUMN alt_unit TEXT NOT NULL DEFAULT ''`,
+    `ALTER TABLE items ADD COLUMN alt_factor REAL NOT NULL DEFAULT 0`,
+    `ALTER TABLE doc_lines ADD COLUMN uom TEXT NOT NULL DEFAULT ''`,
+    `ALTER TABLE doc_lines ADD COLUMN uom_factor REAL NOT NULL DEFAULT 0`,
+    `CREATE TABLE IF NOT EXISTS job_cards (id INTEGER PRIMARY KEY, org_id INTEGER NOT NULL, number TEXT NOT NULL, date TEXT NOT NULL,
+       party_id INTEGER NOT NULL, device TEXT NOT NULL DEFAULT '', serial TEXT NOT NULL DEFAULT '', problem TEXT NOT NULL DEFAULT '',
+       accessories TEXT NOT NULL DEFAULT '', condition TEXT NOT NULL DEFAULT '', estimate INTEGER NOT NULL DEFAULT 0, advance INTEGER NOT NULL DEFAULT 0,
+       promised TEXT NOT NULL DEFAULT '', status TEXT NOT NULL DEFAULT 'received', tech TEXT NOT NULL DEFAULT '', notes TEXT NOT NULL DEFAULT '',
+       inv_id INTEGER, created_by INTEGER, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, UNIQUE (org_id, number))`,
+    `CREATE INDEX IF NOT EXISTS ix_jobs ON job_cards (org_id, status, date)`,
   ],
 };
 
