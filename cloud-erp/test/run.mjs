@@ -511,7 +511,54 @@ check('store role cannot record receipts', denied.status === 403);
   check('a role without selling cannot open job cards', (await api('POST', '/api/jobs', { name: 'Q', device: 'TV', problem: 'p' }, true)).status === 403);
   cookie = ownerCookie;
   await api('PUT', '/api/settings/setup', { biz: '', modules: {}, item_defaults: {} });
+
+  /* --- statutory payroll: PF / ESI / professional tax, ECR, challans --- */
+  const pm = (() => { const d = new Date(Date.now() + 5.5 * 3600e3); d.setUTCDate(1); d.setUTCMonth(d.getUTCMonth() - 1); return d.toISOString().slice(0, 7); })();
+  check('a wrong UAN is refused', (await api('POST', '/api/staff', { name: 'Bad UAN', rate: 10000, uan: '123', pf: true }, true)).status === 400);
+  const amit = await api('POST', '/api/staff', { name: 'Amit Kumar', pay_type: 'month', rate: 30000, join_date: `${pm}-01`, pf: true, uan: '100200300400', wage_pct: 50, esi: true, pt: 200 });
+  const sita = await api('POST', '/api/staff', { name: 'Sita Devi', pay_type: 'month', rate: 18000, join_date: `${pm}-01`, pf: true, uan: '100200300401', wage_pct: 100, esi: true, esi_no: '1234567890' });
+  const raj = await api('POST', '/api/staff', { name: 'Raj Big', pay_type: 'month', rate: 40000, join_date: `${pm}-01`, pf: true, uan: '100200300402', wage_pct: 100 });
+  check('staff keep their PF / ESI details', amit.pf === 1 && amit.uan === '100200300400' && amit.pt === 200 && sita.esi_no === '1234567890');
+  await api('PUT', '/api/settings/setup', { biz: 'kirana', modules: { pos: true } });
+  check('payroll rates default to the 2026 law', (await api('GET', '/api/payroll/rates')).rates.pf_ceiling === 25000);
+  const pa = await api('POST', `/api/staff/${amit.id}/salary`, { month: pm, paid_from: accts.cash.id });
+  const ps = await api('GET', `/api/staff/payslip/${pa.id}`), ast = ps.detail.stat;
+  check('PF on 50% wages: ₹1,800 cut, EPS ₹1,250 + EPF ₹550 from the employer, PT ₹200, no ESI above ₹21,000',
+    ast && ast.pf === 1800 && ast.eps === 1250 && ast.er_epf === 550 && ast.edli === 75 && ast.admin === 75 && ast.esi === 0 && ast.pt === 200 && ps.net === 28000, JSON.stringify(ast));
+  const pb = await api('POST', `/api/staff/${sita.id}/salary`, { month: pm, paid_from: accts.cash.id });
+  const sst = (await api('GET', `/api/staff/payslip/${pb.id}`)).detail.stat;
+  check('ESI on ₹18,000: ₹135 + ₹585 (rounded up); PF on full wages ₹2,160', sst.esi === 135 && sst.er_esi === 585 && sst.pf === 2160 && sst.eps === 1499 && sst.er_epf === 661, JSON.stringify(sst));
+  const pc = await api('POST', `/api/staff/${raj.id}/salary`, { month: pm, paid_from: accts.cash.id });
+  const rst = (await api('GET', `/api/staff/payslip/${pc.id}`)).detail.stat;
+  check('PF stops at the ₹25,000 ceiling: ₹3,000', rst.pf === 3000 && rst.epf_wages === 25000 && rst.eps === 2083 && rst.er_epf === 917, JSON.stringify(rst));
+  tb = await api('GET', '/api/reports/trial-balance');
+  check('books still balance after PF / ESI salaries', tb.balanced);
+  const SR = await api('GET', `/api/payroll/statutory?month=${pm}`);
+  const pfDue = 1800 + 1250 + 550 + 75 + 75 + 2160 + 1499 + 661 + 90 + 90 + 3000 + 2083 + 917 + 125 + 125;
+  check('the month\'s PF, ESI and PT to deposit', SR.rows.length === 3 && SR.totals.pf === pfDue && SR.totals.esi === 720 && SR.totals.pt === 200, JSON.stringify(SR.totals));
+  const ecr = await rq('GET', `/api/payroll/ecr?month=${pm}`, undefined, { cookie });
+  const ecrLines = ecr.data._text ? ecr.data._text.split('\n') : [];
+  check('ECR file in the EPFO format (11 fields, #~#)', ecr.status === 200 && ecrLines.length === 3 && ecrLines.every((l) => l.split('#~#').length === 11)
+    && ecrLines.includes('100200300400#~#AMIT KUMAR#~#30000#~#15000#~#15000#~#15000#~#1800#~#1250#~#550#~#0#~#0'), ecrLines.join(' | '));
+  const esiF = await rq('GET', `/api/payroll/esi?month=${pm}`, undefined, { cookie });
+  check('ESI upload sheet', esiF.status === 200 && /"1234567890","Sita Devi",\d+,18000/.test(esiF.data._text || ''), (esiF.data._text || '').slice(0, 200));
+  await api('POST', '/api/payroll/challan', { kind: 'pf', month: pm, amount: pfDue, paid_from: accts.cash.id, ref: 'TRRN123' });
+  const SR2 = await api('GET', `/api/payroll/statutory?month=${pm}`);
+  check('the PF challan is recorded and the books balance', SR2.totals.pf_paid === pfDue && SR2.challans.length === 1 && (await api('GET', '/api/reports/trial-balance')).balanced);
+  check('a challan of an unknown kind is refused', (await api('POST', '/api/payroll/challan', { kind: 'gst', month: pm, amount: 1, paid_from: accts.cash.id }, true)).status === 400);
+  await api('POST', `/api/payroll/challan/${SR2.challans[0].id}/cancel`);
+  check('a challan can be cancelled', (await api('GET', `/api/payroll/statutory?month=${pm}`)).totals.pf_paid === 0);
+  await api('POST', `/api/staff/txns/${pc.id}/cancel`);
+  check('cancelling a PF salary takes it out of the return and keeps the books balanced', (await api('GET', `/api/payroll/statutory?month=${pm}`)).rows.length === 2
+    && (await api('GET', '/api/reports/trial-balance')).balanced);
+  const rates2 = await api('PUT', '/api/settings/setup', { payroll: { pf_ceiling: 15000 } });
+  check('changing payroll rates keeps the business type and menu', rates2.setup.payroll.pf_ceiling === 15000 && rates2.setup.biz === 'kirana' && rates2.setup.modules.pos === true);
+  check('a wrong rate is refused', (await api('PUT', '/api/settings/setup', { payroll: { pf_rate: 99 } }, true)).status === 400);
+  await api('PUT', '/api/settings/setup', { biz: '', modules: {}, item_defaults: {}, payroll: {} });
   await storeLogin();
+  check('the store role cannot see PF returns', (await api('GET', `/api/payroll/statutory?month=${pm}`, null, true)).status === 403);
+  const al = await rq('GET', '/.well-known/assetlinks.json');
+  check('the Android app\'s asset links file is served (empty until the key is set)', al.status === 200 && Array.isArray(al.data) && al.headers.get('content-type').includes('json'));
 }
 check('only the owner can download a full backup', (await api('GET', '/api/export/backup', null, true)).status === 403);
 check('only the owner can download the Excel backup', (await api('GET', '/api/export/excel', null, true)).status === 403);

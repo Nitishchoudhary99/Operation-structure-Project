@@ -19,7 +19,7 @@ import { fieldsOf, seriesOf } from './custom.js';
 const ID_TABLES = ['accounts', 'warehouses', 'roles', 'parties', 'items', 'docs', 'doc_lines', 'payments', 'journals', 'journal_lines', 'khata',
   'stock_moves', 'gate_entries', 'vaade', 'vaada_kisht', 'recurring', 'reminder_log', 'confirmations', 'bins', 'batches', 'batch_moves',
   'serials', 'serial_moves', 'boms', 'bom_lines', 'productions', 'staff', 'staff_txns', 'write_offs', 'claim_entries', 'mkt_settlements', 'fixed_assets', 'asset_dep', 'dep_runs',
-  'tds_challans', 'job_cards'];
+  'tds_challans', 'job_cards', 'stat_challans'];
 const OTHER_TABLES = ['payment_allocs', 'stock', 'counters', 'org_files', 'bin_stock', 'channel_orders', 'attendance', 'item_codes', 'write_off_lines', 'role_rules', 'channel_returns', 'bank_clear', 'loyalty_points', 'dine_tables'];
 const ORG_FIELDS = ['name', 'gstin', 'state', 'address', 'phone', 'upi_id', 'fy_start', 'city', 'pincode', 'email', 'mode', 'print', 'series', 'fields', 'vaada', 'msg_lang', 'udyam', 'approvals', 'loyalty', 'workflow', 'setup'];
 const JSON_FIELDS = ['print', 'series', 'fields', 'vaada', 'approvals', 'loyalty', 'workflow', 'setup'];
@@ -105,7 +105,7 @@ export async function restoreBackup(c, backup) {
     const docOrPay = (r) => (PAY_REFS.includes(String(r.ref_type)) ? to('payments', r.ref_id) : /^MFG(-X)?$/.test(String(r.ref_type)) ? to('productions', r.ref_id)
       : /^(ADV|SAL)(-X)?$/.test(String(r.ref_type)) ? to('staff_txns', r.ref_id) : /^TLOSS(-X)?$/.test(String(r.ref_type)) ? to('write_offs', r.ref_id)
       : /^CLAIM(-X)?$/.test(String(r.ref_type)) ? to('claim_entries', r.ref_id) : String(r.ref_type) === 'ASSET' ? to('fixed_assets', r.ref_id)
-      : String(r.ref_type) === 'TDSC' ? to('tds_challans', r.ref_id) : /^(DEP|MKT|JV|EXP|OPEN)$/.test(String(r.ref_type)) ? null : to('docs', r.ref_id));
+      : String(r.ref_type) === 'TDSC' ? to('tds_challans', r.ref_id) : /^STAT(-X)?$/.test(String(r.ref_type)) ? to('stat_challans', r.ref_id) : /^(DEP|MKT|JV|EXP|OPEN)$/.test(String(r.ref_type)) ? null : to('docs', r.ref_id));
     // a custom role's own rules follow the role to its new id
     const roleKey = (k) => { const m = String(k || '').match(/^c:(\d+)$/); return m ? (to('roles', +m[1]) ? 'c:' + to('roles', +m[1]) : null) : ['admin', 'accountant', 'store', 'sales'].includes(k) ? k : null; };
     // batch / serial history: a document or production run; adjustments, counts and transfers carry no reference
@@ -164,6 +164,7 @@ export async function restoreBackup(c, backup) {
       org_files: () => ({}),
       dine_tables: () => ({ id: null }),
       job_cards: (r) => ({ party_id: to('parties', r.party_id), inv_id: to('docs', r.inv_id), created_by: me }),
+      stat_challans: (r) => ({ account_id: to('accounts', r.account_id), created_by: me }),
       loyalty_points: (r) => ({ id: null, party_id: to('parties', r.party_id), doc_id: to('docs', r.doc_id), created_by: me }),
     };
     // a row whose own record of the link is gone is left out (it could not be shown or posted anyway)
@@ -236,6 +237,7 @@ export async function restoreBackup(c, backup) {
     counts.loyalty_points = insert('loyalty_points', T.loyalty_points);
     counts.dine_tables = insert('dine_tables', T.dine_tables);
     counts.job_cards = insert('job_cards', T.job_cards);
+    counts.stat_challans = insert('stat_challans', T.stat_challans);
     counts.attendance = insert('attendance', T.attendance);
     counts.item_codes = insert('item_codes', T.item_codes);
     counts.counters = insert('counters', T.counters, 'INSERT OR REPLACE');

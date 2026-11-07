@@ -548,7 +548,7 @@ const MODULES = [
   ['serial', 'Serial / IMEI & warranty', 'Mobiles, electronics, appliances', ['serials']],
   ['mfg', 'Production (recipe / BOM)', 'Make goods from raw material', ['production']],
   ['recurring', 'Recurring bills', 'Rent, AMC, tuition, monthly supply: bills make themselves', ['recurring']],
-  ['staff', 'Staff attendance & salary', 'Attendance, advances, salary slips', ['staff']],
+  ['staff', 'Staff attendance & salary', 'Attendance, advances, salary slips, PF / ESI / professional tax, ECR file', ['staff', 'statutory']],
   ['books', 'Advanced accounts', 'Bank reconciliation, fixed assets, TDS, journals, chart of accounts', ['bankrec', 'assets', 'tds', 'journal', 'accounts', 'daybook']],
 ];
 const SCREEN_MOD = new Map(MODULES.flatMap(([k, , , scr]) => scr.map((h) => [h, k])));
@@ -559,7 +559,7 @@ const flowOk = (h) => !simple() || (ordersOn() && DISP.has(h));
 const docFlowOk = (k) => !simple() || !ADV_DOCS.includes(k) || (ordersOn() && ['SO', 'DN'].includes(k)) || (k === 'QUOTE' && modState('quotes') === true)
   || (['PO', 'GRN'].includes(k) && modState('procure') === true);
 /* which permission area a menu entry needs (custom roles may not see every area); the gate register also opens with 'gate' */
-const navArea = (h) => h === 'dispatch' ? ['items', 'sales'] : h === 'jobs' ? 'sales' : /^(receipts|payments|expenses|accounts|journal|staff|bankrec|assets|tds)$/.test(h) ? 'finance' : /^(sales\/|pos$|recurring$|channels$|shop$|loyalty$|tables$|table\/|kots$)/.test(h) ? 'sales' : /^(purchase\/|receive$)/.test(h) ? 'purchase'
+const navArea = (h) => h === 'dispatch' ? ['items', 'sales'] : h === 'jobs' ? 'sales' : /^(receipts|payments|expenses|accounts|journal|staff|statutory|bankrec|assets|tds)$/.test(h) ? 'finance' : /^(sales\/|pos$|recurring$|channels$|shop$|loyalty$|tables$|table\/|kots$)/.test(h) ? 'sales' : /^(purchase\/|receive$)/.test(h) ? 'purchase'
   : /^gate\/in$/.test(h) ? ['purchase', 'gate'] : /^gate\/out$/.test(h) ? ['items', 'gate'] : h === 'claims' ? ['purchase', 'finance'] : h === 'wa-inbox' ? ['sales', 'khata', 'finance']
   : /^(items|stock|stockcount|pending|bins|expiry|stock-ageing|serials|production|wave|putaway)$/.test(h) ? 'items' : /^(parties|reminders)$/.test(h) ? 'masters' : /^(khata|vaade)$/.test(h) ? 'khata'
   : /^(reports\/|tally$|daybook$|gstr$)/.test(h) ? 'reports' : h === 'plan' ? 'settings' : '';
@@ -580,7 +580,7 @@ const JOBS = {
   gate: { t: 'Gate / security guard', home: 'gate/in', screens: ['gate/in', 'gate/out'] },
   waiter: { t: 'Waiter / captain (restaurant)', home: 'tables', screens: ['tables', 'kots', 'pos'] },
   accounts: { t: 'Accountant', home: 'dashboard', screens: ['dashboard', 'sales/INV', 'sales/SRET', 'sales/CNOTE', 'receipts', 'purchase/BILL', 'purchase/PRET', 'purchase/DNOTE', 'payments',
-    'parties', 'khata', 'reminders', 'vaade', 'staff', 'expenses', 'bankrec', 'assets', 'tds', 'accounts', 'journal', 'daybook', 'reports/pnl', 'reports/balance-sheet', 'reports/trial-balance', 'reports/gst', 'gstr', 'reports/ageing',
+    'parties', 'khata', 'reminders', 'vaade', 'staff', 'statutory', 'expenses', 'bankrec', 'assets', 'tds', 'accounts', 'journal', 'daybook', 'reports/pnl', 'reports/balance-sheet', 'reports/trial-balance', 'reports/gst', 'gstr', 'reports/ageing',
     'reports/register', 'cash', 'tally', 'claims', 'wa-inbox'] },
   sales: { t: 'Salesman', home: 'sales/INV', screens: ['dashboard', 'pos', 'tables', 'jobs', 'sales/INV', 'shop', 'loyalty', 'sales/QUOTE', 'sales/SO', 'sales/DN', 'sales/SRET', 'receipts', 'channels', 'recurring', 'parties', 'khata',
     'reminders', 'vaade', 'items', 'stock', 'wa-inbox'] },
@@ -619,7 +619,7 @@ const NAV = [
   ['Purchase', [['receive', 'Receive Goods (scan)'], ['purchase/PO', 'Purchase Orders'], ['gate/in', 'Gate Entry (inward)'], ['purchase/GRN', 'Goods Receipts (GRN)'], ['purchase/BILL', 'Purchase Bills'], ['purchase/PRET', 'Purchase Returns'], ['purchase/DNOTE', 'Debit Notes (rate diff)'], ['claims', 'Transit Claims'], ['payments', 'Payments']]],
   ['Inventory', [['items', 'Items'], ['stock', 'Stock & Godowns'], ['stock-ageing', 'Stock Ageing'], ['bins', 'Bins & Racks'], ['expiry', 'Batch & Expiry'], ['serials', 'Serial / IMEI'], ['production', 'Production (BOM)'], ['wave', 'Wave Pick List'], ['stockcount', 'Stock Count'], ['gate/out', 'Gate Pass (outward)'], ['pending', 'Pending Orders']]],
   ['Contacts', [['parties', 'Customers & Suppliers'], ['khata', 'Khata Book'], ['reminders', 'Vasooli (Collections)'], ['vaade', 'Vaade (Promises)'], ['wa-inbox', 'WhatsApp Inbox']]],
-  ['Accounts', [['staff', 'Staff & Salary'], ['expenses', 'Expenses'], ['bankrec', 'Bank Reconciliation'], ['assets', 'Fixed Assets'], ['tds', 'TDS'], ['accounts', 'Chart of Accounts'], ['journal', 'Journal Voucher'], ['daybook', 'Day Book']]],
+  ['Accounts', [['staff', 'Staff & Salary'], ['statutory', 'PF / ESI Return'], ['expenses', 'Expenses'], ['bankrec', 'Bank Reconciliation'], ['assets', 'Fixed Assets'], ['tds', 'TDS'], ['accounts', 'Chart of Accounts'], ['journal', 'Journal Voucher'], ['daybook', 'Day Book']]],
   ['Reports', [['reports/pnl', 'Profit & Loss'], ['reports/balance-sheet', 'Balance Sheet'], ['reports/trial-balance', 'Trial Balance'], ['reports/gst', 'GST Summary'], ['gstr', 'GST Returns (GSTR-1, 2B)'], ['reports/ageing', 'Outstanding (Ageing)'], ['reports/register', 'Registers'], ['cash', 'Kal ka Cash'], ['tally', 'Tally Export']]],
   ['Settings', [['settings', 'Settings'], ['plan', 'Plan & Billing']]],
 ];
@@ -644,7 +644,7 @@ const icon = (k) => `<svg class="ico" viewBox="0 0 24 24" aria-hidden="true" fil
 /* Simple mode (the default) keeps the everyday screens in the menu and puts the specialist ones under "More features",
    one tap away and remembered open. Advanced mode, or a menu the owner made for a user, shows its screens as they are. */
 const EXTRA = new Set(['channels', 'recurring', 'sales/CNOTE', 'purchase/DNOTE', 'claims', 'receive', 'stock-ageing', 'bins', 'expiry', 'serials', 'production', 'putaway',
-  'vaade', 'wa-inbox', 'staff', 'bankrec', 'assets', 'tds', 'accounts', 'journal', 'daybook', 'reports/balance-sheet', 'reports/trial-balance', 'reports/register', 'cash', 'tally']);
+  'vaade', 'wa-inbox', 'staff', 'statutory', 'bankrec', 'assets', 'tds', 'accounts', 'journal', 'daybook', 'reports/balance-sheet', 'reports/trial-balance', 'reports/register', 'cash', 'tally']);
 function navHtml() {
   const groups = NAV.map(([g, all]) => [g, all.filter(([h]) => onMenu(h) && seen(h))]);
   const fold = simple() && !myUi().screens && jobOf() === 'all';
@@ -2805,7 +2805,11 @@ function staffForm(s = {}, after) {
     { k: 'title', label: 'Work (e.g. salesman, helper)', value: s.title, more: true }, { k: 'join_date', label: 'Joined on', type: 'date', value: s.join_date || ME.today, more: true },
     { k: 'ot_rate', label: 'Overtime ₹ per hour', type: 'number', value: s.ot_rate || '', more: true },
     ...(s.id ? [{ k: 'active', label: 'Still working here', type: 'checkbox', value: s.active !== 0, more: true }] : []),
-    { k: 'notes', label: 'Notes', value: s.notes, more: true }],
+    { k: 'notes', label: 'Notes', value: s.notes, more: true },
+    { k: 'pf', label: 'PF applies (EPF)', type: 'checkbox', value: !!s.pf, more: true }, { k: 'uan', label: 'UAN (12 digits)', value: s.uan || '', more: true },
+    { k: 'wage_pct', label: 'Wages for PF (% of salary: basic + DA, 50 or more)', type: 'number', value: s.wage_pct || 50, more: true },
+    { k: 'esi', label: 'ESI applies (salary ₹21,000 or less)', type: 'checkbox', value: !!s.esi, more: true }, { k: 'esi_no', label: 'ESI IP number (10 digits)', value: s.esi_no || '', more: true },
+    { k: 'pt', label: 'Professional tax ₹ per month (your state)', type: 'number', value: s.pt || '', more: true }],
   async (v) => { await (s.id ? api('PUT', '/api/staff/' + s.id, v) : POST('/api/staff', v)); toast(s.id ? 'Saved' : `${v.name} added`); after(); },
   { submit: s.id ? 'Save' : 'Add', intro: '<p class="muted">Monthly staff: a day you do not mark counts as present, so mark only absences, half days and leave. Daily-wage staff: mark the days they worked.</p>' });
 }
@@ -2813,7 +2817,7 @@ route(/^staff$/, async (el, m, q) => {
   const month = q.get('month') === 'last' ? shiftMonth(ME.today.slice(0, 7), -1) : q.get('month') || ME.today.slice(0, 7), d = await GET('/api/staff?month=' + month);
   const live = d.rows.filter((s) => s.active), isNow = month === ME.today.slice(0, 7);
   const markBtns = (s) => `<div class="marks" role="group" aria-label="Attendance today for ${esc(s.name)}">${MARKS.map(([k, t]) => `<button type="button" class="mk mk-${k} ${s.today === k ? 'on' : ''}" data-mk="${k}" data-s="${s.id}" title="${t}" aria-pressed="${s.today === k}">${k === 'H' ? '½' : k}</button>`).join('')}</div>`;
-  el.innerHTML = head('Staff & Salary', '<button class="btn primary" id="add">+ Add staff</button>') + `
+  el.innerHTML = head('Staff & Salary', '<a class="btn" href="#/statutory">PF / ESI return</a><button class="btn primary" id="add">+ Add staff</button>') + `
     ${live.length ? `<div class="panel"><div class="row"><h3 style="margin:0">Aaj ki haazri <span class="muted">· ${fdate(d.today)}</span></h3><span class="spacer"></span><button class="btn sm" id="allp">Mark all present</button></div>
       <div class="att">${live.map((s) => `<div class="att-row"><span><b>${esc(s.name)}</b>${s.title ? ` <span class="muted">${esc(s.title)}</span>` : ''}</span>${markBtns(s)}</div>`).join('')}</div>
       <p class="muted small" style="margin:8px 0 0">P present · A absent · ½ half day · L paid leave · O week off. Tap again to change.</p></div>` : ''}
@@ -2874,7 +2878,8 @@ route(/^staff\/(\d+)$/, async (el, m, q) => {
     { k: 'paid_from', label: 'Paid from', type: 'select', options: cash }, { k: 'date', label: 'Date', type: 'date', value: ME.today },
     { k: 'bonus', label: 'Bonus / incentive (₹)', type: 'number', more: true }, { k: 'other_cut', label: 'Other deduction (₹, e.g. damage)', type: 'number', more: true },
     { k: 'notes', label: 'Note', more: true }],
-  async (v) => { const r = await POST(`/api/staff/${s.id}/salary`, { ...v, month }); dirty('accounts'); toast(`Paid ${inr0(r.net)}`); go('payslip/' + r.id); }, { submit: 'Pay salary' });
+  async (v) => { const r = await POST(`/api/staff/${s.id}/salary`, { ...v, month }); dirty('accounts'); toast(`Paid ${inr0(r.net)}`); go('payslip/' + r.id); },
+  { submit: 'Pay salary', intro: s.pf || s.esi || s.pt ? `<p class="muted">${[s.pf && 'PF', s.esi && 'ESI', s.pt && 'professional tax'].filter(Boolean).join(', ')} will be cut as set for ${esc(s.name)}; the payslip shows each.</p>` : '' });
   if ($('#pay')) $('#pay').onclick = payNow;
   if (q.get('pay') && $('#pay')) payNow();
   const order = ['', 'P', 'A', 'H', 'L', 'O'];
@@ -2896,9 +2901,9 @@ route(/^staff\/(\d+)$/, async (el, m, q) => {
   };
 });
 route(/^payslip\/(\d+)$/, async (el, m) => {
-  const p = await GET('/api/staff/payslip/' + m[1]), dt = p.detail, o = p.org;
+  const p = await GET('/api/staff/payslip/' + m[1]), dt = p.detail, o = p.org, st = dt.stat;
   const line = (k, v, cls = '') => `<tr class="${cls}"><td>${k}</td><td class="num">${v}</td></tr>`;
-  const text = `*${o.name}* - Salary slip ${monthName(p.month)}\n${p.name}\nDays paid: ${qtyf(dt.payable || 0)} of ${dt.days || ''}\nEarned: ${inr0(p.gross)}${p.bonus ? `\nBonus: ${inr0(p.bonus)}` : ''}${p.advance_cut ? `\nAdvance cut: -${inr0(p.advance_cut)}` : ''}${p.other_cut ? `\nOther deduction: -${inr0(p.other_cut)}` : ''}\n*Paid: ${inr0(p.net)}* on ${fdate(p.date)}${dt.advance_left ? `\nAdvance still due: ${inr0(dt.advance_left)}` : ''}`;
+  const text = `*${o.name}* - Salary slip ${monthName(p.month)}\n${p.name}\nDays paid: ${qtyf(dt.payable || 0)} of ${dt.days || ''}\nEarned: ${inr0(p.gross)}${p.bonus ? `\nBonus: ${inr0(p.bonus)}` : ''}${p.advance_cut ? `\nAdvance cut: -${inr0(p.advance_cut)}` : ''}${p.other_cut ? `\nOther deduction: -${inr0(p.other_cut)}` : ''}${st && st.pf ? `\nPF: -${inr0(st.pf)}` : ''}${st && st.esi ? `\nESI: -${inr0(st.esi)}` : ''}${st && st.pt ? `\nProfessional tax: -${inr0(st.pt)}` : ''}\n*Paid: ${inr0(p.net)}* on ${fdate(p.date)}${dt.advance_left ? `\nAdvance still due: ${inr0(dt.advance_left)}` : ''}`;
   const phone = String(p.phone || '').replace(/\D/g, '').replace(/^0/, '');
   el.innerHTML = head(`Payslip ${esc(p.name)}`, `${p.status === 'cancelled' ? badge('cancelled') : ''}<a class="btn got" target="_blank" rel="noopener" href="https://wa.me/${phone ? (phone.length === 10 ? '91' + phone : phone) : ''}?text=${encodeURIComponent(text)}">WhatsApp</a><button class="btn primary" data-act="print">Print</button>`) + `
     <div class="panel slip"><div class="row"><div><h2 style="margin:0">${esc(o.name)}</h2><div class="muted">${esc(o.address || '')}${o.phone ? ' · ' + esc(o.phone) : ''}</div></div><span class="spacer"></span><div style="text-align:right"><b>Salary slip</b><div>${esc(monthName(p.month))}</div></div></div>
@@ -2910,10 +2915,60 @@ route(/^payslip\/(\d+)$/, async (el, m) => {
         ${line('Salary for the days', inr(dt.base))}${dt.ot_pay ? line(`Overtime (${dt.ot_hours} h)`, inr(dt.ot_pay)) : ''}
         ${p.gross !== dt.earned ? line('Salary (as paid)', inr(p.gross)) : ''}${p.bonus ? line('Bonus / incentive', inr(p.bonus)) : ''}
         ${p.advance_cut ? line('Advance cut', '−' + inr(p.advance_cut)) : ''}${p.other_cut ? line('Other deduction', '−' + inr(p.other_cut)) : ''}
+        ${st && st.pf ? line(`PF (12% of ${inr0(st.epf_wages)})${st.uan ? ` · UAN ${esc(st.uan)}` : ''}`, '−' + inr(st.pf)) : ''}${st && st.esi ? line(`ESI (0.75%)${st.esi_no ? ` · IP ${esc(st.esi_no)}` : ''}`, '−' + inr(st.esi)) : ''}
+        ${st && st.pt ? line('Professional tax', '−' + inr(st.pt)) : ''}
         ${line('<b>Net paid</b>', `<b>${inr(p.net)}</b>`, 'grand')}${dt.advance_left ? line('Advance still due', inr(dt.advance_left)) : ''}
       </tbody></table>
+      ${st && st.employer ? `<p class="muted small">Employer also pays ${inr(st.employer)} (PF ${inr(st.eps + st.er_epf)}, EDLI + admin ${inr(st.edli + st.admin)}${st.er_esi ? `, ESI ${inr(st.er_esi)}` : ''}) to the government.</p>` : ''}
       <p class="muted small" style="margin-top:16px">${esc(words(p.net))}</p>
       <div class="row" style="margin-top:40px"><span class="muted">Employee's signature</span><span class="spacer"></span><span class="muted">For ${esc(o.name)}</span></div></div>`;
+});
+
+/* PF / ESI / professional tax for a month: who paid what, the EPFO ECR file, the ESI upload sheet, challans paid */
+route(/^statutory$/, async (el, m, q) => {
+  const month = q.get('month') || shiftMonth(ME.today.slice(0, 7), -1), d = await GET('/api/payroll/statutory?month=' + month), T = d.totals;
+  const rs = d.rates;
+  el.innerHTML = head('PF / ESI Return', `<a class="btn" href="#/staff">Staff</a>${ME.can.settings ? '<button class="btn" id="rates">Rates</button>' : ''}`) + `
+    <div class="panel"><div class="row"><a class="btn sm" href="#/statutory?month=${shiftMonth(month, -1)}">&lsaquo;</a><b style="margin:0 10px">${esc(monthName(month))}</b>
+      <a class="btn sm" href="#/statutory?month=${shiftMonth(month, 1)}">&rsaquo;</a><span class="spacer"></span><span class="muted small">Pay by ${fdate(d.due_by)} · PF ${rs.pf_rate}% on wages up to ${inr0(rs.pf_ceiling)} · ESI ${rs.esi_emp}% + ${rs.esi_er}% up to ${inr0(rs.esi_limit)}</span></div></div>
+    <div class="kpis"><div class="kpi"><div class="l">PF to deposit (EPFO)</div><div class="v">${inr0(T.pf)}</div><div class="s">${T.pf_paid ? `paid ${inr0(T.pf_paid)}` : 'not paid yet'}</div></div>
+      <div class="kpi"><div class="l">ESI to deposit</div><div class="v">${inr0(T.esi)}</div><div class="s">${T.esi_paid ? `paid ${inr0(T.esi_paid)}` : 'not paid yet'}</div></div>
+      <div class="kpi"><div class="l">Professional tax</div><div class="v">${inr0(T.pt)}</div><div class="s">${T.pt_paid ? `paid ${inr0(T.pt_paid)}` : 'not paid yet'}</div></div></div>
+    ${d.missing_uan.length ? `<div class="panel warnbox">Add the UAN of ${d.missing_uan.map(esc).join(', ')} (Staff → Edit) to download the ECR.</div>` : ''}
+    ${d.missing_esi.length ? `<div class="panel warnbox">Add the ESI IP number of ${d.missing_esi.map(esc).join(', ')}.</div>` : ''}
+    <div class="panel"><div class="row" style="flex-wrap:wrap;gap:6px">
+      <button class="btn" id="ecr" ${T.pf ? '' : 'disabled'}>Download ECR (EPFO)</button><button class="btn" id="esif" ${T.esi ? '' : 'disabled'}>Download ESI file</button>
+      ${['pf', 'esi', 'pt'].map((k) => `<button class="btn ${T[k] > T[k + '_paid'] ? 'primary' : ''}" data-chl="${k}" ${T[k] ? '' : 'disabled'}>Pay ${k === 'pf' ? 'PF' : k === 'esi' ? 'ESI' : 'PT'} challan</button>`).join('')}</div>
+      <p class="muted small" style="margin:8px 0 0">Upload the ECR on the EPFO employer portal (Payments → ECR upload) and the ESI file on the ESIC portal; then record the challan here so the books show it paid.</p></div>
+    <div class="panel flush">${table([{ h: 'Staff', f: (r) => `<b>${esc(r.name)}</b><div class="muted small">${r.uan ? 'UAN ' + esc(r.uan) : ''}${r.esi_no ? ' · IP ' + esc(r.esi_no) : ''}</div>` },
+      { h: 'Gross', num: 1, f: (r) => inr0(r.gross_wages) }, { h: 'PF wages', num: 1, f: (r) => inr0(r.epf_wages), cls: 'hide-sm' },
+      { h: 'PF (emp + empr)', num: 1, f: (r) => `${inr0(r.pf)} + ${inr0(r.eps + r.er_epf)}` }, { h: 'ESI (emp + empr)', num: 1, f: (r) => (r.esi || r.er_esi ? `${inr0(r.esi)} + ${inr0(r.er_esi)}` : '—') },
+      { h: 'PT', num: 1, f: (r) => (r.pt ? inr0(r.pt) : '—'), cls: 'hide-sm' }, { h: 'NCP days', num: 1, k: 'ncp', cls: 'hide-sm' }], d.rows,
+      { empty: 'No salary with PF, ESI or professional tax paid for this month. Tick PF / ESI on a staff member (Staff → Edit → More details), then pay the salary.' })}</div>
+    ${d.challans.length ? `<div class="panel flush"><div style="padding:14px 16px 0"><h3>Challans paid</h3></div>${table([{ h: 'Date', f: (x) => fdate(x.date) }, { h: 'For', f: (x) => esc(x.kind.toUpperCase()) },
+      { h: 'Ref / CRN', f: (x) => esc(x.ref || '') }, { h: 'Amount', num: 1, f: (x) => (x.status === 'cancelled' ? `<s>${inr0(x.amount)}</s>` : inr0(x.amount)) },
+      { h: '', f: (x) => (x.status === 'done' && !limits().no_cancel ? `<button class="btn sm danger" data-chx="${x.id}">Cancel</button>` : x.status === 'cancelled' ? badge('cancelled') : '') }], d.challans)}</div>` : ''}`;
+  if ($('#ecr')) $('#ecr').onclick = () => fileDownload('/api/payroll/ecr?month=' + month);
+  if ($('#esif')) $('#esif').onclick = () => fileDownload('/api/payroll/esi?month=' + month);
+  const cash = await cashOpts();
+  $$('[data-chl]', el).forEach((b) => b.onclick = () => {
+    const k = b.dataset.chl, due = Math.max(0, T[k] - T[k + '_paid']);
+    modal(`Pay ${k === 'pf' ? 'PF (EPFO)' : k === 'esi' ? 'ESI' : 'professional tax'}: ${monthName(month)}`, [{ k: 'amount', label: 'Amount (₹)', type: 'number', value: due || '', required: true },
+      { k: 'paid_from', label: 'Paid from', type: 'select', options: cash }, { k: 'date', label: 'Date', type: 'date', value: ME.today }, { k: 'ref', label: 'Challan / CRN / TRRN number' }],
+    async (v) => { await POST('/api/payroll/challan', { ...v, kind: k, month }); dirty('accounts'); toast('Challan saved'); render(); });
+  });
+  $$('[data-chx]', el).forEach((b) => b.onclick = async () => {
+    if (!confirm('Cancel this challan? Its entry in the books is reversed.')) return;
+    try { await POST(`/api/payroll/challan/${b.dataset.chx}/cancel`); dirty('accounts'); toast('Cancelled'); render(); } catch (e) { toast(e.message, 'err'); }
+  });
+  if ($('#rates')) $('#rates').onclick = () => modal('PF / ESI rates', [
+    { k: 'pf_ceiling', label: 'PF wage ceiling (₹ a month)', type: 'number', value: rs.pf_ceiling }, { k: 'pf_rate', label: 'PF rate % (employee and employer each)', type: 'number', value: rs.pf_rate },
+    { k: 'eps_ceiling', label: 'EPS (pension) wage ceiling (₹)', type: 'number', value: rs.eps_ceiling }, { k: 'eps_rate', label: 'EPS % out of the employer share', type: 'number', value: rs.eps_rate },
+    { k: 'edli_rate', label: 'EDLI %', type: 'number', value: rs.edli_rate }, { k: 'admin_rate', label: 'PF admin charges %', type: 'number', value: rs.admin_rate },
+    { k: 'esi_limit', label: 'ESI applies up to gross (₹ a month)', type: 'number', value: rs.esi_limit }, { k: 'esi_emp', label: 'ESI employee %', type: 'number', value: rs.esi_emp },
+    { k: 'esi_er', label: 'ESI employer %', type: 'number', value: rs.esi_er }],
+  async (v) => { const r = await api('PUT', '/api/settings/setup', { payroll: v }); ME.org.setup = r.setup; toast('Rates saved'); render(); },
+  { intro: '<p class="muted">Set as per the EPF Scheme, 2026 (PF ceiling ₹25,000 from 17 Sep 2026) and ESIC. Check any change with your CA. New salaries use these rates; paid ones keep theirs.</p>' });
 });
 
 /* ======================================================================= offline: what still works, and the outbox */
@@ -5953,12 +6008,66 @@ route(/^shiplabel\/(\d+)$/, async (el, m, q) => {
     ${P.ship_note ? `<div class="ship-note">${esc(P.ship_note)}</div>` : ''}
     <div class="ship-from"><div class="muted small">FROM</div>${esc(from).replace(/\n/g, '<br>')}</div></div>`;
   const desk = onMenu('dispatch') && seen('dispatch');
-  el.innerHTML = head(`Shipping label · ${esc(d.number)}`, `<a class="btn" href="#/${desk && q.get('packed') ? 'dispatch?tab=packed' : 'doc/' + d.id}">Back</a>${ME.can.settings ? '<a class="btn" href="#/settings/print">Label settings</a>' : ''}<button class="btn primary" data-act="print">Print</button>`) +
+  let srf = {}; try { srf = JSON.parse(d.ship_ref || '{}') || {}; } catch (e) { srf = {}; }
+  el.innerHTML = head(`Shipping label · ${esc(d.number)}`, `<a class="btn" href="#/${desk && q.get('packed') ? 'dispatch?tab=packed' : 'doc/' + d.id}">Back</a>${ME.can.settings ? '<a class="btn" href="#/settings/print">Label settings</a>' : ''}${srf.label_url ? `<a class="btn" target="_blank" rel="noopener" href="${esc(srf.label_url)}">Courier's label (PDF)</a>` : ''}<button class="btn primary" data-act="print">Print</button>`) +
     `${q.get('packed') ? `<div class="panel okbox no-print"><b>Packed ✓ ${esc(d.number)} saved, stock reduced.</b> Print this label and stick it on the parcel.
       <div class="row" style="margin-top:8px">${desk ? '<a class="btn sm primary" href="#/dispatch?tab=packed">Next: hand to courier</a><a class="btn sm" href="#/dispatch">Pack the next order</a>' : ''}<a class="btn sm" href="#/doc/${d.id}">Open delivery note</a></div></div>` : ''}
     ${to ? '' : `<div class="panel no-print"><p class="neg">This customer has no address yet. ${p.id ? `<a href="#/party/${p.id}">Add it on the customer’s page</a>` : 'Add it on the customer’s page'} so it prints here.</p></div>`}
     <div class="doc-paper ship-sheet">${one}</div>`;
 });
+
+/* Book a packed parcel with a courier through Shiprocket: weight and size, the couriers that reach the pincode with
+   rate and days, then Book: AWB, pickup and the courier's label come back (src/courier.js) */
+function bookCourier(r, W) {
+  const f = modal(`Book courier: ${r.number}`, [
+    { k: 'weight', label: 'Weight (kg)', type: 'number', value: lsGet('st_parcel_w') || '0.5', required: true },
+    { k: 'length', label: 'Length (cm)', type: 'number', value: lsGet('st_parcel_l') || 10, more: true }, { k: 'breadth', label: 'Breadth (cm)', type: 'number', value: lsGet('st_parcel_b') || 10, more: true },
+    { k: 'height', label: 'Height (cm)', type: 'number', value: lsGet('st_parcel_h') || 5, more: true }],
+  async (v) => {
+    const sel = f.querySelector('[name=cid]:checked');
+    const x = await POST('/api/courier/book', { dn_id: r.id, ...v, courier_id: sel ? +sel.value : 0 });
+    lsSet('st_parcel_w', v.weight); lsSet('st_parcel_l', v.length); lsSet('st_parcel_b', v.breadth); lsSet('st_parcel_h', v.height);
+    toast(`Booked with ${x.courier}: ${x.awb}`);
+    if (x.label_url) window.open(x.label_url, '_blank', 'noopener');
+    if (r.phone && confirm(`Send ${r.party} the tracking number on WhatsApp now?`)) window.open(waTo(r.phone, fillMsg(W.msg_ship, { ...r, courier: x.courier, awb: x.awb })), '_blank', 'noopener');
+    render();
+  }, { submit: 'Book', intro: `<p class="muted">To <b>${esc(r.party)}</b>${r.address ? ', ' + esc(r.address) : ''} · ${r.pay_mode === 'prepaid' ? 'Prepaid' : 'COD ' + inr(r.total)}. Shiprocket picks the best courier unless you choose one.</p>` });
+  f.querySelector('.form').insertAdjacentHTML('afterend', '<div class="row" style="margin:8px 0"><button type="button" class="btn sm" id="getrates">See courier rates</button></div><div id="rates" class="rates"></div>');
+  f.querySelector('#getrates').onclick = async (e) => {
+    const box = f.querySelector('#rates'), w = f.elements.weight.value;
+    e.target.disabled = true; box.innerHTML = '<p class="muted">Asking Shiprocket…</p>';
+    try {
+      const x = await GET(`/api/courier/rates/${r.id}?weight=${encodeURIComponent(w)}`);
+      box.innerHTML = x.couriers.length ? x.couriers.map((c, i) => `<label class="check rate-row"><input type="radio" name="cid" value="${c.id}" ${i === 0 ? 'checked' : ''}> <span><b>${esc(c.name)}</b> · ${inr(c.rate)}${c.days ? ` · ${esc(String(c.days))} days` : ''}${c.cod_charges ? ` <span class="muted small">(COD charge ${inr(c.cod_charges)})</span>` : ''}</span></label>`).join('')
+        : '<p class="neg">No courier reaches this pincode for this weight.</p>';
+    } catch (er) { box.innerHTML = `<p class="neg">${esc(er.message)}</p>`; }
+    e.target.disabled = false;
+  };
+}
+/* Settings → Orders & dispatch → Courier booking: connect a Shiprocket API user, pick the pickup address */
+async function courierPanel(el) {
+  const box = $('#crp', el); if (!box) return;
+  let C = await GET('/api/courier').catch(() => ({ connected: false }));
+  if (C.connected && ME.can.settings) C = await GET('/api/courier/pickups').catch(() => C);
+  box.innerHTML = `<h2>Courier booking (Shiprocket)</h2>
+    <p class="muted">One Shiprocket account books Delhivery, Blue Dart, DTDC, Ekart, Xpressbees, Shadowfax and more, straight from the Dispatch Desk: rates, AWB, pickup and the courier's label, then tracking.</p>
+    ${C.connected ? `<p>Connected${C.email ? ` as <b>${esc(C.email)}</b>` : ''}. Parcels leave from <b>${esc(C.pickup || 'not chosen')}</b>${C.pickup_pin ? ` (${esc(C.pickup_pin)})` : ''}.</p>
+      ${ME.can.settings ? `<div class="row" style="flex-wrap:wrap;gap:6px">${(C.pickups || []).length ? `<select id="crpick" aria-label="Pickup address">${C.pickups.map((p) => `<option value="${esc(p.name)}" ${p.name === C.pickup ? 'selected' : ''}>${esc(p.name)} · ${esc(p.city)} ${esc(p.pin)}</option>`).join('')}</select><button class="btn sm" id="crpsave">Use this pickup address</button>` : ''}
+        <button class="btn sm danger" id="crdis">Disconnect</button></div>` : ''}`
+    : ME.can.settings ? `<ol class="small"><li>In Shiprocket: Settings → API → Configure → <b>Create an API user</b> (an email of its own).</li><li>Type that email and its password here and tap Connect.</li></ol>
+      <form class="form" id="crform"><label class="f">API user email<input name="email" type="email" required autocomplete="off"></label><label class="f">Password<input name="password" type="password" required autocomplete="new-password"></label>
+      <label class="f">&nbsp;<button class="btn primary">Connect</button></label></form><p class="muted small">The password is kept locked (encrypted) on the server and never shown again.</p>`
+    : '<p class="muted">The owner or an admin connects it.</p>'}`;
+  const form = $('#crform', box);
+  if (form) form.onsubmit = async (e) => {
+    e.preventDefault();
+    const b = form.querySelector('button'); b.disabled = true;
+    try { await POST('/api/courier/connect', { email: form.email.value.trim(), password: form.password.value }); toast('Shiprocket connected'); courierPanel(el); }
+    catch (er) { toast(er.message, 'err'); b.disabled = false; }
+  };
+  if ($('#crpsave', box)) $('#crpsave', box).onclick = async () => { try { await api('PUT', '/api/courier', { pickup: $('#crpick', box).value }); toast('Pickup address saved'); courierPanel(el); } catch (er) { toast(er.message, 'err'); } };
+  if ($('#crdis', box)) $('#crdis', box).onclick = async () => { if (!confirm('Disconnect Shiprocket? Booked parcels keep their tracking numbers.')) return; await api('DELETE', '/api/courier'); toast('Disconnected'); courierPanel(el); };
+}
 
 /* ======================================================================= business type & menu (src/setup.js)
    One page for the owner: what kind of business (a pack sets the tools, menu, dashboard and new-item settings), then each
@@ -6132,7 +6241,7 @@ const fillMsg = (tpl, r) => String(tpl || '').replace(/\{(\w+)\}/g, (m0, k) => {
 const waTo = (phone, text) => `https://wa.me/${phone ? waNum(phone) : ''}?text=${encodeURIComponent(text)}`;
 const DESK_TABS = [['confirm', 'To confirm'], ['pack', 'To pack'], ['packed', 'Packed'], ['shipped', 'On the way'], ['done', 'Done (30 days)']];
 route(/^dispatch$/, async (el, m, q) => {
-  const B = await GET('/api/dispatch'), W = B.workflow;
+  const [B, CR] = await Promise.all([GET('/api/dispatch'), GET('/api/courier').catch(() => ({ connected: false }))]), W = B.workflow;
   ME.org.workflow = W;
   const tabs = DESK_TABS.filter(([k]) => k !== 'confirm' || W.confirm_cod || B.counts.confirm);
   let tab = q.get('tab') && tabs.some(([k]) => k === q.get('tab')) ? q.get('tab') : (tabs.find(([k]) => B.counts[k] && k !== 'done') || tabs.find(([k]) => k === 'pack'))[0];
@@ -6147,10 +6256,11 @@ route(/^dispatch$/, async (el, m, q) => {
     const acts = {
       confirm: `<a class="btn sm got" target="_blank" rel="noopener" href="${waTo(r.phone, fillMsg(W.msg_confirm, r))}">WhatsApp to confirm</a><button class="btn sm primary" data-ok="${r.id}">Customer confirmed ✓</button>`,
       pack: `${canPack ? `<a class="btn sm primary" href="#/pack/${r.id}">Pack &amp; check (scan)</a>` : ''}<a class="btn sm" href="#/picklist/${r.id}">Pick list</a><a class="btn sm" href="#/shiplabel/${r.id}">Label</a>`,
-      packed: `<div class="dk-ship"><select data-cr="${r.id}" aria-label="Courier">${courierOpts(r.courier)}</select><input data-awb="${r.id}" placeholder="Tracking / AWB no." value="${esc(r.awb)}" autocomplete="off">
+      packed: `${CR.connected ? `<button class="btn sm primary" data-book="${r.id}">Book courier (Shiprocket)</button><span class="muted small">or hand it yourself:</span>` : ''}<div class="dk-ship"><select data-cr="${r.id}" aria-label="Courier">${courierOpts(r.courier)}</select><input data-awb="${r.id}" placeholder="Tracking / AWB no." value="${esc(r.awb)}" autocomplete="off">
         <button class="btn sm primary" data-ship="${r.id}">Shipped</button></div><a class="btn sm" href="#/shiplabel/${r.id}">Label</a>${r.invoice ? `<span class="muted small">Invoiced ${esc(r.invoice)}</span>` : ''}`,
-      shipped: `${trackLink(r) ? `<a class="btn sm" target="_blank" rel="noopener" href="${esc(trackLink(r))}">Track</a>` : ''}<a class="btn sm got" target="_blank" rel="noopener" href="${waTo(r.phone, fillMsg(W.msg_ship, r))}">Send tracking on WhatsApp</a>
-        <button class="btn sm primary" data-dl="${r.id}">Delivered</button><button class="btn sm danger" data-rto="${r.id}">Returned (RTO)</button><div class="muted small" style="flex-basis:100%">${shipText(r)}</div>`,
+      shipped: `${r.sr && r.sr.track_url ? `<a class="btn sm" target="_blank" rel="noopener" href="${esc(r.sr.track_url)}">Track</a>` : trackLink(r) ? `<a class="btn sm" target="_blank" rel="noopener" href="${esc(trackLink(r))}">Track</a>` : ''}
+        ${r.sr && r.sr.label_url ? `<a class="btn sm" target="_blank" rel="noopener" href="${esc(r.sr.label_url)}">Courier label</a>` : ''}${r.sr && CR.connected ? `<button class="btn sm" data-trk="${r.id}">Refresh tracking</button>` : ''}<a class="btn sm got" target="_blank" rel="noopener" href="${waTo(r.phone, fillMsg(W.msg_ship, r))}">Send tracking on WhatsApp</a>
+        <button class="btn sm primary" data-dl="${r.id}">Delivered</button><button class="btn sm danger" data-rto="${r.id}">Returned (RTO)</button><div class="muted small" style="flex-basis:100%">${shipText(r)}${r.sr && r.sr.status ? ` · courier says: <b>${esc(r.sr.status)}</b>` : ''}</div>`,
       done: `<span class="muted small">${shipText(r)} · ${fdate((r.ship_at || '').slice(0, 10))}</span>`,
     }[tab];
     return `<div class="dk-card" data-find="${esc([r.party, r.phone, r.number, r.order_no, r.awb, r.city].join(' ').toLowerCase())}">${head2}<div class="dk-acts">${acts}</div></div>`;
@@ -6158,7 +6268,7 @@ route(/^dispatch$/, async (el, m, q) => {
   const list = B[tab];
   const empty = { confirm: 'No order is waiting for the customer’s confirmation.', pack: 'Nothing to pack. New orders show up here.', packed: 'No packed parcel is waiting for the courier.',
     shipped: 'No parcel is on the way.', done: 'Nothing delivered or returned in the last 30 days.' }[tab];
-  el.innerHTML = head('Dispatch Desk', `${ME.can.sales ? '<a class="btn primary" href="#/new/SO">+ New order</a>' : ''}${tab === 'pack' && list.length > 1 ? `<a class="btn" href="#/wave?ids=${list.map((r) => r.id).join(',')}">One pick list for all</a>` : ''}${ME.can.settings ? '<a class="btn" href="#/settings/workflow">Set up</a>' : ''}`) + `
+  el.innerHTML = head('Dispatch Desk', `${ME.can.sales ? '<a class="btn primary" href="#/new/SO">+ New order</a>' : ''}${tab === 'pack' && list.length > 1 ? `<a class="btn" href="#/wave?ids=${list.map((r) => r.id).join(',')}">One pick list for all</a>` : ''}${CR.connected && B.shipped.some((r) => r.sr) ? '<button class="btn" id="dksync">Refresh tracking</button>' : ''}${ME.can.settings ? '<a class="btn" href="#/settings/workflow">Set up</a>' : ''}`) + `
     <div class="seg seg-wrap dk-tabs">${tabs.map(([k, t]) => `<button type="button" data-tab="${k}" class="${k === tab ? 'on' : ''}">${t}${k !== 'done' ? ` <span class="badge">${B.counts[k]}</span>` : ''}</button>`).join('')}</div>
     ${list.length > 5 ? '<div class="panel"><input id="dkq" placeholder="Find by name, phone, order or tracking no…" autocomplete="off"></div>' : ''}
     ${!ordersOn() && ME.can.settings ? '<div class="panel warnbox">Orders &amp; dispatch is not switched on, so Sales Orders stay hidden from the menu in Simple mode. <a href="#/settings/workflow">Set it up (1 minute)</a></div>' : ''}
@@ -6179,6 +6289,17 @@ route(/^dispatch$/, async (el, m, q) => {
       toast('Marked shipped'); render();
     } catch (e) { toast(e.message, 'err'); }
   });
+  $$('[data-book]', el).forEach((b) => b.onclick = () => bookCourier(row(b.dataset.book), W));
+  $$('[data-trk]', el).forEach((b) => b.onclick = async () => {
+    b.disabled = true;
+    try { const x = await POST('/api/courier/track/' + b.dataset.trk); toast(x.delivered ? 'Delivered' : `Courier says: ${x.status}${x.rto ? ' (coming back: mark Returned once it reaches you)' : ''}`); render(); }
+    catch (e) { toast(e.message, 'err'); b.disabled = false; }
+  });
+  if ($('#dksync')) $('#dksync').onclick = async (e) => {
+    e.target.disabled = true;
+    try { const x = await POST('/api/courier/sync'); toast(`${x.checked} checked: ${x.delivered} delivered${x.rto ? `, ${x.rto} coming back` : ''}${x.failed ? `, ${x.failed} could not be read` : ''}`); render(); }
+    catch (er) { toast(er.message, 'err'); e.target.disabled = false; }
+  };
   $$('[data-rto]', el).forEach((b) => b.onclick = () => {
     const r = row(b.dataset.rto);
     modal(`Returned by courier: ${r.number}`, [{ k: 'note', label: 'Reason (optional)', placeholder: 'e.g. customer refused, address not found', wide: true },
@@ -6240,8 +6361,10 @@ route(/^settings\/workflow$/, async (el, m, q) => {
       <p>Item labels with QR or barcode: open an item → <b>Labels</b>, or a purchase bill → More → <b>Print item labels</b>.</p>
       <div class="row sticky-act"><span class="spacer"></span><button class="btn primary" ${can2 ? '' : 'disabled'}>Save</button></div>
     </form>
+    <div class="panel" id="crp"></div>
     <div class="panel"><h2>Ready for orders?</h2><ol class="gs">${steps.map(([ok, t, h], i) => `<li class="${ok ? 'done' : ''}"><span class="tick">${ok ? '&#10003;' : i + 1}</span><div><b>${t}</b></div>${h && !ok ? `<a class="btn sm" href="#/${h}">Open</a>` : ''}</li>`).join('')}</ol>
       <div class="row">${ME.can.sales ? '<a class="btn primary" href="#/new/SO">Enter the first order</a>' : ''}<a class="btn" href="#/dispatch">Open Dispatch Desk</a></div></div>`;
+  courierPanel(el);
   const f = $('#wf');
   const preview = () => { $('#pv1').textContent = fillMsg(f.elements.msg_confirm.value, sample); $('#pv2').textContent = fillMsg(f.elements.msg_ship.value, { ...sample, link: '' }); };
   f.addEventListener('input', preview); preview();

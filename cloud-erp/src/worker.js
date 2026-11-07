@@ -27,8 +27,9 @@ import { listClaims, claimDetail, saveClaim, claimReceipt, closeClaim, cancelCla
 import { dispatchBoard, dispatchStep, workflowOf, cleanWorkflow } from './dispatch.js';
 import { setupOf, cleanSetup } from './setup.js';
 import { listJobs, jobDetail, createJob, updateJob } from './jobs.js';
+import { courierStatus, courierConnect, courierPickup, courierPickups, courierDisconnect, courierRates, courierBook, courierTrack, courierSync } from './courier.js';
 import { botReady, botLink, verifyWebhook, receiveWebhook, setBot, inbox, thread, reply as waReply, markDone } from './wabot.js';
-import { listStaff, saveStaff, markAttendance, staffDetail, giveAdvance, paySalary, cancelStaffTxn, payslip, todayStaffQueries } from './payroll.js';
+import { listStaff, saveStaff, markAttendance, staffDetail, giveAdvance, paySalary, cancelStaffTxn, payslip, todayStaffQueries, statutoryMonth, ecrFile, esiFile, payChallan as payStatChallan, cancelChallan as cancelStatChallan, ratesOf } from './payroll.js';
 import * as rep from './reports.js';
 import { PLANS, planOut, planOf, usage, checkCount, countError, seatBlocked, seatError, requireFeature, extendPlan, adminKey, trialUntil, hasFeature } from './saas.js';
 import { secure } from './headers.js';
@@ -348,7 +349,8 @@ router.add('GET', '/api/dispatch', async (c) => json(await dispatchBoard(c)));
 /* Settings → Business type & menu (src/setup.js) */
 router.add('PUT', '/api/settings/setup', async (c) => {
   requireCan(c.user, 'settings');
-  const S = cleanSetup(c.body);
+  // a partial update (just the payroll rates, or just the menu) keeps the rest
+  const cur = setupOf(c.org), S = cleanSetup({ ...cur, ...c.body, payroll: c.body.payroll === undefined ? cur.payroll : c.body.payroll });
   const on = Object.entries(S.modules).filter(([, v]) => v).map(([k]) => k).join(','), off = Object.entries(S.modules).filter(([, v]) => !v).map(([k]) => k).join(',');
   await c.db.batch([c.db.prepare(`UPDATE orgs SET setup = ? WHERE id = ?`).bind(JSON.stringify(S), c.org.id),
     auditStatement(c, 'business type & menu', `${S.biz || 'no type'}; on: ${on || '-'}; off: ${off || '-'}`.slice(0, 300))]);
@@ -360,6 +362,16 @@ router.add('GET', '/api/jobs/:id', async (c) => json(await jobDetail(c, +c.param
 router.add('POST', '/api/jobs', async (c) => json(await createJob(c, c.body)));
 router.add('PUT', '/api/jobs/:id', async (c) => json(await updateJob(c, +c.params.id, c.body)));
 router.add('PUT', '/api/dispatch/:id', async (c) => json(await dispatchStep(c, +c.params.id, c.body)));
+/* courier booking through Shiprocket (src/courier.js) */
+router.add('GET', '/api/courier', async (c) => json(await courierStatus(c)));
+router.add('POST', '/api/courier/connect', async (c) => json(await courierConnect(c, c.body)));
+router.add('GET', '/api/courier/pickups', async (c) => json(await courierPickups(c)));
+router.add('PUT', '/api/courier', async (c) => json(await courierPickup(c, c.body)));
+router.add('DELETE', '/api/courier', async (c) => json(await courierDisconnect(c)));
+router.add('GET', '/api/courier/rates/:id', async (c) => json(await courierRates(c, +c.params.id, Object.fromEntries(c.url.searchParams))));
+router.add('POST', '/api/courier/book', async (c) => json(await courierBook(c, c.body)));
+router.add('POST', '/api/courier/track/:id', async (c) => json(await courierTrack(c, +c.params.id)));
+router.add('POST', '/api/courier/sync', async (c) => json(await courierSync(c)));
 router.add('PUT', '/api/settings/print', async (c) => {
   requireCan(c.user, 'settings');
   const P = cleanPrint(c.body, printOf(c.org));
@@ -734,6 +746,15 @@ router.add('POST', '/api/staff/:id/advance', async (c) => json(await giveAdvance
 router.add('POST', '/api/staff/:id/salary', async (c) => json(await paySalary(c, +c.params.id, c.body)));
 router.add('POST', '/api/staff/txns/:id/cancel', async (c) => json(await cancelStaffTxn(c, +c.params.id)));
 router.add('GET', '/api/staff/payslip/:id', async (c) => json(await payslip(c, +c.params.id)));
+/* PF / ESI / professional tax: the month's return, the EPFO ECR text, the ESI upload sheet, challans paid */
+router.add('GET', '/api/payroll/statutory', async (c) => json(await statutoryMonth(c, c.url.searchParams.get('month'))));
+router.add('GET', '/api/payroll/ecr', async (c) => new Response(await ecrFile(c, c.url.searchParams.get('month')), {
+  headers: { 'Content-Type': 'text/plain; charset=utf-8', 'Content-Disposition': `attachment; filename="ECR-${(c.url.searchParams.get('month') || '').replace(/[^0-9-]/g, '')}.txt"`, 'Cache-Control': 'no-store' } }));
+router.add('GET', '/api/payroll/esi', async (c) => new Response(await esiFile(c, c.url.searchParams.get('month')), {
+  headers: { 'Content-Type': 'text/csv; charset=utf-8', 'Content-Disposition': `attachment; filename="ESI-${(c.url.searchParams.get('month') || '').replace(/[^0-9-]/g, '')}.csv"`, 'Cache-Control': 'no-store' } }));
+router.add('POST', '/api/payroll/challan', async (c) => json(await payStatChallan(c, c.body)));
+router.add('POST', '/api/payroll/challan/:id/cancel', async (c) => json(await cancelStatChallan(c, +c.params.id)));
+router.add('GET', '/api/payroll/rates', async (c) => { requireCan(c.user, 'finance'); return json({ rates: ratesOf(c.org) }); });
 
 /* ======================================================================= WhatsApp bot: src/wabot.js */
 router.add('GET', '/api/wa/webhook', async (c) => verifyWebhook(c), { public: true });
@@ -2567,6 +2588,14 @@ const SECURITY_TXT = 'Contact: https://wa.me/919068446139\nContact: https://docb
   'Preferred-Languages: en, hi\nCanonical: https://erp.docbrisk.com/.well-known/security.txt\nPolicy: https://docbrisk.com/security\n';
 async function respond(request, env, url) {
   if (url.pathname === '/.well-known/security.txt') return new Response(SECURITY_TXT, { headers: { 'Content-Type': 'text/plain; charset=utf-8', 'Cache-Control': 'public, max-age=86400' } });
+  // the Android app (cloud-erp/android, a Trusted Web Activity) opens without an address bar once this lists its key:
+  // ANDROID_CERT_SHA256 = the signing certificate fingerprint(s), comma-separated (the upload key and Play's app-signing key)
+  if (url.pathname === '/.well-known/assetlinks.json') {
+    const fps = String(env.ANDROID_CERT_SHA256 || '').split(/[\s,]+/).map((x) => x.trim().toUpperCase()).filter((x) => /^([0-9A-F]{2}:){31}[0-9A-F]{2}$/.test(x));
+    const pkg = /^[a-z][a-z0-9_]*(\.[a-z][a-z0-9_]*)+$/.test(env.ANDROID_PACKAGE || '') ? env.ANDROID_PACKAGE : 'com.docbrisk.smarttrader';
+    return new Response(JSON.stringify(fps.length ? [{ relation: ['delegate_permission/common.handle_all_urls'], target: { namespace: 'android_app', package_name: pkg, sha256_cert_fingerprints: fps } }] : []),
+      { headers: { 'Content-Type': 'application/json', 'Cache-Control': 'public, max-age=3600', 'Access-Control-Allow-Origin': '*' } });
+  }
   const share = url.pathname.match(/^\/(k|i|c|s)\/([0-9a-f]{24})\/?$/);
   if (share && env.ASSETS) return sharePage(request, env, share[1], share[2]).catch(() => env.ASSETS.fetch(new Request(url.origin + '/', request)));
   if (!url.pathname.startsWith('/api/')) {

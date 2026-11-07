@@ -19,9 +19,16 @@ export function cleanSetup(b) {
   if (b.modules && typeof b.modules === 'object') for (const k of MODULE_KEYS) if (Object.hasOwn(b.modules, k)) modules[k] = b.modules[k] === true;
   const d = b.item_defaults && typeof b.item_defaults === 'object' ? b.item_defaults : {};
   const gst = d.gst_rate === undefined || d.gst_rate === null || d.gst_rate === '' ? null : num(d.gst_rate, 'Usual GST rate', { min: 0, max: 40 });
+  // payroll rates the owner (or the CA) changed; the rest stay at the law's defaults (src/payroll.js STAT_DEFAULTS)
+  const P = b.payroll && typeof b.payroll === 'object' ? b.payroll : {}, payroll = {};
+  for (const [k, max, name] of [['pf_ceiling', 1e6, 'PF wage ceiling'], ['eps_ceiling', 1e6, 'EPS wage ceiling'], ['pf_rate', 30, 'PF rate'], ['eps_rate', 12, 'EPS rate'],
+    ['edli_rate', 5, 'EDLI rate'], ['admin_rate', 5, 'PF admin charges'], ['esi_limit', 1e6, 'ESI wage limit'], ['esi_emp', 5, 'ESI employee rate'], ['esi_er', 10, 'ESI employer rate']]) {
+    if (P[k] !== undefined && P[k] !== null && P[k] !== '') payroll[k] = num(P[k], name, { min: 0, max });
+  }
   return {
     biz: PACK_KEYS.includes(b.biz) ? b.biz : '',
     modules,
     item_defaults: { unit: str(d.unit, 12), gst_rate: gst, track_batch: d.track_batch === true, track_serial: d.track_serial === true },
+    payroll,
   };
 }

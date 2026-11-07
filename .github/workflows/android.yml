@@ -1,0 +1,70 @@
+name: Android app
+
+# Builds the SmartTrader Android app (a Trusted Web Activity around https://erp.docbrisk.com, cloud-erp/android)
+# as an installable APK and a Play Store app bundle (AAB).
+# Signing: with the repository secrets ANDROID_KEYSTORE_B64 (base64 of the upload keystore), ANDROID_KEYSTORE_PASSWORD,
+# ANDROID_KEY_ALIAS and ANDROID_KEY_PASSWORD the files are signed with that key; without them a throw-away key signs a
+# test build (installs on a phone; the address bar shows until assetlinks.json lists the real key).
+on:
+  workflow_dispatch:
+  pull_request:
+    paths: ['cloud-erp/android/**', '.github/workflows/android.yml']
+  push:
+    branches: [main]
+    paths: ['cloud-erp/android/**', '.github/workflows/android.yml']
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    defaults: { run: { working-directory: cloud-erp/android } }
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with: { distribution: temurin, java-version: 17, cache: gradle }
+      - name: Build the release APK and app bundle
+        run: |
+          chmod +x gradlew
+          ./gradlew --no-daemon assembleRelease bundleRelease
+      - name: Sign (upload key from secrets, else a throw-away test key)
+        env:
+          KEYSTORE_B64: ${{ secrets.ANDROID_KEYSTORE_B64 }}
+          KS_PASS_SECRET: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          KEY_PASS_SECRET: ${{ secrets.ANDROID_KEY_PASSWORD }}
+          ALIAS_SECRET: ${{ secrets.ANDROID_KEY_ALIAS }}
+        run: |
+          set -e
+          if [ -n "$KEYSTORE_B64" ]; then
+            echo "$KEYSTORE_B64" | base64 -d > upload.keystore
+            KS_PASS="$KS_PASS_SECRET"; KEY_PASS="${KEY_PASS_SECRET:-$KS_PASS_SECRET}"; ALIAS="${ALIAS_SECRET:-smarttrader}"; KIND=release
+          else
+            KS_PASS="test-$(openssl rand -hex 8)"; KEY_PASS="$KS_PASS"; ALIAS=smarttrader; KIND=test
+            keytool -genkeypair -v -keystore upload.keystore -alias "$ALIAS" -keyalg RSA -keysize 2048 -validity 10000 \
+              -storepass "$KS_PASS" -keypass "$KEY_PASS" -dname "CN=SmartTrader test build, O=DocBrisk, C=IN"
+          fi
+          export KS_PASS KEY_PASS
+          BT=$(ls -d "$ANDROID_HOME"/build-tools/* | sort -V | tail -1)
+          "$BT/zipalign" -p -f 4 app/build/outputs/apk/release/app-release-unsigned.apk aligned.apk
+          "$BT/apksigner" sign --ks upload.keystore --ks-key-alias "$ALIAS" --ks-pass env:KS_PASS --key-pass env:KEY_PASS --out SmartTrader-$KIND.apk aligned.apk
+          "$BT/apksigner" verify SmartTrader-$KIND.apk
+          cp app/build/outputs/bundle/release/app-release.aab SmartTrader-$KIND.aab
+          jarsigner -keystore upload.keystore -storepass "$KS_PASS" -keypass "$KEY_PASS" SmartTrader-$KIND.aab "$ALIAS"
+          FP=$(keytool -list -v -keystore upload.keystore -alias "$ALIAS" -storepass "$KS_PASS" | grep 'SHA256:' | head -1 | sed 's/.*SHA256: //')
+          {
+            echo "### SmartTrader Android ($KIND build)"
+            echo "Signing certificate SHA-256: \`$FP\`"
+            echo ""
+            echo "Put this fingerprint (and, after the first Play upload, Play's app-signing fingerprint) in the Cloudflare"
+            echo "variable ANDROID_CERT_SHA256 so https://erp.docbrisk.com/.well-known/assetlinks.json vouches for the app."
+          } >> "$GITHUB_STEP_SUMMARY"
+          rm -f upload.keystore aligned.apk
+      - uses: actions/upload-artifact@v4
+        with:
+          name: smarttrader-android
+          path: |
+            cloud-erp/android/SmartTrader-*.apk
+            cloud-erp/android/SmartTrader-*.aab
+          if-no-files-found: error

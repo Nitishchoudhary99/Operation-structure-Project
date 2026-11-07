@@ -16,7 +16,7 @@ import { excelBackup } from './export.js';
 const BACKUP_TABLES = ['accounts', 'warehouses', 'parties', 'items', 'stock', 'stock_moves', 'docs', 'payments', 'journals', 'journal_lines',
   'khata', 'counters', 'gate_entries', 'roles', 'vaade', 'vaada_kisht', 'recurring', 'billing_orders', 'audit', 'org_files', 'reminder_log', 'confirmations', 'bins', 'bin_stock', 'batches', 'batch_moves',
   'serials', 'serial_moves', 'boms', 'productions', 'channel_orders', 'staff', 'attendance', 'staff_txns', 'shop_hooks', 'item_codes', 'write_offs', 'role_rules', 'claim_entries',
-  'channel_returns', 'mkt_settlements', 'bank_clear', 'fixed_assets', 'asset_dep', 'dep_runs', 'tds_challans', 'loyalty_points', 'dine_tables', 'job_cards'];
+  'channel_returns', 'mkt_settlements', 'bank_clear', 'fixed_assets', 'asset_dep', 'dep_runs', 'tds_challans', 'loyalty_points', 'dine_tables', 'job_cards', 'stat_challans'];
 
 /* Every record of this business. Login secrets (password hashes, salts), private link tokens and caches rebuilt
    from the records are left out. */
@@ -63,12 +63,12 @@ async function keyFor(env, use, secret) {
     ? crypto.subtle.importKey('raw', raw, 'AES-GCM', false, ['encrypt', 'decrypt'])
     : crypto.subtle.importKey('raw', raw, { name: 'HMAC', hash: 'SHA-256' }, false, ['sign', 'verify']);
 }
-async function seal(env, text) {
+export async function seal(env, text) {
   const iv = crypto.getRandomValues(new Uint8Array(12));
   const ct = await crypto.subtle.encrypt({ name: 'AES-GCM', iv }, await keyFor(env, 'seal'), enc.encode(text));
   return b64u(iv) + '.' + b64u(ct);
 }
-async function unseal(env, s, secret) {
+export async function unseal(env, s, secret) {
   const [iv, ct] = String(s || '').split('.');
   const pt = await crypto.subtle.decrypt({ name: 'AES-GCM', iv: unb64u(iv) }, await keyFor(env, 'seal', secret), unb64u(ct));
   return new TextDecoder().decode(pt);
