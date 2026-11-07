@@ -19,12 +19,14 @@ jobs:
       - run: npm ci
       - name: Start the worker locally (local D1 database)
         run: |
-          npx wrangler dev --port 8787 --var QUERY_COUNT:1 > wrangler.log 2>&1 &
+          npx wrangler dev --port 8787 --var QUERY_COUNT:1 --var SHIPROCKET_BASE:http://127.0.0.1:8899 > wrangler.log 2>&1 &
           for i in $(seq 1 60); do curl -sf localhost:8787/api/health && break; sleep 1; done
       - name: End-to-end business test
         run: node test/run.mjs http://localhost:8787
       - if: failure()
         run: cat wrangler.log
+      - name: Courier booking against a stand-in Shiprocket (rates, AWB, label, tracking, token renewal)
+        run: node test/courier.mjs http://localhost:8787
       - name: Speed budgets (D1 calls and rows per screen; no screen reads another business's rows)
         run: node test/perf.mjs http://localhost:8787
       - name: Adding SESSION_SECRET keeps two-step sign-in working

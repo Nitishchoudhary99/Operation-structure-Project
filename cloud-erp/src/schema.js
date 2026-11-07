@@ -3,7 +3,7 @@
    Every business table carries org_id: one database serves many businesses (multi-tenant).
    migrate() runs on the first request after each deploy, so no manual migration step is needed. */
 
-export const SCHEMA_VERSION = 43;
+export const SCHEMA_VERSION = 44;
 
 // document types whose monthly totals doc_month keeps (sales and purchase money documents)
 const MONTH_TYPES = `('INV','SRET','CNOTE','BILL','PRET','DNOTE')`;
@@ -711,6 +711,24 @@ export const MIGRATIONS = {
        promised TEXT NOT NULL DEFAULT '', status TEXT NOT NULL DEFAULT 'received', tech TEXT NOT NULL DEFAULT '', notes TEXT NOT NULL DEFAULT '',
        inv_id INTEGER, created_by INTEGER, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, UNIQUE (org_id, number))`,
     `CREATE INDEX IF NOT EXISTS ix_jobs ON job_cards (org_id, status, date)`,
+  ],
+  /* statutory payroll (src/payroll.js): PF / ESI / professional tax per person, the month's challans; courier booking
+     through Shiprocket (src/courier.js): the connection (password and token sealed) and each parcel's booking */
+  44: [
+    `ALTER TABLE staff ADD COLUMN pf INTEGER NOT NULL DEFAULT 0`,
+    `ALTER TABLE staff ADD COLUMN uan TEXT NOT NULL DEFAULT ''`,
+    `ALTER TABLE staff ADD COLUMN esi INTEGER NOT NULL DEFAULT 0`,
+    `ALTER TABLE staff ADD COLUMN esi_no TEXT NOT NULL DEFAULT ''`,
+    `ALTER TABLE staff ADD COLUMN pt INTEGER NOT NULL DEFAULT 0`,
+    `ALTER TABLE staff ADD COLUMN wage_pct REAL NOT NULL DEFAULT 50`,
+    `ALTER TABLE staff ADD COLUMN eps INTEGER NOT NULL DEFAULT 1`,
+    `CREATE TABLE IF NOT EXISTS stat_challans (id INTEGER PRIMARY KEY, org_id INTEGER NOT NULL, kind TEXT NOT NULL CHECK (kind IN ('pf','esi','pt')), month TEXT NOT NULL,
+       date TEXT NOT NULL, amount INTEGER NOT NULL, account_id INTEGER, ref TEXT NOT NULL DEFAULT '', status TEXT NOT NULL DEFAULT 'done',
+       created_by INTEGER, created_at TEXT NOT NULL, txk TEXT)`,
+    `CREATE INDEX IF NOT EXISTS ix_stat_challans ON stat_challans (org_id, month)`,
+    `CREATE TABLE IF NOT EXISTS courier_links (org_id INTEGER PRIMARY KEY, provider TEXT NOT NULL, email TEXT NOT NULL, secret_enc TEXT NOT NULL,
+       token_enc TEXT, token_at TEXT, pickup TEXT NOT NULL DEFAULT '', pickup_pin TEXT NOT NULL DEFAULT '', created_by INTEGER, created_at TEXT NOT NULL)`,
+    `ALTER TABLE docs ADD COLUMN ship_ref TEXT NOT NULL DEFAULT ''`,
   ],
 };
 

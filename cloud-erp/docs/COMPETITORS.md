@@ -318,3 +318,32 @@ to set up; Marg is strongest only in pharma. Sources: vendor comparison pages ([
 
 **Still behind (honest):** live courier booking (Shiprocket / Delhivery APIs), statutory payroll (PF / ESI), and a
 native Android app (we are a PWA). Pack screens and job cards are in English; the Hindi toggle does not cover them yet.
+
+## 10. Deep research round (Nov 2026): what changed in the law and the market, and what we built
+
+**Law that changed payroll.** The four Labour Codes were notified on 21 Nov 2025; the EPF Scheme, 2026 replaced the 1952
+Scheme on 29 Jun 2026, and the PF wage ceiling rose from Rs 15,000 to **Rs 25,000 a month from 17 Sep 2026** (12% each
+side, so up to Rs 3,000 statutory). PF is on Wages as defined in the Code, which cannot be less than **50% of total
+remuneration**. ESI stays at 0.75% + 3.25% up to Rs 21,000 gross. Filing and payment are due within 15 days of month
+close. ECR 2.0 has 11 fields separated by `#~#`. Sources: [TeamLease RegTech, EPF Scheme 2026](https://teamleaseregtech.com/epf-scheme-2026/),
+[EPFO, Introduction to ECR 2.0](https://www.epfindia.gov.in/site_docs/PDFs/EPFOUnifiedPortal/Introduction_ECR2.0.pdf),
+[Frappe HR, EPF](https://docs.frappe.io/hr/india-payroll/employee-provident-fund). Billing apps (Vyapar, myBillBook) do
+attendance and salary at most; none of them produce the ECR file. SmartTrader now does (rates editable, CA has the last word).
+
+**Courier.** Social and D2C sellers ship through aggregators; Shiprocket's API covers order creation, AWB assignment,
+pickup, label and tracking in one account ([Shiprocket API helpsheet](https://www.shiprocket.in/knowledgebase/shiprocket-api-document-helpsheet)).
+Vyapar, myBillBook and Tally have no courier booking; Zoho Inventory integrates shipping carriers on paid plans.
+SmartTrader books from the Dispatch Desk with rates first, then reads tracking back and closes delivered parcels by itself.
+
+**What users complain about elsewhere** (review sites, small samples, read as themes): Tally is desktop-first and its
+updates have moved reports around; Vyapar's date handling and single language annoy some users; support response times
+come up for several apps ([Capterra Vyapar](https://www.capterra.com/p/180579/Vyapar/reviews/), [Capterra myBillBook](https://www.capterra.com/p/202732/FloBooks/reviews/),
+[Software Advice Tally](https://softwareadvice.com/accounting/tally-profile/reviews/)). Our answers: browser + Android app,
+Hindi / Hinglish across screens, plain-language set-up per kind of business, and a free WhatsApp support line in the app.
+
+**Android.** The app is now packaged as a Trusted Web Activity (Play Store ready, signed in CI). Publishing needs the
+owner's Google Play developer account and the upload key; until then the signed APK installs directly on phones.
+
+**Still behind (honest):** live Amazon / Flipkart APIs (developer registration with each), Shiprocket returns (reverse
+pickup) and NDR (failed-delivery) actions, TDS on salary (Form 16), and state-wise professional tax slabs (typed per
+person today).

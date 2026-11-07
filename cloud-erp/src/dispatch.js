@@ -40,6 +40,8 @@ export function cleanWorkflow(b) {
 }
 
 const R = (p) => Math.round(p) / 100;
+/* what the browser may see of a courier booking (src/courier.js): no ids it does not need */
+const shipRef = (t) => { let x = {}; try { x = JSON.parse(t || '{}') || {}; } catch (e) { x = {}; } return x.p ? { p: x.p, label_url: x.label_url || '', status: x.status || '', track_url: x.track_url || '', checked_at: x.checked_at || '' } : null; };
 const mayDispatch = (u) => can(u, 'stock') || can(u, 'sales');
 const ageDays = (d, t) => Math.max(0, Math.round((Date.parse(t + 'T00:00:00Z') - Date.parse(d + 'T00:00:00Z')) / 86400e3));
 const addressOf = (r) => [r.ship_address || r.address, [r.city, r.state, r.pincode].filter(Boolean).join(', ')].filter(Boolean).join(', ');
@@ -57,7 +59,7 @@ export async function dispatchBoard(c) {
     c.db.prepare(`SELECT l.doc_id, i.name AS item, l.qty, l.done_qty, i.is_service FROM doc_lines l JOIN docs d ON d.id = l.doc_id LEFT JOIN items i ON i.id = l.item_id
         WHERE d.org_id = ? AND ((d.type = 'SO' AND d.status IN ('open', 'partial'))
           OR (d.type = 'DN' AND ((d.status != 'cancelled' AND d.ship IN ('', 'shipped')) OR (d.ship IN ('delivered', 'rto') AND d.ship_at >= ?))))`).bind(c.org.id, since),
-    c.db.prepare(`SELECT d.id, d.number, d.date, d.total, d.status, d.pay_mode, d.ship, d.courier, d.awb, d.ship_at, d.ref_id, s.number AS order_no, ${PARTY},
+    c.db.prepare(`SELECT d.id, d.number, d.date, d.total, d.status, d.pay_mode, d.ship, d.courier, d.awb, d.ship_at, d.ship_ref, d.ref_id, s.number AS order_no, ${PARTY},
         (SELECT x.number FROM docs x WHERE x.ref_id = d.id AND x.org_id = d.org_id AND x.type = 'INV' AND x.status != 'cancelled' LIMIT 1) AS invoice
         FROM docs d LEFT JOIN parties p ON p.id = d.party_id LEFT JOIN docs s ON s.id = d.ref_id
         WHERE d.org_id = ? AND d.type = 'DN' AND ((d.status != 'cancelled' AND d.ship IN ('', 'shipped')) OR (d.ship IN ('delivered', 'rto') AND d.ship_at >= ?))
@@ -76,7 +78,7 @@ export async function dispatchBoard(c) {
   // waits for the customer: a COD (or not-said) order with nothing delivered yet that nobody confirmed
   const waits = (r) => w.confirm_cod && r.pay_mode !== 'prepaid' && r.ship !== 'confirmed' && r.status === 'open';
   const dn = notes.results.map((r) => ({ ...out(r, false), status: r.status, courier: r.courier || '', awb: r.awb || '', ship_at: r.ship_at || '',
-    order_id: r.ref_id, order_no: r.order_no || '', invoice: r.invoice || '' }));
+    order_id: r.ref_id, order_no: r.order_no || '', invoice: r.invoice || '', sr: shipRef(r.ship_ref) }));
   const board = {
     confirm: so.filter((r, i) => waits(orders.results[i])),
     pack: so.filter((r, i) => !waits(orders.results[i])),
