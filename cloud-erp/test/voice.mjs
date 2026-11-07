@@ -134,10 +134,16 @@ const F = (transcript) => ({ transcript, isFinal: true }), I = (transcript) => (
 const HEARD = [
   ['computer: one result per pause', [F('2 किलो चीनी'), F('1 लीटर तेल')], { done: '2 किलो चीनी, 1 लीटर तेल', now: '' }],
   ['computer: still speaking', [F('2 किलो चीनी'), I('1 लीटर')], { done: '2 किलो चीनी', now: '1 लीटर' }],
-  ['Android: each result repeats the earlier ones', [F('2 किलो चीनी'), F('2 किलो चीनी 1 लीटर तेल'), F('2 किलो चीनी 1 लीटर तेल 5 साबुन')], { done: '2 किलो चीनी 1 लीटर तेल 5 साबुन', now: '' }],
+  ['Android: each result repeats the earlier ones', [F('2 किलो चीनी'), F('2 किलो चीनी 1 लीटर तेल'), F('2 किलो चीनी 1 लीटर तेल 5 साबुन')], { done: '2 किलो चीनी, 1 लीटर तेल, 5 साबुन', now: '' }],
   ['Android: the same result twice', [F('2 मैगी'), F('2 मैगी')], { done: '2 मैगी', now: '' }],
   ['Android: the words being heard repeat the final ones', [F('2 मैगी'), I('2 मैगी 1 ब्रेड')], { done: '2 मैगी', now: '1 ब्रेड' }],
   ['Android: a shorter repeat after the full one', [F('2 मैगी 1 ब्रेड'), F('1 ब्रेड')], { done: '2 मैगी 1 ब्रेड', now: '' }],
+  ['Android: the end of the earlier words repeated, then new ones', [F('2 मैगी 1 ब्रेड'), F('1 ब्रेड 3 साबुन')], { done: '2 मैगी 1 ब्रेड, 3 साबुन', now: '' }],
+  ['Android: a repeat of an earlier piece, not the last', [F('2 मैगी'), F('1 ब्रेड'), F('2 मैगी')], { done: '2 मैगी, 1 ब्रेड', now: '' }],
+  ['Android: all again after separate pieces, with one new', [F('2 मैगी'), F('1 ब्रेड'), F('2 मैगी 1 ब्रेड 3 साबुन')], { done: '2 मैगी, 1 ब्रेड, 3 साबुन', now: '' }],
+  ['Android: a number as a word, then as a digit', [F('do kilo chini'), F('2 kilo chini ek litre tel')], { done: 'do kilo chini, ek litre tel', now: '' }],
+  ['Android: Hindi number word, then digit', [F('दो किलो चीनी'), F('2 किलो चीनी')], { done: 'दो किलो चीनी', now: '' }],
+  ['Android: words being heard repeat an earlier piece', [F('2 मैगी'), F('1 ब्रेड'), I('2 मैगी')], { done: '2 मैगी, 1 ब्रेड', now: '' }],
 ];
 for (const [name, res, want] of HEARD) {
   const got = heardText(res);
@@ -146,7 +152,12 @@ for (const [name, res, want] of HEARD) {
 // the Android case read into a bill: three lines, no item twice
 const android = parseOrder(heardText([F('2 किलो चीनी'), F('2 किलो चीनी 1 लीटर सरसों तेल'), F('2 किलो चीनी 1 लीटर सरसों तेल 5 साबुन')]).done, items).map((l) => [l.item_id, l.qty]);
 if (JSON.stringify(android) === JSON.stringify([[1, 2], [9, 1], [4, 5]])) pass++; else fails.push(`  Android order read twice: ${JSON.stringify(android)}`);
-const total = CASES.length + HEARD.length + 1;
+// the same order heard many ways on Android: never an item twice
+for (const res of [[F('2 मैगी 1 ब्रेड'), F('1 ब्रेड 3 साबुन'), F('2 मैगी 1 ब्रेड 3 साबुन')], [F('दो किलो चीनी'), F('2 किलो चीनी'), F('2 किलो चीनी 1 लीटर सरसों तेल')]]) {
+  const ids = parseOrder(heardText(res).done, items).map((l) => l.item_id);
+  if (new Set(ids).size === ids.length) pass++; else fails.push(`  item twice: ${JSON.stringify(res.map((r) => r.transcript))} -> ${ids}`);
+}
+const total = CASES.length + HEARD.length + 3;
 console.log(fails.length ? 'FAILED:\n' + fails.join('\n') : '');
 console.log(`${pass}/${total} checks pass: ${CASES.length} spoken orders, ${HEARD.length} ways the phone gives what it heard, and the Android order.`);
 process.exitCode = fails.length ? 1 : 0;

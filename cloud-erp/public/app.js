@@ -7201,9 +7201,10 @@ async function voiceOrder(items, onAdd) {
     const before = $('#vtext').value.trim();
     rec.onresult = (e) => {
       // each final piece once, even where Android repeats the earlier ones in every result
-      const { done, now } = heardText([...e.results].map((r) => ({ transcript: r[0].transcript, isFinal: r.isFinal })));
-      $('#vtext').value = (before ? before.replace(/,?\s*$/, ', ') : '') + done + (done && now ? ', ' : '') + now;
-      if (done) { lines = parseOrder((before ? before + ', ' : '') + done, items); draw(); }
+      // what was already in the box counts as said: a new tap that hears it again does not add it twice
+      const { done, now } = heardText([...(before ? [{ transcript: before, isFinal: true }] : []), ...[...e.results].map((r) => ({ transcript: r[0].transcript, isFinal: r.isFinal }))]);
+      $('#vtext').value = done + (done && now ? ', ' : '') + now;
+      if (done) { lines = parseOrder(done, items); draw(); }
     };
     rec.onerror = (e) => { if (e.error !== 'aborted' && e.error !== 'no-speech') toast(e.error === 'not-allowed' || e.error === 'service-not-allowed' ? 'Allow the microphone for this site to speak the order.' : 'Could not hear: ' + e.error, 'err'); };
     rec.onend = () => { on = false; if (root.innerHTML) { label(); read(); } };
