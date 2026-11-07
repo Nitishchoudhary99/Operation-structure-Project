@@ -9,6 +9,8 @@
    are in a backup), and recurring bills come back paused. Everything is written in one D1 batch: the restore
    happens completely or not at all. The ledger, party balances and monthly totals are rebuilt by the database's
    own triggers as the rows go in. */
+import { workflowOf } from './dispatch.js';
+import { setupOf } from './setup.js';
 import { bad, nowIso, uid } from './lib.js';
 import { randomHex } from './auth.js';
 import { auditStatement } from './engine.js';
@@ -17,10 +19,10 @@ import { fieldsOf, seriesOf } from './custom.js';
 const ID_TABLES = ['accounts', 'warehouses', 'roles', 'parties', 'items', 'docs', 'doc_lines', 'payments', 'journals', 'journal_lines', 'khata',
   'stock_moves', 'gate_entries', 'vaade', 'vaada_kisht', 'recurring', 'reminder_log', 'confirmations', 'bins', 'batches', 'batch_moves',
   'serials', 'serial_moves', 'boms', 'bom_lines', 'productions', 'staff', 'staff_txns', 'write_offs', 'claim_entries', 'mkt_settlements', 'fixed_assets', 'asset_dep', 'dep_runs',
-  'tds_challans'];
+  'tds_challans', 'job_cards'];
 const OTHER_TABLES = ['payment_allocs', 'stock', 'counters', 'org_files', 'bin_stock', 'channel_orders', 'attendance', 'item_codes', 'write_off_lines', 'role_rules', 'channel_returns', 'bank_clear', 'loyalty_points', 'dine_tables'];
-const ORG_FIELDS = ['name', 'gstin', 'state', 'address', 'phone', 'upi_id', 'fy_start', 'city', 'pincode', 'email', 'mode', 'print', 'series', 'fields', 'vaada', 'msg_lang', 'udyam', 'approvals', 'loyalty'];
-const JSON_FIELDS = ['print', 'series', 'fields', 'vaada', 'approvals', 'loyalty'];
+const ORG_FIELDS = ['name', 'gstin', 'state', 'address', 'phone', 'upi_id', 'fy_start', 'city', 'pincode', 'email', 'mode', 'print', 'series', 'fields', 'vaada', 'msg_lang', 'udyam', 'approvals', 'loyalty', 'workflow', 'setup'];
+const JSON_FIELDS = ['print', 'series', 'fields', 'vaada', 'approvals', 'loyalty', 'workflow', 'setup'];
 const PAY_REFS = ['payment', 'receipt', 'payment-X', 'receipt-X'];
 const MAX_ROWS = 300000, MAX_SQL = 90000;
 
@@ -161,6 +163,7 @@ export async function restoreBackup(c, backup) {
       counters: () => ({}),
       org_files: () => ({}),
       dine_tables: () => ({ id: null }),
+      job_cards: (r) => ({ party_id: to('parties', r.party_id), inv_id: to('docs', r.inv_id), created_by: me }),
       loyalty_points: (r) => ({ id: null, party_id: to('parties', r.party_id), doc_id: to('docs', r.doc_id), created_by: me }),
     };
     // a row whose own record of the link is gone is left out (it could not be shown or posted anyway)
@@ -206,6 +209,8 @@ export async function restoreBackup(c, backup) {
       // settings go through the same checks the settings screens use, so a hand-made file cannot store what the app never would
       if (k === 'fields') v = JSON.stringify(fieldsOf({ fields: v }));
       if (k === 'series') v = JSON.stringify(cleanSeriesMap(seriesOf({ series: v })));
+      if (k === 'workflow') v = JSON.stringify(workflowOf({ workflow: v }));
+      if (k === 'setup') { try { v = JSON.stringify(setupOf({ setup: v })); } catch (e) { continue; } }
       if (k === 'name' && !v.trim()) continue;
       sets.push(`${k} = ?`); vals.push(k === 'name' ? v.slice(0, 120) : v.slice(0, 20000));
     }
@@ -230,6 +235,7 @@ export async function restoreBackup(c, backup) {
     counts.bank_clear = insert('bank_clear', T.bank_clear);
     counts.loyalty_points = insert('loyalty_points', T.loyalty_points);
     counts.dine_tables = insert('dine_tables', T.dine_tables);
+    counts.job_cards = insert('job_cards', T.job_cards);
     counts.attendance = insert('attendance', T.attendance);
     counts.item_codes = insert('item_codes', T.item_codes);
     counts.counters = insert('counters', T.counters, 'INSERT OR REPLACE');

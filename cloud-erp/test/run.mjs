@@ -450,6 +450,67 @@ check('store role cannot record receipts', denied.status === 403);
   check('an unknown order is not found', (await api('PUT', '/api/dispatch/99999999', { action: 'confirm' }, true)).status === 404);
   await api('PUT', '/api/settings/workflow', { dispatch: false, confirm_cod: false, default_pay: '' });
   check('with dispatch off, Today shows no parcels to ship', !(await api('GET', '/api/today')).rows.some((r) => r.key === 'to_ship'));
+
+  /* --- business type & menu: one app shaped for each kind of business --- */
+  const su = await api('PUT', '/api/settings/setup', { biz: 'electronics', modules: { pos: true, jobs: true, serial: true, restaurant: false, nonsense: true }, item_defaults: { unit: 'Pcs', gst_rate: 18, track_serial: true } });
+  check('business type & tools are saved, unknown tools dropped', su.setup.biz === 'electronics' && su.setup.modules.jobs === true && su.setup.modules.restaurant === false
+    && !('nonsense' in su.setup.modules) && su.setup.item_defaults.gst_rate === 18 && su.setup.item_defaults.track_serial === true, JSON.stringify(su));
+  check('an unknown business type is not stored', (await api('PUT', '/api/settings/setup', { biz: 'casino', modules: {} })).setup.biz === '');
+  await api('PUT', '/api/settings/setup', { biz: 'electronics', modules: { pos: true, jobs: true, serial: true }, item_defaults: { gst_rate: 18 } });
+  check('the app gets the set-up', (await api('GET', '/api/me')).org.setup.modules.jobs === true);
+  check('a wrong GST default is refused', (await api('PUT', '/api/settings/setup', { item_defaults: { gst_rate: 99 } }, true)).status === 400);
+  await storeLogin();
+  check('only the owner / admin changes the business type', (await api('PUT', '/api/settings/setup', { biz: 'kirana' }, true)).status === 403);
+  cookie = ownerCookie;
+
+  /* --- a second unit: 1 Box = 12 Pcs --- */
+  const soap = await api('POST', '/api/items', { name: 'Lux Soap 100g', unit: 'Pcs', alt_unit: 'Box', alt_factor: 12, sale_price: 50, gst_rate: 18, opening_qty: 120 });
+  check('an item keeps its second unit', soap.alt_unit === 'Box' && soap.alt_factor === 12 && soap.qty_on_hand === 120, JSON.stringify(soap).slice(0, 200));
+  check('a second unit needs how many pieces', (await api('POST', '/api/items', { name: 'Bad Unit', unit: 'Pcs', alt_unit: 'Box', sale_price: 1 }, true)).status === 400);
+  check('the second unit must differ from the first', (await api('POST', '/api/items', { name: 'Bad Unit 2', unit: 'Box', alt_unit: 'box', alt_factor: 10, sale_price: 1 }, true)).status === 400);
+  const boxInv = await api('POST', '/api/docs', { type: 'INV', party_id: cust.id, lines: [{ item_id: soap.id, uom: 'Box', uom_qty: 2, rate: 600, gst_rate: 18 }] });
+  const boxD = await api('GET', `/api/docs/${boxInv.id}`), bl = boxD.lines[0];
+  check('2 Box at ₹600 a box: 24 Pcs leave stock, taxable ₹1,200', bl.qty === 24 && eq(bl.taxable, 1200) && bl.uom === 'Box' && bl.uom_factor === 12 && eq(bl.rate * 12, 600)
+    && await stock(soap.id) === 96, JSON.stringify([bl.qty, bl.rate, bl.taxable, bl.uom, bl.uom_factor, await stock(soap.id)]));
+  const looseInv = await api('POST', '/api/docs', { type: 'INV', party_id: cust.id, lines: [{ item_id: soap.id, qty: 5, rate: 50, gst_rate: 18 }] });
+  check('loose pieces still sell in pieces', (await api('GET', `/api/docs/${looseInv.id}`)).lines[0].uom === '' && await stock(soap.id) === 91);
+  const soBox = await api('POST', '/api/docs', { type: 'SO', party_id: cust.id, lines: [{ item_id: soap.id, uom: 'Box', uom_qty: 3, rate: 590 }] });
+  const dnBoxDraft = await api('GET', `/api/docs/${soBox.id}/convert?to=DN`);
+  check('an order in boxes converts with its box size', dnBoxDraft.lines[0].qty === 36 && dnBoxDraft.lines[0].uom === 'Box' && dnBoxDraft.lines[0].uom_factor === 12);
+  const dnBox = await api('POST', '/api/docs', dnBoxDraft);
+  const dnBl = (await api('GET', `/api/docs/${dnBox.id}`)).lines[0];
+  check('...and the delivery keeps 36 Pcs = 3 Box', dnBl.qty === 36 && dnBl.uom === 'Box' && await stock(soap.id) === 55, JSON.stringify([dnBl.qty, dnBl.uom, await stock(soap.id)]));
+  check('a unit the item does not have is ignored', (await api('GET', `/api/docs/${(await api('POST', '/api/docs', { type: 'INV', party_id: cust.id, lines: [{ item_id: soap.id, uom: 'Crate', uom_qty: 1, qty: 1, rate: 50 }] })).id}`)).lines[0].qty === 1);
+
+  /* --- repair & service job cards --- */
+  const cash0 = (await api('GET', '/api/accounts')).rows.find((a) => a.id === accts.cash.id).balance;
+  const job = await api('POST', '/api/jobs', { name: 'Amit Singh', phone: '9811122233', device: 'Redmi Note 12', serial: '861234567890123', problem: 'Screen broken, no touch',
+    accessories: 'cover', estimate: 2500, advance: 500, account_id: accts.cash.id, promised: '2000-01-02' });
+  check('a job card opens with a new customer and a number', /^JOB-\d{5}$/.test(job.number) && job.party === 'Amit Singh' && job.status === 'received' && job.estimate === 2500 && job.advance === 500, JSON.stringify(job).slice(0, 300));
+  check('the advance is a real receipt in cash', eq((await api('GET', '/api/accounts')).rows.find((a) => a.id === accts.cash.id).balance, cash0 + 500));
+  const job2 = await api('POST', '/api/jobs', { name: 'Amit Singh', phone: '9811122233', device: 'Split AC 1.5 ton', problem: 'Not cooling' });
+  check('the same mobile is the same customer', job2.party_id === job.party_id && job2.number !== job.number);
+  check('a job needs the device and the problem', (await api('POST', '/api/jobs', { name: 'X', device: '', problem: 'y' }, true)).status === 400
+    && (await api('POST', '/api/jobs', { name: 'X', device: 'TV', problem: '' }, true)).status === 400);
+  check('an advance needs where it was paid', (await api('POST', '/api/jobs', { name: 'Y Z', device: 'TV', problem: 'no picture', advance: 100 }, true)).status === 400);
+  let JL = await api('GET', '/api/jobs');
+  check('open jobs listed, late one flagged', JL.rows.some((r) => r.id === job.id && r.late) && JL.counts.received >= 2 && JL.late >= 1);
+  check('search by IMEI', (await api('GET', '/api/jobs?status=all&q=8612345')).rows.length === 1);
+  check('Today shows late repair jobs', (await api('GET', '/api/today')).rows.some((r) => r.key === 'jobs_late'));
+  check('status moves on', (await api('PUT', `/api/jobs/${job.id}`, { action: 'status', status: 'checking' })).status === 'checking');
+  check('an unknown status is refused', (await api('PUT', `/api/jobs/${job.id}`, { action: 'status', status: 'flying' }, true)).status === 400);
+  const jinv = await api('POST', '/api/docs', { type: 'INV', party_id: job.party_id, notes: `Job ${job.number}`, lines: [{ description: 'Screen replacement labour', qty: 1, rate: 800, gst_rate: 18 }, { item_id: soap.id, qty: 1, rate: 50 }] });
+  const billed = await api('PUT', `/api/jobs/${job.id}`, { action: 'bill', inv_id: jinv.id });
+  check('the bill is linked and the job is ready', billed.inv_id === jinv.id && billed.invoice === jinv.number && billed.status === 'ready' && billed.inv_total > 0);
+  check('another customer\'s bill cannot be linked', (await api('PUT', `/api/jobs/${job2.id}`, { action: 'bill', inv_id: boxInv.id }, true)).status === 400);
+  check('delivered', (await api('PUT', `/api/jobs/${job.id}`, { action: 'status', status: 'delivered' })).status === 'delivered'
+    && (await api('PUT', `/api/jobs/${job.id}`, { action: 'status', status: 'checking' }, true)).status === 400);
+  check('a closed job cannot be edited', (await api('PUT', `/api/jobs/${job.id}`, { action: 'edit', device: 'x', problem: 'y' }, true)).status === 400);
+  check('an unknown job is not found', (await api('GET', '/api/jobs/99999999', null, true)).status === 404);
+  await storeLogin();
+  check('a role without selling cannot open job cards', (await api('POST', '/api/jobs', { name: 'Q', device: 'TV', problem: 'p' }, true)).status === 403);
+  cookie = ownerCookie;
+  await api('PUT', '/api/settings/setup', { biz: '', modules: {}, item_defaults: {} });
   await storeLogin();
 }
 check('only the owner can download a full backup', (await api('GET', '/api/export/backup', null, true)).status === 403);

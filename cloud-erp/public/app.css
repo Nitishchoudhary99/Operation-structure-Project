@@ -1142,3 +1142,25 @@ input.need { border-color: var(--danger); box-shadow: 0 0 0 2px color-mix(in srg
 .wf-q { display: flex; gap: 8px; align-items: flex-start; margin: 8px 0; }
 .wf-q input { margin-top: 3px; }
 .wa-prev { white-space: pre-wrap; background: #dcf8c6; color: #111; border-radius: 10px; padding: 10px 12px; font-size: 14px; margin-top: 4px; overflow-wrap: anywhere; }
+/* Business type & menu */
+.packs { display: grid; grid-template-columns: repeat(auto-fill, minmax(230px, 1fr)); gap: 8px; }
+.pack { display: flex; gap: 10px; align-items: flex-start; text-align: left; background: var(--card, #fff); border: 1px solid var(--line, #e5e7eb); border-radius: 12px; padding: 10px 12px; cursor: pointer; color: inherit; font: inherit; min-width: 0; }
+.pack:hover { border-color: var(--ac, #0f766e); }
+.pack.on { border: 2px solid var(--ac, #0f766e); background: color-mix(in srgb, var(--ac, #0f766e) 8%, transparent); padding: 9px 11px; }
+.pack .pi { font-size: 24px; line-height: 1; }
+.pack .pt { display: grid; gap: 2px; min-width: 0; }
+.mods { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 6px 14px; }
+.mod { display: flex; gap: 8px; align-items: flex-start; padding: 6px 0; }
+.mod input { margin-top: 3px; flex: 0 0 auto; }
+/* job cards */
+.jchip { display: inline-block; padding: 2px 9px; border-radius: 99px; font-size: 12px; font-weight: 700; white-space: nowrap; vertical-align: middle; }
+.j-received { background: #e0e7ff; color: #3730a3; } .j-checking { background: #fef3c7; color: #92400e; } .j-waiting { background: #fee2e2; color: #991b1b; }
+.j-ready { background: #d1fae5; color: #065f46; } .j-delivered { background: var(--soft, #f1f5f9); color: var(--muted, #64748b); } .j-cancelled { background: var(--soft, #f1f5f9); color: var(--muted, #64748b); text-decoration: line-through; }
+a.jcard { color: inherit; text-decoration: none; }
+.jobslip .jt th { text-align: left; width: 34%; font-weight: 600; vertical-align: top; }
+.jobslip .jt td, .jobslip .jt th { padding: 6px 8px; border-bottom: 1px solid #e5e7eb; overflow-wrap: anywhere; }
+.lines .uom { margin-top: 4px; width: 100%; font-size: 12px; padding: 2px 4px; }
+.doc-paper.jobslip table.jt { min-width: 0; width: 100%; table-layout: fixed; }
+@media (max-width: 600px) { .doc-paper.jobslip { padding: 14px; } .jobslip .jt th { width: 38%; } .jobslip .hdr { flex-wrap: wrap; gap: 8px; } }
+.jobslip .foot { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 12px 24px; margin-top: 28px; }
+.jobslip .foot .sign { margin: 0; }

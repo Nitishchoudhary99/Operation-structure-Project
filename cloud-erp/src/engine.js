@@ -244,7 +244,11 @@ export async function createDoc(ctx, body) {
     const n = i + 1;
     const item = raw.item_id ? await getItem(+raw.item_id) : null;
     if (raw.item_id && !item) throw bad(`Line ${n}: unknown item.`);
-    const qty = roundQty(num(raw.qty, `Line ${n} quantity`, { min: 0.001, max: 1e9 }));
+    // a second unit (1 Box = 12 Pcs, item.alt_unit / alt_factor): typed in boxes (uom_qty), kept in the item's own unit;
+    // the line remembers the box so the bill prints "2 Box (24 Pcs)". A line already in the item's unit keeps its qty.
+    const alt = item && item.alt_unit && item.alt_factor > 0 && str(raw.uom, 12).toLowerCase() === item.alt_unit.toLowerCase() ? item : null;
+    const inAlt = !!(alt && raw.uom_qty !== undefined && raw.uom_qty !== null && raw.uom_qty !== '');
+    const qty = inAlt ? roundQty(num(raw.uom_qty, `Line ${n} quantity`, { min: 0.001, max: 1e9 }) * alt.alt_factor) : roundQty(num(raw.qty, `Line ${n} quantity`, { min: 0.001, max: 1e9 }));
     const list = item && T.side === 'sales' ? listPrice(item, party, qty) : 0;
     const fallbackRate = item && !T.note ? (T.side === 'sales' ? list : item.purchase_price) : 0;   // notes: the user types the difference
     let rate = raw.rate === undefined || raw.rate === '' || raw.rate === null ? fallbackRate : ratePaise(num(raw.rate, `Line ${n} rate`, { min: 0 }));
@@ -254,6 +258,7 @@ export async function createDoc(ctx, body) {
     if (exp && exp.fcRates && raw.rate !== undefined && raw.rate !== '' && raw.rate !== null) rate = ratePaise(num(raw.rate, `Line ${n} rate`, { min: 0 }) * exp.fx);
     // a rate typed with GST in it (MRP billing): the line keeps the rate before GST, so the line total is that price again
     if (!exp && (raw.incl === true || raw.incl === 1) && raw.rate !== undefined && raw.rate !== '' && raw.rate !== null) rate = exclOfGst(rate, gst);
+    if (inAlt && raw.rate !== undefined && raw.rate !== '' && raw.rate !== null) rate = Math.round(rate / alt.alt_factor * 1e4) / 1e4;   // a rate per box, kept per piece
     const desc = str(raw.description, 300) || (item ? item.name : '');
     if (!item && !desc) throw bad(`Line ${n}: choose an item or type a description.`);
     // a role with a discount limit: the price after rate cut and discount stays at or above the item's price less that %
@@ -298,7 +303,7 @@ export async function createDoc(ctx, body) {
       if (serials.length && Math.abs(serials.length - qty) > 0.0005) throw bad(`Line ${n}: ${serials.length} serial number(s) typed for a quantity of ${qty}.`);
     }
     const bin = moves && T.stock === 'in' && stocked ? str(raw.bin, 30).toUpperCase() : '';
-    L.push({ item, qty, rate, disc, gst, desc, srcLine, calc, stocked, batch, softBatch: !!fromSrc, serials, softSerials, git, bin });
+    L.push({ item, qty, rate, disc, gst, desc, srcLine, calc, stocked, batch, softBatch: !!fromSrc, serials, softSerials, git, bin, uom: alt ? alt.alt_unit : '', uomF: alt ? alt.alt_factor : 0 });
     if (moves && stocked && T.stock === 'out') need.set(item.id, (need.get(item.id) || 0) + qty);
   }
 
@@ -401,10 +406,10 @@ export async function createDoc(ctx, body) {
     } else if (!l.item && ['BILL', 'PRET'].includes(type)) {
       serviceCost += l.calc.taxable * (type === 'PRET' ? -1 : 1);   // free-text purchase lines are expenses
     }
-    st.push(db.prepare(`INSERT INTO doc_lines (doc_id, item_id, description, qty, rate, discount_pct, gst_rate, taxable, cgst, sgst, igst, total, src_line_id, cost, batch_no, expiry, serials)
-                        VALUES ((SELECT id FROM docs WHERE txk = ?), ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+    st.push(db.prepare(`INSERT INTO doc_lines (doc_id, item_id, description, qty, rate, discount_pct, gst_rate, taxable, cgst, sgst, igst, total, src_line_id, cost, batch_no, expiry, serials, uom, uom_factor)
+                        VALUES ((SELECT id FROM docs WHERE txk = ?), ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
       .bind(txk, l.item ? l.item.id : null, l.desc, l.qty, l.rate, l.disc, l.gst, l.calc.taxable, l.calc.cgst, l.calc.sgst, l.calc.igst, l.calc.total,
-        l.srcLine ? l.srcLine.id : null, cost, l.batch.no, l.batch.expiry, l.serials.join(', ')));
+        l.srcLine ? l.srcLine.id : null, cost, l.batch.no, l.batch.expiry, l.serials.join(', '), l.uom, l.uomF));
     const col = fromBill ? 'recv_qty' : short ? 'short_qty' : 'done_qty';
     if (l.srcLine) st.push(db.prepare(`UPDATE doc_lines SET ${col} = ROUND(${col} + ?, 3) WHERE id = ?`).bind(l.qty, l.srcLine.id));
   }

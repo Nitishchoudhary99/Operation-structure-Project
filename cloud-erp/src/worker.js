@@ -25,6 +25,8 @@ import { listHooks, addHook, deleteHook, receiveHook } from './hooks.js';
 import { receivePending, matchBill, learnCode, autoBins, writeOff, cancelWriteOff, writeOffOut } from './receive.js';
 import { listClaims, claimDetail, saveClaim, claimReceipt, closeClaim, cancelClaimEntry } from './claims.js';
 import { dispatchBoard, dispatchStep, workflowOf, cleanWorkflow } from './dispatch.js';
+import { setupOf, cleanSetup } from './setup.js';
+import { listJobs, jobDetail, createJob, updateJob } from './jobs.js';
 import { botReady, botLink, verifyWebhook, receiveWebhook, setBot, inbox, thread, reply as waReply, markDone } from './wabot.js';
 import { listStaff, saveStaff, markAttendance, staffDetail, giveAdvance, paySalary, cancelStaffTxn, payslip, todayStaffQueries } from './payroll.js';
 import * as rep from './reports.js';
@@ -321,7 +323,7 @@ router.add('PUT', '/api/org/mode', async (c) => {
   return json({ ok: true, mode });
 });
 /* business row for the app: settings JSON parsed, image URLs ready for <img> */
-const orgOut = (o) => ({ ...o, workflow: workflowOf(o), print: printOf(o), series: seriesOf(o), fields: fieldsOf(o), vaada: cleanVaada(o.vaada), approvals: approvalsOf(o), loyalty: loyaltyOf(o) });
+const orgOut = (o) => ({ ...o, workflow: workflowOf(o), setup: setupOf(o), print: printOf(o), series: seriesOf(o), fields: fieldsOf(o), vaada: cleanVaada(o.vaada), approvals: approvalsOf(o), loyalty: loyaltyOf(o) });
 /* approval rules: purchase orders above po_above rupees made by anyone but the owner or an admin wait for approval */
 router.add('PUT', '/api/settings/approvals', async (c) => {
   requireCan(c.user, 'settings');
@@ -343,6 +345,20 @@ router.add('PUT', '/api/settings/workflow', async (c) => {
   return json({ workflow: W });
 });
 router.add('GET', '/api/dispatch', async (c) => json(await dispatchBoard(c)));
+/* Settings → Business type & menu (src/setup.js) */
+router.add('PUT', '/api/settings/setup', async (c) => {
+  requireCan(c.user, 'settings');
+  const S = cleanSetup(c.body);
+  const on = Object.entries(S.modules).filter(([, v]) => v).map(([k]) => k).join(','), off = Object.entries(S.modules).filter(([, v]) => !v).map(([k]) => k).join(',');
+  await c.db.batch([c.db.prepare(`UPDATE orgs SET setup = ? WHERE id = ?`).bind(JSON.stringify(S), c.org.id),
+    auditStatement(c, 'business type & menu', `${S.biz || 'no type'}; on: ${on || '-'}; off: ${off || '-'}`.slice(0, 300))]);
+  return json({ setup: S });
+});
+/* repair & service job cards (src/jobs.js) */
+router.add('GET', '/api/jobs', async (c) => json(await listJobs(c, c.url.searchParams.get('status') || 'open', c.url.searchParams.get('q') || '')));
+router.add('GET', '/api/jobs/:id', async (c) => json(await jobDetail(c, +c.params.id)));
+router.add('POST', '/api/jobs', async (c) => json(await createJob(c, c.body)));
+router.add('PUT', '/api/jobs/:id', async (c) => json(await updateJob(c, +c.params.id, c.body)));
 router.add('PUT', '/api/dispatch/:id', async (c) => json(await dispatchStep(c, +c.params.id, c.body)));
 router.add('PUT', '/api/settings/print', async (c) => {
   requireCan(c.user, 'settings');
@@ -773,6 +789,8 @@ router.add('GET', '/api/today', async (c) => {
     if (!can(u, 'sales')) add('to_pack', 'items', `SELECT COUNT(*) AS n, 0 AS v FROM docs WHERE org_id = ? AND type = 'SO' AND status IN ('open','partial')`, o);
     add('to_ship', 'items', `SELECT COUNT(*) AS n, 0 AS v FROM docs WHERE org_id = ? AND type = 'DN' AND status != 'cancelled' AND ship = ''`, o);
   }
+  add('jobs_ready', 'sales', `SELECT COUNT(*) AS n, 0 AS v FROM job_cards WHERE org_id = ? AND status = 'ready'`, o);
+  add('jobs_late', 'sales', `SELECT COUNT(*) AS n, 0 AS v FROM job_cards WHERE org_id = ? AND status IN ('received','checking','waiting') AND promised != '' AND promised < ?`, o, t);
   add('to_receive', 'purchase', `SELECT COUNT(*) AS n, 0 AS v FROM docs WHERE org_id = ? AND type = 'PO' AND status IN ('open','partial')`, o);
   add('at_gate', 'purchase', `SELECT COUNT(*) AS n, 0 AS v FROM gate_entries WHERE org_id = ? AND kind = 'in' AND status = 'open'`, o);
   add('in_transit', 'purchase', `SELECT COUNT(*) AS n, COALESCE(SUM(total), 0) AS v FROM docs WHERE org_id = ? AND type = 'BILL' AND transit = 1 AND status != 'cancelled'`, o);
@@ -851,7 +869,19 @@ const itemFields = (b, c) => itemPrice(b, {
   track_batch: b.track_batch === undefined ? null : b.track_batch === true || b.track_batch === 1 || b.track_batch === '1' || b.track_batch === 'on' ? 1 : 0,
   track_serial: b.track_serial === undefined ? null : b.track_serial === true || b.track_serial === 1 || b.track_serial === '1' || b.track_serial === 'on' ? 1 : 0,
   warranty_months: b.warranty_months === undefined ? null : Math.round(num(b.warranty_months, 'Warranty months', { min: 0, max: 240, def: 0 })),
+  ...altUnit(b),
 });
+/* a second unit to buy and sell in (1 Box = 12 Pcs): stock stays in the item's own unit; left out = unchanged */
+function altUnit(b) {
+  if (b.alt_unit === undefined) return { alt_unit: null, alt_factor: null };
+  const u = str(b.alt_unit, 12), unit = str(b.unit, 12) || 'Pcs';
+  if (!u) return { alt_unit: '', alt_factor: 0 };
+  const f = num(b.alt_factor, `How many ${unit} in 1 ${u}`, { min: 0, max: 100000, def: 0 });
+  if (!(f > 0) || f === 1) throw bad(`Type how many ${unit} make 1 ${u} (more than 1).`);
+  if (u.toLowerCase() === unit.toLowerCase()) throw bad('The second unit must differ from the item\'s unit.');
+  return { alt_unit: u, alt_factor: Math.round(f * 1000) / 1000 };
+}
+const altStatement = (c, id, f) => (f.alt_unit === null ? null : c.db.prepare(`UPDATE items SET alt_unit = ?, alt_factor = ? WHERE id = ? AND org_id = ?`).bind(f.alt_unit, f.alt_factor, id, c.org.id));
 function itemPrice(b, f) {
   const typed = ratePaise(num(b.sale_price, 'Sale price', { min: 0, def: 0 }));
   f.sale_price = f.price_incl ? exclOfGst(typed, f.gst_rate) : Math.round(typed);
@@ -982,6 +1012,7 @@ router.add('POST', '/api/items', async (c) => {
     .bind(c.org.id, f.sku, f.name, f.category, f.unit, f.hsn, f.gst_rate, f.purchase_price ?? 0, f.sale_price, f.reorder_level, f.is_service, f.purchase_price ?? 0, f.barcode, f.location,
       f.extra ?? cleanExtra(fieldsOf(c.org), 'item', {}), f.is_service ? 0 : f.track_batch ?? 0, f.is_service ? 0 : f.track_serial ?? 0, f.warranty_months ?? 0, f.price_incl,
       f.wholesale_price ?? 0, f.wholesale_min ?? 0, f.shop_hide ?? 0, nowIso()).first();
+  if (altStatement(c, r.id, f)) await altStatement(c, r.id, f).run();
   if (c.body.opening_qty && +c.body.opening_qty > 0 && !f.is_service) {
     await stockAdjust(c, { item_id: r.id, qty: c.body.opening_qty, rate: c.body.opening_rate === undefined || c.body.opening_rate === '' ? R(f.purchase_price ?? 0) : c.body.opening_rate, reason: 'opening',
       warehouse_id: c.body.warehouse_id, batch_no: c.body.opening_batch, expiry: c.body.opening_expiry, serials: c.body.opening_serials });
@@ -1001,6 +1032,7 @@ router.add('PUT', '/api/items/:id', async (c) => {
     .bind(f.sku, f.name, f.category, f.unit, f.hsn, f.gst_rate, f.purchase_price, f.sale_price, f.price_incl, f.reorder_level, f.barcode, f.location, f.extra, f.track_batch,
       f.track_serial, f.warranty_months, f.wholesale_price, f.wholesale_min, f.shop_hide, +c.params.id, c.org.id).run();
   if (!r.meta.changes) throw notFound('Item not found.');
+  if (altStatement(c, +c.params.id, f)) await altStatement(c, +c.params.id, f).run();
   return json({ ok: true });
 });
 router.add('DELETE', '/api/items/:id', async (c) => {
@@ -1273,6 +1305,7 @@ router.add('GET', '/api/docs/:id/convert', async (c) => {
     discount_pct: l.discount_pct, gst_rate: l.gst_rate, src_line_id: l.id, batch_no: l.batch_no || '', expiry: l.expiry || '',
     serials: l.serials && Math.abs(left(l) - l.qty) < 0.0005 ? l.serials : '', src_serials: l.serials || '',
     track_batch: l.track_batch, track_serial: l.track_serial, location: l.location, is_service: l.is_service ? 1 : 0,
+    uom: l.uom || '', uom_factor: l.uom_factor || 0,
   }));
   if (!lines.length) throw bad(`Nothing left to ${['SRET', 'PRET'].includes(to) ? 'return' : receiving ? 'receive' : 'process'} on ${src.number}.`);
   return json({ type: to, party_id: src.party_id, ref_id: src.id, ref_number: src.number, ref_type: src.type, warehouse_id: src.warehouse_id, date: today(), extra: src.extra,
