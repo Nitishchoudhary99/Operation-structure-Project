@@ -14,6 +14,7 @@ import {
 import {
   DOC_TYPES, NOTE_TYPES, stockCount, loadByIds, SYS_SQL, sysMap, createDoc, cancelDoc, createPayment, voidPayment, stockAdjust, stockTransfer, createExpense, createJournal, partyOpening,
   auditStatement, cashAccount, approveDoc, approvalsOf, openingStockStatements, partyOpeningStatements, warehouseOf,
+  onceGuard,
 } from './engine.js';
 import { getBom, saveBom, listProductions, createProduction, cancelProduction } from './mfg.js';
 import { importOrders, stockFile, readSettlement, postSettlement, listSettlements } from './channels.js';
@@ -27,9 +28,10 @@ import { listClaims, claimDetail, saveClaim, claimReceipt, closeClaim, cancelCla
 import { dispatchBoard, dispatchStep, workflowOf, cleanWorkflow } from './dispatch.js';
 import { setupOf, cleanSetup } from './setup.js';
 import { listJobs, jobDetail, createJob, updateJob } from './jobs.js';
-import { courierStatus, courierConnect, courierPickup, courierPickups, courierDisconnect, courierRates, courierBook, courierTrack, courierSync } from './courier.js';
+import { courierStatus, courierConnect, courierPickup, courierPickups, courierDisconnect, courierRates, courierBook, courierTrack, courierSync, courierNdr, courierNdrAction, courierReturn } from './courier.js';
 import { botReady, botLink, verifyWebhook, receiveWebhook, setBot, inbox, thread, reply as waReply, markDone } from './wabot.js';
-import { listStaff, saveStaff, markAttendance, staffDetail, giveAdvance, paySalary, cancelStaffTxn, payslip, todayStaffQueries, statutoryMonth, ecrFile, esiFile, payChallan as payStatChallan, cancelChallan as cancelStatChallan, ratesOf } from './payroll.js';
+import { listStaff, saveStaff, markAttendance, staffDetail, giveAdvance, paySalary, cancelStaffTxn, payslip, todayStaffQueries, statutoryMonth, ecrFile, esiFile, payChallan as payStatChallan, cancelChallan as cancelStatChallan, ratesOf, salaryTdsStatement } from './payroll.js';
+import { ptStates } from './paytax.js';
 import * as rep from './reports.js';
 import { PLANS, planOut, planOf, usage, checkCount, countError, seatBlocked, seatError, requireFeature, extendPlan, adminKey, trialUntil, hasFeature } from './saas.js';
 import { secure } from './headers.js';
@@ -372,6 +374,9 @@ router.add('GET', '/api/courier/rates/:id', async (c) => json(await courierRates
 router.add('POST', '/api/courier/book', async (c) => json(await courierBook(c, c.body)));
 router.add('POST', '/api/courier/track/:id', async (c) => json(await courierTrack(c, +c.params.id)));
 router.add('POST', '/api/courier/sync', async (c) => json(await courierSync(c)));
+router.add('GET', '/api/courier/ndr', async (c) => json(await courierNdr(c)));
+router.add('POST', '/api/courier/ndr/:id', async (c) => json(await courierNdrAction(c, +c.params.id, c.body)));
+router.add('POST', '/api/courier/return', async (c) => json(await courierReturn(c, c.body)));
 router.add('PUT', '/api/settings/print', async (c) => {
   requireCan(c.user, 'settings');
   const P = cleanPrint(c.body, printOf(c.org));
@@ -754,7 +759,8 @@ router.add('GET', '/api/payroll/esi', async (c) => new Response(await esiFile(c,
   headers: { 'Content-Type': 'text/csv; charset=utf-8', 'Content-Disposition': `attachment; filename="ESI-${(c.url.searchParams.get('month') || '').replace(/[^0-9-]/g, '')}.csv"`, 'Cache-Control': 'no-store' } }));
 router.add('POST', '/api/payroll/challan', async (c) => json(await payStatChallan(c, c.body)));
 router.add('POST', '/api/payroll/challan/:id/cancel', async (c) => json(await cancelStatChallan(c, +c.params.id)));
-router.add('GET', '/api/payroll/rates', async (c) => { requireCan(c.user, 'finance'); return json({ rates: ratesOf(c.org) }); });
+router.add('GET', '/api/payroll/rates', async (c) => { requireCan(c.user, 'finance'); return json({ rates: ratesOf(c.org), pt_states: ptStates(), state: c.org.state || '' }); });
+router.add('GET', '/api/payroll/tds-statement/:id', async (c) => json(await salaryTdsStatement(c, +c.params.id, c.url.searchParams.get('year'))));
 
 /* ======================================================================= WhatsApp bot: src/wabot.js */
 router.add('GET', '/api/wa/webhook', async (c) => verifyWebhook(c), { public: true });
@@ -1935,10 +1941,13 @@ router.add('POST', '/api/khata/entries/:id/reverse', async (c) => {
   if (e.status !== 'sent') throw bad('Only sent entries can be reversed. A pending entry can simply be discarded.');
   if (await c.db.prepare(`SELECT 1 FROM khata WHERE reverses = ?`).bind(e.id).first()) throw bad('This entry has already been reversed.');
   const p = await c.db.prepare(`SELECT id, name, phone, lang FROM parties WHERE id = ? AND org_id = ?`).bind(e.party_id, c.org.id).first();
-  const r = await c.db.prepare(`INSERT INTO khata (org_id, party_id, date, kind, amount, note, created_by, created_at, status, reverses)
+  // a second tap (or a second person) at the same moment cannot reverse the entry twice
+  const [, ins] = await c.db.batch([onceGuard(c.db, `SELECT 1 FROM khata WHERE reverses = ?`, e.id),
+    c.db.prepare(`INSERT INTO khata (org_id, party_id, date, kind, amount, note, created_by, created_at, status, reverses)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?) RETURNING *`)
     .bind(c.org.id, e.party_id, today(), e.kind === 'gave' ? 'got' : 'gave', e.amount, `Correction of entry dated ${fd(e.date)}${c.body.reason ? ': ' + str(c.body.reason, 120) : ''}`,
-      c.user.id, nowIso(), e.id).first();
+      c.user.id, nowIso(), e.id)]);
+  const r = ins.results[0];
   return json({ ok: true, entry_id: r.id, phone: p.phone, ...entrySend(p, await entryMessage(c, r, p)) });
 });
 router.add('GET', '/api/khata/:party/reminder', async (c) => {
@@ -2616,6 +2625,8 @@ async function respond(request, env, url) {
     }
     if (e instanceof HttpError) return json({ error: e.message, ...(e.extra || {}) }, e.status);
     // a save stopped inside its own write because another one changed the same bill or stock at the same moment
+    if (/NOT NULL constraint failed: once_guard\.k/.test(String(e && e.message)))
+      return json({ error: 'This was already done a moment ago (a second tap, or someone else). Refresh the page to see it.' }, 409);
     if (/NOT NULL constraint failed: (docs\.total|stock\.qty)/.test(String(e && e.message)))
       return json({ error: 'Another entry was saved at the same moment and changed this bill or stock. Check it and save again.' }, 409);
     console.error(e && e.stack || e);          // logged for the owner; the caller only ever sees this fixed text

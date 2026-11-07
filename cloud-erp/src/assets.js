@@ -8,7 +8,7 @@
    Selling or scrapping an asset takes it out of the books, with the gain or loss on it. */
 import { bad, notFound, str, num, today, nowIso, date as isoDate, oneOf } from './lib.js';
 import { requireCan, checkBackdate } from './auth.js';
-import { journalStatements, auditStatement, cashAccount, ensureSysAccounts } from './engine.js';
+import { journalStatements, auditStatement, cashAccount, ensureSysAccounts, onceGuard } from './engine.js';
 import { fyStart } from './reports.js';
 
 /* income-tax block rates and Schedule II lives, as the starting values of a new asset (both can be changed) */
@@ -116,6 +116,7 @@ export async function bookDep(c, fy) {
   if (!items.length) throw bad('No depreciation for this year.');
   const sys = await assetAccounts(c), total = items.reduce((s, l) => s + P(l.amount), 0), now = nowIso();
   await c.db.batch([
+    onceGuard(c.db, `SELECT 1 FROM dep_runs WHERE org_id = ? AND fy = ?`, c.org.id, p.fy),
     ...items.map((l) => c.db.prepare(`INSERT INTO asset_dep (org_id, asset_id, fy, amount, created_at) VALUES (?, ?, ?, ?, ?)`).bind(c.org.id, l.id, p.fy, P(l.amount), now)),
     c.db.prepare(`INSERT INTO dep_runs (org_id, fy, total, created_by, created_at) VALUES (?, ?, ?, ?, ?)`).bind(c.org.id, p.fy, total, c.user.id, now),
     ...journalStatements(c.db, c, { date: p.to, narration: `Depreciation ${p.label} (${items.length} asset${items.length > 1 ? 's' : ''})`, refType: 'DEP', refId: null,
@@ -135,6 +136,7 @@ export async function undoDep(c, fy) {
   if (later) throw bad(`Undo ${fyLabel(later.fy)} first: each year starts from the one before.`);
   const sys = await assetAccounts(c);
   await c.db.batch([
+    onceGuard(c.db, `SELECT 1 WHERE NOT EXISTS (SELECT 1 FROM dep_runs WHERE id = ?)`, run.id),
     c.db.prepare(`DELETE FROM asset_dep WHERE org_id = ? AND fy = ?`).bind(c.org.id, from),
     c.db.prepare(`DELETE FROM dep_runs WHERE id = ?`).bind(run.id),
     ...journalStatements(c.db, c, { date: fyEnd(from), narration: `Depreciation ${fyLabel(from)} taken back`, refType: 'DEP', refId: null,
@@ -158,7 +160,8 @@ export async function disposeAsset(c, id, b) {
   const lines = [{ account: sys.acc_dep, amount: dep }, { account: sys.fixed_assets, amount: -a.cost }];
   if (amount) lines.push({ account: (await cashAccount(c.db, c.org.id, +b.account_id)).id, amount });
   if (gain > 0) lines.push({ account: sys.other_income, amount: -gain }); else if (gain < 0) lines.push({ account: sys.asset_loss, amount: -gain });
-  await c.db.batch([c.db.prepare(`UPDATE fixed_assets SET sold_on = ?, sold_for = ? WHERE id = ?`).bind(on, amount, id),
+  await c.db.batch([onceGuard(c.db, `SELECT 1 FROM fixed_assets WHERE id = ? AND sold_on IS NOT NULL AND sold_on != ''`, id),
+    c.db.prepare(`UPDATE fixed_assets SET sold_on = ?, sold_for = ? WHERE id = ?`).bind(on, amount, id),
     ...journalStatements(c.db, c, { date: on, narration: `${amount ? 'Sold' : 'Scrapped'}: ${a.name}`, refType: 'ASSET', refId: id, lines }),
     auditStatement(c, amount ? 'asset sold' : 'asset scrapped', `${a.name} ${amount / 100}`)]);
   return { gain: gain / 100 };

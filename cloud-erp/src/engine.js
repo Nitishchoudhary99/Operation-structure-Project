@@ -605,6 +605,10 @@ export function paymentStatements(ctx, { kind, party, account, date: d, amount, 
 }
 
 export const SETTLE_RACE = /NOT NULL constraint failed: docs\.total/;
+/* put first in a write that must happen once: when the SELECT finds it already done (two taps, two people at the same
+   moment), the write fails as a whole and nothing in it is kept; the person sees ONCE_TEXT (src/worker.js) */
+export const onceGuard = (db, sql, ...binds) => db.prepare(`INSERT INTO once_guard (k) SELECT NULL WHERE EXISTS (${sql})`).bind(...binds);
+export const ONCE_RACE = /NOT NULL constraint failed: once_guard\.k/;
 export async function createPayment(ctx, body) {
   const { db } = ctx;
   const kind = body.kind === 'payment' ? 'payment' : 'receipt';
@@ -728,7 +732,8 @@ export async function cancelDoc(ctx, id, opts = {}) {
       WHERE pa.doc_id = ? AND pa.payment_id > 0`).bind(doc.id).all();
   if (pays.some((p) => p.sys !== 'loyalty')) throw bad('Void the payments against this document first.');
 
-  const st = await reverseStock(ctx, { refType: doc.type, refId: doc.id, date: doc.date, label: doc.number });
+  const st = [onceGuard(db, `SELECT 1 FROM docs WHERE id = ? AND status = 'cancelled'`, doc.id),
+    ...await reverseStock(ctx, { refType: doc.type, refId: doc.id, date: doc.date, label: doc.number })];
   for (const p of pays) st.push(...await voidStatements(ctx, p));
   st.push(cancelPointStatement(ctx, doc));
   const { results: jls } = await db.prepare(`SELECT jl.* FROM journal_lines jl JOIN journals j ON j.id = jl.journal_id
@@ -769,7 +774,7 @@ export async function voidPayment(ctx, id) {
   const p = await db.prepare(`SELECT p.*, a.sys FROM payments p LEFT JOIN accounts a ON a.id = p.account_id WHERE p.id = ? AND p.org_id = ?`).bind(id, ctx.org.id).first();
   if (!p) throw notFound('Payment not found.');
   if (p.notes && p.notes.startsWith('[void]')) throw bad('Already void.');
-  await db.batch(await voidStatements(ctx, p));
+  await db.batch([onceGuard(db, `SELECT 1 FROM payments WHERE id = ? AND notes LIKE '[void]%'`, p.id), ...await voidStatements(ctx, p)]);
 }
 
 /* everything that voids one payment or receipt; points used on a bill come back to the customer */

@@ -5,7 +5,7 @@
    every component back and takes the finished goods out again, as long as they have not been used. */
 import { bad, notFound, str, num, roundQty, nowIso, today, date, uid, loadByIds, counterStatements, counterValueSql } from './lib.js';
 import { requireCan, requireCancel, seesCosts } from './auth.js';
-import { stockStatements, warehouseOf, auditStatement, reverseStock } from './engine.js';
+import { stockStatements, warehouseOf, auditStatement, reverseStock, onceGuard } from './engine.js';
 import { lotState, takeOut, putIn, cleanBatch, cleanSerials } from './lots.js';
 
 const R = (p) => Math.round(p) / 100;
@@ -141,7 +141,8 @@ export async function cancelProduction(c, id) {
   const p = await c.db.prepare(`SELECT * FROM productions WHERE id = ? AND org_id = ?`).bind(id, c.org.id).first();
   if (!p) throw notFound('Production not found.');
   if (p.status === 'cancelled') throw bad('Already cancelled.');
-  const st = await reverseStock(c, { refType: 'MFG', refId: p.id, date: p.date, label: p.number });
+  const st = [onceGuard(c.db, `SELECT 1 FROM productions WHERE id = ? AND status != 'done'`, p.id),
+    ...await reverseStock(c, { refType: 'MFG', refId: p.id, date: p.date, label: p.number })];
   st.push(c.db.prepare(`UPDATE productions SET status = 'cancelled' WHERE id = ? AND status = 'done'`).bind(p.id));
   st.push(auditStatement(c, 'cancel production', p.number));
   await c.db.batch(st);

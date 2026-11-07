@@ -23,12 +23,13 @@ jobs:
           for i in $(seq 1 60); do curl -sf localhost:8787/api/health && break; sleep 1; done
       - name: End-to-end business test
         run: node test/run.mjs http://localhost:8787
-      - if: failure()
-        run: cat wrangler.log
-      - name: Courier booking against a stand-in Shiprocket (rates, AWB, label, tracking, token renewal)
+      - name: Courier booking against a stand-in Shiprocket (rates, AWB, label, tracking, token renewal, NDR, returns)
         run: node test/courier.mjs http://localhost:8787
       - name: Speed budgets (D1 calls and rows per screen; no screen reads another business's rows)
         run: node test/perf.mjs http://localhost:8787
+      # after every test that talks to the worker, so its log shows whichever of them failed
+      - if: failure()
+        run: cat wrangler.log
       - name: Adding SESSION_SECRET keeps two-step sign-in working
         run: node test/keys.mjs
       - name: Bolkar bill reads spoken orders (Hindi, Hinglish, English) as phones send them
