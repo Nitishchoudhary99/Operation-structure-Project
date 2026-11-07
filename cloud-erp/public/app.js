@@ -2808,8 +2808,15 @@ function staffForm(s = {}, after) {
     { k: 'notes', label: 'Notes', value: s.notes, more: true },
     { k: 'pf', label: 'PF applies (EPF)', type: 'checkbox', value: !!s.pf, more: true }, { k: 'uan', label: 'UAN (12 digits)', value: s.uan || '', more: true },
     { k: 'wage_pct', label: 'Wages for PF (% of salary: basic + DA, 50 or more)', type: 'number', value: s.wage_pct || 50, more: true },
+    { k: 'eps', label: 'Pension (EPS) member (untick for staff not in EPS)', type: 'checkbox', value: s.eps !== 0, more: true },
     { k: 'esi', label: 'ESI applies (salary ₹21,000 or less)', type: 'checkbox', value: !!s.esi, more: true }, { k: 'esi_no', label: 'ESI IP number (10 digits)', value: s.esi_no || '', more: true },
-    { k: 'pt', label: 'Professional tax ₹ per month (your state)', type: 'number', value: s.pt || '', more: true }],
+    { k: 'pt_auto', label: `Professional tax by the ${ME.org.state || 'state'} slab`, type: 'checkbox', value: !!s.pt_auto, more: true },
+    { k: 'gender', label: 'Gender (Maharashtra has a separate women slab)', type: 'select', value: s.gender || '', more: true, options: [{ v: '', t: '—' }, { v: 'f', t: 'Woman' }, { v: 'm', t: 'Man' }] },
+    { k: 'pt', label: 'Or a fixed professional tax ₹ per month (wins over the slab)', type: 'number', value: s.pt || '', more: true },
+    { k: 'pan', label: 'PAN (for income tax on salary)', value: s.pan || '', more: true },
+    { k: 'tds_mode', label: 'Income tax (TDS) on salary', type: 'select', value: s.tds_mode || '', more: true,
+      options: [{ v: '', t: 'Not cut' }, { v: 'auto', t: 'Work it out (new regime)' }, { v: 'fixed', t: 'A fixed amount each month' }] },
+    { k: 'tds_fixed', label: 'Fixed TDS ₹ per month (old regime or as the person asked)', type: 'number', value: s.tds_fixed || '', more: true }],
   async (v) => { await (s.id ? api('PUT', '/api/staff/' + s.id, v) : POST('/api/staff', v)); toast(s.id ? 'Saved' : `${v.name} added`); after(); },
   { submit: s.id ? 'Save' : 'Add', intro: '<p class="muted">Monthly staff: a day you do not mark counts as present, so mark only absences, half days and leave. Daily-wage staff: mark the days they worked.</p>' });
 }
@@ -2852,7 +2859,7 @@ route(/^staff\/(\d+)$/, async (el, m, q) => {
     return `<button type="button" class="cal-d ${mk ? 'mk-' + mk.status : ''} ${future || before ? 'off' : ''}" data-day="${day}" ${future || before ? 'disabled' : ''} aria-label="${fdate(day)}: ${mk ? MARKS.find(([k]) => k === mk.status)[1] : 'not marked'}">
       <small>${i + 1}</small><b>${mk ? (mk.status === 'H' ? '½' : mk.status) : ''}</b>${mk && mk.ot_hours ? `<i>+${mk.ot_hours}h</i>` : ''}</button>`;
   })].join('');
-  el.innerHTML = head(esc(s.name), `<button class="btn" id="edit">Edit</button><button class="btn" id="adv">Give advance</button>${d.paid ? `<a class="btn" href="#/payslip/${d.paid.id}">Payslip</a>` : p.from ? '<button class="btn primary" id="pay">Pay salary</button>' : ''}`) + `
+  el.innerHTML = head(esc(s.name), `<button class="btn" id="edit">Edit</button><button class="btn" id="adv">Give advance</button>${s.tds_mode ? `<a class="btn" href="#/tds-salary/${s.id}">Income tax statement</a>` : ''}${d.paid ? `<a class="btn" href="#/payslip/${d.paid.id}">Payslip</a>` : p.from ? '<button class="btn primary" id="pay">Pay salary</button>' : ''}`) + `
     <div class="kpis"><div class="kpi"><div class="l">Pay</div><div class="v">${esc(payLabel(s))}</div><div class="s">${esc(s.title || '')}${s.phone ? ' · ' + esc(s.phone) : ''}</div></div>
       <div class="kpi"><div class="l">${esc(monthName(month))}</div><div class="v">${inr0(p.earned)}</div><div class="s">${qtyf(p.payable)} payable day${p.payable === 1 ? '' : 's'}${p.ot_hours ? ` · OT ${p.ot_hours} h` : ''}</div></div>
       <div class="kpi"><div class="l">Advance due</div><div class="v ${d.advance_due ? 'neg' : ''}">${inr0(d.advance_due)}</div></div></div>
@@ -2874,12 +2881,12 @@ route(/^staff\/(\d+)$/, async (el, m, q) => {
   async (v) => { await POST(`/api/staff/${s.id}/advance`, v); dirty('accounts'); toast('Advance saved'); reload(); }, { intro: '<p class="muted">You can cut it from a salary later, in parts or all at once.</p>' });
   const payNow = () => modal(`Pay ${s.name}: ${monthName(month)}`, [
     { k: 'gross', label: `Salary earned (₹) · ${qtyf(p.payable)} days${p.ot_pay ? ` + OT ${inr0(p.ot_pay)}` : ''}`, type: 'number', value: p.earned },
-    { k: 'advance_cut', label: `Cut from advance (₹) · due ${inr0(d.advance_due)}`, type: 'number', value: Math.min(d.advance_due, p.earned) || '' },
+    { k: 'advance_cut', label: `Cut from advance (₹) · due ${inr0(d.advance_due)}`, type: 'number', value: Math.max(0, Math.min(d.advance_due, p.earned - (d.cuts || 0))) || '' },
     { k: 'paid_from', label: 'Paid from', type: 'select', options: cash }, { k: 'date', label: 'Date', type: 'date', value: ME.today },
     { k: 'bonus', label: 'Bonus / incentive (₹)', type: 'number', more: true }, { k: 'other_cut', label: 'Other deduction (₹, e.g. damage)', type: 'number', more: true },
     { k: 'notes', label: 'Note', more: true }],
   async (v) => { const r = await POST(`/api/staff/${s.id}/salary`, { ...v, month }); dirty('accounts'); toast(`Paid ${inr0(r.net)}`); go('payslip/' + r.id); },
-  { submit: 'Pay salary', intro: s.pf || s.esi || s.pt ? `<p class="muted">${[s.pf && 'PF', s.esi && 'ESI', s.pt && 'professional tax'].filter(Boolean).join(', ')} will be cut as set for ${esc(s.name)}; the payslip shows each.</p>` : '' });
+  { submit: 'Pay salary', intro: s.pf || s.esi || s.pt || s.pt_auto || s.tds_mode ? `<p class="muted">${[s.pf && 'PF', s.esi && 'ESI', (s.pt || s.pt_auto) && 'professional tax', s.tds_mode && 'income tax (TDS)'].filter(Boolean).join(', ')} will be cut as set for ${esc(s.name)}${d.cuts ? ` (about ${inr0(d.cuts)})` : ''}; the payslip shows each.</p>` : '' });
   if ($('#pay')) $('#pay').onclick = payNow;
   if (q.get('pay') && $('#pay')) payNow();
   const order = ['', 'P', 'A', 'H', 'L', 'O'];
@@ -2903,7 +2910,7 @@ route(/^staff\/(\d+)$/, async (el, m, q) => {
 route(/^payslip\/(\d+)$/, async (el, m) => {
   const p = await GET('/api/staff/payslip/' + m[1]), dt = p.detail, o = p.org, st = dt.stat;
   const line = (k, v, cls = '') => `<tr class="${cls}"><td>${k}</td><td class="num">${v}</td></tr>`;
-  const text = `*${o.name}* - Salary slip ${monthName(p.month)}\n${p.name}\nDays paid: ${qtyf(dt.payable || 0)} of ${dt.days || ''}\nEarned: ${inr0(p.gross)}${p.bonus ? `\nBonus: ${inr0(p.bonus)}` : ''}${p.advance_cut ? `\nAdvance cut: -${inr0(p.advance_cut)}` : ''}${p.other_cut ? `\nOther deduction: -${inr0(p.other_cut)}` : ''}${st && st.pf ? `\nPF: -${inr0(st.pf)}` : ''}${st && st.esi ? `\nESI: -${inr0(st.esi)}` : ''}${st && st.pt ? `\nProfessional tax: -${inr0(st.pt)}` : ''}\n*Paid: ${inr0(p.net)}* on ${fdate(p.date)}${dt.advance_left ? `\nAdvance still due: ${inr0(dt.advance_left)}` : ''}`;
+  const text = `*${o.name}* - Salary slip ${monthName(p.month)}\n${p.name}\nDays paid: ${qtyf(dt.payable || 0)} of ${dt.days || ''}\nEarned: ${inr0(p.gross)}${p.bonus ? `\nBonus: ${inr0(p.bonus)}` : ''}${p.advance_cut ? `\nAdvance cut: -${inr0(p.advance_cut)}` : ''}${p.other_cut ? `\nOther deduction: -${inr0(p.other_cut)}` : ''}${st && st.pf ? `\nPF: -${inr0(st.pf)}` : ''}${st && st.esi ? `\nESI: -${inr0(st.esi)}` : ''}${st && st.pt ? `\nProfessional tax: -${inr0(st.pt)}` : ''}${st && st.tds ? `\nIncome tax (TDS): -${inr0(st.tds)}` : ''}\n*Paid: ${inr0(p.net)}* on ${fdate(p.date)}${dt.advance_left ? `\nAdvance still due: ${inr0(dt.advance_left)}` : ''}`;
   const phone = String(p.phone || '').replace(/\D/g, '').replace(/^0/, '');
   el.innerHTML = head(`Payslip ${esc(p.name)}`, `${p.status === 'cancelled' ? badge('cancelled') : ''}<a class="btn got" target="_blank" rel="noopener" href="https://wa.me/${phone ? (phone.length === 10 ? '91' + phone : phone) : ''}?text=${encodeURIComponent(text)}">WhatsApp</a><button class="btn primary" data-act="print">Print</button>`) + `
     <div class="panel slip"><div class="row"><div><h2 style="margin:0">${esc(o.name)}</h2><div class="muted">${esc(o.address || '')}${o.phone ? ' · ' + esc(o.phone) : ''}</div></div><span class="spacer"></span><div style="text-align:right"><b>Salary slip</b><div>${esc(monthName(p.month))}</div></div></div>
@@ -2915,13 +2922,39 @@ route(/^payslip\/(\d+)$/, async (el, m) => {
         ${line('Salary for the days', inr(dt.base))}${dt.ot_pay ? line(`Overtime (${dt.ot_hours} h)`, inr(dt.ot_pay)) : ''}
         ${p.gross !== dt.earned ? line('Salary (as paid)', inr(p.gross)) : ''}${p.bonus ? line('Bonus / incentive', inr(p.bonus)) : ''}
         ${p.advance_cut ? line('Advance cut', '−' + inr(p.advance_cut)) : ''}${p.other_cut ? line('Other deduction', '−' + inr(p.other_cut)) : ''}
-        ${st && st.pf ? line(`PF (12% of ${inr0(st.epf_wages)})${st.uan ? ` · UAN ${esc(st.uan)}` : ''}`, '−' + inr(st.pf)) : ''}${st && st.esi ? line(`ESI (0.75%)${st.esi_no ? ` · IP ${esc(st.esi_no)}` : ''}`, '−' + inr(st.esi)) : ''}
-        ${st && st.pt ? line('Professional tax', '−' + inr(st.pt)) : ''}
+        ${st && st.pf ? line(`PF (${dt.rates ? dt.rates.pf_rate : 12}% of ${inr0(st.epf_wages)})${st.uan ? ` · UAN ${esc(st.uan)}` : ''}`, '−' + inr(st.pf)) : ''}${st && st.esi ? line(`ESI (${dt.rates ? dt.rates.esi_emp : 0.75}% of ${inr0(st.esi_wages)})${st.esi_no ? ` · IP ${esc(st.esi_no)}` : ''}`, '−' + inr(st.esi)) : ''}
+        ${st && st.pt ? line('Professional tax', '−' + inr(st.pt)) : ''}${st && st.tds ? line(`Income tax (TDS, new regime)${st.pan ? ` · PAN ${esc(st.pan)}` : ''}`, '−' + inr(st.tds)) : ''}
         ${line('<b>Net paid</b>', `<b>${inr(p.net)}</b>`, 'grand')}${dt.advance_left ? line('Advance still due', inr(dt.advance_left)) : ''}
       </tbody></table>
       ${st && st.employer ? `<p class="muted small">Employer also pays ${inr(st.employer)} (PF ${inr(st.eps + st.er_epf)}, EDLI + admin ${inr(st.edli + st.admin)}${st.er_esi ? `, ESI ${inr(st.er_esi)}` : ''}) to the government.</p>` : ''}
       <p class="muted small" style="margin-top:16px">${esc(words(p.net))}</p>
       <div class="row" style="margin-top:40px"><span class="muted">Employee's signature</span><span class="spacer"></span><span class="muted">For ${esc(o.name)}</span></div></div>`;
+});
+
+/* one person's salary TDS for a tax year: what Form 130 (the yearly certificate from the TDS portal) should show */
+route(/^tds-salary\/(\d+)$/, async (el, m, q) => {
+  const y = q.get('year') || '', d = await GET(`/api/payroll/tds-statement/${m[1]}${y ? '?year=' + y : ''}`), A = d.part_a, B = d.part_b, C = d.part_c;
+  const start = +d.tax_year.slice(0, 4), line = (k, v, cls = '') => `<tr class="${cls}"><td>${k}</td><td class="num">${v}</td></tr>`;
+  el.innerHTML = head(`Income tax on salary: ${esc(A.employee.name)}`, `<a class="btn sm" href="#/tds-salary/${m[1]}?year=${start - 1}">&lsaquo; ${start - 1}-${String(start % 100).padStart(2, '0')}</a>
+      <a class="btn sm" href="#/tds-salary/${m[1]}?year=${start + 1}">${start + 1}-${String((start + 2) % 100).padStart(2, '0')} &rsaquo;</a><button class="btn primary" data-act="print">Print</button>`) + `
+    ${d.warnings.map((w) => `<div class="panel warnbox no-print">${esc(w)}</div>`).join('')}
+    <div class="panel slip"><div class="row"><div><h2 style="margin:0">${esc(A.employer.name)}</h2><div class="muted">${esc(A.employer.address)}${A.employer.tan ? ' · TAN ' + esc(A.employer.tan) : ''}</div></div>
+      <span class="spacer"></span><div style="text-align:right"><b>Salary TDS statement</b><div>Tax year ${esc(d.tax_year)} · new regime</div></div></div><hr>
+      <div class="row"><div><b>${esc(A.employee.name)}</b><div class="muted">${A.employee.pan ? 'PAN ' + esc(A.employee.pan) : 'PAN not given'}${A.employee.title ? ' · ' + esc(A.employee.title) : ''}</div></div>
+        <span class="spacer"></span><div class="muted">${A.period ? `${esc(monthName(A.period.from))} – ${esc(monthName(A.period.to))}` : 'No salary this year'}</div></div>
+      <h3 style="margin-top:16px">Part B · Tax cut each quarter</h3>
+      <table class="t"><thead><tr><th>Quarter</th><th class="num">Salary paid</th><th class="num">TDS cut</th></tr></thead><tbody>
+        ${B.quarters.map((x) => `<tr><td>${x.quarter}</td><td class="num">${inr0(x.paid)}</td><td class="num">${inr0(x.tds)}</td></tr>`).join('')}
+        <tr class="grand"><td><b>Total</b></td><td class="num"><b>${inr0(C.gross_salary)}</b></td><td class="num"><b>${inr0(B.total_tds)}</b></td></tr></tbody></table>
+      ${B.challans.length ? `<p class="muted small">Salary TDS challans paid in the year: ${B.challans.map((x) => `${fdate(x.date)} ${inr0(x.amount)}${x.challan_no ? ' (' + esc(x.challan_no) + ')' : ''}`).join(', ')}</p>`
+        : '<p class="muted small">No salary TDS challan (section 392) recorded for this year yet: TDS → Pay challan.</p>'}
+      <h3 style="margin-top:16px">Part C · Tax worked out (new regime)</h3>
+      <table class="t"><tbody>${line('Gross salary', inr(C.gross_salary))}${line('Less standard deduction', '−' + inr(C.standard_deduction))}${line('<b>Taxable income</b>', `<b>${inr(C.taxable)}</b>`)}
+        ${line('Tax on it (after the rebate up to ₹12 lakh)', inr(C.tax))}${C.surcharge ? line('Surcharge', inr(C.surcharge)) : ''}${line('Health & education cess 4%', inr(C.cess))}
+        ${line('<b>Tax for the year</b>', `<b>${inr(C.tax_payable)}</b>`, 'grand')}${line('TDS cut from salary', inr(C.tds_cut))}
+        ${line(C.balance >= 0 ? 'Still to cut / pay' : 'Cut more than the tax', inr(Math.abs(C.balance)))}
+        ${C.pf_paid ? line('Employee PF (not deducted in the new regime)', inr(C.pf_paid)) : ''}${C.pt_paid ? line('Professional tax paid', inr(C.pt_paid)) : ''}</tbody></table>
+      <p class="muted small" style="margin-top:12px">The official certificate is Form 130 (it replaced Form 16 from 1 April 2026): it is made on the TDS portal after the quarterly salary TDS returns (Form 138) are filed. Check it against this statement. Old-regime staff: type their monthly TDS by hand on the staff page.</p></div>`;
 });
 
 /* PF / ESI / professional tax for a month: who paid what, the EPFO ECR file, the ESI upload sheet, challans paid */
@@ -2933,7 +2966,8 @@ route(/^statutory$/, async (el, m, q) => {
       <a class="btn sm" href="#/statutory?month=${shiftMonth(month, 1)}">&rsaquo;</a><span class="spacer"></span><span class="muted small">Pay by ${fdate(d.due_by)} · PF ${rs.pf_rate}% on wages up to ${inr0(rs.pf_ceiling)} · ESI ${rs.esi_emp}% + ${rs.esi_er}% up to ${inr0(rs.esi_limit)}</span></div></div>
     <div class="kpis"><div class="kpi"><div class="l">PF to deposit (EPFO)</div><div class="v">${inr0(T.pf)}</div><div class="s">${T.pf_paid ? `paid ${inr0(T.pf_paid)}` : 'not paid yet'}</div></div>
       <div class="kpi"><div class="l">ESI to deposit</div><div class="v">${inr0(T.esi)}</div><div class="s">${T.esi_paid ? `paid ${inr0(T.esi_paid)}` : 'not paid yet'}</div></div>
-      <div class="kpi"><div class="l">Professional tax</div><div class="v">${inr0(T.pt)}</div><div class="s">${T.pt_paid ? `paid ${inr0(T.pt_paid)}` : 'not paid yet'}</div></div></div>
+      <div class="kpi"><div class="l">Professional tax</div><div class="v">${inr0(T.pt)}</div><div class="s">${T.pt_paid ? `paid ${inr0(T.pt_paid)}` : 'not paid yet'}</div></div>
+      ${T.tds ? `<div class="kpi"><div class="l">Income tax cut (TDS, sec 392)</div><div class="v">${inr0(T.tds)}</div><div class="s"><a href="#/tds">Pay it as a TDS challan</a> by the 7th</div></div>` : ''}</div>
     ${d.missing_uan.length ? `<div class="panel warnbox">Add the UAN of ${d.missing_uan.map(esc).join(', ')} (Staff → Edit) to download the ECR.</div>` : ''}
     ${d.missing_esi.length ? `<div class="panel warnbox">Add the ESI IP number of ${d.missing_esi.map(esc).join(', ')}.</div>` : ''}
     <div class="panel"><div class="row" style="flex-wrap:wrap;gap:6px">
@@ -2943,7 +2977,7 @@ route(/^statutory$/, async (el, m, q) => {
     <div class="panel flush">${table([{ h: 'Staff', f: (r) => `<b>${esc(r.name)}</b><div class="muted small">${r.uan ? 'UAN ' + esc(r.uan) : ''}${r.esi_no ? ' · IP ' + esc(r.esi_no) : ''}</div>` },
       { h: 'Gross', num: 1, f: (r) => inr0(r.gross_wages) }, { h: 'PF wages', num: 1, f: (r) => inr0(r.epf_wages), cls: 'hide-sm' },
       { h: 'PF (emp + empr)', num: 1, f: (r) => `${inr0(r.pf)} + ${inr0(r.eps + r.er_epf)}` }, { h: 'ESI (emp + empr)', num: 1, f: (r) => (r.esi || r.er_esi ? `${inr0(r.esi)} + ${inr0(r.er_esi)}` : '—') },
-      { h: 'PT', num: 1, f: (r) => (r.pt ? inr0(r.pt) : '—'), cls: 'hide-sm' }, { h: 'NCP days', num: 1, k: 'ncp', cls: 'hide-sm' }], d.rows,
+      { h: 'PT', num: 1, f: (r) => (r.pt ? inr0(r.pt) : '—'), cls: 'hide-sm' }, { h: 'TDS', num: 1, f: (r) => (r.tds ? inr0(r.tds) : '—'), cls: 'hide-sm' }, { h: 'NCP days', num: 1, k: 'ncp', cls: 'hide-sm' }], d.rows,
       { empty: 'No salary with PF, ESI or professional tax paid for this month. Tick PF / ESI on a staff member (Staff → Edit → More details), then pay the salary.' })}</div>
     ${d.challans.length ? `<div class="panel flush"><div style="padding:14px 16px 0"><h3>Challans paid</h3></div>${table([{ h: 'Date', f: (x) => fdate(x.date) }, { h: 'For', f: (x) => esc(x.kind.toUpperCase()) },
       { h: 'Ref / CRN', f: (x) => esc(x.ref || '') }, { h: 'Amount', num: 1, f: (x) => (x.status === 'cancelled' ? `<s>${inr0(x.amount)}</s>` : inr0(x.amount)) },
@@ -2961,13 +2995,19 @@ route(/^statutory$/, async (el, m, q) => {
     if (!confirm('Cancel this challan? Its entry in the books is reversed.')) return;
     try { await POST(`/api/payroll/challan/${b.dataset.chx}/cancel`); dirty('accounts'); toast('Cancelled'); render(); } catch (e) { toast(e.message, 'err'); }
   });
-  if ($('#rates')) $('#rates').onclick = () => modal('PF / ESI rates', [
+  if ($('#rates')) $('#rates').onclick = () => modal('Payroll rates', [
     { k: 'pf_ceiling', label: 'PF wage ceiling (₹ a month)', type: 'number', value: rs.pf_ceiling }, { k: 'pf_rate', label: 'PF rate % (employee and employer each)', type: 'number', value: rs.pf_rate },
     { k: 'eps_ceiling', label: 'EPS (pension) wage ceiling (₹)', type: 'number', value: rs.eps_ceiling }, { k: 'eps_rate', label: 'EPS % out of the employer share', type: 'number', value: rs.eps_rate },
     { k: 'edli_rate', label: 'EDLI %', type: 'number', value: rs.edli_rate }, { k: 'admin_rate', label: 'PF admin charges %', type: 'number', value: rs.admin_rate },
     { k: 'esi_limit', label: 'ESI applies up to gross (₹ a month)', type: 'number', value: rs.esi_limit }, { k: 'esi_emp', label: 'ESI employee %', type: 'number', value: rs.esi_emp },
-    { k: 'esi_er', label: 'ESI employer %', type: 'number', value: rs.esi_er }],
-  async (v) => { const r = await api('PUT', '/api/settings/setup', { payroll: v }); ME.org.setup = r.setup; toast('Rates saved'); render(); },
+    { k: 'esi_er', label: 'ESI employer %', type: 'number', value: rs.esi_er }, { k: 'tan', label: 'Business TAN (for income tax cut from salaries)', value: rs.tan || '' }],
+  async (v) => {
+    // only what the owner changed is kept: an unchanged rate follows the law's default when that changes
+    let saved = {};
+    try { saved = (typeof ME.org.setup === 'string' ? JSON.parse(ME.org.setup || '{}') : ME.org.setup || {}).payroll || {}; } catch (e) { saved = {}; }
+    const changed = Object.fromEntries(Object.entries(v).filter(([k, x]) => String(x ?? '') !== String(rs[k] ?? '')));
+    const r = await api('PUT', '/api/settings/setup', { payroll: { ...saved, ...changed } }); ME.org.setup = r.setup; toast('Rates saved'); render();
+  },
   { intro: '<p class="muted">Set as per the EPF Scheme, 2026 (PF ceiling ₹25,000 from 17 Sep 2026) and ESIC. Check any change with your CA. New salaries use these rates; paid ones keep theirs.</p>' });
 });
 
@@ -6027,10 +6067,11 @@ function bookCourier(r, W) {
     const sel = f.querySelector('[name=cid]:checked');
     const x = await POST('/api/courier/book', { dn_id: r.id, ...v, courier_id: sel ? +sel.value : 0 });
     lsSet('st_parcel_w', v.weight); lsSet('st_parcel_l', v.length); lsSet('st_parcel_b', v.breadth); lsSet('st_parcel_h', v.height);
-    toast(`Booked with ${x.courier}: ${x.awb}`);
-    if (x.label_url) window.open(x.label_url, '_blank', 'noopener');
-    if (r.phone && confirm(`Send ${r.party} the tracking number on WhatsApp now?`)) window.open(waTo(r.phone, fillMsg(W.msg_ship, { ...r, courier: x.courier, awb: x.awb })), '_blank', 'noopener');
     render();
+    // links the person taps (a window opened after the booking's wait would be blocked as a pop-up)
+    setTimeout(() => modal(`Booked: ${x.courier} ${x.awb}`, [], async () => {}, { submit: 'Done', intro: `<p>The courier is booked${x.pickup ? ` and the pickup is asked for (${esc(x.pickup)})` : ''}.</p>
+      <div class="row" style="flex-wrap:wrap;gap:6px">${x.label_url ? `<a class="btn primary" target="_blank" rel="noopener" href="${esc(x.label_url)}">Open courier label</a>` : '<span class="muted">The label is not ready yet: open it from Shiprocket.</span>'}
+      ${r.phone ? `<a class="btn got" target="_blank" rel="noopener" href="${esc(waTo(r.phone, fillMsg(W.msg_ship, { ...r, courier: x.courier, awb: x.awb })))}">Send tracking on WhatsApp</a>` : ''}</div>` }), 50);
   }, { submit: 'Book', intro: `<p class="muted">To <b>${esc(r.party)}</b>${r.address ? ', ' + esc(r.address) : ''} · ${r.pay_mode === 'prepaid' ? 'Prepaid' : 'COD ' + inr(r.total)}. Shiprocket picks the best courier unless you choose one.</p>` });
   f.querySelector('.form').insertAdjacentHTML('afterend', '<div class="row" style="margin:8px 0"><button type="button" class="btn sm" id="getrates">See courier rates</button></div><div id="rates" class="rates"></div>');
   f.querySelector('#getrates').onclick = async (e) => {
@@ -6047,8 +6088,9 @@ function bookCourier(r, W) {
 /* Settings → Orders & dispatch → Courier booking: connect a Shiprocket API user, pick the pickup address */
 async function courierPanel(el) {
   const box = $('#crp', el); if (!box) return;
-  let C = await GET('/api/courier').catch(() => ({ connected: false }));
-  if (C.connected && ME.can.settings) C = await GET('/api/courier/pickups').catch(() => C);
+  // the owner's call brings the pickup list too (one call); anyone else, or Shiprocket not answering, gets the plain status
+  let C = ME.can.settings ? await GET('/api/courier/pickups').catch(() => null) : null;
+  if (!C) C = await GET('/api/courier').catch(() => ({ connected: false }));
   box.innerHTML = `<h2>Courier booking (Shiprocket)</h2>
     <p class="muted">One Shiprocket account books Delhivery, Blue Dart, DTDC, Ekart, Xpressbees, Shadowfax and more, straight from the Dispatch Desk: rates, AWB, pickup and the courier's label, then tracking.</p>
     ${C.connected ? `<p>Connected${C.email ? ` as <b>${esc(C.email)}</b>` : ''}. Parcels leave from <b>${esc(C.pickup || 'not chosen')}</b>${C.pickup_pin ? ` (${esc(C.pickup_pin)})` : ''}.</p>
@@ -6066,7 +6108,10 @@ async function courierPanel(el) {
     catch (er) { toast(er.message, 'err'); b.disabled = false; }
   };
   if ($('#crpsave', box)) $('#crpsave', box).onclick = async () => { try { await api('PUT', '/api/courier', { pickup: $('#crpick', box).value }); toast('Pickup address saved'); courierPanel(el); } catch (er) { toast(er.message, 'err'); } };
-  if ($('#crdis', box)) $('#crdis', box).onclick = async () => { if (!confirm('Disconnect Shiprocket? Booked parcels keep their tracking numbers.')) return; await api('DELETE', '/api/courier'); toast('Disconnected'); courierPanel(el); };
+  if ($('#crdis', box)) $('#crdis', box).onclick = async () => {
+    if (!confirm('Disconnect Shiprocket? Booked parcels keep their tracking numbers.')) return;
+    try { await api('DELETE', '/api/courier'); toast('Disconnected'); courierPanel(el); } catch (er) { toast(er.message, 'err'); }
+  };
 }
 
 /* ======================================================================= business type & menu (src/setup.js)
@@ -6261,14 +6306,15 @@ route(/^dispatch$/, async (el, m, q) => {
       shipped: `${r.sr && r.sr.track_url ? `<a class="btn sm" target="_blank" rel="noopener" href="${esc(r.sr.track_url)}">Track</a>` : trackLink(r) ? `<a class="btn sm" target="_blank" rel="noopener" href="${esc(trackLink(r))}">Track</a>` : ''}
         ${r.sr && r.sr.label_url ? `<a class="btn sm" target="_blank" rel="noopener" href="${esc(r.sr.label_url)}">Courier label</a>` : ''}${r.sr && CR.connected ? `<button class="btn sm" data-trk="${r.id}">Refresh tracking</button>` : ''}<a class="btn sm got" target="_blank" rel="noopener" href="${waTo(r.phone, fillMsg(W.msg_ship, r))}">Send tracking on WhatsApp</a>
         <button class="btn sm primary" data-dl="${r.id}">Delivered</button><button class="btn sm danger" data-rto="${r.id}">Returned (RTO)</button><div class="muted small" style="flex-basis:100%">${shipText(r)}${r.sr && r.sr.status ? ` · courier says: <b>${esc(r.sr.status)}</b>` : ''}</div>`,
-      done: `<span class="muted small">${shipText(r)} · ${fdate((r.ship_at || '').slice(0, 10))}</span>`,
+      done: `<span class="muted small">${shipText(r)} · ${fdate((r.ship_at || '').slice(0, 10))}</span>${r.sr && r.sr.ret ? `<span class="muted small">· return pickup ${r.sr.ret.awb ? esc(r.sr.ret.courier + ' ' + r.sr.ret.awb) : 'made on Shiprocket'}</span>`
+        : r.ship === 'delivered' && r.sr && CR.connected ? `<button class="btn sm" data-ret="${r.id}">Return pickup</button>` : ''}`,
     }[tab];
     return `<div class="dk-card" data-find="${esc([r.party, r.phone, r.number, r.order_no, r.awb, r.city].join(' ').toLowerCase())}">${head2}<div class="dk-acts">${acts}</div></div>`;
   };
   const list = B[tab];
   const empty = { confirm: 'No order is waiting for the customer’s confirmation.', pack: 'Nothing to pack. New orders show up here.', packed: 'No packed parcel is waiting for the courier.',
     shipped: 'No parcel is on the way.', done: 'Nothing delivered or returned in the last 30 days.' }[tab];
-  el.innerHTML = head('Dispatch Desk', `${ME.can.sales ? '<a class="btn primary" href="#/new/SO">+ New order</a>' : ''}${tab === 'pack' && list.length > 1 ? `<a class="btn" href="#/wave?ids=${list.map((r) => r.id).join(',')}">One pick list for all</a>` : ''}${CR.connected && B.shipped.some((r) => r.sr) ? '<button class="btn" id="dksync">Refresh tracking</button>' : ''}${ME.can.settings ? '<a class="btn" href="#/settings/workflow">Set up</a>' : ''}`) + `
+  el.innerHTML = head('Dispatch Desk', `${ME.can.sales ? '<a class="btn primary" href="#/new/SO">+ New order</a>' : ''}${tab === 'pack' && list.length > 1 ? `<a class="btn" href="#/wave?ids=${list.map((r) => r.id).join(',')}">One pick list for all</a>` : ''}${CR.connected && B.shipped.some((r) => r.sr) ? '<button class="btn" id="dksync">Refresh tracking</button>' : ''}${CR.connected && tab === 'shipped' ? '<button class="btn" id="dkndr">Failed deliveries</button>' : ''}${ME.can.settings ? '<a class="btn" href="#/settings/workflow">Set up</a>' : ''}`) + `
     <div class="seg seg-wrap dk-tabs">${tabs.map(([k, t]) => `<button type="button" data-tab="${k}" class="${k === tab ? 'on' : ''}">${t}${k !== 'done' ? ` <span class="badge">${B.counts[k]}</span>` : ''}</button>`).join('')}</div>
     ${list.length > 5 ? '<div class="panel"><input id="dkq" placeholder="Find by name, phone, order or tracking no…" autocomplete="off"></div>' : ''}
     ${!ordersOn() && ME.can.settings ? '<div class="panel warnbox">Orders &amp; dispatch is not switched on, so Sales Orders stay hidden from the menu in Simple mode. <a href="#/settings/workflow">Set it up (1 minute)</a></div>' : ''}
@@ -6290,6 +6336,38 @@ route(/^dispatch$/, async (el, m, q) => {
     } catch (e) { toast(e.message, 'err'); }
   });
   $$('[data-book]', el).forEach((b) => b.onclick = () => bookCourier(row(b.dataset.book), W));
+  // a delivered parcel the customer sends back: Shiprocket picks it up from them (the Sales Return is entered when it arrives)
+  $$('[data-ret]', el).forEach((b) => b.onclick = () => {
+    const r = row(b.dataset.ret);
+    modal(`Return pickup: ${r.number}`, [{ k: 'reason', label: 'Why it comes back', placeholder: 'e.g. size does not fit', wide: true },
+      { k: 'weight', label: 'Weight (kg)', type: 'number', value: lsGet('st_parcel_w') || '0.5', required: true }],
+    async (v) => { const x = await POST('/api/courier/return', { dn_id: r.id, ...v }); toast(x.awb ? `Return pickup booked: ${x.courier} ${x.awb}` : x.note, x.awb ? 'ok' : 'info'); render(); },
+    { submit: 'Book return pickup', intro: `<p class="muted">The courier collects ${r.items.map((x) => `${esc(x.item)} × ${qtyf(x.qty)}`).join(', ')} from <b>${esc(r.party)}</b> and brings it to your pickup address. When it arrives, make a Sales Return from the invoice so stock and money are right.</p>` });
+  });
+  // parcels the courier could not deliver: try again (new phone / address / date) or send back
+  if ($('#dkndr')) $('#dkndr').onclick = async (e) => {
+    e.target.disabled = true;
+    let x;
+    try { x = await GET('/api/courier/ndr'); } catch (er) { toast(er.message, 'err'); e.target.disabled = false; return; }
+    e.target.disabled = false;
+    if (!x.rows.length) return toast('No failed delivery is waiting for an answer');
+    const f = modal('Failed deliveries (NDR)', [], async () => {}, { submit: 'Close', intro: `<p class="muted">The courier tried and could not deliver. Answer within a day or two, or the parcel comes back by itself.</p>
+      ${x.rows.map((n) => `<div class="panel ndr-row" data-ndrrow="${n.dn_id}"><b>${esc(n.party || '')}</b> · ${esc(n.number)} · ${esc(n.courier)} ${esc(n.awb)}<div class="muted small">${esc(n.reason || 'No reason given')} · attempt ${n.attempts || 1}${n.raised_at ? ' · ' + esc(n.raised_at.slice(0, 10)) : ''}</div>
+        <div class="row" style="flex-wrap:wrap;gap:6px;margin-top:6px"><input data-ndr-phone="${n.dn_id}" placeholder="New mobile (optional)" inputmode="tel" style="max-width:160px"><input data-ndr-addr="${n.dn_id}" placeholder="Address line (optional)" style="max-width:220px">
+        <input type="date" data-ndr-date="${n.dn_id}" min="${ME.today}" aria-label="Deliver on"><button type="button" class="btn sm primary" data-ndr="${n.dn_id}" data-act2="reattempt">Try again</button>
+        <button type="button" class="btn sm danger" data-ndr="${n.dn_id}" data-act2="return">Send back</button></div></div>`).join('')}` });
+    f.addEventListener('click', async (ev) => {
+      const b = ev.target.closest('[data-ndr]'); if (!b) return;
+      const id = b.dataset.ndr, val = (k) => (f.querySelector(`[data-ndr-${k}="${id}"]`) || {}).value || '';
+      if (b.dataset.act2 === 'return' && !confirm('Send this parcel back to you?')) return;
+      b.disabled = true;
+      try {
+        await POST('/api/courier/ndr/' + id, { action: b.dataset.act2, phone: val('phone'), address: val('addr'), date: val('date') });
+        toast(b.dataset.act2 === 'return' ? 'Asked to send it back' : 'Asked to deliver again');
+        const done = f.querySelector(`[data-ndrrow="${id}"]`); if (done) done.hidden = true;
+      } catch (er) { toast(er.message, 'err'); b.disabled = false; }
+    });
+  };
   $$('[data-trk]', el).forEach((b) => b.onclick = async () => {
     b.disabled = true;
     try { const x = await POST('/api/courier/track/' + b.dataset.trk); toast(x.delivered ? 'Delivered' : `Courier says: ${x.status}${x.rto ? ' (coming back: mark Returned once it reaches you)' : ''}`); render(); }

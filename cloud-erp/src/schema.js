@@ -3,7 +3,7 @@
    Every business table carries org_id: one database serves many businesses (multi-tenant).
    migrate() runs on the first request after each deploy, so no manual migration step is needed. */
 
-export const SCHEMA_VERSION = 44;
+export const SCHEMA_VERSION = 46;
 
 // document types whose monthly totals doc_month keeps (sales and purchase money documents)
 const MONTH_TYPES = `('INV','SRET','CNOTE','BILL','PRET','DNOTE')`;
@@ -729,6 +729,21 @@ export const MIGRATIONS = {
     `CREATE TABLE IF NOT EXISTS courier_links (org_id INTEGER PRIMARY KEY, provider TEXT NOT NULL, email TEXT NOT NULL, secret_enc TEXT NOT NULL,
        token_enc TEXT, token_at TEXT, pickup TEXT NOT NULL DEFAULT '', pickup_pin TEXT NOT NULL DEFAULT '', created_by INTEGER, created_at TEXT NOT NULL)`,
     `ALTER TABLE docs ADD COLUMN ship_ref TEXT NOT NULL DEFAULT ''`,
+  ],
+  /* once_guard never keeps a row: a write that must happen only once (cancel, void, sell, reverse) starts with
+     INSERT INTO once_guard SELECT NULL WHERE <it was already done>, so a second tap or a second person a moment later
+     makes the whole write fail and nothing is kept (src/engine.js onceGuard) */
+  45: [
+    `CREATE TABLE IF NOT EXISTS once_guard (k TEXT NOT NULL)`,
+  ],
+  /* professional tax by the state's slab (pt_auto; gender for Maharashtra's women slab), income tax on salary (PAN,
+     tds_mode '' | 'auto' (new regime) | 'fixed' with tds_fixed paise a month) */
+  46: [
+    `ALTER TABLE staff ADD COLUMN pt_auto INTEGER NOT NULL DEFAULT 0`,
+    `ALTER TABLE staff ADD COLUMN gender TEXT NOT NULL DEFAULT ''`,
+    `ALTER TABLE staff ADD COLUMN pan TEXT NOT NULL DEFAULT ''`,
+    `ALTER TABLE staff ADD COLUMN tds_mode TEXT NOT NULL DEFAULT ''`,
+    `ALTER TABLE staff ADD COLUMN tds_fixed INTEGER NOT NULL DEFAULT 0`,
   ],
 };
 

@@ -41,8 +41,11 @@ export function cleanWorkflow(b) {
 
 const R = (p) => Math.round(p) / 100;
 /* what the browser may see of a courier booking (src/courier.js): no ids it does not need */
-const shipRef = (t) => { let x = {}; try { x = JSON.parse(t || '{}') || {}; } catch (e) { x = {}; } return x.p ? { p: x.p, label_url: x.label_url || '', status: x.status || '', track_url: x.track_url || '', checked_at: x.checked_at || '' } : null; };
+const shipRef = (t) => { let x = {}; try { x = JSON.parse(t || '{}') || {}; } catch (e) { x = {}; } return x.p ? { p: x.p, label_url: x.label_url || '', status: x.status || '', track_url: x.track_url || '', checked_at: x.checked_at || '',
+  ndr: x.ndr ? { action: x.ndr.action || '', at: x.ndr.at || '' } : null, ret: x.ret ? { awb: x.ret.awb || '', courier: x.ret.courier || '', at: x.ret.at || '' } : null } : null; };
 const mayDispatch = (u) => can(u, 'stock') || can(u, 'sales');
+/* may hand parcels to a courier (book, track): selling right, or godown staff the owner did not stop from dispatching */
+export const mayShip = (u) => (can(u, 'sales') || (can(u, 'stock') && !rulesOf(u).no_dispatch)) && canView(u, 'sales');
 const ageDays = (d, t) => Math.max(0, Math.round((Date.parse(t + 'T00:00:00Z') - Date.parse(d + 'T00:00:00Z')) / 86400e3));
 const addressOf = (r) => [r.ship_address || r.address, [r.city, r.state, r.pincode].filter(Boolean).join(', ')].filter(Boolean).join(', ');
 

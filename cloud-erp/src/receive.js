@@ -10,7 +10,7 @@
      (CGST Act s.17(5)(h)), so it is reversed: Dr loss or claim (value + GST) / Cr Goods in Transit, Cr GST Input. */
 import { bad, notFound, forbidden, str, nowIso, roundQty, loadByIds, date, today, oneOf, uid, counterStatements, counterValueSql } from './lib.js';
 import { can, requireCan, requireCancel, checkBackdate } from './auth.js';
-import { auditStatement, journalStatements, creditedOf, partOf, TRANSIT_SQL } from './engine.js';
+import { auditStatement, journalStatements, creditedOf, partOf, TRANSIT_SQL, onceGuard } from './engine.js';
 
 const R = (p) => Math.round(p) / 100;
 
@@ -211,7 +211,8 @@ export async function cancelWriteOff(c, id) {
   if (w.received || w.closed) throw bad(`Money was received or closed on claim ${w.number}: cancel those entries first (Transit Claims).`);
   const [lines, jls] = await db.batch([db.prepare(`SELECT * FROM write_off_lines WHERE write_off_id = ?`).bind(w.id),
     db.prepare(`SELECT jl.* FROM journal_lines jl JOIN journals j ON j.id = jl.journal_id WHERE j.org_id = ? AND j.ref_type = 'TLOSS' AND j.ref_id = ?`).bind(c.org.id, w.id)]);
-  const st = [db.prepare(`UPDATE write_offs SET status = 'cancelled' WHERE id = ? AND status = 'done'`).bind(w.id)];
+  const st = [onceGuard(db, `SELECT 1 FROM write_offs WHERE id = ? AND (status != 'done' OR received > 0 OR closed > 0)`, w.id),
+    db.prepare(`UPDATE write_offs SET status = 'cancelled' WHERE id = ? AND status = 'done'`).bind(w.id)];
   for (const l of lines.results) st.push(db.prepare(`UPDATE doc_lines SET short_qty = MAX(0, ROUND(short_qty - ?, 3)) WHERE id = ?`).bind(l.qty, l.line_id));
   st.push(db.prepare(TRANSIT_SQL).bind(w.bill_id));
   st.push(...journalStatements(db, c, { date: w.date, narration: 'Cancelled ' + w.number, refType: 'TLOSS-X', refId: w.id,

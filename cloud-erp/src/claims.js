@@ -7,7 +7,7 @@
    (received, closed), so a claim is open, partly settled, settled, or closed as a loss at a glance. */
 import { bad, notFound, forbidden, str, nowIso, date, today, toPaise, num, uid } from './lib.js';
 import { can, requireCancel, checkBackdate } from './auth.js';
-import { auditStatement, journalStatements, cashAccount } from './engine.js';
+import { auditStatement, journalStatements, cashAccount, onceGuard } from './engine.js';
 
 const R = (p) => Math.round(p) / 100;
 const STATES = { open: 'Not paid yet', partial: 'Partly paid', settled: 'Settled', rejected: 'Closed as loss' };
@@ -103,6 +103,8 @@ async function entry(c, w, { kind, d, amount, account, note, narration, lines })
   if (!c.sys.claims) throw bad('The Transit & Insurance Claims account is missing in the chart of accounts.');
   const txk = uid(), col = kind === 'receipt' ? 'received' : 'closed';
   await c.db.batch([
+    // the claim as it was read: a second receipt saved at the same moment cannot take it past what is due
+    onceGuard(c.db, `SELECT 1 FROM write_offs WHERE id = ? AND (received != ? OR closed != ? OR status != 'done')`, w.id, w.received, w.closed),
     c.db.prepare(`INSERT INTO claim_entries (org_id, write_off_id, kind, date, amount, account_id, note, created_by, created_at, txk) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
       .bind(c.org.id, w.id, kind, d, amount, account, note, c.user.id, nowIso(), txk),
     c.db.prepare(`UPDATE write_offs SET ${col} = ${col} + ? WHERE id = ?`).bind(amount, w.id),
@@ -123,6 +125,7 @@ export async function cancelClaimEntry(c, id) {
     .bind(c.org.id, e.id).all();
   const col = e.kind === 'receipt' ? 'received' : 'closed';
   await c.db.batch([
+    onceGuard(c.db, `SELECT 1 FROM claim_entries WHERE id = ? AND status != 'done'`, e.id),
     c.db.prepare(`UPDATE claim_entries SET status = 'cancelled' WHERE id = ? AND status = 'done'`).bind(e.id),
     c.db.prepare(`UPDATE write_offs SET ${col} = MAX(0, ${col} - ?) WHERE id = ?`).bind(e.amount, e.write_off_id),
     ...journalStatements(c.db, c, { date: e.date, narration: 'Cancelled claim entry', refType: 'CLAIM-X', refId: e.id,

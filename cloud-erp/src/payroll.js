@@ -7,9 +7,10 @@
    Books: an advance is Dr Staff Advances / Cr cash; a salary is Dr Salaries & Wages (earned + bonus) / Cr Staff Advances
    (the advance cut) / Cr cash (what is paid). Cancelling reverses the journal. */
 import { bad, notFound, str, reqStr, num, toPaise, nowIso, today, date, uid, oneOf, addDays } from './lib.js';
-import { requireCan, requireCancel } from './auth.js';
-import { journalStatements, auditStatement, cashAccount, ensureSysAccounts } from './engine.js';
+import { requireCan, requireCancel, checkBackdate } from './auth.js';
+import { journalStatements, auditStatement, cashAccount, ensureSysAccounts, onceGuard, TDS_ACCOUNTS } from './engine.js';
 import { setupOf } from './setup.js';
+import { ptFor, monthTds, taxYearOf, yearTax } from './paytax.js';
 
 /* ---------- statutory deductions: PF (EPF / EPS / EDLI), ESI, professional tax ----------
    Under the Code on Social Security and the EPF Scheme, 2026: PF is 12% of Wages (basic + DA, at least 50% of the
@@ -23,11 +24,16 @@ export const STAT_ACCOUNTS = [['pf_payable', ['2410', '2411', '2419'], 'PF Payab
   ['pt_payable', ['2430', '2431', '2439'], 'Professional Tax Payable', 'liability'], ['er_contrib', ['6015', '6016', '6019'], 'Employer PF & ESI', 'expense']];
 export const ratesOf = (org) => ({ ...STAT_DEFAULTS, ...(setupOf(org).payroll || {}) });
 const rupee = (p) => Math.round(p / 100) * 100;                   // paise → whole rupees (in paise)
-const rupeeUp = (p) => Math.ceil(Math.round(p) / 100) * 100;
-/* s: staff row; pay: salaryFor(); amounts in paise. wages for PF exclude overtime and bonus (Code on Wages) */
-export function statutoryFor(s, pay, rates) {
-  const r = rates, out = { pf: 0, eps: 0, er_epf: 0, edli: 0, admin: 0, esi: 0, er_esi: 0, pt: 0, gross_wages: pay.earned, epf_wages: 0, eps_wages: 0, edli_wages: 0, esi_wages: 0,
-    ncp: Math.max(0, Math.floor(pay.days - pay.payable - (pay.from ? 0 : 0))) };
+/* ESI: rate % of wages, any part of a rupee goes up to the next rupee; worked in whole numbers (no float error) */
+const esiOf = (wages, rate) => { const n = Math.round(wages) * Math.round(rate * 100); return Math.floor((n + 999999) / 1e6) * 100; };
+/* the person's own monthly wage rate (ESI coverage is decided on it, not on a month with overtime): day wage × 26 */
+const monthRate = (s) => (s.pay_type === 'day' ? s.rate * 26 : s.rate);
+/* s: staff row; pay: salaryFor(); amounts in paise. wages for PF exclude overtime and bonus (Code on Wages).
+   x: { state, month, bonus, before: { gross, tds } in paise of the earlier months of this tax year } for PT and TDS */
+export function statutoryFor(s, pay, rates, x = {}) {
+  const r = rates, out = { pf: 0, eps: 0, er_epf: 0, edli: 0, admin: 0, esi: 0, er_esi: 0, pt: 0, tds: 0, gross_wages: pay.earned, epf_wages: 0, eps_wages: 0, edli_wages: 0, esi_wages: 0,
+    // days not paid while employed this month (NCP days in the ECR): days before joining and days not yet come are not counted
+    ncp: Math.max(0, Math.floor((pay.span ?? pay.days) - pay.payable)) };
   if (s.pf) {
     const wages = rupee(pay.base * Math.min(100, Math.max(50, s.wage_pct || 50)) / 100);
     const cap = r.pf_ceiling * 100, epsCap = r.eps_ceiling * 100;
@@ -37,11 +43,21 @@ export function statutoryFor(s, pay, rates) {
     out.er_epf = Math.max(0, rupee(out.epf_wages * r.pf_rate / 100) - out.eps);
     out.edli = rupee(out.edli_wages * r.edli_rate / 100); out.admin = rupee(out.epf_wages * r.admin_rate / 100);
   }
-  if (s.esi && pay.earned > 0 && pay.earned <= r.esi_limit * 100) {
-    out.esi_wages = pay.earned; out.esi = rupeeUp(pay.earned * r.esi_emp / 100); out.er_esi = rupeeUp(pay.earned * r.esi_er / 100);
+  // covered while the wage rate is within the limit; the contribution is on what was paid (overtime included)
+  if (s.esi && pay.earned > 0 && monthRate(s) <= r.esi_limit * 100) {
+    out.esi_wages = pay.earned; out.esi = esiOf(pay.earned, r.esi_emp); out.er_esi = esiOf(pay.earned, r.esi_er);
   }
-  out.pt = s.pt || 0;
-  out.employee = out.pf + out.esi + out.pt;
+  // professional tax: a fixed monthly amount typed on the person, else the state's slab when switched on; none on no pay
+  const month = x.month || pay.month || '';
+  if (pay.earned > 0) out.pt = s.pt ? s.pt : s.pt_auto ? ptFor(x.state, pay.earned / 100, month, s.gender === 'f') * 100 : 0;
+  // income tax (TDS on salary, new regime) on the year's pay so far plus this month for the months left
+  const gross = pay.earned + (x.bonus || 0);
+  if (s.tds_mode === 'fixed') out.tds = Math.min(s.tds_fixed || 0, gross);
+  else if (s.tds_mode === 'auto' && gross > 0 && month) {
+    const b = x.before || { gross: 0, tds: 0 }, t = monthTds(month, gross / 100, { gross: b.gross / 100, tds: b.tds / 100 });
+    out.tds = t.tds * 100; out.tds_year = t.year.total * 100; out.tds_projected = t.projected * 100;
+  }
+  out.employee = out.pf + out.esi + out.pt + out.tds;
   out.employer = out.eps + out.er_epf + out.edli + out.admin + out.er_esi;
   return out;
 }
@@ -53,6 +69,7 @@ const daysIn = (m) => new Date(Date.UTC(+m.slice(0, 4), +m.slice(5, 7), 0)).getU
 const D = (account, amount) => ({ account, amount });
 const C = (account, amount) => ({ account, amount: -amount });
 
+const digits = (v, n) => String(v ?? '').replace(/\D/g, '').slice(0, n);
 const staffFields = (b) => ({
   name: reqStr(b.name, 'Name', 80), phone: str(b.phone, 20).replace(/[^\d+]/g, ''), title: str(b.title, 60),
   pay_type: oneOf(b.pay_type || 'month', ['month', 'day'], 'Pay type'),
@@ -60,15 +77,22 @@ const staffFields = (b) => ({
   ot_rate: toPaise(num(b.ot_rate, 'Overtime per hour', { min: 0, max: 1e6, def: 0 })),
   join_date: b.join_date ? date(b.join_date, 'Joining date') : today(), notes: str(b.notes, 300),
   // statutory: PF (UAN), ESI (IP number), professional tax per month, wages share for PF (basic + DA, 50% or more)
-  pf: b.pf === true || b.pf === 1 || b.pf === '1' ? 1 : 0, uan: str(b.uan, 12).replace(/\D/g, ''),
-  esi: b.esi === true || b.esi === 1 || b.esi === '1' ? 1 : 0, esi_no: str(b.esi_no, 17).replace(/\D/g, ''),
-  pt: toPaise(num(b.pt, 'Professional tax', { min: 0, max: 2500, def: 0 })), wage_pct: Math.round(num(b.wage_pct, 'Wages share for PF', { min: 50, max: 100, def: 50 })),
+  // spaces and dashes are allowed while typing ("1002 0030 0400"): the digits are kept, then checked
+  pf: yes(b.pf), uan: digits(b.uan, 14), eps: b.eps === false || b.eps === 0 || b.eps === '0' ? 0 : 1,
+  esi: yes(b.esi), esi_no: digits(b.esi_no, 12),
+  pt: toPaise(num(b.pt, 'Professional tax', { min: 0, max: 2500, def: 0 })), pt_auto: yes(b.pt_auto), gender: oneOf(String(b.gender || ''), ['', 'm', 'f'], 'Gender'),
+  wage_pct: Math.round(num(b.wage_pct, 'Wages share for PF', { min: 50, max: 100, def: 50 })),
+  pan: str(b.pan, 12).toUpperCase().replace(/\s/g, ''), tds_mode: oneOf(String(b.tds_mode || ''), ['', 'auto', 'fixed'], 'Income tax (TDS)'),
+  tds_fixed: toPaise(num(b.tds_fixed, 'Monthly TDS', { min: 0, max: 1e8, def: 0 })),
 });
+const yes = (v) => (v === true || v === 1 || v === '1' ? 1 : 0);
 const checkIds = (f) => {
   if (f.uan && !/^\d{12}$/.test(f.uan)) throw bad('UAN has 12 digits.');
   if (f.esi_no && !/^\d{10}$/.test(f.esi_no)) throw bad('ESI IP number has 10 digits.');
+  if (f.pan && !/^[A-Z]{5}\d{4}[A-Z]$/.test(f.pan)) throw bad('PAN is 10 characters, like ABCDE1234F.');
 };
-const staffOut = (s) => ({ ...s, rate: R(s.rate), ot_rate: R(s.ot_rate), pt: R(s.pt || 0) });
+const staffOut = (s) => ({ ...s, rate: R(s.rate), ot_rate: R(s.ot_rate), pt: R(s.pt || 0), tds_fixed: R(s.tds_fixed || 0) });
+const STAFF_COLS = ['name', 'phone', 'title', 'pay_type', 'rate', 'ot_rate', 'join_date', 'notes', 'pf', 'uan', 'eps', 'esi', 'esi_no', 'pt', 'pt_auto', 'gender', 'wage_pct', 'pan', 'tds_mode', 'tds_fixed'];
 
 async function staffOf(c, id) {
   const s = await c.db.prepare(`SELECT * FROM staff WHERE id = ? AND org_id = ?`).bind(id, c.org.id).first();
@@ -94,7 +118,8 @@ export function salaryFor(s, month, marks) {
   }
   const base = s.pay_type === 'month' ? s.rate * payable / n : s.rate * payable;
   const otPay = ot * s.ot_rate;
-  return { month, days: n, from: from <= to ? from : '', to, ...count, payable, ot_hours: Math.round(ot * 100) / 100,
+  const span = from <= to ? Math.round((Date.parse(to) - Date.parse(from)) / 864e5) + 1 : 0;   // days counted (joined → month end or today)
+  return { month, days: n, span, from: from <= to ? from : '', to, ...count, payable, ot_hours: Math.round(ot * 100) / 100,
     base: Math.round(base / 100) * 100, ot_pay: Math.round(otPay / 100) * 100, earned: Math.round((base + otPay) / 100) * 100 };
 }
 
@@ -125,21 +150,18 @@ export async function saveStaff(c, id, body) {
   requireCan(c.user, 'finance');
   const f = staffFields(body);
   checkIds(f);
-  const stat = c.db.prepare(`UPDATE staff SET pf = ?, uan = ?, esi = ?, esi_no = ?, pt = ?, wage_pct = ? WHERE id = ? AND org_id = ?`);
+  const vals = STAFF_COLS.map((k) => f[k]);
   if (id) {
     await staffOf(c, id);
-    await c.db.batch([c.db.prepare(`UPDATE staff SET name = ?, phone = ?, title = ?, pay_type = ?, rate = ?, ot_rate = ?, join_date = ?, notes = ?, active = ? WHERE id = ? AND org_id = ?`)
-      .bind(f.name, f.phone, f.title, f.pay_type, f.rate, f.ot_rate, f.join_date, f.notes, body.active === false || body.active === 0 ? 0 : 1, id, c.org.id),
-    stat.bind(f.pf, f.uan, f.esi, f.esi_no, f.pt, f.wage_pct, id, c.org.id),
-    auditStatement(c, 'edit staff', f.name)]);
-    return staffOut(await staffOf(c, id));
+    const [u] = await c.db.batch([c.db.prepare(`UPDATE staff SET ${STAFF_COLS.map((k) => `${k} = ?`).join(', ')}, active = ? WHERE id = ? AND org_id = ? RETURNING *`)
+      .bind(...vals, body.active === false || body.active === 0 ? 0 : 1, id, c.org.id), auditStatement(c, 'edit staff', f.name)]);
+    return staffOut(u.results[0]);
   }
-  const n = await c.db.prepare(`SELECT COUNT(*) AS n FROM staff WHERE org_id = ?`).bind(c.org.id).first();
-  if (n.n >= 500) throw bad('At most 500 staff in one business.');
-  const r = await c.db.prepare(`INSERT INTO staff (org_id, name, phone, title, pay_type, rate, ot_rate, join_date, notes, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING *`)
-    .bind(c.org.id, f.name, f.phone, f.title, f.pay_type, f.rate, f.ot_rate, f.join_date, f.notes, nowIso()).first();
-  await stat.bind(f.pf, f.uan, f.esi, f.esi_no, f.pt, f.wage_pct, r.id, c.org.id).run();
-  return staffOut(await staffOf(c, r.id));
+  // the count and the new row in one write: two saves at the same moment cannot pass 500 either
+  const r = await c.db.prepare(`INSERT INTO staff (org_id, ${STAFF_COLS.join(', ')}, created_at) SELECT ?, ${STAFF_COLS.map(() => '?').join(', ')}, ?
+      WHERE (SELECT COUNT(*) FROM staff WHERE org_id = ?) < 500 RETURNING *`).bind(c.org.id, ...vals, nowIso(), c.org.id).first();
+  if (!r) throw bad('At most 500 staff in one business.');
+  return staffOut(r);
 }
 
 /* marks: [{ staff_id, date?, status ('' clears), ot_hours? }] (date defaults to body.date or today) */
@@ -175,15 +197,20 @@ export async function staffDetail(c, id, month) {
   requireCan(c.user, 'finance');
   month = monthOf(month);
   const s = await staffOf(c, id), n = daysIn(month);
-  const [marks, txns, adv] = await c.db.batch([
+  const ty = taxYearOf(month);
+  const [marks, txns, adv, before] = await c.db.batch([
     c.db.prepare(`SELECT date, status, ot_hours FROM attendance WHERE staff_id = ? AND org_id = ? AND date BETWEEN ? AND ? ORDER BY date`).bind(id, c.org.id, `${month}-01`, `${month}-${n}`),
     c.db.prepare(`SELECT t.*, a.name AS account FROM staff_txns t LEFT JOIN accounts a ON a.id = t.account_id WHERE t.org_id = ? AND t.staff_id = ? ORDER BY t.date DESC, t.id DESC LIMIT 200`).bind(c.org.id, id),
     c.db.prepare(`${ADV_SQL} AND staff_id = ?`).bind(c.org.id, id),
+    c.db.prepare(`SELECT COALESCE(SUM(gross + bonus), 0) AS gross, COALESCE(SUM(json_extract(detail, '$.stat.tds')), 0) AS tds FROM staff_txns
+        WHERE org_id = ? AND staff_id = ? AND kind = 'salary' AND status = 'done' AND month >= ? AND month < ?`).bind(c.org.id, id, ty.start, month),
   ]);
   const pay = salaryFor(s, month, marks.results);
   const paid = txns.results.find((x) => x.kind === 'salary' && x.status === 'done' && x.month === month);
+  // what PF / ESI / professional tax / TDS would take from this month's pay (the Pay form leaves room for it)
+  const cuts = statutoryFor(s, pay, ratesOf(c.org), { state: c.org.state, month, before: before.results[0] }).employee;
   return { staff: staffOut(s), month, marks: marks.results, pay: { ...pay, base: R(pay.base), ot_pay: R(pay.ot_pay), earned: R(pay.earned) },
-    advance_due: R(adv.results[0] ? adv.results[0].due : 0), paid: paid ? { id: paid.id, amount: R(paid.amount) } : null,
+    advance_due: R(adv.results[0] ? adv.results[0].due : 0), paid: paid ? { id: paid.id, amount: R(paid.amount) } : null, cuts: R(cuts),
     txns: txns.results.map((t) => ({ ...t, gross: R(t.gross), bonus: R(t.bonus), advance_cut: R(t.advance_cut), other_cut: R(t.other_cut), amount: R(t.amount), detail: JSON.parse(t.detail || '{}') })) };
 }
 
@@ -191,6 +218,8 @@ export async function giveAdvance(c, id, body) {
   requireCan(c.user, 'finance');
   const s = await staffOf(c, id);
   const amount = toPaise(num(body.amount, 'Amount', { min: 1, max: 1e8 })), d = date(body.date || today());
+  if (d > today()) throw bad('An advance cannot be dated in the future.');
+  checkBackdate(c.user, d, today(), 'an advance');
   const from = await cashAccount(c.db, c.org.id, +body.paid_from);
   const txk = uid();
   await c.db.batch([
@@ -207,10 +236,14 @@ export async function giveAdvance(c, id, body) {
 export async function paySalary(c, id, body) {
   requireCan(c.user, 'finance');
   const s = await staffOf(c, id), month = monthOf(body.month), n = daysIn(month);
-  const [marks, adv, done] = await c.db.batch([
+  const ty = taxYearOf(month);
+  const [marks, adv, done, before] = await c.db.batch([
     c.db.prepare(`SELECT date, status, ot_hours FROM attendance WHERE staff_id = ? AND org_id = ? AND date BETWEEN ? AND ?`).bind(id, c.org.id, `${month}-01`, `${month}-${n}`),
     c.db.prepare(`${ADV_SQL} AND staff_id = ?`).bind(c.org.id, id),
     c.db.prepare(`SELECT id FROM staff_txns WHERE staff_id = ? AND month = ? AND kind = 'salary' AND status = 'done'`).bind(id, month),
+    // the earlier months of this tax year, for TDS on salary
+    c.db.prepare(`SELECT COALESCE(SUM(gross + bonus), 0) AS gross, COALESCE(SUM(json_extract(detail, '$.stat.tds')), 0) AS tds FROM staff_txns
+        WHERE org_id = ? AND staff_id = ? AND kind = 'salary' AND status = 'done' AND month >= ? AND month < ?`).bind(c.org.id, id, ty.start, month),
   ]);
   if (done.results.length) throw bad(`${s.name}'s salary for ${month} is already paid. Cancel that payment first to pay it again.`);
   const pay = salaryFor(s, month, marks.results);
@@ -222,16 +255,20 @@ export async function paySalary(c, id, body) {
   if (advCut > due) throw bad(`Only ${R(due)} of advance is due from ${s.name}.`);
   const other = toPaise(num(body.other_cut, 'Other deduction', { min: 0, max: 1e9, def: 0 }));
   // PF / ESI / professional tax on what was earned this month (a salary typed by hand scales the month's pay)
-  const scale = pay.earned > 0 ? gross / pay.earned : 1;
-  const st = statutoryFor(s, { ...pay, base: Math.round(pay.base * scale), earned: gross }, ratesOf(c.org));
+  // (nothing earned by the marks but a salary typed: all of it is the month's pay, so PF is not left at nil)
+  const base = pay.earned > 0 ? Math.round(pay.base * gross / pay.earned) : gross;
+  const st = statutoryFor(s, { ...pay, base, earned: gross }, ratesOf(c.org), { state: c.org.state, month, bonus, before: before.results[0] });
   const net = gross + bonus - advCut - other - st.employee;
   if (net < 0) throw bad('The deductions are more than the salary.');
   if (st.employee || st.employer) await ensureSysAccounts(c, STAT_ACCOUNTS);
+  if (st.tds) await ensureSysAccounts(c, TDS_ACCOUNTS);
   const from = await cashAccount(c.db, c.org.id, +body.paid_from);
   const d = date(body.date || today()), txk = uid();
+  if (d > today()) throw bad('A salary cannot be dated in the future.');
+  checkBackdate(c.user, d, today(), 'a salary');
   const salaryAcc = c.sys.salary || c.sys.misc_exp;
   const detail = { ...pay, base: pay.base, ot_pay: pay.ot_pay, earned: pay.earned, rate: s.rate, pay_type: s.pay_type, advance_left: due - advCut,
-    stat: st.employee || st.employer ? { ...st, uan: s.uan || '', esi_no: s.esi_no || '' } : null };
+    stat: st.employee || st.employer ? { ...st, uan: s.uan || '', esi_no: s.esi_no || '', pan: s.pan || '' } : null, rates: ratesOf(c.org) };
   const S = c.sys;
   await c.db.batch([
     c.db.prepare(`INSERT INTO staff_txns (org_id, staff_id, kind, date, month, gross, bonus, advance_cut, other_cut, amount, account_id, detail, notes, created_by, created_at, txk)
@@ -240,7 +277,7 @@ export async function paySalary(c, id, body) {
     // other deductions (fine, damage) stay with the business: the expense is only what was earned less them
     ...journalStatements(c.db, c, { date: d, narration: `Salary ${month}: ${s.name}`, refType: 'SAL', refTxk: txk, refTable: 'staff_txns',
       lines: [D(salaryAcc, gross + bonus - other), D(S.er_contrib, st.employer), C(c.sys.staff_adv, advCut),
-        C(S.pf_payable, st.pf + st.eps + st.er_epf + st.edli + st.admin), C(S.esi_payable, st.esi + st.er_esi), C(S.pt_payable, st.pt), C(from.id, net)] }),
+        C(S.pf_payable, st.pf + st.eps + st.er_epf + st.edli + st.admin), C(S.esi_payable, st.esi + st.er_esi), C(S.pt_payable, st.pt), C(S.tds_payable, st.tds), C(from.id, net)] }),
     auditStatement(c, 'salary', `${s.name} ${month} ${net / 100}`),
   ]);
   const row = await c.db.prepare(`SELECT id FROM staff_txns WHERE txk = ?`).bind(txk).first();
@@ -261,6 +298,7 @@ export async function cancelStaffTxn(c, txnId) {
   const { results: jls } = await c.db.prepare(`SELECT jl.* FROM journal_lines jl JOIN journals j ON j.id = jl.journal_id WHERE j.org_id = ? AND j.ref_type = ? AND j.ref_id = ?`)
     .bind(c.org.id, ref, t.id).all();
   await c.db.batch([
+    onceGuard(c.db, `SELECT 1 FROM staff_txns WHERE id = ? AND status != 'done'`, t.id),
     c.db.prepare(`UPDATE staff_txns SET status = 'cancelled' WHERE id = ? AND status = 'done'`).bind(t.id),
     ...journalStatements(c.db, c, { date: t.date, narration: `Cancelled ${t.kind} ${t.name}`, refType: ref + '-X', refId: t.id,
       lines: jls.map((l) => ({ account: l.account_id, amount: l.credit - l.debit })) }),
@@ -279,7 +317,7 @@ export async function payslip(c, txnId) {
   return { id: t.id, name: t.name, phone: t.phone, title: t.title, pay_type: t.pay_type, month: t.month, date: t.date, status: t.status,
     gross: R(t.gross), bonus: R(t.bonus), advance_cut: R(t.advance_cut), other_cut: R(t.other_cut), net: R(t.amount), notes: t.notes,
     detail: { ...dt, base: R(dt.base || 0), ot_pay: R(dt.ot_pay || 0), earned: R(dt.earned || 0), rate: R(dt.rate || 0), advance_left: R(dt.advance_left || 0),
-      stat: dt.stat ? Object.fromEntries(Object.entries(dt.stat).map(([k, v]) => [k, typeof v === 'number' && !['ncp'].includes(k) ? R(v) : v])) : null },
+      stat: dt.stat ? Object.fromEntries(Object.entries(dt.stat).map(([k, v]) => [k, typeof v === 'number' && !['ncp'].includes(k) ? R(v) : v])) : null, rates: dt.rates || ratesOf(c.org) },
     org: { name: c.org.name, address: c.org.address, phone: c.org.phone, gstin: c.org.gstin } };
 }
 
@@ -299,23 +337,23 @@ export function todayStaffQueries(db, orgId) {
 }
 
 /* ---------- the month's statutory return: PF (ECR for the EPFO portal), ESI (upload sheet), professional tax ---------- */
-async function monthSalaries(c, month) {
-  const { results } = await c.db.prepare(`SELECT t.id, t.detail, t.gross, s.name, s.uan, s.esi_no FROM staff_txns t JOIN staff s ON s.id = t.staff_id
-      WHERE t.org_id = ? AND t.kind = 'salary' AND t.status = 'done' AND t.month = ? ORDER BY s.name`).bind(c.org.id, month).all();
-  return results.map((t) => { const d = JSON.parse(t.detail || '{}'); return { ...t, stat: d.stat || null, days: d.days, payable: d.payable }; }).filter((t) => t.stat);
-}
+const salariesStatement = (c, month) => c.db.prepare(`SELECT t.id, t.detail, t.gross, s.name, s.uan, s.esi_no FROM staff_txns t JOIN staff s ON s.id = t.staff_id
+      WHERE t.org_id = ? AND t.kind = 'salary' AND t.status = 'done' AND t.month = ? ORDER BY s.name`).bind(c.org.id, month);
+const salaryRows = (results) => results.map((t) => { const d = JSON.parse(t.detail || '{}'); return { ...t, stat: d.stat || null, days: d.days, payable: d.payable }; }).filter((t) => t.stat);
+async function monthSalaries(c, month) { return salaryRows((await salariesStatement(c, month).all()).results); }
 export async function statutoryMonth(c, monthIn) {
   requireCan(c.user, 'finance');
-  const month = monthOf(monthIn), rows = await monthSalaries(c, month);
+  const month = monthOf(monthIn);
+  const [sal, ch] = await c.db.batch([salariesStatement(c, month),
+    c.db.prepare(`SELECT id, kind, date, amount, ref, status FROM stat_challans WHERE org_id = ? AND month = ? ORDER BY id`).bind(c.org.id, month)]);
+  const rows = salaryRows(sal.results), challans = ch.results;
   const sum = (k) => rows.reduce((a, r) => a + (r.stat[k] || 0), 0);
-  const { results: paid } = await c.db.prepare(`SELECT kind, COALESCE(SUM(amount), 0) AS amount FROM stat_challans WHERE org_id = ? AND month = ? AND status = 'done' GROUP BY kind`)
-    .bind(c.org.id, month).all();
-  const { results: challans } = await c.db.prepare(`SELECT id, kind, date, amount, ref, status FROM stat_challans WHERE org_id = ? AND month = ? ORDER BY id`).bind(c.org.id, month).all();
+  const paid = ['pf', 'esi', 'pt'].map((kind) => ({ kind, amount: challans.filter((x) => x.kind === kind && x.status === 'done').reduce((a, x) => a + x.amount, 0) }));
   const paidOf = (k) => R((paid.find((p) => p.kind === k) || { amount: 0 }).amount);
   const pf = sum('pf') + sum('eps') + sum('er_epf') + sum('edli') + sum('admin'), esi = sum('esi') + sum('er_esi'), pt = sum('pt');
   return { month, rates: ratesOf(c.org), due_by: `${addDays(`${month}-01`, 31).slice(0, 7)}-15`,
     rows: rows.map((r) => ({ name: r.name, uan: r.stat.uan || r.uan, esi_no: r.stat.esi_no || r.esi_no, ncp: r.stat.ncp, ...Object.fromEntries(['gross_wages', 'epf_wages', 'eps_wages', 'edli_wages', 'esi_wages', 'pf', 'eps', 'er_epf', 'edli', 'admin', 'esi', 'er_esi', 'pt'].map((k) => [k, R(r.stat[k] || 0)])) })),
-    totals: { pf: R(pf), esi: R(esi), pt: R(pt), pf_paid: paidOf('pf'), esi_paid: paidOf('esi'), pt_paid: paidOf('pt') },
+    totals: { pf: R(pf), esi: R(esi), pt: R(pt), tds: R(sum('tds')), pf_paid: paidOf('pf'), esi_paid: paidOf('esi'), pt_paid: paidOf('pt') },
     challans: challans.map((x) => ({ ...x, amount: R(x.amount) })),
     missing_uan: rows.filter((r) => (r.stat.pf || 0) > 0 && !(r.stat.uan || r.uan)).map((r) => r.name),
     missing_esi: rows.filter((r) => (r.stat.esi || 0) > 0 && !(r.stat.esi_no || r.esi_no)).map((r) => r.name) };
@@ -329,6 +367,9 @@ export async function ecrFile(c, monthIn) {
   if (miss.length) throw bad(`Add the UAN of ${miss.map((r) => r.name).join(', ')} (Staff → edit) before the ECR.`);
   const W = (p) => String(Math.round((p || 0) / 100));
   const clean = (n) => String(n).toUpperCase().replace(/[^A-Z .]/g, ' ').replace(/\s+/g, ' ').trim();
+  // the ECR wants the name as on the UAN, in English letters: a name typed only in Hindi would go out blank
+  const noName = rows.filter((r) => !clean(r.name));
+  if (noName.length) throw bad(`Type ${noName.map((r) => r.name).join(', ')}'s name in English letters (as on the UAN) in Staff → edit before the ECR.`);
   return rows.map((r) => [r.stat.uan || r.uan, clean(r.name), W(r.stat.gross_wages), W(r.stat.epf_wages), W(r.stat.eps_wages), W(r.stat.edli_wages),
     W(r.stat.pf), W(r.stat.eps), W(r.stat.er_epf), String(r.stat.ncp || 0), '0'].join('#~#')).join('\n');
 }
@@ -337,7 +378,10 @@ export async function esiFile(c, monthIn) {
   requireCan(c.user, 'finance');
   const month = monthOf(monthIn), rows = (await monthSalaries(c, month)).filter((r) => (r.stat.esi || 0) > 0);
   if (!rows.length) throw bad(`No ESI on the salaries paid for ${month}.`);
-  const q = (v) => `"${String(v).replace(/"/g, '""')}"`;
+  const miss = rows.filter((r) => !(r.stat.esi_no || r.esi_no));
+  if (miss.length) throw bad(`Add the ESI IP number of ${miss.map((r) => r.name).join(', ')} (Staff → edit) before the ESI sheet.`);
+  // a name starting with = + - @ would run as a formula when the sheet is opened in Excel
+  const q = (v) => `"${String(v).replace(/^([=+\-@\t\r])/, "'$1").replace(/"/g, '""')}"`;
   return ['IP Number,IP Name,No of Days for which wages paid/payable during the month,Total Monthly Wages,Reason Code for Zero workings days,Last Working Day',
     ...rows.map((r) => [q(r.stat.esi_no || r.esi_no || ''), q(r.name), Math.round(r.payable || 0), Math.round((r.stat.esi_wages || 0) / 100), '', ''].join(','))].join('\n');
 }
@@ -346,6 +390,8 @@ export async function payChallan(c, body) {
   requireCan(c.user, 'finance');
   const kind = oneOf(String(body.kind || ''), ['pf', 'esi', 'pt'], 'Challan');
   const month = monthOf(body.month), amount = toPaise(num(body.amount, 'Amount', { min: 1, max: 1e10 })), d = date(body.date || today());
+  if (d > today()) throw bad('A challan cannot be dated in the future.');
+  checkBackdate(c.user, d, today(), 'a challan');
   const from = await cashAccount(c.db, c.org.id, +body.paid_from);
   await ensureSysAccounts(c, STAT_ACCOUNTS);
   const acc = { pf: c.sys.pf_payable, esi: c.sys.esi_payable, pt: c.sys.pt_payable }[kind], txk = uid();
@@ -368,10 +414,45 @@ export async function cancelChallan(c, id) {
   const { results: jls } = await c.db.prepare(`SELECT jl.* FROM journal_lines jl JOIN journals j ON j.id = jl.journal_id WHERE j.org_id = ? AND j.ref_type = 'STAT' AND j.ref_id = ?`)
     .bind(c.org.id, t.id).all();
   await c.db.batch([
+    onceGuard(c.db, `SELECT 1 FROM stat_challans WHERE id = ? AND status != 'done'`, t.id),
     c.db.prepare(`UPDATE stat_challans SET status = 'cancelled' WHERE id = ? AND status = 'done'`).bind(t.id),
     ...journalStatements(c.db, c, { date: t.date, narration: `Cancelled ${t.kind} challan ${t.month}`, refType: 'STAT-X', refId: t.id,
       lines: jls.map((l) => ({ account: l.account_id, amount: l.credit - l.debit })) }),
     auditStatement(c, 'cancel statutory challan', `${t.kind} ${t.month} ${t.amount / 100}`),
   ]);
   return { ok: true };
+}
+
+/* ---------- the year's salary TDS statement for one person (what Form 130 certifies) ----------
+   Part A: employer and employee; Part B: tax cut each quarter and the salary TDS challans (section 392) paid in the
+   year; Part C: the computation under the new regime. The official Form 130 is downloaded from the TDS portal after the
+   quarterly returns (Form 138) are filed; this statement is what to check it against. */
+export async function salaryTdsStatement(c, staffId, yearIn) {
+  requireCan(c.user, 'finance');
+  const s = await staffOf(c, staffId);
+  const start = /^\d{4}$/.test(String(yearIn || '')) ? +yearIn : +taxYearOf(today().slice(0, 7)).start.slice(0, 4);
+  const from = `${start}-04`, to = `${start + 1}-03`;
+  const [txns, ch] = await c.db.batch([
+    c.db.prepare(`SELECT month, date, gross, bonus, amount, detail FROM staff_txns WHERE org_id = ? AND staff_id = ? AND kind = 'salary' AND status = 'done'
+        AND month BETWEEN ? AND ? ORDER BY month`).bind(c.org.id, s.id, from, to),
+    c.db.prepare(`SELECT date, amount, challan_no, section FROM tds_challans WHERE org_id = ? AND date BETWEEN ? AND ? AND section IN ('392', '192', '392(1)')
+        ORDER BY date`).bind(c.org.id, `${start}-04-01`, `${start + 1}-03-31`),
+  ]);
+  const rows = txns.results.map((t) => { const d = JSON.parse(t.detail || '{}'), st = d.stat || {};
+    return { month: t.month, date: t.date, gross: t.gross + t.bonus, pf: st.pf || 0, pt: st.pt || 0, tds: st.tds || 0, net: t.amount }; });
+  const q = (m) => { const n = +m.slice(5, 7); return n >= 4 && n <= 6 ? 1 : n <= 9 && n >= 7 ? 2 : n >= 10 ? 3 : 4; };
+  const quarters = [1, 2, 3, 4].map((n) => { const r = rows.filter((x) => q(x.month) === n);
+    return { quarter: `Q${n}`, paid: R(r.reduce((a, x) => a + x.gross, 0)), tds: R(r.reduce((a, x) => a + x.tds, 0)) }; });
+  const gross = rows.reduce((a, x) => a + x.gross, 0), tdsCut = rows.reduce((a, x) => a + x.tds, 0);
+  const y = yearTax(gross / 100);
+  return { tax_year: `${start}-${String((start + 1) % 100).padStart(2, '0')}`, regime: 'new',
+    part_a: { employer: { name: c.org.name, address: c.org.address || '', gstin: c.org.gstin || '', tan: ratesOf(c.org).tan || '' },
+      employee: { name: s.name, pan: s.pan || '', title: s.title || '' }, period: rows.length ? { from: rows[0].month, to: rows[rows.length - 1].month } : null },
+    part_b: { quarters, challans: ch.results.map((x) => ({ ...x, amount: R(x.amount) })), total_tds: R(tdsCut) },
+    part_c: { gross_salary: R(gross), standard_deduction: Math.min(75000, R(gross)), taxable: y.taxable, tax: y.tax, surcharge: y.surcharge, cess: y.cess,
+      tax_payable: y.total, tds_cut: R(tdsCut), balance: Math.round(y.total - R(tdsCut)), pt_paid: R(rows.reduce((a, x) => a + x.pt, 0)), pf_paid: R(rows.reduce((a, x) => a + x.pf, 0)) },
+    months: rows.map((x) => ({ ...x, gross: R(x.gross), pf: R(x.pf), pt: R(x.pt), tds: R(x.tds), net: R(x.net) })),
+    warnings: [...(s.pan ? [] : ['PAN is missing: add it on the staff page (without PAN the law asks for TDS of at least 20%).']),
+      ...(ratesOf(c.org).tan ? [] : ['The business TAN is missing: add it in Staff → PF & ESI → Payroll rates.']),
+      ...(s.tds_mode === 'auto' ? [] : ['Income tax is not worked out for this person (Staff → edit → Income tax: new regime).'])] };
 }

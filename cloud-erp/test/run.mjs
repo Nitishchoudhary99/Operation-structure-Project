@@ -5,6 +5,7 @@
 import { backupHealth } from '../src/lib.js';
 import { totpCode } from '../src/security.js';
 import { parseOrder, soundKey } from '../public/voice.js';
+import { ptFor, yearTax, monthTds, taxYearOf } from '../src/paytax.js';
 const BASE = process.argv[2] || process.env.ERP_URL || 'http://localhost:8787';
 let cookie = '', pass = 0, fail = 0;
 
@@ -3527,6 +3528,124 @@ if (process.env.ERP_AI_MOCK) {
   const after = await A('GET', `/api/docs/${back.id}`), riceNow = (await A('GET', '/api/items')).rows.find((i) => i.id === rice.id), pNow = (await A('GET', '/api/parties')).rows;
   check('another business can change, cancel, copy or bill against none of them', wr.every(([, , st]) => st >= 400) && after.status !== 'cancelled' && riceNow.name === 'Rice 25kg'
     && pNow.some((p) => p.id === away.id && p.name === 'Delhi Wholesale') && pNow.some((p) => p.id === local.id && p.name === 'Local Kirana'), JSON.stringify(wr));
+}
+
+/* --- payroll by the law: professional tax by the state's slab, income tax (TDS) on salary, and the fixes found in the
+       bug hunt (UAN typed with spaces, ESI on the wage rate, NCP days of a new joiner, ECR names, ESI sheet, races) --- */
+{
+  // the arithmetic itself, against figures worked by hand
+  check('PT Karnataka: ₹200 a month on ₹25,000 or more, ₹300 in February, nil below', ptFor('Karnataka', 30000, '2026-11') === 200 && ptFor('Karnataka', 30000, '2027-02') === 300 && ptFor('Karnataka', 24999, '2026-11') === 0);
+  check('PT Maharashtra: men ₹175 on ₹7,501–10,000; women nil up to ₹25,000', ptFor('Maharashtra', 9000, '2026-11') === 175 && ptFor('Maharashtra', 20000, '2026-11', true) === 0 && ptFor('Maharashtra', 30000, '2027-02', true) === 300);
+  check('PT West Bengal ₹150 on ₹25,001–40,000; Telangana ₹150 on ₹15,001–20,000', ptFor('West Bengal', 30000, '2026-11') === 150 && ptFor('Telangana', 18000, '2026-11') === 150);
+  check('PT on yearly income (Madhya Pradesh ₹2,000 a year: ₹166, and ₹174 in March)', ptFor('Madhya Pradesh', 30000, '2026-11') === 166 && ptFor('Madhya Pradesh', 30000, '2027-03') === 174);
+  check('PT on half-yearly income (Tamil Nadu ₹1,250 a half-year: ₹208, ₹210 in September and March)', ptFor('Tamil Nadu', 30000, '2026-11') === 208 && ptFor('Tamil Nadu', 30000, '2026-09') === 210);
+  check('PT Meghalaya / Manipur on yearly income', ptFor('Meghalaya', 30000, '2026-11') === 83 && ptFor('Manipur', 30000, '2026-11') === 208 && ptFor('Manipur', 30000, '2027-03') === 212);
+  check('no PT in Odisha (abolished from April 2026), Delhi or Rajasthan; none on nil pay', ptFor('Odisha', 50000, '2026-11') === 0 && ptFor('Delhi', 50000, '2026-11') === 0 && ptFor('Karnataka', 0, '2026-11') === 0);
+  check('income tax, new regime: nil up to ₹12.75 lakh salary (rebate)', yearTax(1275000).total === 0);
+  check('income tax just above ₹12 lakh taxable: marginal relief (₹25,000 + 4% cess)', yearTax(1300000).total === 26000, JSON.stringify(yearTax(1300000)));
+  check('income tax on ₹20 lakh salary: ₹1,85,000 + 4% cess = ₹1,92,400', yearTax(2000000).total === 192400, JSON.stringify(yearTax(2000000)));
+  check('salary TDS from April on ₹2 lakh a month: ₹2,92,500 for the year, ₹24,375 a month', monthTds('2026-04', 200000).tds === 24375 && monthTds('2026-04', 200000).year.total === 292500);
+  check('salary TDS later in the year spreads what is left over the months left', monthTds('2026-10', 200000, { gross: 1200000, tds: 6 * 24375 }).tds === 24375);
+  check('the tax year of a month', taxYearOf('2026-11').label === '2026-27' && taxYearOf('2027-02').start === '2026-04');
+
+  const ip = '203.0.113.' + (170 + Math.floor(Math.random() * 20));
+  const em = `kpay${Date.now()}@test.in`;
+  const su = await rq('POST', '/api/auth/signup', { business: 'Karnataka Pay Co', name: 'K', email: em, password: 'Tenant-pass-1', state: 'Karnataka' }, { ip });
+  const K = { get: (p) => rq('GET', p, undefined, { cookie: su.cookie, ip }), post: (p, b) => rq('POST', p, b || {}, { cookie: su.cookie, ip }), put: (p, b) => rq('PUT', p, b || {}, { cookie: su.cookie, ip }) };
+  const pm = (() => { const d = new Date(Date.now() + 5.5 * 3600e3); d.setUTCDate(1); d.setUTCMonth(d.getUTCMonth() - 1); return d.toISOString().slice(0, 7); })();
+  const daysIn = new Date(Date.UTC(+pm.slice(0, 4), +pm.slice(5, 7), 0)).getUTCDate();
+  const cash = (await K.get('/api/accounts')).data.rows.find((a) => a.sys === 'cash');
+  const spaced = await K.post('/api/staff', { name: 'Space UAN', rate: 15000, join_date: `${pm}-01`, pf: true, uan: '1002 0030 0400', esi_no: '12-3456-7890' });
+  check('a UAN or ESI number typed with spaces or dashes is kept as its digits', spaced.status === 200 && spaced.data.uan === '100200300400' && spaced.data.esi_no === '1234567890', JSON.stringify(spaced.data));
+  check('a wrong PAN is refused', (await K.post('/api/staff', { name: 'Bad PAN', rate: 1000, pan: 'ABC123' })).status === 400);
+  check('payroll rates that cannot both be right are refused', (await K.put('/api/settings/setup', { payroll: { eps_rate: 13 } })).status === 400
+    && (await K.put('/api/settings/setup', { payroll: { pf_ceiling: 0 } })).status === 400 && (await K.put('/api/settings/setup', { payroll: { tan: 'XYZ' } })).status === 400);
+  check('the business TAN is kept with the payroll rates', (await K.put('/api/settings/setup', { payroll: { tan: 'blra12345b' } })).data.setup.payroll.tan === 'BLRA12345B');
+
+  // professional tax by the Karnataka slab, and income tax worked out on a ₹3 lakh monthly salary
+  const kavya = (await K.post('/api/staff', { name: 'Kavya Rao', rate: 300000, join_date: `${pm}-01`, pt_auto: true, tds_mode: 'auto', pan: 'abcde1234f' })).data;
+  check('PAN is kept in capitals; PT by slab and TDS are set', kavya.pan === 'ABCDE1234F' && kavya.pt_auto === 1 && kavya.tds_mode === 'auto', JSON.stringify(kavya));
+  const det = (await K.get(`/api/staff/${kavya.id}?month=${pm}`)).data;
+  const wantPt = ptFor('Karnataka', 300000, pm), wantTds = monthTds(pm, 300000).tds;
+  check('the Pay form knows what will be cut (PT + TDS)', det.cuts === wantPt + wantTds, JSON.stringify([det.cuts, wantPt, wantTds]));
+  const ks = (await K.post(`/api/staff/${kavya.id}/salary`, { month: pm, paid_from: cash.id })).data;
+  const kslip = (await K.get(`/api/staff/payslip/${ks.id}`)).data;
+  check('salary: PT by the state slab and income tax (TDS) cut, net is the rest', kslip.detail.stat.pt === wantPt && kslip.detail.stat.tds === wantTds && kslip.net === 300000 - wantPt - wantTds,
+    JSON.stringify([kslip.detail.stat, kslip.net]));
+  check('the payslip carries the rates it was worked out with', kslip.detail.rates && kslip.detail.rates.pf_rate === 12);
+  const tbK = (await K.get('/api/reports/trial-balance')).data;
+  const tdsAcc = (tbK.rows || []).find((r) => /TDS Payable/.test(r.name || ''));
+  check('the TDS cut is owed to the government (TDS Payable) and the books balance', tbK.balanced && tdsAcc && Math.round(tdsAcc.credit - tdsAcc.debit) === wantTds, JSON.stringify(tdsAcc));
+  const SRk = (await K.get(`/api/payroll/statutory?month=${pm}`)).data;
+  check('the month\'s return shows the TDS cut', SRk.totals.tds === wantTds, JSON.stringify(SRk.totals));
+  const stm = (await K.get(`/api/payroll/tds-statement/${kavya.id}?year=${taxYearOf(pm).start.slice(0, 4)}`)).data;
+  check('the year\'s salary TDS statement (Form 130 check): PAN, TAN, quarters and computation', stm.part_a.employee.pan === 'ABCDE1234F' && stm.part_a.employer.tan === 'BLRA12345B'
+    && stm.part_b.total_tds === wantTds && stm.part_c.gross_salary === 300000 && stm.part_c.tds_cut === wantTds && stm.part_b.quarters.length === 4, JSON.stringify(stm.part_b));
+
+  // ESI coverage is on the wage rate: a ₹20,000 person with overtime still pays ESI on all of it
+  const esiP = (await K.post('/api/staff', { name: 'Ravi OT', rate: 20000, ot_rate: 500, join_date: `${pm}-01`, esi: true, esi_no: '2234567890' })).data;
+  await K.post('/api/staff/attendance', { marks: [5, 6, 7].map((d) => ({ staff_id: esiP.id, date: `${pm}-0${d}`, status: 'P', ot_hours: 8 })) });
+  const es = (await K.post(`/api/staff/${esiP.id}/salary`, { month: pm, paid_from: cash.id })).data;
+  const est = (await K.get(`/api/staff/payslip/${es.id}`)).data.detail.stat;
+  check('ESI on a ₹20,000 wage with ₹12,000 overtime: on ₹32,000 (₹240 + ₹1,040)', est.esi_wages === 32000 && est.esi === 240 && est.er_esi === 1040, JSON.stringify(est));
+
+  // a new joiner: the days before joining are not NCP days in the ECR
+  const late = (await K.post('/api/staff', { name: 'Late Joiner', rate: 15000, join_date: `${pm}-11`, pf: true, wage_pct: 100, uan: '100200300499' })).data;
+  const ls = (await K.post(`/api/staff/${late.id}/salary`, { month: pm, paid_from: cash.id })).data;
+  const lst = (await K.get(`/api/staff/payslip/${ls.id}`)).data.detail.stat;
+  check('joined on the 11th, no absence: 0 NCP days, PF on the part month', lst.ncp === 0 && lst.epf_wages === Math.round(15000 * (daysIn - 10) / daysIn), JSON.stringify(lst));
+  const noEps = (await K.post('/api/staff', { name: 'Not In EPS', rate: 15000, join_date: `${pm}-01`, pf: true, eps: false, wage_pct: 100, uan: '100200300498' })).data;
+  const ne = (await K.post(`/api/staff/${noEps.id}/salary`, { month: pm, paid_from: cash.id })).data;
+  const nst = (await K.get(`/api/staff/payslip/${ne.id}`)).data.detail.stat;
+  check('not in the pension scheme: the employer\'s whole 12% goes to EPF', noEps.eps === 0 && nst.eps === 0 && nst.er_epf === 1800, JSON.stringify(nst));
+
+  // ECR names must be in English letters; the ESI sheet needs every IP number and never carries a formula
+  const hindi = (await K.post('/api/staff', { name: 'राम लाल', rate: 12000, join_date: `${pm}-01`, pf: true, uan: '100200300497' })).data;
+  await K.post(`/api/staff/${hindi.id}/salary`, { month: pm, paid_from: cash.id });
+  const ecrBad = await K.get(`/api/payroll/ecr?month=${pm}`);
+  check('ECR with a name only in Hindi letters is stopped with a clear message', ecrBad.status === 400 && /English letters/.test(ecrBad.data.error), JSON.stringify(ecrBad.data));
+  await K.put(`/api/staff/${hindi.id}`, { ...hindi, name: 'Ram Lal' });
+  const ecrOk = await K.get(`/api/payroll/ecr?month=${pm}`);
+  check('the ECR is made once the name is in English', ecrOk.status === 200 && /RAM LAL/.test(ecrOk.data._text || ''));
+  const noIp = (await K.post('/api/staff', { name: '=HYPERLINK("x")', rate: 15000, join_date: `${pm}-01`, esi: true })).data;
+  await K.post(`/api/staff/${noIp.id}/salary`, { month: pm, paid_from: cash.id });
+  const esiBad = await K.get(`/api/payroll/esi?month=${pm}`);
+  check('the ESI sheet asks for a missing IP number instead of leaving it blank', esiBad.status === 400 && /IP number/.test(esiBad.data.error), JSON.stringify(esiBad.data));
+  await K.put(`/api/staff/${noIp.id}`, { ...noIp, esi_no: '3234567890' });
+  const esiOk = await K.get(`/api/payroll/esi?month=${pm}`);
+  check('a name starting with = cannot run as a formula in Excel', esiOk.status === 200 && (esiOk.data._text || '').includes(`"'=HYPERLINK(""x"")"`), (esiOk.data._text || '').slice(0, 300));
+
+  // dates and races
+  check('a challan or an advance dated in the future is refused', (await K.post('/api/payroll/challan', { kind: 'pt', month: pm, amount: 200, paid_from: cash.id, date: '2099-01-01' })).status === 400
+    && (await K.post(`/api/staff/${kavya.id}/advance`, { amount: 100, paid_from: cash.id, date: '2099-01-01' })).status === 400);
+  await K.post('/api/payroll/challan', { kind: 'pt', month: pm, amount: 200, paid_from: cash.id });
+  const ch = (await K.get(`/api/payroll/statutory?month=${pm}`)).data.challans[0];
+  const cc = await Promise.all([1, 2].map(() => K.post(`/api/payroll/challan/${ch.id}/cancel`)));
+  check('one challan cancelled twice at the same moment is reversed once', cc.filter((r) => r.status === 200).length === 1 && (await K.get('/api/reports/trial-balance')).data.balanced,
+    JSON.stringify(cc.map((r) => r.status)));
+  const sc = await Promise.all([1, 2].map(() => K.post(`/api/staff/txns/${ls.id}/cancel`)));
+  check('one salary cancelled twice at the same moment is reversed once', sc.filter((r) => r.status === 200).length === 1 && (await K.get('/api/reports/trial-balance')).data.balanced,
+    JSON.stringify(sc.map((r) => r.status)));
+}
+
+/* --- once-only writes: a second tap (or a second person) at the same moment must not do it twice (src/engine.js onceGuard) --- */
+{
+  const T = await tenant('Twice', '203.0.113.' + (150 + Math.floor(Math.random() * 15)));
+  const cash = (await T.get('/api/accounts')).data.rows.find((a) => a.sys === 'cash');
+  const cus = (await T.post('/api/parties', { name: 'Twice Customer', kind: 'customer', state: 'Rajasthan' })).data;
+  const sells = [], revs = [];
+  for (let k = 0; k < 4; k++) {
+    const a = (await T.post('/api/assets', { name: 'Laptop ' + k, category: 'computer', bought_on: '2026-04-10', cost: 50000, paid: 'opening' })).data;
+    const r = await Promise.all([1, 2].map(() => T.post(`/api/assets/${a.id}/dispose`, { date: new Date(Date.now() + 5.5 * 3600e3).toISOString().slice(0, 10), amount: 30000, account_id: cash.id })));
+    sells.push(r.map((x) => x.status).join('+'));
+    const e = (await T.post('/api/khata', { party_id: cus.id, kind: 'gave', amount: 500 })).data;
+    await T.post(`/api/khata/entries/${e.entry_id}/send`, { via: 'whatsapp' });
+    const v = await Promise.all([1, 2].map(() => T.post(`/api/khata/entries/${e.entry_id}/reverse`, { reason: 'twice' })));
+    revs.push(v.map((x) => x.status).join('+'));
+  }
+  check('an asset sold twice at the same moment is sold once', sells.every((s) => s.split('+').filter((x) => x === '200').length === 1), JSON.stringify(sells));
+  check('a khata entry reversed twice at the same moment is reversed once', revs.every((s) => s.split('+').filter((x) => x === '200').length === 1), JSON.stringify(revs));
+  check('the books still balance', (await T.get('/api/reports/trial-balance')).data.balanced);
 }
 
 /* After everything above (sales, returns, cancels, deletes, restores, races, other businesses): nothing is left out
