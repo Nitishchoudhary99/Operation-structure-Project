@@ -3764,6 +3764,12 @@ if (process.env.ERP_AI_MOCK) {
   check('a piece can be put back (−1)', undo.data.orders[0].lines.find((l) => l.item_id === RM.id).picked === 4);
   const reset = await G.post('/api/pick/reset', { ids: [bulk.id] });
   check('picking an order can start again', reset.data.picked === 0);
+  // quantity typed with one scan (5 pieces of the same design / colour / size)
+  const many = await G.post('/api/pick/scan', { ids: [bulk.id], code: 'K101-RED-M', qty: 5 });
+  check('one scan with quantity 5 picks 5 pieces', many.status === 200 && many.data.line.picked === 5, JSON.stringify(many.data).slice(0, 200));
+  const tooMany = await G.post('/api/pick/scan', { ids: [bulk.id], code: 'K101-RED-L', qty: 6 });
+  check('a typed quantity above what is ordered is refused, saying how many are left', tooMany.status === 400 && /only 5 more/.test(tooMany.data.error), JSON.stringify(tooMany.data));
+  await G.post('/api/pick/reset', { ids: [bulk.id] });
   // a partial delivery note keeps the rest on the order, picked count follows
   for (let k = 0; k < 3; k++) await G.post('/api/pick/scan', { ids: [bulk.id], code: 'K101-BLUE-M' });
   const c2 = (await G.get(`/api/docs/${bulk.id}/convert?to=DN`)).data;

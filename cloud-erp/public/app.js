@@ -3283,7 +3283,9 @@ async function wavePick(el, ids) {
     code = String(code || '').trim();
     if (!code) return false;
     try {
-      const r = await POST('/api/pick/scan', { ids: st.orders.map((o) => o.id), code });
+      const qn = Math.max(1, Math.round(+($('#wqty') || {}).value || 1));
+      const r = await POST('/api/pick/scan', { ids: st.orders.map((o) => o.id), code, qty: qn });
+      if ($('#wqty')) $('#wqty').value = 1;
       st = r.state;
       lastTo = { ok: true, html: `Put <b>${esc(r.item)}</b> in <b class="put-big">${esc(r.order.number)}</b> · ${esc(r.order.party)}${r.order.done ? ' <span class="pchip pre">order complete ✓</span>' : ''}` };
       log.push({ ok: true, t: `✓ ${r.item} → ${r.order.number} (${r.order.party})` }); beep(true); paint(); return true;
@@ -3291,7 +3293,7 @@ async function wavePick(el, ids) {
   };
   el.innerHTML = head('Combined pick list', `<a class="btn" href="#/wave">Change orders</a>${wfOf().pick_mode === 'scan' ? '' : `<a class="btn" href="#/wave?print=1&ids=${esc(ids)}">Print</a>`}`) + `
     <div class="panel"><div id="wtop"></div>
-      <div class="row" style="margin-top:8px"><input id="wscan" placeholder="Scan or type item code…" autocomplete="off" enterkeyhint="done" style="flex:1;min-width:0">${canCamera() ? '<button class="btn primary" id="wcam">📷 Scan</button>' : ''}</div>
+      <div class="row" style="margin-top:8px"><label class="pqty">Qty<input id="wqty" type="number" min="1" step="1" inputmode="numeric" value="1" aria-label="Pieces for the next scan"></label><input id="wscan" placeholder="Scan or type item code…" autocomplete="off" enterkeyhint="done" style="flex:1;min-width:0">${canCamera() ? '<button class="btn primary" id="wcam">📷 Scan</button>' : ''}</div>
       <div id="wto"></div><div id="wlog" class="pk-log" aria-live="polite"></div></div>
     <div class="panel"><h3 style="margin-top:0">Orders</h3><div id="worders" class="worders"></div></div>
     <div class="panel flush"><div class="tbl-wrap"><table class="t"><thead><tr><th>Bin</th><th>Item</th><th class="num">Picked / to pick</th><th>For order</th></tr></thead><tbody id="witems"></tbody></table></div></div>
@@ -6131,7 +6133,7 @@ route(/^pack\/(\d+)$/, async (el, m) => {
     const goods = order.lines, done = goods.length && goods.every((l) => l.picked >= l.want - 0.0005), any = goods.some((l) => l.picked > 0);
     $('#plines').innerHTML = goods.map((l) => `<tr class="${l.picked >= l.want - 0.0005 ? 'pk-ok' : l.picked ? 'pk-part' : ''}"><td>${esc(l.name)}<div class="muted small">${esc(l.code)}</div></td>
       <td class="num"><b>${qtyf(l.picked)}</b> / ${qtyf(l.want)} ${esc(l.unit || '')}</td><td>${l.picked >= l.want - 0.0005 ? '✅' : l.picked ? '…' : ''}</td>
-      <td>${l.picked ? `<button class="btn sm" data-minus="${l.line_id}" title="Put one back">−1</button>` : ''}</td></tr>`).join('');
+      <td>${l.picked < l.want - 0.0005 ? `<button class="btn sm" data-all="${l.line_id}" title="Picked all the rest of this line">✓ All ${qtyf(l.want - l.picked)}</button> ` : ''}${l.picked ? `<button class="btn sm" data-minus="${l.line_id}" title="Put one back">−1</button>` : ''}</td></tr>`).join('');
     $('#plog').innerHTML = log.slice(-6).reverse().map((x) => `<div class="${x.ok ? 'pos' : 'neg'}">${esc(x.t)}</div>`).join('');
     $('#pstate').innerHTML = done ? '<span class="pchip pre">Picking complete ✓ ready to pack</span>' : `<span class="pchip none">Picked ${qtyf(order.picked)} of ${qtyf(order.need)}</span>`;
     $('#psave').disabled = !any;
@@ -6142,14 +6144,17 @@ route(/^pack\/(\d+)$/, async (el, m) => {
     code = String(code || '').trim();
     if (!code) return false;
     try {
-      const r = await POST('/api/pick/scan', { ids: [so.id], code });
+      const qn = Math.max(1, Math.round(+($('#pqty') || {}).value || 1));
+      const r = await POST('/api/pick/scan', { ids: [so.id], code, qty: qn });
+      if ($('#pqty')) $('#pqty').value = 1;
       take(r.state); log.push({ ok: true, t: `✓ ${r.item}${r.qty > 1 ? ` ×${r.qty}` : ''} — ${qtyf(r.line.picked)} of ${qtyf(r.line.want)}` }); beep(true); paint(); return true;
     } catch (e) { log.push({ ok: false, t: e.message }); beep(false); paint(); return false; }
   };
   el.innerHTML = head(`Pick &amp; pack · ${esc(so.number)}`, `<a class="btn" href="#/doc/${so.id}">Back</a><a class="btn" href="#/shiplabel/${so.id}">Shipping label</a>`) + `
     <div class="panel"><p><b>${esc((so.party || {}).name || '')}</b>${(so.party || {}).city ? ' · ' + esc(so.party.city) : ''} · ${fdate(so.date)} · ${payChip(so)} <span id="pstate"></span></p>
       <p class="muted">Scan each piece's QR label as you pick it. Wrong design, colour or size, or more than ordered, is refused. What you scan is saved at once (the owner sees it too); stock goes out only when the Delivery Note is saved.</p>
-      <div class="row"><input id="pscan" placeholder="Scan or type item code…" autocomplete="off" enterkeyhint="done" style="flex:1;min-width:0">${canCamera() ? '<button class="btn primary" id="pcam">📷 Scan</button>' : ''}</div>
+      <div class="row"><label class="pqty">Qty<input id="pqty" type="number" min="1" step="1" inputmode="numeric" value="1" aria-label="Pieces for the next scan"></label><input id="pscan" placeholder="Scan or type item code…" autocomplete="off" enterkeyhint="done" style="flex:1;min-width:0">${canCamera() ? '<button class="btn primary" id="pcam">📷 Scan</button>' : ''}</div>
+      <p class="muted small" style="margin:6px 0 0">Many pieces of one design / colour / size: type the quantity, then scan once.</p>
       <div id="plog" class="pk-log" aria-live="polite"></div></div>
     <div class="panel flush"><div class="tbl-wrap"><table class="t"><thead><tr><th>Item</th><th class="num">Picked / ordered</th><th></th><th></th></tr></thead><tbody id="plines"></tbody></table></div></div>
     <div class="row sticky-act"><button class="btn sm" id="preset">Start again</button><span class="spacer"></span><button class="btn primary" id="psave" disabled>Scan items to start</button></div>`;
@@ -6157,6 +6162,14 @@ route(/^pack\/(\d+)$/, async (el, m) => {
   inp.addEventListener('keydown', async (e) => { if (e.key === 'Enter') { e.preventDefault(); const v = inp.value; inp.value = ''; await onCode(v); inp.focus(); } });
   if ($('#pcam')) $('#pcam').onclick = () => cameraScan(onCode);
   $('#plines').onclick = async (e) => {
+    const all = e.target.closest('[data-all]');
+    if (all) {
+      const l = lineOf(+all.dataset.all); if (!l) return;
+      // the rest of this line counted as picked; the item code still goes through the same checks
+      try { const r = await POST('/api/pick/scan', { ids: [so.id], code: l.code, qty: Math.round(l.want - l.picked) }); take(r.state); log.push({ ok: true, t: `✓ ${l.name} — all ${qtyf(l.want)} picked` }); beep(true); paint(); }
+      catch (er) { log.push({ ok: false, t: er.message }); beep(false); paint(); }
+      return;
+    }
     const b = e.target.closest('[data-minus]'); if (!b) return;
     try { take(await POST('/api/pick/undo', { line_id: +b.dataset.minus, ids: [so.id] })); paint(); } catch (er) { toast(er.message, 'err'); }
   };

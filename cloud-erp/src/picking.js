@@ -72,8 +72,11 @@ export async function pickScan(c, b) {
   const code = str(b.code, 500).trim();
   if (!code) throw bad('Scan or type a code.');
   const ids = idsOf(b.ids);
-  const it = await itemOfCode(c, code);
-  if (!it) throw bad(`✗ ${code}: no item has this code.`, { wrong: true });
+  const found = await itemOfCode(c, code);
+  if (!found) throw bad(`✗ ${code}: no item has this code.`, { wrong: true });
+  // a quantity typed with the scan (5 pieces of one design / colour / size: one scan, not five)
+  const times = Math.round(num(b.qty, 'Quantity', { min: 1, max: 100000, def: 1 }));
+  const it = { ...found, pack: found.pack * times };
   for (let attempt = 0; attempt < 3; attempt++) {
     const { docs, lines } = await ordersOf(c, ids);
     const mine = lines.filter((l) => l.item_id === it.id);
@@ -81,7 +84,9 @@ export async function pickScan(c, b) {
     const room = mine.find((l) => picked(l) + it.pack <= left(l) + 0.0005);
     if (!room) {
       const want = mine.reduce((s, l) => s + left(l), 0);
-      throw bad(`✗ EXTRA: all ${want} of ${it.name} ${docs.length > 1 ? 'for these orders are' : 'are'} already picked.`, { extra: true, item: it.name });
+      const free = mine.reduce((s, l) => s + Math.max(0, left(l) - picked(l)), 0);
+      throw bad(free > 0 ? `✗ EXTRA: only ${free} more of ${it.name} ${docs.length > 1 ? 'are on these orders' : 'is on this order'}, not ${it.pack}.`
+        : `✗ EXTRA: all ${want} of ${it.name} ${docs.length > 1 ? 'for these orders are' : 'are'} already picked.`, { extra: true, item: it.name });
     }
     const r = await c.db.prepare(`UPDATE doc_lines SET picked_qty = ROUND(MAX(0, picked_qty) + ?, 3) WHERE id = ? AND MAX(0, picked_qty) + ? <= qty - done_qty + 0.0005`)
       .bind(it.pack, room.id, it.pack).run();
