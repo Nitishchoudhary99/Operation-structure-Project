@@ -593,6 +593,15 @@ const myUi = () => {
   const u = ME.ui || {}, r = ME.role_ui || {}, own = !!(u.job || u.screens);
   return { job: own ? u.job : r.job, screens: own ? u.screens : r.screens, home: u.home || r.home || '' };
 };
+/* the owner sees, in the last 7 days of a trial or paid plan, that it ends and what stops (staff logins above the free
+   plan's limit are paused), with the way to keep it */
+function planWarn() {
+  const p = ME.plan || {};
+  if (ME.user.role_key !== 'owner' || !p.until || p.key === 'free') return '';
+  const left = Math.round((new Date(p.until + 'T00:00:00') - new Date(ME.today + 'T00:00:00')) / 864e5);
+  if (left > 7 || left < 0) return '';
+  return `<div class="closing">Your <b>${esc(p.label)}</b> plan ends ${left === 0 ? '<b>today</b>' : `in <b>${left} day${left === 1 ? '' : 's'}</b> (${fdate(p.until)})`}. After that the Free plan allows 1 user, so staff logins are paused. <a href="#/plan">Keep the plan</a></div>`;
+}
 const jobOf = (ui = myUi()) => (JOBS[ui.job] ? ui.job : ROLE_JOB[ME.user.role_key] || 'all');
 /* is this menu entry on the user's menu? (whether the role may open it is seen()) */
 function onMenu(h) {
@@ -721,7 +730,7 @@ function shell() {
         ${news.length ? `<div class="newmenu"><button class="btn primary" id="newbtn" aria-haspopup="true" aria-expanded="false">+ <span>New</span></button>
           <div class="menu qmenu" id="newmenu" hidden>${news.map(([h, t, , , ic]) => `<a href="#/${h}">${icon(ic)}<span>${t}</span></a>`).join('')}</div></div>` : ''}
       </header>
-      ${ME.org.close_after && ME.user.role_key === 'owner' ? `<div class="closing">This business will be deleted on <b>${fdate(ME.org.close_after.slice(0, 10))}</b>. <a href="#/settings/security">Keep it (cancel)</a> · <a href="#/settings?backup=1">Download a backup</a></div>` : ''}
+      ${planWarn()}${ME.org.close_after && ME.user.role_key === 'owner' ? `<div class="closing">This business will be deleted on <b>${fdate(ME.org.close_after.slice(0, 10))}</b>. <a href="#/settings/security">Keep it (cancel)</a> · <a href="#/settings?backup=1">Download a backup</a></div>` : ''}
       <main class="page" id="page"></main>
     </div></div><div class="scrim" id="scrim"></div>
     <nav class="bnav" id="bnav" aria-label="Main">${bnavItems().map(([h, t, ic, act]) => `<a href="${h ? '#/' + h : '#'}" ${act ? `data-bn="${act}"` : `data-h="${h}"`}>${icon(ic)}<span>${t}</span></a>`).join('')}</nav>`;
