@@ -1755,7 +1755,12 @@ route(/^new\/([A-Z]+)$/, async (el, m, q) => {
     };
     fillBatches(tr);
     const del = $('[data-del]', tr);
-    if (del) del.onclick = () => { if ($$('tr', tbody).length > 1) { tr.remove(); recalc(); } };
+    // the last line too: it goes, and an empty line takes its place to choose another item
+    if (del) del.onclick = () => {
+      tr.remove();
+      if (!$$('tr', tbody).length) { tbody.insertAdjacentHTML('beforeend', lineRow({})); wireRow(tbody.lastElementChild); enhanceSelects(tbody.lastElementChild); }
+      recalc(); stockWarn();
+    };
   };
   $$('tr', tbody).forEach(wireRow);
   // the whole order crossed (or fell below) the wholesale step: every rate the app filled follows; typed rates stay
