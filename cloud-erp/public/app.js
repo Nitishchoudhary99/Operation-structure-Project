@@ -593,6 +593,15 @@ const myUi = () => {
   const u = ME.ui || {}, r = ME.role_ui || {}, own = !!(u.job || u.screens);
   return { job: own ? u.job : r.job, screens: own ? u.screens : r.screens, home: u.home || r.home || '' };
 };
+/* the owner sees, in the last 7 days of a trial or paid plan, that it ends and what stops (staff logins above the free
+   plan's limit are paused), with the way to keep it */
+function planWarn() {
+  const p = ME.plan || {};
+  if (ME.user.role_key !== 'owner' || !p.until || p.key === 'free') return '';
+  const left = Math.round((new Date(p.until + 'T00:00:00') - new Date(ME.today + 'T00:00:00')) / 864e5);
+  if (left > 7 || left < 0) return '';
+  return `<div class="closing">Your <b>${esc(p.label)}</b> plan ends ${left === 0 ? '<b>today</b>' : `in <b>${left} day${left === 1 ? '' : 's'}</b> (${fdate(p.until)})`}. After that the Free plan allows 1 user, so staff logins are paused. <a href="#/plan">Keep the plan</a></div>`;
+}
 const jobOf = (ui = myUi()) => (JOBS[ui.job] ? ui.job : ROLE_JOB[ME.user.role_key] || 'all');
 /* is this menu entry on the user's menu? (whether the role may open it is seen()) */
 function onMenu(h) {
@@ -721,7 +730,7 @@ function shell() {
         ${news.length ? `<div class="newmenu"><button class="btn primary" id="newbtn" aria-haspopup="true" aria-expanded="false">+ <span>New</span></button>
           <div class="menu qmenu" id="newmenu" hidden>${news.map(([h, t, , , ic]) => `<a href="#/${h}">${icon(ic)}<span>${t}</span></a>`).join('')}</div></div>` : ''}
       </header>
-      ${ME.org.close_after && ME.user.role_key === 'owner' ? `<div class="closing">This business will be deleted on <b>${fdate(ME.org.close_after.slice(0, 10))}</b>. <a href="#/settings/security">Keep it (cancel)</a> · <a href="#/settings?backup=1">Download a backup</a></div>` : ''}
+      ${planWarn()}${ME.org.close_after && ME.user.role_key === 'owner' ? `<div class="closing">This business will be deleted on <b>${fdate(ME.org.close_after.slice(0, 10))}</b>. <a href="#/settings/security">Keep it (cancel)</a> · <a href="#/settings?backup=1">Download a backup</a></div>` : ''}
       <main class="page" id="page"></main>
     </div></div><div class="scrim" id="scrim"></div>
     <nav class="bnav" id="bnav" aria-label="Main">${bnavItems().map(([h, t, ic, act]) => `<a href="${h ? '#/' + h : '#'}" ${act ? `data-bn="${act}"` : `data-h="${h}"`}>${icon(ic)}<span>${t}</span></a>`).join('')}</nav>`;
@@ -1511,8 +1520,8 @@ route(/^new\/([A-Z]+)$/, async (el, m, q) => {
       <label class="f">Shipping bill date<input name="sb_date" type="date"></label></div><p class="muted small" data-exphelp></p></div>` : ''}
     ${fromDoc && draft.export_type ? `<div class="panel muted small">&#127760; Export ${draft.export_type === 'WPAY' ? 'with IGST' : 'under LUT, no IGST'}${draft.currency ? ` in ${esc(draft.currency)} at ₹${draft.fx_rate}` : ''}: the same terms as ${esc(draft.ref_number)}. Rates below are in rupees.</div>` : ''}
     ${isNote ? '' : `<label class="check incl-all"><input type="checkbox" id="inclall" ${(draft.incl ?? (isSale && !draft.lines.some((l) => l.rate) && (inclPref() || items.some((x) => x.price_incl)))) ? 'checked' : ''}> Rates include GST (MRP)</label>`}
-    ${fromDoc || isNote ? '' : `<div class="panel scanbar no-print"><div class="row"><input id="dscan" placeholder="Scan QR / barcode to add an item (or type its code)" autocomplete="off" enterkeyhint="done" style="flex:1;min-width:0" aria-label="Scan item code">${canCamera() ? '<button type="button" class="btn primary" id="dcam">&#128247; Scan</button>' : ''}</div>
-      <div id="dslog" class="pk-log small" aria-live="polite"></div>${isSale && wholesaleMin() ? `<div class="muted small" id="wsnote">Wholesale price on every item once the order has ${wholesaleMin()} pieces or more.</div>` : ''}</div>`}
+    ${fromDoc || isNote ? '' : `<div class="panel scanbar no-print"><div class="row"><label class="pqty">Qty<input id="dqty" type="number" min="1" step="1" inputmode="numeric" value="1" aria-label="Pieces for the next scan"></label><input id="dscan" placeholder="Scan QR / barcode to add an item (or type its code)" autocomplete="off" enterkeyhint="done" style="flex:1;min-width:0" aria-label="Scan item code">${canCamera() ? '<button type="button" class="btn primary" id="dcam">&#128247; Scan</button>' : ''}</div>
+      <div class="muted small">Many pieces of one design / colour / size: type the quantity, then scan once.</div><div id="dslog" class="pk-log small" aria-live="polite"></div>${isSale && wholesaleMin() ? `<div class="muted small" id="wsnote">Wholesale price on every item once the order has ${wholesaleMin()} pieces or more.</div>` : ''}</div>`}
     <div class="panel flush"><div class="tbl-wrap"><table class="t lines"><thead><tr><th>Item</th><th>Qty</th><th>${isNote ? 'Rate diff (₹/unit)' : 'Rate (₹)'}</th><th>Disc %</th><th>GST</th><th class="num">Amount</th><th></th></tr></thead>
       <tbody id="lines">${draft.lines.map(lineRow).join('')}</tbody></table></div>
       ${fromDoc ? '' : '<div style="padding:10px"><button type="button" class="btn sm" id="addline">+ Add line</button></div>'}</div>
@@ -1818,7 +1827,10 @@ route(/^new\/([A-Z]+)$/, async (el, m, q) => {
       items.push(it);
       $$('select[name=item_id]', tbody).forEach((sl) => sl.insertAdjacentHTML('beforeend', `<option value="${it.id}">${esc(it.name)}</option>`));
     }
-    const n = it.pack_qty || 1;
+    // the quantity typed before the scan (5 pieces: one scan), then back to 1 for the next one
+    const qBox = $('#dqty'), times = Math.max(1, Math.round(+(qBox || {}).value || 1));
+    if (qBox) qBox.value = 1;
+    const n = (it.pack_qty || 1) * times;
     let tr = $$('tr', tbody).find((r) => +((($('select[name=item_id]', r) || {}).value) || 0) === it.id && !(($('[name=uom]', r) || {}).value));
     if (tr) {
       const q = $('[name=qty]', tr);
@@ -5327,7 +5339,7 @@ async function receiveScreen(el, [kind, id]) {
       <label class="f">Date<input type="date" id="rdate" value="${ME.today}"></label>
       <label class="f">Supplier bill / challan no.<input id="rref" maxlength="40" value="${esc((draft && draft.party_ref) || (ge && ge.challan_no) || '')}" ${kind === 'bill' ? 'disabled' : ''}></label>
     </div></div>
-    <div class="panel rscanbar"><div class="row"><input id="rscan" placeholder="Scan barcode / IMEI, or type a code and press Enter" autocomplete="off" enterkeyhint="go" aria-label="Scan">
+    <div class="panel rscanbar"><div class="row"><label class="pqty">Qty<input id="rqty" type="number" min="1" step="1" inputmode="numeric" value="1" aria-label="Pieces for the next scan"></label><input id="rscan" placeholder="Scan barcode / IMEI, or type a code and press Enter" autocomplete="off" enterkeyhint="go" aria-label="Scan">
       <button type="button" class="btn" id="rcam" aria-label="Scan with camera">&#128247;</button>${free ? '<select id="radd" aria-label="Add an item"><option value="">+ Add item…</option>' + items.filter((i) => !i.is_service).map((i) => `<option value="${i.id}">${esc(i.name)}</option>`).join('') + '</select>' : ''}</div>
       <div class="rmsg" id="rmsg" role="status" aria-live="polite"></div><div class="rprog" id="rprog"></div></div>
     <div class="rlines" id="rlines"></div><datalist id="binlist"></datalist>
@@ -5374,10 +5386,14 @@ async function receiveScreen(el, [kind, id]) {
     }
     const l = L[i];
     if (l.track_serial) { active = i; beep(true); msg(`<b>${esc(l.name)}</b>: now scan each piece's serial / IMEI number.`); draw(); return; }
+    // the quantity typed before the scan (10 pieces of one code: one scan), then back to 1
+    const qBox = $('#rqty'), times = Math.max(1, Math.round(+(qBox || {}).value || 1));
+    if (qBox) qBox.value = 1;
+    pack = pack * times;
     l.got = r2(l.got + pack);
     const over = l.expected !== null && l.got + l.bad > l.expected + 0.0005;
     beep(!over);
-    msg(over ? `<b>${esc(l.name)}</b>: ${qtyf(l.got)} is more than the ${qtyf(l.expected)} billed.` : `<b>${esc(l.name)}</b> +${qtyf(pack)}${pack > 1 ? ' (one pack)' : ''}${l.expected !== null ? ` &rarr; ${qtyf(l.got)} of ${qtyf(l.expected)}` : ''}`, over ? 'err' : 'ok');
+    msg(over ? `<b>${esc(l.name)}</b>: ${qtyf(l.got)} is more than the ${qtyf(l.expected)} billed.` : `<b>${esc(l.name)}</b> +${qtyf(pack)}${times === 1 && pack > 1 ? ' (one pack)' : ''}${l.expected !== null ? ` &rarr; ${qtyf(l.got)} of ${qtyf(l.expected)}` : ''}`, over ? 'err' : 'ok');
     draw();
   };
   const teach = (code) => {
