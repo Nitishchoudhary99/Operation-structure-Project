@@ -6153,7 +6153,7 @@ route(/^pack\/(\d+)$/, async (el, m) => {
   const paint = () => {
     const goods = order.lines, done = goods.length && goods.every((l) => l.picked >= l.want - 0.0005), any = goods.some((l) => l.picked > 0);
     $('#plines').innerHTML = goods.map((l) => `<tr class="${l.picked >= l.want - 0.0005 ? 'pk-ok' : l.picked ? 'pk-part' : ''}"><td>${esc(l.name)}<div class="muted small">${esc(l.code)}</div></td>
-      <td class="num"><b>${qtyf(l.picked)}</b> / ${qtyf(l.want)} ${esc(l.unit || '')}</td><td>${l.picked >= l.want - 0.0005 ? '✅' : l.picked ? '…' : ''}</td>
+      <td class="num"><input class="pk-set" type="number" min="0" max="${l.want}" step="1" inputmode="numeric" data-set="${l.line_id}" value="${l.picked}" aria-label="Picked: ${esc(l.name)}"> / ${qtyf(l.want)} ${esc(l.unit || '')}</td><td>${l.picked >= l.want - 0.0005 ? '✅' : l.picked ? '…' : ''}</td>
       <td>${l.picked < l.want - 0.0005 ? `<button class="btn sm" data-all="${l.line_id}" title="Picked all the rest of this line">✓ All ${qtyf(l.want - l.picked)}</button> ` : ''}${l.picked ? `<button class="btn sm" data-minus="${l.line_id}" title="Put one back">−1</button>` : ''}</td></tr>`).join('');
     $('#plog').innerHTML = log.slice(-6).reverse().map((x) => `<div class="${x.ok ? 'pos' : 'neg'}">${esc(x.t)}</div>`).join('');
     $('#pstate').innerHTML = done ? '<span class="pchip pre">Picking complete ✓ ready to pack</span>' : `<span class="pchip none">Picked ${qtyf(order.picked)} of ${qtyf(order.need)}</span>`;
@@ -6173,7 +6173,7 @@ route(/^pack\/(\d+)$/, async (el, m) => {
   };
   el.innerHTML = head(`Pick &amp; pack · ${esc(so.number)}`, `<a class="btn" href="#/doc/${so.id}">Back</a><a class="btn" href="#/shiplabel/${so.id}">Shipping label</a>`) + `
     <div class="panel"><p><b>${esc((so.party || {}).name || '')}</b>${(so.party || {}).city ? ' · ' + esc(so.party.city) : ''} · ${fdate(so.date)} · ${payChip(so)} <span id="pstate"></span></p>
-      <p class="muted">Scan each piece's QR label as you pick it. Wrong design, colour or size, or more than ordered, is refused. What you scan is saved at once (the owner sees it too); stock goes out only when the Delivery Note is saved.</p>
+      <p class="muted">Scan each piece's QR label as you pick it, or type the picked count on a line. Wrong design, colour or size, or more than ordered, is refused. What you scan is saved at once (the owner sees it too); stock goes out only when the Delivery Note is saved.</p>
       <div class="row"><label class="pqty">Qty<input id="pqty" type="number" min="1" step="1" inputmode="numeric" value="1" aria-label="Pieces for the next scan"></label><input id="pscan" placeholder="Scan or type item code…" autocomplete="off" enterkeyhint="done" style="flex:1;min-width:0">${canCamera() ? '<button class="btn primary" id="pcam">📷 Scan</button>' : ''}</div>
       <p class="muted small" style="margin:6px 0 0">Many pieces of one design / colour / size: type the quantity, then scan once.</p>
       <div id="plog" class="pk-log" aria-live="polite"></div></div>
@@ -6194,6 +6194,16 @@ route(/^pack\/(\d+)$/, async (el, m) => {
     const b = e.target.closest('[data-minus]'); if (!b) return;
     try { take(await POST('/api/pick/undo', { line_id: +b.dataset.minus, ids: [so.id] })); paint(); } catch (er) { toast(er.message, 'err'); }
   };
+  // the picked count typed in (counted by hand): saved when the box is left or Enter is pressed
+  $('#plines').addEventListener('change', async (e) => {
+    const box = e.target.closest('[data-set]'); if (!box) return;
+    const l = lineOf(+box.dataset.set), v = Math.max(0, Math.round(+box.value || 0));
+    if (!l || v === l.picked) return;
+    try { take(await POST('/api/pick/set', { line_id: l.line_id, qty: v, ids: [so.id] })); log.push({ ok: true, t: `✓ ${l.name} — ${qtyf(v)} of ${qtyf(l.want)} (typed)` }); beep(true); }
+    catch (er) { log.push({ ok: false, t: er.message }); beep(false); }
+    paint();
+  });
+  $('#plines').addEventListener('keydown', (e) => { if (e.key === 'Enter' && e.target.closest('[data-set]')) { e.preventDefault(); e.target.blur(); } });
   $('#preset').onclick = async () => {
     if (!confirm('Start picking this order again from nothing?')) return;
     try { take(await POST('/api/pick/reset', { ids: [so.id] })); log.length = 0; paint(); } catch (er) { toast(er.message, 'err'); }
