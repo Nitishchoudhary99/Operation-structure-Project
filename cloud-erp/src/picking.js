@@ -111,6 +111,22 @@ export async function pickUndo(c, b) {
   return pickState(c, ids.length ? ids : [line.doc_id]);
 }
 
+/* POST /api/pick/set { line_id, qty, ids }: the picked count of one order line typed in (counted by hand). It stays
+   within what is still to be sent on that line; the check is inside the write, like a scan. */
+export async function pickSet(c, b) {
+  mayPick(c);
+  const line = await c.db.prepare(`SELECT l.id, l.doc_id, l.qty, l.done_qty, i.name FROM doc_lines l JOIN docs d ON d.id = l.doc_id LEFT JOIN items i ON i.id = l.item_id
+      WHERE l.id = ? AND d.org_id = ? AND d.type = 'SO' AND d.status IN ('open', 'partial')`).bind(+b.line_id || 0, c.org.id).first();
+  if (!line) throw notFound('Line not found.');
+  const n = Math.round(num(b.qty, 'Quantity', { min: 0, max: 1e6, def: 0 }) * 1000) / 1000;
+  const room = left(line);
+  if (n > room + 0.0005) throw bad(`✗ Only ${room} of ${line.name || 'this item'} ${room === 1 ? 'is' : 'are'} on this order, not ${n}.`, { extra: true });
+  const r = await c.db.prepare(`UPDATE doc_lines SET picked_qty = ? WHERE id = ? AND ? <= qty - done_qty + 0.0005`).bind(n, line.id, n).run();
+  if (!r.meta.changes) throw bad('The order changed a moment ago. Try again.');
+  const ids = idsOf(b.ids);
+  return pickState(c, ids.length ? ids : [line.doc_id]);
+}
+
 /* POST /api/pick/reset { ids }: start picking these orders again from nothing */
 export async function pickReset(c, b) {
   mayPick(c);

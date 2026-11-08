@@ -32,7 +32,7 @@ import { courierStatus, courierConnect, courierPickup, courierPickups, courierDi
 import { botReady, botLink, verifyWebhook, receiveWebhook, setBot, inbox, thread, reply as waReply, markDone } from './wabot.js';
 import { listStaff, saveStaff, markAttendance, staffDetail, giveAdvance, paySalary, cancelStaffTxn, payslip, todayStaffQueries, statutoryMonth, ecrFile, esiFile, payChallan as payStatChallan, cancelChallan as cancelStatChallan, ratesOf, salaryTdsStatement } from './payroll.js';
 import { ptStates } from './paytax.js';
-import { pickState, pickScan, pickUndo, pickReset } from './picking.js';
+import { pickState, pickScan, pickUndo, pickReset, pickSet } from './picking.js';
 import { findItem, codeKey } from './codes.js';
 import { reservedStatement, withReserved } from './engine.js';
 import * as rep from './reports.js';
@@ -381,6 +381,7 @@ router.add('GET', '/api/pick', async (c) => json(await pickState(c, c.url.search
 router.add('POST', '/api/pick/scan', async (c) => json(await pickScan(c, c.body)));
 router.add('POST', '/api/pick/undo', async (c) => json(await pickUndo(c, c.body)));
 router.add('POST', '/api/pick/reset', async (c) => json(await pickReset(c, c.body)));
+router.add('POST', '/api/pick/set', async (c) => json(await pickSet(c, c.body)));
 router.add('GET', '/api/courier/ndr', async (c) => json(await courierNdr(c)));
 router.add('POST', '/api/courier/ndr/:id', async (c) => json(await courierNdrAction(c, +c.params.id, c.body)));
 router.add('POST', '/api/courier/return', async (c) => json(await courierReturn(c, c.body)));

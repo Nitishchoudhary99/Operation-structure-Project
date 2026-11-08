@@ -3769,6 +3769,15 @@ if (process.env.ERP_AI_MOCK) {
   check('one scan with quantity 5 picks 5 pieces', many.status === 200 && many.data.line.picked === 5, JSON.stringify(many.data).slice(0, 200));
   const tooMany = await G.post('/api/pick/scan', { ids: [bulk.id], code: 'K101-RED-L', qty: 6 });
   check('a typed quantity above what is ordered is refused, saying how many are left', tooMany.status === 400 && /only 5 more/.test(tooMany.data.error), JSON.stringify(tooMany.data));
+  // the picked count typed straight into a line (counted by hand)
+  const rlLine = (await G.get('/api/pick?ids=' + bulk.id)).data.orders[0].lines.find((l) => l.item_id === RL.id);
+  const typed = await G.post('/api/pick/set', { line_id: rlLine.line_id, qty: 3, ids: [bulk.id] });
+  check('a picked count can be typed on a line', typed.status === 200 && typed.data.orders[0].lines.find((l) => l.item_id === RL.id).picked === 3, JSON.stringify(typed.data).slice(0, 200));
+  const typedDown = await G.post('/api/pick/set', { line_id: rlLine.line_id, qty: 1, ids: [bulk.id] });
+  check('...and typed lower again', typedDown.data.orders[0].lines.find((l) => l.item_id === RL.id).picked === 1);
+  const typedOver = await G.post('/api/pick/set', { line_id: rlLine.line_id, qty: 9, ids: [bulk.id] });
+  check('a typed count above what is ordered is refused', typedOver.status === 400 && /Only 5/.test(typedOver.data.error), JSON.stringify(typedOver.data));
+  check('another business cannot type a picked count on these lines', (await (await tenant('Pickset', '203.0.113.' + (150 + Math.floor(Math.random() * 10)))).post('/api/pick/set', { line_id: rlLine.line_id, qty: 1 })).status === 404);
   await G.post('/api/pick/reset', { ids: [bulk.id] });
   // a partial delivery note keeps the rest on the order, picked count follows
   for (let k = 0; k < 3; k++) await G.post('/api/pick/scan', { ids: [bulk.id], code: 'K101-BLUE-M' });
