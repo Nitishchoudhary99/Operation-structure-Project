@@ -1185,3 +1185,13 @@ tr.scan-hit td{animation:scanhit 1.2s ease-out}
 .dk-paid{padding:10px 14px}
 .pqty{display:flex;align-items:center;gap:6px;font-weight:600}.pqty input{width:70px}
 .pk-set{width:64px;text-align:right;font-weight:700}
+
+/* long settings page: section chips; order editor: rarely used fields folded away on a phone */
+.jumpbar { display: flex; gap: 8px; align-items: center; overflow-x: auto; padding: 2px 0 10px; margin-bottom: 4px; scrollbar-width: thin; }
+.jumpbar > span { flex: none; white-space: nowrap; }
+.jumpbar .chip { flex: none; border: 1px solid var(--line); background: var(--panel); color: inherit; border-radius: 999px; padding: 6px 12px; font: inherit; font-size: 13px; cursor: pointer; white-space: nowrap; }
+.jumpbar .chip:hover, .jumpbar .chip:focus-visible { border-color: var(--brand, #0f766e); }
+.panel { scroll-margin-top: 70px; }
+.more-opts { grid-column: 1 / -1; }
+.more-opts > summary { cursor: pointer; font-weight: 600; padding: 8px 0; }
+.more-opts > .form { margin-top: 6px; }

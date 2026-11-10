@@ -1501,13 +1501,16 @@ route(/^new\/([A-Z]+)$/, async (el, m, q) => {
         ${fromDoc ? `<input value="${esc((parties.find((p) => p.id === draft.party_id) || {}).name || '')}" disabled><input type="hidden" name="party_id" value="${draft.party_id}">`
           : `<select name="party_id" required><option value="">Choose…</option>${plist.map((p) => `<option value="${p.id}" ${p.id === +draft.party_id ? 'selected' : ''}>${esc(p.name)}</option>`).join('')}</select>`}</label>
       ${fromDoc ? '' : `<label class="f">&nbsp;<button type="button" class="btn" id="newparty">+ New ${side}</button></label>`}
-      ${isSale && !isNote && !fromDoc ? `<label class="f">Price<select name="price_mode"><option value="">Auto (customer's list${wholesaleMin() ? `, wholesale from ${wholesaleMin()} pcs` : ''})</option><option value="retail">Retail</option><option value="wholesale">Wholesale</option></select></label>` : ''}
       <label class="f">Date<input type="date" name="date" value="${esc(draft.date)}"${minDate() ? ` min="${minDate()}"` : ''}></label>
       ${refField ? `<label class="f">${type === 'GRN' ? 'Supplier challan / bill no.' : 'Supplier bill no.'}<input name="party_ref" maxlength="40" value="${esc(draft.party_ref || '')}" autocomplete="off"></label>` : ''}
       ${billFirst ? `<label class="f check wide"><input type="checkbox" name="transit"> <span>Goods not received yet (on the way)<small class="help">Stock comes in when the goods arrive: Purchase → Receive Goods.</small></span></label>` : ''}
-      ${money || type === 'PO' || type === 'SO' || type === 'QUOTE' ? `<label class="f">${money ? 'Due date' : type === 'QUOTE' ? 'Valid until' : 'Expected by'}<input type="date" name="due_date" placeholder="auto"></label>` : ''}
-      ${money && !fromDoc && !isNote ? `<label class="f">Repeat this ${isSale ? 'invoice' : 'bill'}<select name="repeat">${[['', 'No, just once'], ...Object.entries(EVERY_T)].map(([v, t]) => `<option value="${v}" ${v === (q.get('repeat') || '') ? 'selected' : ''}>${t}</option>`).join('')}</select>
+      ${money ? '' : `${type === 'PO' || type === 'SO' || type === 'QUOTE' ? `<label class="f">${type === 'QUOTE' ? 'Valid until' : 'Expected by'}<input type="date" name="due_date" placeholder="auto"></label>` : ''}`}
+      ${money ? `<details class="more-opts"${innerWidth > 860 || q.get('repeat') ? ' open' : ''}><summary>More options<span class="muted"> &middot; ${isSale && !isNote && !fromDoc ? 'price list, ' : ''}due date${!fromDoc && !isNote ? ', repeat' : ''}</span></summary><div class="form">
+        ${isSale && !isNote && !fromDoc ? `<label class="f">Price<select name="price_mode"><option value="">Auto (customer's list${wholesaleMin() ? `, wholesale from ${wholesaleMin()} pcs` : ''})</option><option value="retail">Retail</option><option value="wholesale">Wholesale</option></select></label>` : ''}
+        <label class="f">Due date<input type="date" name="due_date" placeholder="auto"></label>
+        ${!fromDoc && !isNote ? `<label class="f">Repeat this ${isSale ? 'invoice' : 'bill'}<select name="repeat">${[['', 'No, just once'], ...Object.entries(EVERY_T)].map(([v, t]) => `<option value="${v}" ${v === (q.get('repeat') || '') ? 'selected' : ''}>${t}</option>`).join('')}</select>
         <small class="help">Rent, tuition, AMC: a new one is made by itself${isSale ? ' and sent to the customer' : ''}.</small></label>` : ''}
+      </div></details>` : ''}
       ${whs.length > 1 ? `<label class="f">Godown<select name="warehouse_id">${whs.map((w) => `<option value="${w.id}" ${w.id === +draft.warehouse_id ? 'selected' : ''}>${esc(w.name)}</option>`).join('')}</select></label>`
         : `<input type="hidden" name="warehouse_id" value="${whs[0] ? whs[0].id : ''}">`}
       ${cfInputs('doc', draft.extra || {}, T.side)}
@@ -4536,6 +4539,15 @@ route(/^reports\/([a-z-]+)$/, async (el, m, q) => {
 
 /* ======================================================================= settings */
 const SET_TABS = [['settings', 'Business & users'], ['settings/security', 'Security & privacy'], ['settings/print', 'Branding & print'], ['settings/numbering', 'Numbering'], ['settings/fields', 'Custom fields'], ['settings/business', 'Business type & menu'], ['settings/workflow', 'Orders & dispatch'], ['settings/roles', 'Roles']];
+// a row of chips under the tabs of a long settings page: one tap goes to that section
+function jumpBar(el) {
+  const heads = [...el.querySelectorAll('.panel')].map((pn) => [pn, pn.querySelector('h2, h3')]).filter(([, h]) => h && h.textContent.trim());
+  const tabs = el.querySelector('.tabs'); if (heads.length < 4 || !tabs) return;
+  const bar = document.createElement('div'); bar.className = 'jumpbar'; bar.setAttribute('aria-label', 'Sections on this page');
+  bar.innerHTML = '<span class="muted">Go to:</span>' + heads.map(([, h], i) => `<button type="button" class="chip" data-j="${i}">${esc(h.textContent.trim())}</button>`).join('');
+  tabs.after(bar);
+  bar.onclick = (e) => { const b = e.target.closest('[data-j]'); if (b) heads[+b.dataset.j][0].scrollIntoView({ behavior: 'smooth', block: 'start' }); };
+}
 const setTabs = (cur) => `<div class="tabs">${SET_TABS.filter(([h]) => h !== 'settings/roles' || ME.can.users).map(([h, t]) => `<a href="#/${h}" class="${h === cur ? 'on' : ''}">${t}</a>`).join('')}</div>`;
 
 /* Shrink a photo on this device (canvas) so it fits the 64 KB limit; nothing is uploaded until it is small. */
@@ -4974,6 +4986,7 @@ route(/^settings$/, async (el, m, q) => {
       <h3 style="margin-top:16px">Restore from a backup</h3><div id="restorebox"><span class="muted">Checking…</span></div></div>` : ''}
     <p class="muted">Selling SmartTrader to other businesses? <a href="#/admin">Open the admin panel</a> (needs the ADMIN_KEY secret).</p>
     ${canUsers ? `<div class="panel flush"><div style="padding:14px 16px 0"><h3>Audit trail</h3></div>${table([{ h: 'When', f: (a) => new Date(a.at).toLocaleString('en-IN') }, { h: 'User', k: 'user' }, { h: 'Action', k: 'action' }, { h: 'Detail', k: 'detail', cls: 'hide-sm' }], audit.slice(0, 100))}</div>` : ''}`;
+  jumpBar(el);
   if ($('#wabon')) $('#wabon').onchange = async (e) => {
     try { await api('PUT', '/api/settings/wa-bot', { on: e.target.checked }); ME = await GET('/api/me'); shell(); wireInstall(); toast(e.target.checked ? 'WhatsApp bot on' : 'WhatsApp bot off'); render(); }
     catch (err) { e.target.checked = !e.target.checked; toast(err.message, 'err'); }
