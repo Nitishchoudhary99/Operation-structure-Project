@@ -1195,3 +1195,26 @@ tr.scan-hit td{animation:scanhit 1.2s ease-out}
 .more-opts { grid-column: 1 / -1; }
 .more-opts > summary { cursor: pointer; font-weight: 600; padding: 8px 0; }
 .more-opts > .form { margin-top: 6px; }
+/* phone: lists fit the screen - headings may wrap and cells are tighter, so the last column is not cut off */
+.sub-sm { display: none; }
+@media (max-width: 860px) { .sub-sm { display: block; } }
+@media (max-width: 600px) {
+  .t th { white-space: normal; padding: 8px 6px; vertical-align: bottom; }
+  .t td { padding: 9px 6px; }
+  .t th:first-child, .t td:first-child { padding-left: 10px; }
+  .t th:last-child, .t td:last-child { padding-right: 10px; }
+}
+/* phone: Items and Customers lists show each row as a card, label on the left and value on the right */
+@media (max-width: 600px) {
+  .cards .tbl-wrap { overflow: visible; }
+  .cards table.t, .cards .t tbody { display: block; }
+  .cards .t thead { display: none; }
+  .cards .t tr { display: block; padding: 12px 14px; border-bottom: 1px solid var(--line); }
+  .cards .t td { display: block; padding: 3px 0; border: 0; text-align: right; overflow: hidden; }
+  .cards .t td::before { content: attr(data-h); float: left; margin-right: 12px; color: var(--muted); font-size: 13px; }
+  .cards .t td:first-child { display: block; text-align: left; font-weight: 600; font-size: 16px; padding-bottom: 6px; }
+  .cards .t td:first-child::before { content: none; }
+  .cards .t td:empty, .cards .t td.hide-sm { display: none; }
+  .cards .t td .sub-sm { display: inline; margin-left: 6px; }
+  .cards .t tfoot { display: none; }
+}
