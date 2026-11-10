@@ -1195,12 +1195,13 @@ tr.scan-hit td{animation:scanhit 1.2s ease-out}
 .more-opts { grid-column: 1 / -1; }
 .more-opts > summary { cursor: pointer; font-weight: 600; padding: 8px 0; }
 .more-opts > .form { margin-top: 6px; }
-/* phone: lists fit the screen - headings may wrap and cells are tighter, so the last column is not cut off */
-.sub-sm { display: none; }
-@media (max-width: 860px) { .sub-sm { display: block; } }
-@media (max-width: 600px) {
-  .t th { white-space: normal; padding: 8px 6px; vertical-align: bottom; }
-  .t td { padding: 9px 6px; }
-  .t th:first-child, .t td:first-child { padding-left: 10px; }
-  .t th:last-child, .t td:last-child { padding-right: 10px; }
+/* phone: lists scroll sideways in one clean line per row; the first column (name) stays in view while scrolling */
+@media (max-width: 860px) {
+  .tbl-wrap { -webkit-overflow-scrolling: touch; overscroll-behavior-x: contain; }
+  .tbl-wrap .t td, .tbl-wrap .t th { white-space: nowrap; }
+  .tbl-wrap .t th:first-child, .tbl-wrap .t td:first-child { position: sticky; left: 0; z-index: 1; background: var(--panel);
+    white-space: normal; min-width: 120px; max-width: 46vw; box-shadow: 1px 0 0 var(--line); }
+  .tbl-wrap .t th:first-child { background: var(--soft); }
+  .tbl-wrap .t tr.click:hover td:first-child { background: var(--soft); }
+  .doc-paper .tbl-wrap .t th:first-child, .doc-paper .tbl-wrap .t td:first-child { position: static; max-width: none; box-shadow: none; }
 }
