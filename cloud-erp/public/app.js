@@ -148,7 +148,7 @@ const emptyCta = (text, btn = '') => `<div class="empty-cta"><p>${text}</p>${btn
 function table(cols, rows, { onRow, foot, empty = 'Nothing here yet.' } = {}) {
   if (!rows.length) return `<div class="empty">${empty}</div>`;
   const th = cols.map((c) => `<th class="${c.num ? 'num' : ''} ${c.cls || ''}">${c.h}</th>`).join('');
-  const tr = rows.map((r, i) => `<tr ${onRow ? `class="click" data-i="${i}"` : ''}>${cols.map((c) => `<td class="${c.num ? 'num' : ''} ${c.cls || ''}">${c.f ? c.f(r) : esc(r[c.k])}</td>`).join('')}</tr>`).join('');
+  const tr = rows.map((r, i) => `<tr ${onRow ? `class="click" data-i="${i}"` : ''}>${cols.map((c) => `<td class="${c.num ? 'num' : ''} ${c.cls || ''}" data-h="${esc(String(c.h).replace(/<[^>]*>/g, ''))}">${c.f ? c.f(r) : esc(r[c.k])}</td>`).join('')}</tr>`).join('');
   const tf = foot ? `<tfoot><tr>${cols.map((c) => `<td class="${c.num ? 'num' : ''} ${c.cls || ''}">${foot[c.k] ?? ''}</td>`).join('')}</tr></tfoot>` : '';
   return `<div class="tbl-wrap"><table class="t" data-rows="${rows.length}"><thead><tr>${th}</tr></thead><tbody>${tr}</tbody>${tf}</table></div>`;
 }
@@ -2293,7 +2293,7 @@ route(/^parties$/, async (el, m, q) => {
   const { rows } = await GET('/api/parties' + (kind ? '?kind=' + kind : ''));
   el.innerHTML = head('Customers & Suppliers', `${ME.can.masters ? '<a class="btn" href="#/import/parties">Import from Excel</a>' : ''}<button class="btn primary" id="new">+ New contact</button>`) + `
     <div class="tabs">${[['', 'All'], ['customer', 'Customers'], ['supplier', 'Suppliers']].map(([k, t]) => `<a href="#/parties${k ? '?kind=' + k : ''}" class="${kind === k ? 'on' : ''}">${t}</a>`).join('')}</div>
-    ${rows.length > 5 ? '<div class="panel"><input id="search" type="search" placeholder="Search name, mobile, GSTIN…" style="max-width:320px"></div>' : ''}<div class="panel flush" id="list"></div>
+    ${rows.length > 5 ? '<div class="panel"><input id="search" type="search" placeholder="Search name, mobile, GSTIN…" style="max-width:320px"></div>' : ''}<div class="panel flush cards" id="list"></div>
     <p class="muted">Dr = they owe you. Cr = you owe them.</p>`;
   const cols = [{ h: 'Name', k: 'name' }, { h: 'Type', k: 'kind' }, { h: 'Mobile', k: 'phone', cls: 'hide-sm' }, { h: 'GSTIN', k: 'gstin', cls: 'hide-sm' }, ...cfCols('party'),
     { h: 'Balance', num: 1, f: (r) => `<span class="${r.balance > 0 ? 'pos' : r.balance < 0 ? 'neg' : ''}">${inr(Math.abs(r.balance))} ${r.balance > 0 ? 'Dr' : r.balance < 0 ? 'Cr' : ''}</span>${r.over_limit ? ' ' + badge('overdue') : ''}` }];
@@ -2389,7 +2389,7 @@ route(/^items$/, async (el, m, q) => {
     ...(rows.some((r) => r.reserved > 0) ? [{ h: 'On orders', k: 'reserved', num: 1, f: (r) => (r.reserved ? qtyf(r.reserved) : '<span class="muted">—</span>'), cls: 'hide-sm' },
       { h: 'Free to sell', k: 'available', num: 1, f: (r) => (r.is_service ? '' : `<b class="${r.available < 0 ? 'neg' : ''}">${qtyf(r.available)}</b>`) , cls: 'hide-sm' }] : []), ...(ME.costs === false ? [] : [{ h: 'Value', k: 'stock_value', num: 1, f: (r) => inr(r.stock_value) }]), ...cfCols('item')];
   el.innerHTML = head('Items', `${ME.can.items ? '<a class="btn" href="#/import/items">Import from Excel</a><button class="btn" id="variants">+ Sizes &amp; colours</button>' : ''}<button class="btn" id="csv">Export CSV</button><button class="btn primary" id="new">+ New item</button>`) +
-    `<div class="panel"><input id="search" placeholder="Search items…" style="max-width:320px"></div><div class="panel flush" id="list"></div>`;
+    `<div class="panel"><input id="search" placeholder="Search items…" style="max-width:320px"></div><div class="panel flush cards" id="list"></div>`;
   const draw = (f) => { const r = rows.filter((x) => !f || (x.name + ' ' + x.sku + ' ' + x.category + ' ' + Object.values(x.extra || {}).join(' ')).toLowerCase().includes(f));
     $('#list').innerHTML = table(cols, r, { onRow: true, empty: f ? 'No item matches your search.' : emptyCta('Add the products you sell. Then they come up in bills with price and GST filled in.', ME.can.items ? '<button class="btn primary" data-newitem>+ Add your first item</button> <a class="btn" href="#/import/items">Import from Excel</a>' : '') });
     bindRows($('#list'), r, (x) => go('item/' + x.id)); const b = $('[data-newitem]', el); if (b) b.onclick = () => itemForm(); };
