@@ -1,3 +1,5 @@
 node_modules/
 .wrangler/
 .dev.vars
+test/access-report.json
+.access-state/

@@ -1075,7 +1075,11 @@ router.add('PUT', '/api/items/:id', async (c) => {
 router.add('DELETE', '/api/items/:id', async (c) => {
   requireCan(c.user, 'items');
   const id = +c.params.id;
-  const used = await c.db.prepare(`SELECT EXISTS (SELECT 1 FROM doc_lines WHERE item_id = ?) + EXISTS (SELECT 1 FROM stock_moves WHERE org_id = ? AND item_id = ?) AS n`).bind(id, c.org.id, id).first();
+  // another business's item: not found; and the "has transactions" check only ever looks at this business's bills,
+  // so the answer can never tell anyone whether someone else's item was sold
+  if (!(await c.db.prepare(`SELECT 1 FROM items WHERE id = ? AND org_id = ?`).bind(id, c.org.id).first())) throw notFound('Item not found.');
+  const used = await c.db.prepare(`SELECT EXISTS (SELECT 1 FROM doc_lines l JOIN docs d ON d.id = l.doc_id WHERE l.item_id = ?2 AND d.org_id = ?1)
+      + EXISTS (SELECT 1 FROM stock_moves WHERE org_id = ?1 AND item_id = ?2) AS n`).bind(c.org.id, id).first();
   if (used.n) throw bad('This item has transactions and cannot be deleted.');
   await c.db.batch([c.db.prepare(`DELETE FROM items WHERE id = ? AND org_id = ?`).bind(id, c.org.id),
     c.db.prepare(`DELETE FROM item_codes WHERE item_id = ? AND org_id = ?`).bind(id, c.org.id)]);

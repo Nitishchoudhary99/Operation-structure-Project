@@ -46,7 +46,8 @@ export async function removeTable(c, id) {
   requireCan(c.user, 'settings');
   const busy = await c.db.prepare(`SELECT 1 FROM dine_orders WHERE table_id = ? AND org_id = ? AND status = 'open'`).bind(id, c.org.id).first();
   if (busy) throw bad('This table has an open order. Bill it or move it first.');
-  await c.db.prepare(`UPDATE dine_tables SET active = 0 WHERE id = ? AND org_id = ?`).bind(id, c.org.id).run();
+  const r = await c.db.prepare(`UPDATE dine_tables SET active = 0 WHERE id = ? AND org_id = ?`).bind(id, c.org.id).run();
+  if (!r.meta.changes) throw notFound('Table not found.');      // another business's table, or none: never a quiet "ok"
   return dineBoard(c);
 }
 

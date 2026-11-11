@@ -4,7 +4,7 @@
    with the bank's date (bank_clear), so they never come up again; what the bank shows and the books do not (charges,
    interest, a customer's direct transfer) is added in one tap, and the Bank Reconciliation Statement says why the
    two balances differ: deposits not yet credited and cheques not yet presented. */
-import { bad, str, today, nowIso, date as isoDate, loadByIds } from './lib.js';
+import { bad, notFound, str, today, nowIso, date as isoDate, loadByIds } from './lib.js';
 import { requireCan } from './auth.js';
 import { parseCsv } from './channels.js';
 
@@ -144,7 +144,8 @@ export async function clearLines(c, body) {
 
 export async function unclearLine(c, lineId) {
   requireCan(c.user, 'finance');
-  await c.db.prepare(`DELETE FROM bank_clear WHERE line_id = ? AND org_id = ?`).bind(lineId, c.org.id).run();
+  const r = await c.db.prepare(`DELETE FROM bank_clear WHERE line_id = ? AND org_id = ?`).bind(lineId, c.org.id).run();
+  if (!r.meta.changes) throw notFound('That bank line is not marked cleared.');
   return { ok: true };
 }
 
