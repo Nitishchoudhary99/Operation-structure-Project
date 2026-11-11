@@ -54,7 +54,7 @@ import { gstr1, gstr1Sheets, match2b } from './gstr.js';
 import { loyaltyOf, cleanLoyalty, partyPoints, members as loyaltyMembers, adjustPoints } from './loyalty.js';
 import { widgetData, listDashboards, saveDashboard, deleteDashboard, pickDefault } from './widgets.js';
 import { dineBoard, addTables, removeTable, tableDetail, sendKot, voidLine, moveOrder, billOrder, voidOrder, kotLog } from './dine.js';
-import { secondStep, twoStepStart, twoStepEnable, twoStepDisable, newBackupCodes, twoStepReset, requireTwoStep, loginStatement, signInHistory,
+import { secondStep, twoStepStart, twoStepEnable, twoStepDisable, newBackupCodes, twoStepReset, requireTwoStep, stepUp, loginStatement, signInHistory,
   closeBusiness, cancelClose, purgeClosed, notOwnerWhileClosing } from './security.js';
 import { workbook } from './xlsx.js';
 import { printOf, cleanPrint, imageFromDataUrl, shortHash, imageResponse, FILE_KINDS, seriesOf, numberSpec, formatNumber, cleanSeries, fyParts,
@@ -591,6 +591,7 @@ router.add('POST', '/api/users', async (c) => {
   const { role, role_id } = await roleOf(c, c.body.role);
   const prob = passwordProblem(c.body.password);
   if (prob) throw bad(prob);
+  if (role === 'admin') await stepUp(c);             // a new admin: the person adding them confirms with their own password
   await rateLimit(c.env, 'adduser:' + c.org.id, 30, 3600);
   if (await c.db.prepare(`SELECT 1 FROM users WHERE email = ?`).bind(email).first()) throw bad('This email cannot be used. Please use a different email address.');
   await checkCount(c.db, c.org, 'users');
@@ -610,9 +611,11 @@ router.add('PUT', '/api/users/:id', async (c) => {
   if (!u) throw notFound('User not found.');
   if (u.role === 'owner') throw bad('The owner cannot be changed here.');
   const { role, role_id } = c.body.role ? await roleOf(c, c.body.role) : { role: u.role, role_id: u.role_id };
+  if (role === 'admin' && u.role !== 'admin') await stepUp(c);   // promoting someone to admin
   if (c.body.password !== undefined) {   // owner/admin sets a new password for a staff member who forgot theirs
     const prob = passwordProblem(c.body.password);
     if (prob) throw bad(prob);
+    await stepUp(c);
     const salt = randomHex(16);
     await c.db.batch([c.db.prepare(`UPDATE users SET pw_hash = ?, salt = ?, pw_changed_at = MAX(pw_changed_at + 1, ?) WHERE id = ?`).bind(await hashPassword(c.body.password, salt), salt, Date.now(), u.id),
       auditStatement(c, 'reset password', u.email)]);
