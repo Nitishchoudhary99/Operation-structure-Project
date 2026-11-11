@@ -5,7 +5,7 @@
    - closing a business: the owner asks, the business waits 7 days (the owner can still sign in, cancel and download a backup),
      then every record of it is deleted. The payment records of its SmartTrader plan are kept, as the law needs. */
 import { HttpError, bad, forbidden, nowIso, str } from './lib.js';
-import { hashPassword, sameText, sessionSecret, legacySecret } from './auth.js';
+import { hashPassword, sameText, sessionSecret, legacySecret, rateLimit } from './auth.js';
 
 const enc = new TextEncoder();
 const b64u = (buf) => btoa(String.fromCharCode(...new Uint8Array(buf))).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
@@ -143,11 +143,25 @@ export async function newBackupCodes(c) {
   return { ok: true, backup_codes: codes };
 }
 /* The owner or an admin turns it off for a staff member who lost the phone (never for the owner) */
+/* Step-up: a high-risk change (making an admin, setting someone else's password, resetting their two-step sign-in,
+   switching off two-step sign-in for the business) asks the person doing it for their own password again, and their
+   authenticator code when two-step sign-in is on. A stolen session alone cannot do these. The app shows a
+   "confirm with your password" box when it gets code step_up and sends the same request again with the answers. */
+export async function stepUp(c) {
+  if (!c.body.confirm_password) throw new HttpError(403, 'Confirm with your password to do this.', { code: 'step_up', two_step: !!c.user.totp_on });
+  await rateLimit(c.env, 'stepup:' + c.user.id, 10, 3600);
+  const u = await freshUser(c);
+  if (!u || !sameText(await hashPassword(String(c.body.confirm_password), u.salt), u.pw_hash))
+    throw new HttpError(403, 'Your password is not correct.', { code: 'step_up', two_step: !!(u && u.totp_on) });
+  if (u.totp_on && !(await secondStep(c.env, c.db, u, c.body.confirm_code)))
+    throw new HttpError(403, 'That code is not right. Use the code from your authenticator app or a backup code.', { code: 'step_up', two_step: true });
+}
 export async function twoStepReset(c, userId) {
   if (!['owner', 'admin'].includes(c.user.role)) throw forbidden('Only the owner or an admin can do this.');
   const u = await c.db.prepare(`SELECT id, name, role FROM users WHERE id = ? AND org_id = ?`).bind(userId, c.org.id).first();
   if (!u) throw bad('No such user.');
   if (u.role === 'owner' || u.id === c.user.id) throw forbidden('Your own two-step sign-in is changed by you, with your code.');
+  await stepUp(c);
   await c.db.batch([c.db.prepare(`UPDATE users SET totp_on = 0, totp_secret = '', totp_backup = '', totp_last = 0 WHERE id = ?`).bind(u.id),
     audit(c, 'two-step sign-in reset', u.name)]);
   return { ok: true };
@@ -155,6 +169,7 @@ export async function twoStepReset(c, userId) {
 export async function requireTwoStep(c, on) {
   if (c.user.role !== 'owner') throw forbidden('Only the owner can change this.');
   if (on && !(await freshUser(c)).totp_on) throw bad('Turn on two-step sign-in for yourself first.');
+  if (!on && c.org.require_2fa) await stepUp(c);
   await c.db.batch([c.db.prepare(`UPDATE orgs SET require_2fa = ? WHERE id = ?`).bind(on ? 1 : 0, c.org.id), audit(c, 'two-step sign-in for everyone', on ? 'on' : 'off')]);
   return { ok: true };
 }

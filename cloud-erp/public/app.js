@@ -308,6 +308,17 @@ function download(name, text, type = 'text/csv') {
 }
 
 /* Modal form. fields: [{k, label, type, options, value, wide, step}]; onSubmit(values) may throw to show an error. */
+/* A sensitive change the server wants confirmed (code step_up: making an admin, setting someone's password, resetting
+   their two-step sign-in, switching off two-step sign-in for everyone): ask for the password (and code), send it again. */
+async function stepped(method, path, body = {}) {
+  try { return await api(method, path, body); } catch (e) {
+    if (!(e.data && e.data.code === 'step_up')) throw e;
+    return new Promise((resolve) => modal('Confirm it is you', [{ k: 'confirm_password', label: 'Your password', type: 'password' },
+      ...(e.data.two_step ? [{ k: 'confirm_code', label: 'Code from your authenticator app (or a backup code)' }] : [])],
+    async (v) => { resolve(await api(method, path, { ...body, ...v })); },
+    { submit: 'Confirm', intro: '<p class="muted">This is a sensitive change, so we check that it is really you.</p>' }));
+  }
+}
 function modal(title, fields, onSubmit, { submit = 'Save', intro = '' } = {}) {
   const root = $('#modal-root');
   const input = (f) => {
@@ -4915,12 +4926,12 @@ route(/^settings\/security$/, async (el) => {
   });
   if ($('#tsoff')) $('#tsoff').onclick = () => passCode('Turn off two-step sign-in', 'Turn off', async (v) => { await POST('/api/me/2fa/disable', v); toast('Two-step sign-in is off'); render(); });
   if ($('#req2')) $('#req2').onchange = async (e) => {
-    try { await api('PUT', '/api/settings/require-2fa', { on: e.target.checked }); toast(e.target.checked ? 'Everyone needs two-step sign-in now' : 'Two-step sign-in is up to each user'); }
+    try { await stepped('PUT', '/api/settings/require-2fa', { on: e.target.checked }); toast(e.target.checked ? 'Everyone needs two-step sign-in now' : 'Two-step sign-in is up to each user'); }
     catch (x) { e.target.checked = !e.target.checked; toast(x.message, 'err'); }
   };
   $$('[data-reset2]', el).forEach((b) => { b.onclick = async () => {
     if (!confirm(`Turn off two-step sign-in for ${b.dataset.n}? They sign in with the password alone until they set it up again on the new phone.`)) return;
-    try { await POST(`/api/users/${b.dataset.reset2}/2fa-reset`); toast('Reset'); render(); } catch (x) { toast(x.message, 'err'); }
+    try { await stepped('POST', `/api/users/${b.dataset.reset2}/2fa-reset`); toast('Reset'); render(); } catch (x) { toast(x.message, 'err'); }
   }; });
   if ($('#closego')) $('#closego').onclick = () => passCode('Close and delete this business', 'Close the business', async (v) => {
     const r = await POST('/api/org/close', v); ME = await GET('/api/me'); shell(); toast(`The business will be deleted on ${fdate(r.close_after.slice(0, 10))}`); render();
@@ -5153,12 +5164,12 @@ route(/^settings$/, async (el, m, q) => {
   wireVaadaSettings(el);
   if ($('#adduser')) $('#adduser').onclick = () => modal('Add user', [{ k: 'name', label: 'Name' }, { k: 'email', label: 'Email', type: 'email' },
     { k: 'role', label: 'Role', type: 'select', options: roleOpts }, { k: 'password', label: 'Temporary password (8+ chars)', type: 'password' }],
-  async (v) => { await POST('/api/users', v); toast('User added. Share the email and password with them.'); render(); });
+  async (v) => { await stepped('POST', '/api/users', v); toast('User added. Share the email and password with them.'); render(); });
   $$('[data-pw]', el).forEach((b) => b.onclick = () => modal('Set a new password', [{ k: 'password', label: 'New password (8+ chars)', type: 'password' }],
-    async (v) => { await api('PUT', '/api/users/' + b.dataset.pw, { password: v.password }); toast('Password changed. Share it with ' + b.dataset.email + '.'); },
+    async (v) => { await stepped('PUT', '/api/users/' + b.dataset.pw, { password: v.password }); toast('Password changed. Share it with ' + b.dataset.email + '.'); },
     { submit: 'Set password', intro: 'For ' + esc(b.dataset.email) + ', who forgot their password. They will be signed out on other devices.' }));
   $$('[data-u]', el).forEach((b) => b.onclick = async () => { await api('PUT', '/api/users/' + b.dataset.u, { active: b.dataset.a !== '1' }); render(); });
-  $$('[data-role]', el).forEach((s) => s.onchange = async () => { try { await api('PUT', '/api/users/' + s.dataset.role, { role: s.value }); toast('Role changed'); } catch (e) { toast(e.message, 'err'); render(); } });
+  $$('[data-role]', el).forEach((s) => s.onchange = async () => { try { await stepped('PUT', '/api/users/' + s.dataset.role, { role: s.value }); toast('Role changed'); } catch (e) { toast(e.message, 'err'); render(); } });
   $$('[data-menu]', el).forEach((b) => b.onclick = () => menuEditor(users.rows.find((u) => u.id === +b.dataset.menu)));
 });
 

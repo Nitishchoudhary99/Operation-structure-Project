@@ -1252,7 +1252,11 @@ const setPlan = (orgName, plan, months = 12) => adm('GET', '/api/admin/orgs').th
   await rq('PUT', `/api/users/${staffId}`, { active: true }, { cookie: owner2, ip: O.ip });
   check('...and switching them back on does not revive the old token', (await who(sl.cookie)) === 401);
   const sl2 = await rq('POST', '/api/auth/login', { email: 'staff' + O.email, password: 'Staff-pass-1' }, { ip: O.ip });
-  await rq('PUT', `/api/users/${staffId}`, { password: 'Staff-pass-2' }, { cookie: owner2, ip: O.ip });
+  const noConfirm = await rq('PUT', `/api/users/${staffId}`, { password: 'Staff-pass-2' }, { cookie: owner2, ip: O.ip });
+  const wrongConfirm = await rq('PUT', `/api/users/${staffId}`, { password: 'Staff-pass-2', confirm_password: 'not-my-password' }, { cookie: owner2, ip: O.ip });
+  check('setting a staff password asks for the owner\'s own password first (step-up), and a wrong one is refused',
+    noConfirm.status === 403 && noConfirm.data.code === 'step_up' && wrongConfirm.status === 403 && (await who(sl2.cookie)) === 200, JSON.stringify([noConfirm.status, wrongConfirm.status]));
+  await rq('PUT', `/api/users/${staffId}`, { password: 'Staff-pass-2', confirm_password: 'Tenant-pass-2' }, { cookie: owner2, ip: O.ip });
   check('an owner-set password ends the staff member\'s old sessions', (await who(sl2.cookie)) === 401);
   const d1 = await rq('POST', '/api/auth/login', { email: O.email, password: 'Tenant-pass-2' }, { ip: O.ip });
   const d2 = await rq('POST', '/api/auth/login', { email: O.email, password: 'Tenant-pass-2' }, { ip: O.ip });
@@ -2375,7 +2379,9 @@ else {
     && !std('sales').perms.edit.includes('purchase') && std('sales').changed === false, JSON.stringify(roles.builtin.map((r) => [r.key, r.perms.edit])));
   await V('POST', '/api/users', { email: 'kavita' + email, name: 'Kavita (counter)', role: 'sales', password: 'Kavita-pass-1234' });
   await V('POST', '/api/users', { email: 'gopal' + email, name: 'Gopal (godown)', role: 'store', password: 'Gopal-pass-1234' });
-  await V('POST', '/api/users', { email: 'anil' + email, name: 'Anil (admin)', role: 'admin', password: 'Anil-pass-12345' });
+  const adminNoConfirm = await rq('POST', '/api/users', { email: 'anil' + email, name: 'Anil (admin)', role: 'admin', password: 'Anil-pass-12345' }, { cookie: su.cookie, ip });
+  check('making a new admin asks for the owner\'s password first (step-up)', adminNoConfirm.status === 403 && adminNoConfirm.data.code === 'step_up', JSON.stringify(adminNoConfirm.data));
+  await V('POST', '/api/users', { email: 'anil' + email, name: 'Anil (admin)', role: 'admin', password: 'Anil-pass-12345', confirm_password: 'Mehta-pass-1234' });
   await V('PUT', '/api/roles/builtin/sales', { rules: { no_cancel: true, no_credit: true, hide_costs: true, max_discount: 10, backdate_days: 0 }, ui: { job: 'counter', home: 'pos' } });
   const login = async (who, pw) => (await rq('POST', '/api/auth/login', { email: who + email, password: pw }, { ip })).cookie;
   const kc = await login('kavita', 'Kavita-pass-1234'), K = (m, p, b) => rq(m, p, b, { cookie: kc, ip });
@@ -2947,8 +2953,12 @@ if (process.env.ERP_AI_MOCK) {
   const staffId = (await S('GET', '/api/security')).users.find((u) => u.email === sEm).id, ownerId = (await S('GET', '/api/me')).user.id;
   check('a staff member cannot turn it off while the business asks for it, nor reset others', (await T('POST', '/api/me/2fa/disable', { password: 'Staff-pass-12345', code: await totpCode(sst.secret, step() + 1) })).status === 400
     && (await T('POST', `/api/users/${ownerId}/2fa-reset`)).status === 403);
-  check('the owner resets a staff member who lost the phone', (await S('POST', `/api/users/${staffId}/2fa-reset`)).ok && (await S('GET', '/api/security')).users.find((u) => u.id === staffId).totp_on === 0);
-  await S('PUT', '/api/settings/require-2fa', { on: false });
+  const r2a = await SE('POST', `/api/users/${staffId}/2fa-reset`, { confirm_password: pw }), r2b = await SE('POST', `/api/users/${staffId}/2fa-reset`, { confirm_password: pw, confirm_code: '000000' });
+  check('resetting someone\'s two-step sign-in needs the owner\'s password AND code', r2a.status === 403 && r2a.data.code === 'step_up' && r2a.data.two_step === true && r2b.status === 403, JSON.stringify([r2a.status, r2b.status]));
+  check('the owner resets a staff member who lost the phone', (await S('POST', `/api/users/${staffId}/2fa-reset`, { confirm_password: pw, confirm_code: on.backup_codes[3] })).ok && (await S('GET', '/api/security')).users.find((u) => u.id === staffId).totp_on === 0);
+  const offNo = await SE('PUT', '/api/settings/require-2fa', { on: false });
+  check('switching off two-step sign-in for everyone needs a step-up', offNo.status === 403 && offNo.data.code === 'step_up');
+  await S('PUT', '/api/settings/require-2fa', { on: false, confirm_password: pw, confirm_code: on.backup_codes[4] });
   check('the owner turns it off with password and a code', (await SE('POST', '/api/me/2fa/disable', { password: pw, code: '111111' })).status === 400
     && (await S('POST', '/api/me/2fa/disable', { password: pw, code: on.backup_codes[1] })).ok && (await S('GET', '/api/me')).user.two_step === false);
   // closing the business
