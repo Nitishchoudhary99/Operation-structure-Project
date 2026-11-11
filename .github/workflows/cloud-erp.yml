@@ -27,9 +27,17 @@ jobs:
         run: node test/courier.mjs http://localhost:8787
       - name: Speed budgets (D1 calls and rows per screen; no screen reads another business's rows)
         run: node test/perf.mjs http://localhost:8787
+      - name: Access control attack test (every route; anonymous, other business, low roles, removed users, forged / expired tokens)
+        run: |
+          npx wrangler dev --port 8788 --persist-to .access-state --var QUERY_COUNT:1 --var SESSION_SECRET:access-test-secret-0123456789 > wrangler-access.log 2>&1 &
+          for i in $(seq 1 60); do curl -sf localhost:8788/api/health && break; sleep 1; done
+          node test/access.mjs http://localhost:8788
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with: { name: access-report, path: cloud-erp/test/access-report.json, if-no-files-found: ignore }
       # after every test that talks to the worker, so its log shows whichever of them failed
       - if: failure()
-        run: cat wrangler.log
+        run: cat wrangler.log; cat wrangler-access.log 2>/dev/null | tail -50
       - name: Adding SESSION_SECRET keeps two-step sign-in working
         run: node test/keys.mjs
       - name: Bolkar bill reads spoken orders (Hindi, Hinglish, English) as phones send them
