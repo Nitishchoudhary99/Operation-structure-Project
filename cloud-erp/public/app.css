@@ -817,7 +817,7 @@ html.in .app-loading { display: block; }
 .landing .cta h2 { margin-top: 0; }
 .landing footer { border-top: 1px solid var(--line); padding: 28px 20px; color: var(--muted); font-size: 14px; max-width: 1080px; margin: 0 auto; }
 .landing .fgrid { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 18px; }
-.landing footer h4 { margin: 0 0 8px; font-size: 14px; color: var(--ink); }
+.landing footer h3 { margin: 0 0 8px; font-size: 14px; color: var(--ink); }
 .landing footer ul { list-style: none; padding: 0; margin: 0; }
 .landing footer li { margin: 6px 0; }
 .landing footer li a { color: var(--muted); }

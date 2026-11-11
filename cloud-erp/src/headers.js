@@ -3,13 +3,14 @@
    The web app is one script file with no inline scripts, so scripts run only from this site (plus Razorpay Checkout,
    which is optional). Inline style attributes are used throughout the screens, hence 'unsafe-inline' for styles only. */
 const RZP = 'https://*.razorpay.com';
+const CFA = 'https://static.cloudflareinsights.com', CFA_SEND = 'https://cloudflareinsights.com';   // Cloudflare Web Analytics (no cookies)
 export const CSP_APP = [
   "default-src 'self'",
-  `script-src 'self' 'wasm-unsafe-eval' ${RZP}`,     // WebAssembly (not JS eval): the on-phone bill reader
+  `script-src 'self' 'wasm-unsafe-eval' ${RZP} ${CFA}`,     // WebAssembly (not JS eval): the on-phone bill reader
   `style-src 'self' 'unsafe-inline' ${RZP}`,
   `img-src 'self' data: blob: ${RZP}`,
   `font-src 'self' data: ${RZP}`,
-  `connect-src 'self' ${RZP}`,
+  `connect-src 'self' ${RZP} ${CFA_SEND}`,
   `frame-src ${RZP}`,
   "worker-src 'self'",
   "manifest-src 'self'",

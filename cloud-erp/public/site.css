@@ -38,7 +38,7 @@ summary { font-weight: 700; cursor: pointer; }
 .cta h2 { margin-top: 0; }
 footer { border-top: 1px solid var(--line); padding: 28px 20px; color: var(--muted); font-size: 14px; max-width: 1080px; margin: 0 auto; }
 .fgrid { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 18px; }
-footer h4 { margin: 0 0 8px; font-size: 14px; color: var(--ink); }
+footer h3 { margin: 0 0 8px; font-size: 14px; color: var(--ink); }
 footer ul { list-style: none; padding: 0; margin: 0; }
 footer li { margin: 6px 0; }
 footer li a { color: var(--muted); text-decoration: none; }
