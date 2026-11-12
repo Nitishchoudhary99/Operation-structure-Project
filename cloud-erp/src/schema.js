@@ -3,7 +3,7 @@
    Every business table carries org_id: one database serves many businesses (multi-tenant).
    migrate() runs on the first request after each deploy, so no manual migration step is needed. */
 
-export const SCHEMA_VERSION = 48;
+export const SCHEMA_VERSION = 49;
 
 // document types whose monthly totals doc_month keeps (sales and purchase money documents)
 const MONTH_TYPES = `('INV','SRET','CNOTE','BILL','PRET','DNOTE')`;
@@ -768,6 +768,11 @@ export const MIGRATIONS = {
       reason TEXT NOT NULL DEFAULT '', kot_id INTEGER)`,
     `CREATE INDEX IF NOT EXISTS ix_dine_requests ON dine_requests (org_id, status)`,
     `CREATE INDEX IF NOT EXISTS ix_dine_requests_table ON dine_requests (table_id, status)`,
+  ],
+  /* paying at the table (src/dine.js): a guest's "paid by UPI" carries the amount; the bill it became */
+  49: [
+    `ALTER TABLE dine_requests ADD COLUMN amount REAL NOT NULL DEFAULT 0`,
+    `ALTER TABLE dine_requests ADD COLUMN doc_id INTEGER`,
   ],
 };
 

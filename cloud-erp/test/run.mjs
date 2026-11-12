@@ -3304,8 +3304,39 @@ if (process.env.ERP_AI_MOCK) {
   check('a new QR for a table: the old link stops at once, the new one works', newTok !== tok(t3) && (await G('GET', `/api/public/dine/${tok(t3)}`)).status === 404 && (await G('GET', `/api/public/dine/${newTok}`)).status === 200);
   const page = await fetch(`${BASE}/t/${newTok}`);
   check('the table link opens the app with a menu preview card and noindex', page.status === 200 && /Sharma Dhaba: menu, table T3/.test(await page.text()) && /noindex/.test(page.headers.get('x-robots-tag') || ''));
+  /* paying at the table: the guest sees the bill, pays by UPI and says so; the staff check it came in and that makes the bill */
+  const bill0 = (await G('GET', `/api/public/dine/${tok(t1)}/bill`)).data;
+  check('the guest sees the table\'s bill: dishes, amounts with GST, the total rounded to the rupee, no UPI ID yet', bill0.lines.length >= 2 && bill0.pay === Math.round(bill0.total) && bill0.upi === ''
+    && !/rate|gst_rate|created_by|user/.test(JSON.stringify(bill0.lines)), JSON.stringify(bill0).slice(0, 300));
+  await D('PUT', '/api/org', { name: 'Sharma Dhaba', state: 'Rajasthan', upi_id: 'sharmadhaba@upi' });
+  check('with a UPI ID set, the bill shows it for paying', (await G('GET', `/api/public/dine/${tok(t1)}/bill`)).data.upi === 'sharmadhaba@upi');
+  check('"I have paid" for a different amount is refused (the bill changed)', /changed/.test((await G('POST', `/api/public/dine/${tok(t1)}`, { kind: 'pay', amount: bill0.pay + 50 })).data.error || ''));
+  const pay1 = await G('POST', `/api/public/dine/${tok(t1)}`, { kind: 'pay', amount: bill0.pay, ref: '4123 5678 90ab' });
+  check('"I have paid" for the bill as it is goes to the staff, once', pay1.status === 200 && /^[0-9a-f]{32}$/.test(pay1.data.token)
+    && /already checking/.test((await G('POST', `/api/public/dine/${tok(t1)}`, { kind: 'pay', amount: bill0.pay })).data.error || ''));
+  const pr = (await W('GET', '/api/dine/requests')).data.requests.find((x) => x.id === pay1.data.id);
+  check('the staff see the payment to check: table, amount, the reference (digits and letters only)', pr && pr.kind === 'pay' && pr.total === bill0.pay && pr.note === '412356789 0ab'.replace(/ /g, '') && pr.table_name === 'T1', JSON.stringify(pr));
+  check('another business cannot settle it', (await rq('POST', `/api/dine/requests/${pay1.data.id}/settle`, {}, { cookie: other.cookie, ip: '203.0.113.162' })).status === 404);
+  const settled = await W('POST', `/api/dine/requests/${pay1.data.id}/settle`, {});
+  check('"Received: make the bill": one invoice, paid in full, the table free', settled.status === 200 && settled.data.type === 'INV' && Math.abs(settled.data.total - bill0.pay) < 1
+    && settled.data.balance === 0 && (await D('GET', `/api/dine/tables/${t1.id}`)).order === null, JSON.stringify({ s: settled.status, t: settled.data.total, b: settled.data.balance, e: settled.data.error }));
+  check('the same payment cannot be settled twice', (await W('POST', `/api/dine/requests/${pay1.data.id}/settle`, {})).status === 400);
+  check('the guest sees it paid', (await st(t1, `${pay1.data.id}.${pay1.data.token}`))[0].status === 'done');
+  check('with nothing on the table there is nothing to pay', (await G('GET', `/api/public/dine/${tok(t1)}/bill`)).data.pay === 0
+    && (await G('POST', `/api/public/dine/${tok(t1)}`, { kind: 'pay', amount: 0 })).status === 400);
+  // the bill grows after the guest paid: the staff are told, nothing is billed
+  const G2 = (m, p, b) => rq(m, p, b, { ip: '203.0.113.163' });   // another phone (the first one has used its sends for 10 minutes)
+  await D('POST', `/api/dine/tables/${t1.id}/kot`, { lines: [{ item_id: roti.id, qty: 2 }] });
+  const b2 = (await G2('GET', `/api/public/dine/${tok(t1)}/bill`)).data;
+  const pay2 = await G2('POST', `/api/public/dine/${tok(t1)}`, { kind: 'pay', amount: b2.pay });
+  await D('POST', `/api/dine/tables/${t1.id}/kot`, { lines: [{ item_id: roti.id, qty: 1 }] });
+  const s2x = await W('POST', `/api/dine/requests/${pay2.data.id}/settle`, {});
+  check('if the bill grew after the guest paid, settling is refused with both amounts and the table stays open', s2x.status === 400 && /now ₹\d+, the guest paid ₹\d+/.test(s2x.data.error || '')
+    && (await D('GET', `/api/dine/tables/${t1.id}`)).order !== null, JSON.stringify(s2x.data));
+  await W('POST', `/api/dine/requests/${pay2.data.id}/reject`, { reason: 'Pay the rest at the counter' });
+  check('a payment marked "not received" tells the guest why', (await st(t1, `${pay2.data.id}.${pay2.data.token}`))[0].reason === 'Pay the rest at the counter');
   await D('PUT', '/api/dine/qr', { qr: false });
-  check('turning QR ordering off closes every table link', (await G('GET', `/api/public/dine/${newTok}`)).status === 404 && (await G('POST', `/api/public/dine/${tok(t1)}`, { kind: 'help', what: 'bill' })).status === 404);
+  check('turning QR ordering off closes every table link', (await G2('GET', `/api/public/dine/${newTok}`)).status === 404 && (await G2('POST', `/api/public/dine/${tok(t1)}`, { kind: 'help', what: 'bill' })).status === 404);
 }
 
 /* --- exports: a foreign-currency invoice under LUT or with IGST, its shipping bill, GSTR-1 table 6A and 3B 3.1(b) --- */
