@@ -274,10 +274,12 @@ export async function guestMenu(c, token) {
   await rateLimit(c.env, 'dine:' + ipOf(c), 300, 600);
   const t = await guestTable(c, token);
   if (!t) throw noTable();
-  const { results } = await c.db.prepare(`SELECT id, name, unit, category, sale_price, gst_rate, price_incl FROM items
+  const { results } = await c.db.prepare(`SELECT id, name, unit, category, sale_price, gst_rate, price_incl, food, sold_out FROM items
       WHERE org_id = ? AND shop_hide = 0 AND sale_price > 0 AND is_service IN (0, 1) ORDER BY category, name LIMIT 1000`).bind(t.org_id).all();
+  const day = today();
   return { shop: { name: t.org, city: t.city || '', note: dineSettingsOf(t).note }, table: t.name, help: Object.keys(HELP),
-    items: results.map((i) => ({ id: i.id, name: i.name, unit: i.unit, category: i.category || '', price: R(i.sale_price * (100 + (i.gst_rate || 0)) / 100) })) };
+    items: results.map((i) => ({ id: i.id, name: i.name, unit: i.unit, category: i.category || '', price: R(i.sale_price * (100 + (i.gst_rate || 0)) / 100),
+      food: FOOD.includes(i.food) ? i.food : '', sold_out: i.sold_out === day })) };
 }
 
 /* the table's running bill as the guest sees it: dishes, quantities and amounts with GST, the total to pay (rounded to
@@ -314,12 +316,13 @@ export async function guestSend(c, token, body) {
     if (!raw.length) throw bad('Add something from the menu first.');
     if (raw.length > 40) throw bad('At most 40 dishes in one order.');
     const ids = [...new Set(raw.map((l) => +l.item_id || 0))];
-    const { results } = await c.db.prepare(`SELECT id, name, sale_price, gst_rate FROM items WHERE org_id = ? AND shop_hide = 0 AND sale_price > 0
+    const { results } = await c.db.prepare(`SELECT id, name, sale_price, gst_rate, sold_out FROM items WHERE org_id = ? AND shop_hide = 0 AND sale_price > 0
         AND id IN (${ids.map(() => '?').join(',')})`).bind(t.org_id, ...ids).all();
     const byId = new Map(results.map((i) => [i.id, i]));
     lines = raw.map((l) => {
       const it = byId.get(+l.item_id);
       if (!it) throw bad('Something in the order is no longer on the menu. Please refresh the menu.');
+      if (it.sold_out === today()) throw bad(`Sorry, ${it.name} is finished for today. Please take it out of the order.`);
       const qty = Math.round(+l.qty);
       if (!(qty >= 1 && qty <= 50)) throw bad(`${it.name}: choose 1 to 50.`);
       const price = R(it.sale_price * (100 + (it.gst_rate || 0)) / 100);
@@ -524,14 +527,14 @@ export async function dineToday(c) {
    old one stops at once) or switches it off on the Table QR page. */
 async function kitchenOrg(c, token) {
   if (!/^[0-9a-f]{24}$/.test(String(token || ''))) return null;
-  const { results } = await c.db.prepare(`SELECT id, name, dine FROM orgs WHERE dine LIKE ?`).bind('%' + token + '%').all();
-  return results.find((o) => dineSettingsOf(o).kt === token) || null;
+  const o = await c.db.prepare(`SELECT id, name, dine FROM orgs WHERE kd_token = ?`).bind(token).first();
+  return o && dineSettingsOf(o).kt === token ? o : null;
 }
 export async function kitchenLink(c, on) {
   requireCan(c.user, 'settings');
   const st = dineSettingsOf(c.org);
   const s = { qr: st.qr, note: st.note, kt: on ? randomHex(12) : '' };
-  await c.db.batch([c.db.prepare(`UPDATE orgs SET dine = ? WHERE id = ?`).bind(JSON.stringify(s), c.org.id), auditStatement(c, 'kitchen display link', on ? 'new link' : 'off')]);
+  await c.db.batch([c.db.prepare(`UPDATE orgs SET dine = ?, kd_token = ? WHERE id = ?`).bind(JSON.stringify(s), s.kt || null, c.org.id), auditStatement(c, 'kitchen display link', on ? 'new link' : 'off')]);
   c.org.dine = JSON.stringify(s);
   return dineQr(c);
 }
@@ -546,4 +549,42 @@ export async function kitchenDisplaySet(c, token, id, body) {
   const o = await kitchenOrg(c, token);
   if (!o) throw notFound('This kitchen link is not working. Ask the owner for the new one.');
   return { shop: o.name, ...(await setKot(c, o.id, id, body)) };
+}
+
+/* ======================================================================= the menu for today
+   Each dish can carry a veg / non-veg / egg mark (the guest's menu shows it) and be "sold out" for the day: the kitchen
+   marks it, the guest's menu shows it greyed and cannot order it, and it is back on the menu the next morning by itself. */
+const FOOD = ['veg', 'nonveg', 'egg'];
+async function menuOf(c, orgId) {
+  const { results } = await c.db.prepare(`SELECT id, name, category, food, sold_out FROM items WHERE org_id = ? AND shop_hide = 0 AND sale_price > 0
+      ORDER BY category, name LIMIT 1000`).bind(orgId).all();
+  const day = today();
+  return { menu: results.map((i) => ({ id: i.id, name: i.name, category: i.category || '', food: FOOD.includes(i.food) ? i.food : '', sold_out: i.sold_out === day })) };
+}
+async function setSoldOut(c, orgId, id, body) {
+  const out = !!(body && body.sold_out);
+  const r = await c.db.prepare(`UPDATE items SET sold_out = ? WHERE id = ? AND org_id = ?`).bind(out ? today() : '', id, orgId).run();
+  if (!r.meta.changes) throw notFound('Dish not found.');
+  return menuOf(c, orgId);
+}
+export async function dineMenu(c) { requireCan(c.user, 'kitchen'); return menuOf(c, c.org.id); }
+export async function dineSoldOut(c, id, body) { requireCan(c.user, 'kitchen'); return setSoldOut(c, c.org.id, id, body); }
+export async function dineFood(c, id, body) {
+  requireCan(c.user, 'items');
+  const f = body && FOOD.includes(body.food) ? body.food : '';
+  const r = await c.db.prepare(`UPDATE items SET food = ? WHERE id = ? AND org_id = ?`).bind(f, id, c.org.id).run();
+  if (!r.meta.changes) throw notFound('Dish not found.');
+  return menuOf(c, c.org.id);
+}
+export async function kitchenMenu(c, token) {
+  await rateLimit(c.env, 'kd:' + ipOf(c), 600, 600);
+  const o = await kitchenOrg(c, token);
+  if (!o) throw notFound('This kitchen link is not working. Ask the owner for the new one.');
+  return menuOf(c, o.id);
+}
+export async function kitchenSoldOut(c, token, id, body) {
+  await rateLimit(c.env, 'kd-set:' + ipOf(c), 300, 600);
+  const o = await kitchenOrg(c, token);
+  if (!o) throw notFound('This kitchen link is not working. Ask the owner for the new one.');
+  return setSoldOut(c, o.id, id, body);
 }

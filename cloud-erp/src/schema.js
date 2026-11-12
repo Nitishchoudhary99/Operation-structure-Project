@@ -3,7 +3,7 @@
    Every business table carries org_id: one database serves many businesses (multi-tenant).
    migrate() runs on the first request after each deploy, so no manual migration step is needed. */
 
-export const SCHEMA_VERSION = 50;
+export const SCHEMA_VERSION = 51;
 
 // document types whose monthly totals doc_month keeps (sales and purchase money documents)
 const MONTH_TYPES = `('INV','SRET','CNOTE','BILL','PRET','DNOTE')`;
@@ -777,6 +777,15 @@ export const MIGRATIONS = {
   /* when a KOT was first marked ready in the kitchen (the owner's kitchen time) */
   50: [
     `ALTER TABLE kots ADD COLUMN ready_at TEXT`,
+  ],
+  /* restaurant menu: a veg / non-veg / egg mark, and "sold out" for one day (the date it ran out; it comes back by itself
+     the next day); the kitchen display link's token in its own indexed column instead of a scan of every shop's settings */
+  51: [
+    `ALTER TABLE items ADD COLUMN food TEXT NOT NULL DEFAULT ''`,
+    `ALTER TABLE items ADD COLUMN sold_out TEXT NOT NULL DEFAULT ''`,
+    `ALTER TABLE orgs ADD COLUMN kd_token TEXT`,
+    `UPDATE orgs SET kd_token = json_extract(dine, '$.kt') WHERE dine LIKE '%"kt":"%' AND json_valid(dine)`,
+    `CREATE UNIQUE INDEX IF NOT EXISTS ux_orgs_kd_token ON orgs (kd_token) WHERE kd_token IS NOT NULL AND kd_token != ''`,
   ],
 };
 

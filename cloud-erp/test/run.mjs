@@ -3373,6 +3373,20 @@ if (process.env.ERP_AI_MOCK) {
   check('the kitchen link cannot touch a KOT that is not this shop\'s', (await G2('POST', `/api/public/kitchen/${kt1}/kots/99999999`, { status: 'ready' })).status === 404);
   const kt2 = (await D('POST', '/api/dine/kitchen-link', {})).kitchen_link.split('/kd/')[1];
   check('a new kitchen link stops the old one at once', kt2 !== kt1 && (await G2('GET', '/api/public/kitchen/' + kt1)).status === 404 && (await G2('GET', '/api/public/kitchen/' + kt2)).status === 200);
+  /* the menu for today: veg / non-veg marks, and sold out for the day */
+  const G3 = (m, p, b) => rq(m, p, b, { ip: '203.0.113.171' });
+  check('a cook cannot change the veg mark (items right)', (await CK('POST', `/api/dine/menu/${paneer.id}/food`, { food: 'veg' })).status === 403);
+  await D('POST', `/api/dine/menu/${paneer.id}/food`, { food: 'veg' });
+  check('an unknown mark is cleared, not stored', (await D('POST', `/api/dine/menu/${roti.id}/food`, { food: '<b>x' })).menu.find((i) => i.id === roti.id).food === '');
+  const so = await CK('POST', `/api/dine/menu/${paneer.id}/sold-out`, { sold_out: true });
+  check('the cook marks a dish sold out for today', so.status === 200 && so.data.menu.find((i) => i.id === paneer.id).sold_out === true);
+  const gm = (await G3('GET', `/api/public/dine/${tok(t1)}`)).data.items.find((i) => i.id === paneer.id);
+  check('the guest menu shows the veg mark and sold out', gm.food === 'veg' && gm.sold_out === true, JSON.stringify(gm));
+  const sor = await G3('POST', `/api/public/dine/${tok(t1)}`, { kind: 'order', lines: [{ item_id: paneer.id, qty: 1 }] });
+  check('a guest cannot order a sold-out dish', sor.status === 400 && /finished for today/.test(sor.data.error || ''), JSON.stringify(sor.data));
+  const kmn = await G2('POST', `/api/public/kitchen/${kt2}/menu/${paneer.id}`, { sold_out: false });
+  check('the kitchen link brings it back, and shows the menu', kmn.status === 200 && kmn.data.menu.find((i) => i.id === paneer.id).sold_out === false && (await G2('GET', `/api/public/kitchen/${kt2}/menu`)).status === 200);
+  check('the kitchen link cannot touch a dish that is not this shop\'s', (await G2('POST', `/api/public/kitchen/${kt2}/menu/99999999`, { sold_out: true })).status === 404);
   await D('DELETE', '/api/dine/kitchen-link');
   check('switching the kitchen link off closes it', (await G2('GET', '/api/public/kitchen/' + kt2)).status === 404);
   await D('PUT', '/api/dine/qr', { qr: false });

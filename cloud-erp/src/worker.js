@@ -54,7 +54,8 @@ import { gstr1, gstr1Sheets, match2b } from './gstr.js';
 import { loyaltyOf, cleanLoyalty, partyPoints, members as loyaltyMembers, adjustPoints } from './loyalty.js';
 import { widgetData, listDashboards, saveDashboard, deleteDashboard, pickDefault } from './widgets.js';
 import { dineBoard, addTables, removeTable, tableDetail, sendKot, voidLine, moveOrder, billOrder, voidOrder, kotLog, guestMenu, guestSend, guestStatus,
-  dineRequests, acceptRequest, answerRequest, kitchen, kotStatus, dineQr, saveDineSettings, newTableQr, guestBill, settleRequest, dineToday, kitchenLink, kitchenDisplay, kitchenDisplaySet } from './dine.js';
+  dineRequests, acceptRequest, answerRequest, kitchen, kotStatus, dineQr, saveDineSettings, newTableQr, guestBill, settleRequest, dineToday, kitchenLink, kitchenDisplay, kitchenDisplaySet,
+  dineMenu, dineSoldOut, dineFood, kitchenMenu, kitchenSoldOut } from './dine.js';
 import { secondStep, twoStepStart, twoStepEnable, twoStepDisable, newBackupCodes, twoStepReset, requireTwoStep, stepUp, loginStatement, signInHistory,
   closeBusiness, cancelClose, purgeClosed, notOwnerWhileClosing } from './security.js';
 import { workbook } from './xlsx.js';
@@ -1038,6 +1039,11 @@ router.add('POST', '/api/dine/requests/:id/reject', async (c) => json(await answ
 router.add('POST', '/api/dine/requests/:id/settle', async (c) => json(await docDetail(c, (await settleRequest(c, +c.params.id)).doc_id)));
 router.add('POST', '/api/dine/requests/:id/done', async (c) => json(await answerRequest(c, +c.params.id, c.body, 'done')));
 router.add('GET', '/api/dine/today', async (c) => json(await dineToday(c)));
+router.add('GET', '/api/dine/menu', async (c) => json(await dineMenu(c)));
+router.add('POST', '/api/dine/menu/:id/sold-out', async (c) => json(await dineSoldOut(c, +c.params.id, c.body)));
+router.add('POST', '/api/dine/menu/:id/food', async (c) => json(await dineFood(c, +c.params.id, c.body)));
+router.add('GET', '/api/public/kitchen/:token/menu', async (c) => json(await kitchenMenu(c, c.params.token), 200, noStore), { public: true });
+router.add('POST', '/api/public/kitchen/:token/menu/:id', async (c) => json(await kitchenSoldOut(c, c.params.token, +c.params.id, c.body), 200, noStore), { public: true });
 router.add('POST', '/api/dine/kitchen-link', async (c) => json(await kitchenLink(c, true)));
 router.add('DELETE', '/api/dine/kitchen-link', async (c) => json(await kitchenLink(c, false)));
 router.add('GET', '/api/public/kitchen/:token', async (c) => json(await kitchenDisplay(c, c.params.token), 200, noStore), { public: true });
@@ -2472,6 +2478,9 @@ const READ_AREAS = [
   [/^\/api\/rates\/?$/, 'sales'],
   [/^\/api\/(loyalty(\/\d+)?|settings\/loyalty)\/?$/, 'sales'],
   [/^\/api\/dine\/kitchen\/?$/, 'kitchen'],
+  [/^\/api\/dine\/menu\/?$/, 'kitchen'],
+  [/^\/api\/dine\/menu\/\d+\/sold-out\/?$/, 'kitchen'],
+  [/^\/api\/dine\/menu\/\d+\/food\/?$/, 'items'],
   [/^\/api\/dine\/kots\/\d+\/status\/?$/, 'kitchen'],
   [/^\/api\/dine(\/|$)/, 'sales'],
   [/^\/api\/(dash\/widgets|dashboards)\/?$/, OPEN],

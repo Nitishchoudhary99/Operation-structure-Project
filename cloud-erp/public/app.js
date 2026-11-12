@@ -7072,6 +7072,12 @@ const kotDraft = (tid, set) => {
   try { return JSON.parse(storeGet(kotDraftKey(tid)) || '[]') || []; } catch (e) { return []; }
 };
 const since = (iso) => { const m = Math.max(0, Math.round((Date.now() - Date.parse(iso)) / 60000)); return m < 60 ? `${m} min` : `${Math.floor(m / 60)} h ${m % 60} min`; };
+/* the Indian food mark: a green dot in a square for veg, a brown triangle for non-veg, a yellow one for egg */
+const FOOD_T = { veg: 'Veg', nonveg: 'Non-veg', egg: 'Egg' };
+const foodMark = (f) => (FOOD_T[f] ? `<span class="fmark ${f}" title="${FOOD_T[f]}" aria-label="${FOOD_T[f]}"></span>` : '');
+/* "sold out today" chips for the kitchen: tap a dish when it runs out; it is back on the menu by itself tomorrow */
+const soldOutHtml = (m) => `<details class="panel soldpanel"${m.menu.some((i) => i.sold_out) ? ' open' : ''}><summary><b>Sold out today</b> <span class="muted small">${m.menu.filter((i) => i.sold_out).length} of ${m.menu.length} dishes · tap a dish when it runs out; guests cannot order it, and it is back tomorrow by itself</span></summary>
+  <div class="sochips">${m.menu.map((i) => `<button type="button" class="sochip${i.sold_out ? ' on' : ''}" data-so="${i.id}" data-out="${i.sold_out ? 0 : 1}">${foodMark(i.food)}${esc(i.name)}${i.sold_out ? ' ✕' : ''}</button>`).join('') || '<span class="muted small">No dishes with a selling price yet.</span>'}</div></details>`;
 function printKot(k) {
   let r = $('#receipt');
   if (!r) { r = document.createElement('div'); r.id = 'receipt'; r.className = 'receipt'; document.body.appendChild(r); }
@@ -7254,7 +7260,7 @@ async function publicTable(token) {
   const load = (k, def) => { try { return JSON.parse(localStorage.getItem(k) || '') || def; } catch (e) { return def; } };
   const keep = (k, v) => { try { localStorage.setItem(k, JSON.stringify(v)); } catch (e) { /* storage off */ } };
   let cart = load(key, {}), mine = load(mineKey, []).filter((x) => x && Date.now() - x.at < 12 * 3600e3), status = {};
-  for (const k of Object.keys(cart)) if (!byId.has(+k) || !(cart[k] > 0)) delete cart[k];
+  for (const k of Object.keys(cart)) if (!byId.has(+k) || !(cart[k] > 0) || byId.get(+k).sold_out) delete cart[k];
   const cats = [...new Set(d.items.map((i) => i.category).filter(Boolean))];
   let q = '', cat = '';
   const shell = () => {
@@ -7274,8 +7280,9 @@ async function publicTable(token) {
   const bar = () => { const n = Object.values(cart).reduce((a, b) => a + b, 0); $('#sbar').hidden = !n; $('#scount').textContent = `${L.items(n)} · ${inr(totalOf())}`; };
   function draw() {
     const rows = d.items.filter((i) => (!cat || i.category === cat) && (!q || i.name.toLowerCase().includes(q)));
-    $('#slist').innerHTML = rows.length ? rows.map((i) => `<div class="shop-item"><div><b>${esc(i.name)}</b><div class="muted small">${esc(i.unit || '')}</div></div>
-        <div class="shop-price">${inr(i.price)}</div><div class="shop-qty">${cart[i.id] ? `<button type="button" class="btn sm" data-dec="${i.id}" aria-label="One less ${esc(i.name)}">−</button><b>${cart[i.id]}</b><button type="button" class="btn sm" data-inc="${i.id}" aria-label="One more ${esc(i.name)}">+</button>`
+    const out = L === DINE_T.hi ? 'आज ख़त्म' : 'Sold out today';
+    $('#slist').innerHTML = rows.length ? rows.map((i) => `<div class="shop-item${i.sold_out ? ' soldout' : ''}"><div><b>${foodMark(i.food)}${esc(i.name)}</b><div class="muted small">${esc(i.unit || '')}</div></div>
+        <div class="shop-price">${inr(i.price)}</div><div class="shop-qty">${i.sold_out ? `<span class="muted small">${out}</span>` : cart[i.id] ? `<button type="button" class="btn sm" data-dec="${i.id}" aria-label="One less ${esc(i.name)}">−</button><b>${cart[i.id]}</b><button type="button" class="btn sm" data-inc="${i.id}" aria-label="One more ${esc(i.name)}">+</button>`
           : `<button type="button" class="btn sm primary" data-inc="${i.id}">${L.add}</button>`}</div></div>`).join('') : `<p class="muted">${L.empty}</p>`;
     bar();
   }
@@ -7421,12 +7428,17 @@ async function publicKitchen(token) {
       <div class="kgrid">${x.kots.map((k) => `<div class="kcard ${k.kind === 'cancel' ? 'cancel' : k.kstatus}"><div class="row"><b class="kno">KOT ${k.number}</b><span class="spacer"></span><b>Table ${esc(k.table_name)}</b></div>
         <div class="muted small">${since(k.created_at)} ago · ${k.kind === 'cancel' ? '<b>CANCEL</b>' : esc(k.kstatus)}</div>
         <ul>${k.lines.map((l) => `<li><b>${qtyf(l.qty)} × ${esc(l.name)}</b>${l.note ? `<div class="muted small">${esc(l.note)}</div>` : ''}</li>`).join('')}</ul>
-        ${k.kind === 'cancel' ? `<button class="btn" data-ks="${k.id}" data-to="served">Seen</button>` : `<button class="btn primary big" data-ks="${k.id}" data-to="${next[k.kstatus][0]}">${next[k.kstatus][1]}</button>`}</div>`).join('') || '<div class="empty">No tickets waiting. New KOTs appear here and beep.</div>'}</div></main>`;
+        ${k.kind === 'cancel' ? `<button class="btn" data-ks="${k.id}" data-to="served">Seen</button>` : `<button class="btn primary big" data-ks="${k.id}" data-to="${next[k.kstatus][0]}">${next[k.kstatus][1]}</button>`}</div>`).join('') || '<div class="empty">No tickets waiting. New KOTs appear here and beep.</div>'}</div>${menu ? soldOutHtml(menu) : ''}</main>`;
+    if (open !== null && $('.soldpanel')) $('.soldpanel').open = open;
   };
-  const load = async () => { try { draw(await call('GET', '')); } catch (e) { app.innerHTML = `<div class="boot"><h2>${esc(e.message)}</h2></div>`; clearInterval(t); } };
+  let menu = null, open = null;
+  const keepOpen = () => { open = $('.soldpanel') ? $('.soldpanel').open : null; };
+  const load = async () => { try { keepOpen(); const [x, m] = await Promise.all([call('GET', ''), call('GET', '/menu').catch(() => null)]); menu = m; draw(x); } catch (e) { app.innerHTML = `<div class="boot"><h2>${esc(e.message)}</h2></div>`; clearInterval(t); } };
   app.onclick = async (e) => {
+    const so = e.target.closest('[data-so]');
+    if (so && Date.now() >= quiet) { so.disabled = true; quiet = Date.now() + 60000; keepOpen(); try { menu = await call('POST', '/menu/' + so.dataset.so, { sold_out: so.dataset.out === '1' }); draw(await call('GET', '')); } catch (er) { toast(er.message, 'err'); } quiet = Date.now() + 900; return; }
     const b = e.target.closest('[data-ks]'); if (!b || Date.now() < quiet) return;
-    b.disabled = true; quiet = Date.now() + 60000;
+    b.disabled = true; quiet = Date.now() + 60000; keepOpen();
     try { draw(await call('POST', '/kots/' + b.dataset.ks, { status: b.dataset.to })); } catch (er) { toast(er.message, 'err'); }
     quiet = Date.now() + 900;
   };
@@ -7465,7 +7477,8 @@ route(/^restaurant-live$/, async (el) => {
 route(/^kitchen$/, async (el) => {
   const draw = async () => {
     if (location.hash !== '#/kitchen') return;
-    let x; try { x = await GET('/api/dine/kitchen'); } catch (e) { return; }
+    let x, m; try { [x, m] = await Promise.all([GET('/api/dine/kitchen'), GET('/api/dine/menu').catch(() => null)]); } catch (e) { return; }
+    const keepOpen = $('.soldpanel', el) ? $('.soldpanel', el).open : null;
     const fresh = x.kots.filter((k) => k.kstatus === 'new' && !dineSeen.has('k' + k.id));
     x.kots.forEach((k) => dineSeen.add('k' + k.id));
     if (fresh.length && el.dataset.loaded) beep(true);
@@ -7475,9 +7488,12 @@ route(/^kitchen$/, async (el) => {
       <div class="kgrid">${x.kots.map((k) => `<div class="kcard ${k.kind === 'cancel' ? 'cancel' : k.kstatus}"><div class="row"><b class="kno">KOT ${k.number}</b><span class="spacer"></span><b>Table ${esc(k.table_name)}</b></div>
         <div class="muted small">${since(k.created_at)} ago · ${k.kind === 'cancel' ? '<b>CANCEL</b>' : esc(k.kstatus)}</div>
         <ul>${k.lines.map((l) => `<li><b>${qtyf(l.qty)} × ${esc(l.name)}</b>${l.note ? `<div class="muted small">${esc(l.note)}</div>` : ''}</li>`).join('')}</ul>
-        ${k.kind === 'cancel' ? `<button class="btn" data-ks="${k.id}" data-to="served">Seen</button>` : `<button class="btn primary big" data-ks="${k.id}" data-to="${next[k.kstatus][0]}">${next[k.kstatus][1]}</button>`}</div>`).join('') || '<div class="empty">No tickets waiting. New KOTs appear here.</div>'}</div>`;
+        ${k.kind === 'cancel' ? `<button class="btn" data-ks="${k.id}" data-to="served">Seen</button>` : `<button class="btn primary big" data-ks="${k.id}" data-to="${next[k.kstatus][0]}">${next[k.kstatus][1]}</button>`}</div>`).join('') || '<div class="empty">No tickets waiting. New KOTs appear here.</div>'}</div>${m ? soldOutHtml(m) : ''}`;
+    if (keepOpen !== null && $('.soldpanel', el)) $('.soldpanel', el).open = keepOpen;
   };
   el.onclick = async (e) => {
+    const so = e.target.closest('[data-so]');
+    if (so && !dineBusy()) { so.disabled = true; dineHush(60000); try { await POST(`/api/dine/menu/${so.dataset.so}/sold-out`, { sold_out: so.dataset.out === '1' }); } catch (er) { toast(er.message, 'err'); } await draw(); dineHush(); return; }
     const b = e.target.closest('[data-ks]'); if (!b || dineBusy()) return;
     b.disabled = true; dineHush(60000);
     try { await POST(`/api/dine/kots/${b.dataset.ks}/status`, { status: b.dataset.to }); } catch (er) { toast(er.message, 'err'); }
@@ -7489,20 +7505,25 @@ route(/^kitchen$/, async (el) => {
 route(/^table-qr$/, async (el) => {
   const x = await GET('/api/dine/qr');
   el.innerHTML = head('Table QR ordering', '<a class="btn" href="#/tables">Tables</a><button class="btn" data-act="print">Print posters</button>') + `
-    <div class="panel no-print"><form id="dqs" class="form"><label class="f" style="display:flex;gap:8px;align-items:center"><input type="checkbox" name="qr" ${x.qr ? 'checked' : ''} style="width:auto"> Guests can order from the table QR</label>
+    <div class="panel no-print"><form id="dqs" class="form"><label class="f wide" style="flex-direction:row;justify-content:flex-start;gap:8px;align-items:center;font-size:15px;font-weight:600"><input type="checkbox" name="qr" ${x.qr ? 'checked' : ''} style="width:20px;height:20px;margin:0;flex:none"> Guests can order from the table QR</label>
       <label class="f wide">Note on the menu (optional)<input name="note" maxlength="200" value="${esc(x.note)}" placeholder="Orders are confirmed by our staff. Kitchen open till 11 pm."></label>
-      <label class="f">&nbsp;<button class="btn primary">Save</button></label></form>
+      <div class="f wide"><button class="btn primary" style="width:auto;align-self:flex-start">Save</button></div></form>
       <p class="muted small">Every order a guest sends waits on the Tables page until a staff member accepts it: only then does it become a KOT. The menu shows your items that have a selling price and are not hidden from the online rate list. If a QR is misused, make a new one for that table: the old one stops at once.</p></div>
     <div class="panel no-print"><b>Kitchen screen on a TV or tablet</b>
       <p class="muted small">A link that opens the kitchen screen with no login and no user seat: today's KOTs (tables, dishes, notes; never prices or customers), and the buttons to move them on. Nothing else in your ERP opens with it. If it reaches the wrong person, make a new one: the old link stops at once. A cook who should log in on their own phone can instead get the "Kitchen / cook" role (Settings → Roles).</p>
       ${x.kitchen_link ? `<div class="row" style="align-items:center;gap:12px;flex-wrap:wrap"><div id="kdqr" style="width:120px"></div><div style="flex:1;min-width:200px"><code style="word-break:break-all">${esc(x.kitchen_link)}</code>
         <div class="row" style="margin-top:8px"><a class="btn sm" href="${esc(x.kitchen_link)}" target="_blank" rel="noopener">Open</a><button class="btn sm" id="kdnew">New link</button><button class="btn sm danger" id="kdoff">Switch off</button></div></div></div>`
         : '<button class="btn primary" id="kdnew">Make the kitchen link</button>'}</div>
+    ${ME.can.items ? `<details class="panel no-print" id="fpanel"><summary><b>Veg / non-veg marks on the menu</b> <span class="muted small">guests see the green or brown mark next to each dish</span></summary><div id="flist" class="muted small">Loading…</div></details>` : ''}
     <div class="qrposters">${x.tables.map((t) => `<div class="qrposter"><b class="qpname">${esc(ME.org.name)}</b><div class="qrbox" data-link="${esc(t.link)}"></div><b class="qptable">Table ${esc(t.name)}</b>
       <div>Scan to see the menu and order</div><div lang="hi">स्कैन करें, मेन्यू देखें, ऑर्डर करें</div>
       <div class="no-print row" style="justify-content:center"><a class="btn sm" href="${esc(t.link)}" target="_blank" rel="noopener">Open</a><button class="btn sm" data-newqr="${t.id}">New QR</button></div></div>`).join('') || '<div class="empty">Add tables first.</div>'}</div>`;
   $$('.qrbox', el).forEach((b) => qrInto(b, b.dataset.link));
   if (x.kitchen_link) qrInto($('#kdqr'), x.kitchen_link);
+  const drawFood = (m) => { $('#flist').innerHTML = m.menu.length ? `<table class="tbl"><tbody>${m.menu.map((i) => `<tr><td>${foodMark(i.food)}${esc(i.name)}<div class="muted small">${esc(i.category)}</div></td><td style="width:150px"><select data-food="${i.id}" aria-label="Mark for ${esc(i.name)}">
+      ${[['', 'No mark'], ['veg', 'Veg'], ['nonveg', 'Non-veg'], ['egg', 'Egg']].map(([v, t]) => `<option value="${v}"${i.food === v ? ' selected' : ''}>${t}</option>`).join('')}</select></td></tr>`).join('')}</tbody></table>` : 'No dishes with a selling price yet.'; };
+  if ($('#fpanel')) $('#fpanel').addEventListener('toggle', async () => { if ($('#fpanel').open && !$('#fpanel').dataset.got) { $('#fpanel').dataset.got = '1'; try { drawFood(await GET('/api/dine/menu')); } catch (er) { $('#flist').textContent = er.message; } } });
+  el.onchange = async (e) => { const sel = e.target.closest('[data-food]'); if (!sel) return; sel.disabled = true; try { drawFood(await POST(`/api/dine/menu/${sel.dataset.food}/food`, { food: sel.value })); toast('Saved'); } catch (er) { toast(er.message, 'err'); sel.disabled = false; } };
   if ($('#kdnew')) $('#kdnew').onclick = async () => { if (x.kitchen_link && !confirm('Make a new kitchen link? The old one stops working at once.')) return; try { await POST('/api/dine/kitchen-link', {}); render(); } catch (er) { toast(er.message, 'err'); } };
   if ($('#kdoff')) $('#kdoff').onclick = async () => { if (!confirm('Switch the kitchen link off?')) return; try { await api('DELETE', '/api/dine/kitchen-link'); render(); } catch (er) { toast(er.message, 'err'); } };
   $('#dqs').onsubmit = async (e) => { e.preventDefault(); try { await api('PUT', '/api/dine/qr', { qr: e.target.qr.checked, note: e.target.note.value }); toast(e.target.qr.checked ? 'QR ordering is on' : 'QR ordering is off'); } catch (er) { toast(er.message, 'err'); } };
