@@ -7332,6 +7332,12 @@ async function publicTable(token) {
 /* Guest orders and calls wait here until someone answers. Accept makes the KOT (printed like any other); Reject tells the
    guest why. The list is on the Tables page, which checks every 10 seconds and beeps when something new comes in. */
 let dineSeen = new Set();
+/* After an action the list is drawn again and other buttons move into the place just tapped: a second tap within a
+   moment (a double tap, or a nervous one) would press one of them (accept the next order, mark a KOT ready as well).
+   For a short time after each action these screens take no tap. */
+let dineQuiet = 0;
+const dineBusy = () => Date.now() < dineQuiet;
+const dineHush = (ms = 900) => { dineQuiet = Date.now() + ms; };
 function dineAsksHtml(x) {
   if (!x.requests.length) return '';
   return `<div class="panel dasks"><div class="row"><b>From the tables (QR)</b><span class="spacer"></span><span class="muted small">${x.requests.length} waiting</span></div>
@@ -7344,14 +7350,14 @@ function dineAsksHtml(x) {
 }
 function wireDineAsks(el, after) {
   el.onclick = async (e) => {
-    const b = e.target.closest('[data-racc],[data-rrej],[data-rdone]'); if (!b) return;
-    b.disabled = true;
+    const b = e.target.closest('[data-racc],[data-rrej],[data-rdone]'); if (!b || dineBusy()) return;
+    b.disabled = true; dineHush(60000);
     try {
       if (b.dataset.racc) { const r = await POST(`/api/dine/requests/${b.dataset.racc}/accept`, {}); printKot(r.kot); toast(`KOT ${r.kot.number} sent, table ${r.kot.table}`); }
       else if (b.dataset.rrej) { const reason = prompt('Why can it not be taken? The guest sees this (optional):', 'Not available right now'); if (reason === null) { b.disabled = false; return; } await POST(`/api/dine/requests/${b.dataset.rrej}/reject`, { reason }); }
       else await POST(`/api/dine/requests/${b.dataset.rdone}/done`, {});
-      after();
-    } catch (er) { toast(er.message, 'err'); b.disabled = false; after(); }
+      await after(); dineHush();
+    } catch (er) { toast(er.message, 'err'); b.disabled = false; await after(); dineHush(); }
   };
 }
 route(/^kitchen$/, async (el) => {
@@ -7370,10 +7376,10 @@ route(/^kitchen$/, async (el) => {
         ${k.kind === 'cancel' ? `<button class="btn" data-ks="${k.id}" data-to="served">Seen</button>` : `<button class="btn primary big" data-ks="${k.id}" data-to="${next[k.kstatus][0]}">${next[k.kstatus][1]}</button>`}</div>`).join('') || '<div class="empty">No tickets waiting. New KOTs appear here.</div>'}</div>`;
   };
   el.onclick = async (e) => {
-    const b = e.target.closest('[data-ks]'); if (!b) return;
-    b.disabled = true;
+    const b = e.target.closest('[data-ks]'); if (!b || dineBusy()) return;
+    b.disabled = true; dineHush(60000);
     try { await POST(`/api/dine/kots/${b.dataset.ks}/status`, { status: b.dataset.to }); } catch (er) { toast(er.message, 'err'); }
-    draw();
+    await draw(); dineHush();
   };
   await draw();
   const tick = setInterval(() => { if (location.hash === '#/kitchen') draw(); else clearInterval(tick); }, 8000);
