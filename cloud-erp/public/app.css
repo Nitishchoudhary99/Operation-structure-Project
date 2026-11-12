@@ -1221,3 +1221,4 @@ tr.scan-hit td{animation:scanhit 1.2s ease-out}
 .dreq.ok .badge { background: var(--ok-soft); color: var(--ok); } .dreq.bad .badge { background: var(--danger-soft); color: var(--danger); } .dreq.wait .badge { background: var(--warn-soft); color: var(--warn); }
 .okbox { background: var(--ok-soft); color: var(--ok); border-radius: var(--radius); padding: 10px 12px; }
 @media print { .qrposters { grid-template-columns: repeat(2, 1fr); } .qrposter { border: 1px solid #999; page-break-inside: avoid; } }
+.dine .err:empty { display: none; }

@@ -54,7 +54,7 @@ import { gstr1, gstr1Sheets, match2b } from './gstr.js';
 import { loyaltyOf, cleanLoyalty, partyPoints, members as loyaltyMembers, adjustPoints } from './loyalty.js';
 import { widgetData, listDashboards, saveDashboard, deleteDashboard, pickDefault } from './widgets.js';
 import { dineBoard, addTables, removeTable, tableDetail, sendKot, voidLine, moveOrder, billOrder, voidOrder, kotLog, guestMenu, guestSend, guestStatus,
-  dineRequests, acceptRequest, answerRequest, kitchen, kotStatus, dineQr, saveDineSettings, newTableQr } from './dine.js';
+  dineRequests, acceptRequest, answerRequest, kitchen, kotStatus, dineQr, saveDineSettings, newTableQr, guestBill, settleRequest } from './dine.js';
 import { secondStep, twoStepStart, twoStepEnable, twoStepDisable, newBackupCodes, twoStepReset, requireTwoStep, stepUp, loginStatement, signInHistory,
   closeBusiness, cancelClose, purgeClosed, notOwnerWhileClosing } from './security.js';
 import { workbook } from './xlsx.js';
@@ -1030,10 +1030,12 @@ router.add('GET', '/api/dine/kots', async (c) => json(await kotLog(c, c.url.sear
 const noStore = { 'X-Robots-Tag': 'noindex', 'Cache-Control': 'no-store' };
 router.add('GET', '/api/public/dine/:token', async (c) => json(await guestMenu(c, c.params.token), 200, noStore), { public: true });
 router.add('POST', '/api/public/dine/:token', async (c) => json(await guestSend(c, c.params.token, c.body), 200, noStore), { public: true });
+router.add('GET', '/api/public/dine/:token/bill', async (c) => json(await guestBill(c, c.params.token), 200, noStore), { public: true });
 router.add('GET', '/api/public/dine/:token/status', async (c) => json(await guestStatus(c, c.params.token, c.url.searchParams.get('r')), 200, noStore), { public: true });
 router.add('GET', '/api/dine/requests', async (c) => json(await dineRequests(c)));
 router.add('POST', '/api/dine/requests/:id/accept', async (c) => json(await acceptRequest(c, +c.params.id)));
 router.add('POST', '/api/dine/requests/:id/reject', async (c) => json(await answerRequest(c, +c.params.id, c.body, 'rejected')));
+router.add('POST', '/api/dine/requests/:id/settle', async (c) => json(await docDetail(c, (await settleRequest(c, +c.params.id)).doc_id)));
 router.add('POST', '/api/dine/requests/:id/done', async (c) => json(await answerRequest(c, +c.params.id, c.body, 'done')));
 router.add('GET', '/api/dine/kitchen', async (c) => json(await kitchen(c)));
 router.add('POST', '/api/dine/kots/:id/status', async (c) => json(await kotStatus(c, +c.params.id, c.body)));

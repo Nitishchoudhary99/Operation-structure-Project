@@ -258,16 +258,35 @@ export async function guestMenu(c, token) {
     items: results.map((i) => ({ id: i.id, name: i.name, unit: i.unit, category: i.category || '', price: R(i.sale_price * (100 + (i.gst_rate || 0)) / 100) })) };
 }
 
+/* the table's running bill as the guest sees it: dishes, quantities and amounts with GST, the total to pay (rounded to
+   the rupee, as the bill will be) and the shop's UPI ID when it has one. Nothing about who served or other tables. */
+async function tableBill(c, tableId) {
+  const d = await c.db.prepare(`SELECT id FROM dine_orders WHERE table_id = ? AND status = 'open'`).bind(tableId).first();
+  if (!d) return { lines: [], total: 0, pay: 0 };
+  const { results } = await c.db.prepare(`SELECT name, rate, incl, gst_rate, SUM(qty) AS qty FROM dine_lines WHERE order_id = ? AND status = 'ok'
+      GROUP BY name, rate, incl, gst_rate ORDER BY MIN(id)`).bind(d.id).all();
+  const lines = results.map((l) => ({ name: l.name, qty: Math.round(l.qty * 1000) / 1000, amount: R(payOf(l)) }));
+  const total = R(results.reduce((s, l) => s + payOf(l), 0));
+  return { lines, total, pay: Math.round(total) };
+}
+export async function guestBill(c, token) {
+  await rateLimit(c.env, 'dine:' + ipOf(c), 300, 600);
+  const t = await guestTable(c, token);
+  if (!t) throw noTable();
+  const o = await c.db.prepare(`SELECT upi_id FROM orgs WHERE id = ?`).bind(t.org_id).first();
+  return { table: t.name, shop: t.org, upi: (o && o.upi_id) || '', ...(await tableBill(c, t.id)) };
+}
+
 /* a guest's order or call for help: waits for the staff; the reply carries the private token for following it */
 export async function guestSend(c, token, body) {
   const ip = ipOf(c);
   await rateLimit(c.env, 'dine-send:' + ip, 20, 600);
   const t = await guestTable(c, token);
   if (!t) throw noTable();
-  const kind = body && body.kind === 'help' ? 'help' : 'order';
+  const kind = body && ['help', 'pay'].includes(body.kind) ? body.kind : 'order';
   const waiting = await c.db.prepare(`SELECT COUNT(*) AS n FROM dine_requests WHERE table_id = ? AND status = 'new'`).bind(t.id).first();
   if (waiting.n >= 8) throw bad('The staff have not seen this table\'s last requests yet. Please wait a moment.');
-  let lines = [], what = '', total = 0;
+  let lines = [], what = '', total = 0, amount = 0, ref = '';
   if (kind === 'order') {
     const raw = Array.isArray(body.lines) ? body.lines : [];
     if (!raw.length) throw bad('Add something from the menu first.');
@@ -285,6 +304,14 @@ export async function guestSend(c, token, body) {
       total += price * qty;
       return { item_id: it.id, name: it.name, qty, price, note: str(l.note, 80) };
     });
+  } else if (kind === 'pay') {
+    // "I have paid by UPI": for the bill as it is now; the staff check the money came in before the bill is made
+    const bill = await tableBill(c, t.id);
+    if (!bill.pay) throw bad('There is no bill on this table yet.');
+    if (Math.round(+body.amount) !== bill.pay) throw bad('The bill has changed. Please look at it again before paying.');
+    amount = bill.pay; what = 'upi'; ref = str(body.ref, 30).replace(/[^0-9A-Za-z]/g, '');
+    const dup = await c.db.prepare(`SELECT id FROM dine_requests WHERE table_id = ? AND kind = 'pay' AND status = 'new'`).bind(t.id).first();
+    if (dup) throw bad('The staff are already checking a payment for this table.');
   } else {
     what = Object.hasOwn(HELP, body && body.what) ? body.what : 'other';
     // the same call twice is one call
@@ -292,9 +319,9 @@ export async function guestSend(c, token, body) {
     if (dup) return { id: dup.id, token: null, again: true };
   }
   const secret = randomHex(16);
-  const r = await c.db.prepare(`INSERT INTO dine_requests (org_id, table_id, kind, status, lines, what, note, guest, token_hash, created_at)
-      VALUES (?, ?, ?, 'new', ?, ?, ?, ?, ?, ?) RETURNING id`)
-    .bind(t.org_id, t.id, kind, JSON.stringify(lines), what, str(body && body.note, 200), str(body && body.name, 40), await sha(secret), nowIso()).first();
+  const r = await c.db.prepare(`INSERT INTO dine_requests (org_id, table_id, kind, status, lines, what, note, guest, token_hash, created_at, amount)
+      VALUES (?, ?, ?, 'new', ?, ?, ?, ?, ?, ?, ?) RETURNING id`)
+    .bind(t.org_id, t.id, kind, JSON.stringify(lines), what, kind === 'pay' ? ref : str(body && body.note, 200), str(body && body.name, 40), await sha(secret), nowIso(), amount).first();
   return { id: r.id, token: secret, total: Math.round(total * 100) / 100 };
 }
 
@@ -306,11 +333,11 @@ export async function guestStatus(c, token, list) {
   const want = String(list || '').split(',').slice(0, 20).map((x) => x.split('.')).filter(([id, s]) => /^\d+$/.test(id) && /^[0-9a-f]{32}$/.test(s || ''));
   const out = [];
   for (const [id, s] of want) {
-    const r = await c.db.prepare(`SELECT r.id, r.kind, r.status, r.what, r.reason, r.lines, r.created_at, r.token_hash, k.kstatus, k.number AS kot_no
+    const r = await c.db.prepare(`SELECT r.id, r.kind, r.status, r.what, r.reason, r.lines, r.created_at, r.token_hash, r.amount, k.kstatus, k.number AS kot_no
         FROM dine_requests r LEFT JOIN kots k ON k.id = r.kot_id WHERE r.id = ? AND r.table_id = ?`).bind(+id, t.id).first();
     if (!r || !same(r.token_hash, await sha(s))) continue;
     let lines = []; try { lines = JSON.parse(r.lines); } catch (e) { lines = []; }
-    out.push({ id: r.id, kind: r.kind, status: r.status, what: r.what, reason: r.reason, at: r.created_at, kitchen: r.kstatus || null, kot: r.kot_no || null,
+    out.push({ id: r.id, kind: r.kind, status: r.status, what: r.what, reason: r.reason, at: r.created_at, kitchen: r.kstatus || null, kot: r.kot_no || null, amount: r.amount || 0,
       lines: lines.map((l) => ({ name: l.name, qty: l.qty })) });
   }
   return { requests: out };
@@ -319,10 +346,10 @@ export async function guestStatus(c, token, list) {
 /* ---- the staff side ---- */
 export async function dineRequests(c) {
   requireCan(c.user, 'sales');
-  const { results } = await c.db.prepare(`SELECT r.id, r.table_id, r.kind, r.lines, r.what, r.note, r.guest, r.created_at, t.name AS table_name
+  const { results } = await c.db.prepare(`SELECT r.id, r.table_id, r.kind, r.lines, r.what, r.note, r.guest, r.created_at, r.amount, t.name AS table_name
       FROM dine_requests r JOIN dine_tables t ON t.id = r.table_id WHERE r.org_id = ? AND r.status = 'new' ORDER BY r.id LIMIT 200`).bind(c.org.id).all();
   return { requests: results.map((r) => { let lines = []; try { lines = JSON.parse(r.lines); } catch (e) { lines = []; }
-    return { ...r, lines, help: r.kind === 'help' ? HELP[r.what] || 'Help' : '', total: Math.round(lines.reduce((s, l) => s + l.price * l.qty, 0) * 100) / 100 }; }) };
+    return { ...r, lines, help: r.kind === 'help' ? HELP[r.what] || 'Help' : r.kind === 'pay' ? 'Paid by UPI' : '', total: r.kind === 'pay' ? r.amount : Math.round(lines.reduce((s, l) => s + l.price * l.qty, 0) * 100) / 100 }; }) };
 }
 
 /* accept a guest order: it becomes a KOT now (prices from the menu as it is now, as for any KOT); one staff member wins a race */
@@ -344,6 +371,29 @@ export async function acceptRequest(c, id) {
   await c.db.batch([c.db.prepare(`UPDATE dine_requests SET status = 'accepted', kot_id = ? WHERE id = ?`).bind(res.kot.id, r.id),
     auditStatement(c, 'QR order accepted', `table ${res.kot.table}, KOT ${res.kot.number}`)]);
   return { kot: res.kot, ...(await dineRequests(c)) };
+}
+
+/* "paid by UPI" checked by the staff (the money is in the shop's UPI app): the table's bill is made, paid in full to
+   the UPI account, and the table is free. The bill must still be what the guest paid for. */
+export async function settleRequest(c, id) {
+  requireCan(c.user, 'sales');
+  const r = await c.db.prepare(`SELECT * FROM dine_requests WHERE id = ? AND org_id = ?`).bind(id, c.org.id).first();
+  if (!r) throw notFound('Request not found.');
+  if (r.kind !== 'pay') throw bad('This is not a payment.');
+  const bill = await tableBill(c, r.table_id);
+  if (bill.pay !== Math.round(r.amount)) throw bad(`The bill is now ₹${bill.pay}, the guest paid ₹${Math.round(r.amount)}. Settle the difference at the counter and bill the table from its page.`);
+  const upi = await c.db.prepare(`SELECT id FROM accounts WHERE org_id = ? AND sys = 'upi'`).bind(c.org.id).first();
+  if (!upi) throw bad('There is no UPI account in your books.');
+  const hold = await c.db.prepare(`UPDATE dine_requests SET status = 'accepting', handled_by = ?, handled_at = ? WHERE id = ? AND status = 'new'`).bind(c.user.id, nowIso(), r.id).run();
+  if (!hold.meta.changes) throw bad('Someone has already answered this payment.');
+  let b;
+  try { b = await billOrder(c, r.table_id, { payment: { full: true, account_id: upi.id, reference: r.note ? 'UPI ' + r.note : 'UPI at table' } }); } catch (e) {
+    await c.db.prepare(`UPDATE dine_requests SET status = 'new', handled_by = NULL, handled_at = NULL WHERE id = ? AND status = 'accepting'`).bind(r.id).run();
+    throw e;
+  }
+  await c.db.batch([c.db.prepare(`UPDATE dine_requests SET status = 'done', doc_id = ? WHERE id = ?`).bind(b.doc_id, r.id),
+    auditStatement(c, 'table paid by UPI', `₹${Math.round(r.amount)}${r.note ? ', ref ' + r.note : ''}, ${b.number}`)]);
+  return b;
 }
 
 export async function answerRequest(c, id, body, status) {
