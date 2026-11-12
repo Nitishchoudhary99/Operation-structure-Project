@@ -7078,7 +7078,13 @@ const foodMark = (f) => (FOOD_T[f] ? `<span class="fmark ${f}" title="${FOOD_T[f
 /* "sold out today" chips for the kitchen: tap a dish when it runs out; it is back on the menu by itself tomorrow */
 const soldOutHtml = (m) => `<details class="panel soldpanel"${m.menu.some((i) => i.sold_out) ? ' open' : ''}><summary><b>Sold out today</b> <span class="muted small">${m.menu.filter((i) => i.sold_out).length} of ${m.menu.length} dishes · tap a dish when it runs out; guests cannot order it, and it is back tomorrow by itself</span></summary>
   <div class="sochips">${m.menu.map((i) => `<button type="button" class="sochip${i.sold_out ? ' on' : ''}" data-so="${i.id}" data-out="${i.sold_out ? 0 : 1}">${foodMark(i.food)}${esc(i.name)}${i.sold_out ? ' ✕' : ''}</button>`).join('') || '<span class="muted small">No dishes with a selling price yet.</span>'}</div></details>`;
-function printKot(k) {
+/* the thermal printer (public/escpos.js, loaded only when used): connected → the slip goes straight to it; otherwise,
+   or if it fails, the browser prints as before */
+let escpos = null;
+const escposWanted = () => { try { return !!localStorage.getItem('st:printer'); } catch (e) { return false; } };
+async function escposMod() { if (!escpos) escpos = await import('/escpos.js'); return escpos; }
+async function printKot(k) {
+  if (escposWanted()) { try { const m = await escposMod(); if (await m.send(m.kotBytes(k, ME.org.name))) return; toast('Thermal printer not connected: printing through the browser.', 'err'); } catch (e) { /* the browser prints */ } }
   let r = $('#receipt');
   if (!r) { r = document.createElement('div'); r.id = 'receipt'; r.className = 'receipt'; document.body.appendChild(r); }
   const t = new Date(k.at).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' });
@@ -7087,6 +7093,26 @@ function printKot(k) {
     <table>${k.lines.map((l) => `<tr><td class="kq">${qtyf(l.qty)}</td><td><b>${esc(l.name)}</b>${l.note ? `<div class="kn">${esc(l.note)}</div>` : ''}</td></tr>`).join('')}</table>`;
   document.body.classList.add('print-receipt');
   setTimeout(() => { print(); document.body.classList.remove('print-receipt'); }, 50);
+}
+async function printerDialog() {
+  const m = await escposMod(), sup = m.supported();
+  let root = $('#printer-root'); if (!root) { root = document.createElement('div'); root.id = 'printer-root'; document.body.appendChild(root); }
+  const draw = () => { const st = m.status();
+    root.innerHTML = `<div class="modal-bg"><div class="modal" role="dialog" aria-label="Thermal printer"><h2>Thermal printer (KOT)</h2>
+      <p class="muted small">KOTs go straight to a 58 or 80 mm thermal printer, without the print dialog. Until one is connected, or if it stops answering, they print through the browser as before.</p>
+      <p><b>${st.connected ? `Connected: ${esc(st.name)}` : st.wanted ? 'Not connected right now' : 'No printer connected'}</b></p>
+      ${sup.bluetooth || sup.usb ? `<div class="row" style="flex-wrap:wrap;gap:8px">${sup.bluetooth ? '<button class="btn primary" data-pc="bluetooth">Connect Bluetooth printer</button>' : ''}${sup.usb ? '<button class="btn" data-pc="usb">Connect USB printer</button>' : ''}</div>`
+        : '<p class="warnbox small">This browser cannot talk to printers. Use Chrome or Edge (on Android, Windows or Mac).</p>'}
+      <label class="f" style="margin-top:10px">Paper width<select id="pw"><option value="32"${st.width === 32 ? ' selected' : ''}>58 mm (32 letters)</option><option value="48"${st.width === 48 ? ' selected' : ''}>80 mm (48 letters)</option></select></label>
+      <p class="muted small">A KOT with Hindi dish names prints as a picture, so it reads as typed. A Bluetooth printer is asked for again after the page reloads; a USB one is remembered.</p>
+      <div class="row" style="margin-top:10px;gap:8px">${st.connected ? '<button class="btn" id="ptest">Test print</button>' : ''}${st.wanted ? '<button class="btn danger" id="pforget">Stop using it</button>' : ''}<span class="spacer"></span><button class="btn" id="pclose">Close</button></div></div></div>`;
+    root.querySelectorAll('[data-pc]').forEach((b) => { b.onclick = async () => { b.disabled = true; try { await m.connect(b.dataset.pc, +$('#pw').value); toast('Printer connected'); } catch (e) { if (e.name !== 'NotFoundError') toast(e.message, 'err'); } draw(); }; });
+    $('#pw').onchange = () => m.setWidth(+$('#pw').value);
+    if ($('#ptest')) $('#ptest').onclick = async () => { if (!(await m.test(ME.org.name))) toast('The printer did not answer.', 'err'); draw(); };
+    if ($('#pforget')) $('#pforget').onclick = () => { m.forget(); draw(); };
+    $('#pclose').onclick = () => { root.innerHTML = ''; };
+  };
+  await m.reconnect(); draw();
 }
 route(/^tables$/, async (el) => {
   const [b, asks] = await Promise.all([GET('/api/dine'), GET('/api/dine/requests').catch(() => ({ requests: [] }))]), canSet = ME.can.settings;
@@ -7103,7 +7129,7 @@ route(/^tables$/, async (el) => {
   }
   const areas = [...new Set(b.tables.map((t) => t.area || ''))];
   const running = b.tables.filter((t) => t.order);
-  el.innerHTML = head('Tables (Restaurant)', `${ME.can.finance ? '<a class="btn" href="#/restaurant-live">Owner dashboard</a>' : ''}<a class="btn" href="#/kitchen">Kitchen screen</a><a class="btn" href="#/kots">KOT log</a>${canSet ? '<a class="btn" href="#/table-qr">Table QR</a><button class="btn" id="tmore">+ Tables</button>' : ''}`) + dineAsksHtml(asks) + floorLegend(b.tables) + `
+  el.innerHTML = head('Tables (Restaurant)', `${ME.can.finance ? '<a class="btn" href="#/restaurant-live">Owner dashboard</a>' : ''}<a class="btn" href="#/kitchen">Kitchen screen</a><a class="btn" href="#/kots">KOT log</a><button class="btn" id="tprinter" title="Thermal printer for KOTs">🖨 Printer</button>${canSet ? '<a class="btn" href="#/table-qr">Table QR</a><button class="btn" id="tmore">+ Tables</button>' : ''}`) + dineAsksHtml(asks) + floorLegend(b.tables) + `
     <div class="kpis"><div class="kpi"><div class="l">Running</div><div class="v">${running.length} / ${b.tables.length}</div><div class="s">tables with an open order</div></div>
       <div class="kpi"><div class="l">On the tables now</div><div class="v">${inr(running.reduce((x, t) => x + t.order.amount, 0))}</div><div class="s">not billed yet</div></div></div>
     ${areas.map((a) => `${a ? `<h3 class="tarea">${esc(a)}</h3>` : ''}<div class="tgrid">${b.tables.filter((t) => (t.area || '') === a).map((t) => `<a class="ttile ${t.order ? 'busy' : ''} fs-${t.state || 'free'}" href="#/table/${t.id}"><span class="fstate">${FLOOR[t.state || 'free'][0]}${t.state === 'cooking' && t.kitchen && t.kitchen.oldest ? ' · ' + since(t.kitchen.oldest) : ''}</span>
@@ -7111,6 +7137,7 @@ route(/^tables$/, async (el) => {
         : `<span class="muted small">Free${t.seats ? ` &middot; ${t.seats} seats` : ''}</span>`}${kotDraft(t.id).length ? '<span class="tnew">not sent</span>' : ''}${t.asks && !['pay', 'bill', 'help', 'asked'].includes(t.state) ? `<span class="tnew">&#128276; ${t.asks} from QR</span>` : ''}</a>`).join('')}</div>`).join('')}`;
   wireDineAsks(el, () => render());
   window.__tablesSig = JSON.stringify([b, asks]);
+  if ($('#tprinter')) $('#tprinter').onclick = () => printerDialog().catch((e) => toast(e.message, 'err'));
   if ($('#tmore')) $('#tmore').onclick = () => modal('Add tables', [{ k: 'names', label: 'Names (comma or one per line), or leave empty and give a number', type: 'textarea', wide: true },
     { k: 'count', label: 'Or how many', type: 'number' }, { k: 'prefix', label: 'Name starts with', value: 'T' }, { k: 'area', label: 'Area (optional)' }, { k: 'seats', label: 'Seats', type: 'number', value: 4 }],
   async (v) => { await POST('/api/dine/tables', { ...v, count: +v.count || 0, seats: +v.seats || 0 }); render(); });
