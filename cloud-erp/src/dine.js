@@ -12,17 +12,39 @@ const R = (p) => Math.round(p) / 100;
 const PAY_SQL = `l.qty * CASE WHEN l.incl = 1 THEN l.rate ELSE l.rate * (100 + l.gst_rate) / 100.0 END`;
 const payOf = (l) => l.qty * (l.incl ? l.rate : l.rate * (100 + (l.gst_rate || 0)) / 100);
 
+/* Each table's state on the floor, most urgent first: a payment to check, the bill asked for, help asked for, food
+   ready to take out, food being cooked, guests eating, a guest order waiting to be accepted, or free. */
+const floorState = (t) => {
+  const a = t.askKinds || {}, k = t.kitchen || {};
+  if (a.pay) return 'pay';
+  if (a.bill) return 'bill';
+  if (a.help) return 'help';
+  if (k.ready) return 'ready';
+  if (k.new || k.cooking) return 'cooking';
+  if (t.order) return 'eating';
+  if (a.order) return 'asked';
+  return 'free';
+};
 export async function dineBoard(c) {
   const o = c.org.id;
-  const [tables, orders, asks] = await c.db.batch([
+  const [tables, orders, asks, kit, kinds] = await c.db.batch([
     c.db.prepare(`SELECT id, name, area, seats FROM dine_tables WHERE org_id = ? AND active = 1 ORDER BY area, sort, id`).bind(o),
     c.db.prepare(`SELECT d.id, d.table_id, d.opened_at, d.guests, COUNT(l.id) AS items, COALESCE(SUM(${PAY_SQL}), 0) AS amount, MAX(l.created_at) AS last_kot
         FROM dine_orders d LEFT JOIN dine_lines l ON l.order_id = d.id AND l.status = 'ok'
         WHERE d.org_id = ? AND d.status = 'open' GROUP BY d.id`).bind(o),
     c.db.prepare(`SELECT table_id, COUNT(*) AS n FROM dine_requests WHERE org_id = ? AND status = 'new' GROUP BY table_id`).bind(o),
+    c.db.prepare(`SELECT d.table_id, k.kstatus, COUNT(*) AS n, MIN(k.created_at) AS oldest FROM kots k JOIN dine_orders d ON d.id = k.order_id
+        WHERE d.org_id = ? AND d.status = 'open' AND k.kind = 'kot' GROUP BY d.table_id, k.kstatus`).bind(o),
+    c.db.prepare(`SELECT table_id, CASE WHEN kind = 'help' AND what = 'bill' THEN 'bill' ELSE kind END AS k, COUNT(*) AS n
+        FROM dine_requests WHERE org_id = ? AND status = 'new' GROUP BY table_id, k`).bind(o),
   ]);
+  const kitchenOf = new Map(), kindOf = new Map();
+  kit.results.forEach((x) => { const m = kitchenOf.get(x.table_id) || {}; m[x.kstatus] = x.n; if (x.kstatus !== 'served') m.oldest = m.oldest && m.oldest < x.oldest ? m.oldest : x.oldest; kitchenOf.set(x.table_id, m); });
+  kinds.results.forEach((x) => { const m = kindOf.get(x.table_id) || {}; m[x.k] = x.n; kindOf.set(x.table_id, m); });
   const open = new Map(orders.results.map((x) => [x.table_id, x])), ask = new Map(asks.results.map((x) => [x.table_id, x.n]));
-  return { tables: tables.results.map((t) => { const x = open.get(t.id); return { ...t, asks: ask.get(t.id) || 0, order: x ? { ...x, amount: R(x.amount) } : null }; }),
+  return { tables: tables.results.map((t) => { const x = open.get(t.id);
+      const row = { ...t, asks: ask.get(t.id) || 0, order: x ? { ...x, amount: R(x.amount) } : null, kitchen: kitchenOf.get(t.id) || {}, askKinds: kindOf.get(t.id) || {} };
+      return { ...row, state: floorState(row) }; }),
     asks: asks.results.reduce((n, x) => n + x.n, 0) };
 }
 
@@ -422,7 +444,9 @@ export async function kotStatus(c, id, body) {
   requireCan(c.user, 'sales');
   const st = body && body.status;
   if (!KSTATUS.includes(st)) throw bad('Unknown kitchen status.');
-  const r = await c.db.prepare(`UPDATE kots SET kstatus = ?, kstatus_at = ? WHERE id = ? AND org_id = ?`).bind(st, nowIso(), id, c.org.id).run();
+  const now = nowIso();
+  const r = await c.db.prepare(`UPDATE kots SET kstatus = ?, kstatus_at = ?, ready_at = CASE WHEN ? = 'ready' THEN COALESCE(ready_at, ?) ELSE ready_at END
+      WHERE id = ? AND org_id = ?`).bind(st, now, st, now, id, c.org.id).run();
   if (!r.meta.changes) throw notFound('KOT not found.');
   return kitchen(c);
 }
@@ -450,4 +474,39 @@ export async function newTableQr(c, id) {
   if (!r.meta.changes) throw notFound('Table not found.');
   await c.db.batch([auditStatement(c, 'table QR', `new link for table ${id}`)]);
   return dineQr(c);
+}
+
+/* ======================================================================= the owner's live view of the restaurant today
+   Tables busy now, money billed from tables, guest QR orders and how they were answered, how long tables stay and the
+   kitchen takes, the dishes selling most, KOTs hour by hour, and money received today by mode. Owner / finance only. */
+export async function dineToday(c) {
+  requireCan(c.user, 'finance');
+  const o = c.org.id, day = today(), from = new Date(Date.parse(day + 'T00:00:00+05:30')).toISOString();
+  const [billed, reqs, kitchenTime, dishes, hours, money, board] = await Promise.all([
+    c.db.prepare(`SELECT COUNT(*) AS n, COALESCE(SUM(x.total), 0) AS total, AVG((julianday(d.closed_at) - julianday(d.opened_at)) * 1440) AS mins
+        FROM dine_orders d JOIN docs x ON x.id = d.doc_id WHERE d.org_id = ? AND d.status = 'billed' AND x.date = ? AND x.status != 'cancelled'`).bind(o, day).first(),
+    c.db.prepare(`SELECT kind, status, COUNT(*) AS n FROM dine_requests WHERE org_id = ? AND created_at >= ? GROUP BY kind, status`).bind(o, from).all(),
+    c.db.prepare(`SELECT AVG((julianday(ready_at) - julianday(created_at)) * 1440) AS mins, COUNT(*) AS n FROM kots WHERE org_id = ? AND day = ? AND kind = 'kot' AND ready_at IS NOT NULL`).bind(o, day).first(),
+    c.db.prepare(`SELECT l.name, SUM(l.qty) AS qty, SUM(${PAY_SQL}) AS amount FROM dine_lines l JOIN kots k ON k.id = l.kot_id
+        WHERE k.org_id = ? AND k.day = ? AND l.status = 'ok' GROUP BY l.name ORDER BY qty DESC LIMIT 8`).bind(o, day).all(),
+    c.db.prepare(`SELECT CAST(strftime('%H', created_at, '+330 minutes') AS INTEGER) AS h, COUNT(*) AS n FROM kots WHERE org_id = ? AND day = ? AND kind = 'kot' GROUP BY h ORDER BY h`).bind(o, day).all(),
+    c.db.prepare(`SELECT a.sys, a.name, SUM(p.amount) AS amount FROM payments p JOIN accounts a ON a.id = p.account_id
+        WHERE p.org_id = ? AND p.kind = 'receipt' AND p.date = ? GROUP BY a.id ORDER BY amount DESC`).bind(o, day).all(),
+    dineBoard(c),
+  ]);
+  const q = { order: { new: 0, accepted: 0, rejected: 0 }, help: 0, pay: { new: 0, done: 0, rejected: 0 } };
+  reqs.results.forEach((r) => {
+    if (r.kind === 'order') q.order[r.status === 'accepting' ? 'new' : r.status] = (q.order[r.status] || 0) + r.n;
+    else if (r.kind === 'help') q.help += r.n;
+    else if (r.kind === 'pay') q.pay[r.status === 'accepting' ? 'new' : r.status] = (q.pay[r.status] || 0) + r.n;
+  });
+  const busy = board.tables.filter((t) => t.state !== 'free');
+  return {
+    day, tables: board.tables.length, busy: busy.length, running: R(board.tables.reduce((s, t) => s + (t.order ? t.order.amount * 100 : 0), 0)),
+    states: board.tables.reduce((m, t) => { m[t.state] = (m[t.state] || 0) + 1; return m; }, {}),
+    billed: { bills: billed.n, total: R(billed.total), table_mins: billed.mins == null ? null : Math.round(billed.mins) },
+    kitchen_mins: kitchenTime.mins == null ? null : Math.round(kitchenTime.mins), kots_ready: kitchenTime.n,
+    qr: q, dishes: dishes.results.map((d) => ({ name: d.name, qty: Math.round(d.qty * 1000) / 1000, amount: R(d.amount) })),
+    hours: hours.results, money: money.results.map((m) => ({ sys: m.sys || '', name: m.name, amount: R(m.amount) })),
+  };
 }

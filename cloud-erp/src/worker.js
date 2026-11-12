@@ -54,7 +54,7 @@ import { gstr1, gstr1Sheets, match2b } from './gstr.js';
 import { loyaltyOf, cleanLoyalty, partyPoints, members as loyaltyMembers, adjustPoints } from './loyalty.js';
 import { widgetData, listDashboards, saveDashboard, deleteDashboard, pickDefault } from './widgets.js';
 import { dineBoard, addTables, removeTable, tableDetail, sendKot, voidLine, moveOrder, billOrder, voidOrder, kotLog, guestMenu, guestSend, guestStatus,
-  dineRequests, acceptRequest, answerRequest, kitchen, kotStatus, dineQr, saveDineSettings, newTableQr, guestBill, settleRequest } from './dine.js';
+  dineRequests, acceptRequest, answerRequest, kitchen, kotStatus, dineQr, saveDineSettings, newTableQr, guestBill, settleRequest, dineToday } from './dine.js';
 import { secondStep, twoStepStart, twoStepEnable, twoStepDisable, newBackupCodes, twoStepReset, requireTwoStep, stepUp, loginStatement, signInHistory,
   closeBusiness, cancelClose, purgeClosed, notOwnerWhileClosing } from './security.js';
 import { workbook } from './xlsx.js';
@@ -1037,6 +1037,7 @@ router.add('POST', '/api/dine/requests/:id/accept', async (c) => json(await acce
 router.add('POST', '/api/dine/requests/:id/reject', async (c) => json(await answerRequest(c, +c.params.id, c.body, 'rejected')));
 router.add('POST', '/api/dine/requests/:id/settle', async (c) => json(await docDetail(c, (await settleRequest(c, +c.params.id)).doc_id)));
 router.add('POST', '/api/dine/requests/:id/done', async (c) => json(await answerRequest(c, +c.params.id, c.body, 'done')));
+router.add('GET', '/api/dine/today', async (c) => json(await dineToday(c)));
 router.add('GET', '/api/dine/kitchen', async (c) => json(await kitchen(c)));
 router.add('POST', '/api/dine/kots/:id/status', async (c) => json(await kotStatus(c, +c.params.id, c.body)));
 router.add('GET', '/api/dine/qr', async (c) => json(await dineQr(c)));

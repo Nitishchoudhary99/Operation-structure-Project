@@ -7095,12 +7095,12 @@ route(/^tables$/, async (el) => {
   }
   const areas = [...new Set(b.tables.map((t) => t.area || ''))];
   const running = b.tables.filter((t) => t.order);
-  el.innerHTML = head('Tables (Restaurant)', `<a class="btn" href="#/kitchen">Kitchen screen</a><a class="btn" href="#/kots">KOT log</a>${canSet ? '<a class="btn" href="#/table-qr">Table QR</a><button class="btn" id="tmore">+ Tables</button>' : ''}`) + dineAsksHtml(asks) + `
+  el.innerHTML = head('Tables (Restaurant)', `${ME.can.finance ? '<a class="btn" href="#/restaurant-live">Owner dashboard</a>' : ''}<a class="btn" href="#/kitchen">Kitchen screen</a><a class="btn" href="#/kots">KOT log</a>${canSet ? '<a class="btn" href="#/table-qr">Table QR</a><button class="btn" id="tmore">+ Tables</button>' : ''}`) + dineAsksHtml(asks) + floorLegend(b.tables) + `
     <div class="kpis"><div class="kpi"><div class="l">Running</div><div class="v">${running.length} / ${b.tables.length}</div><div class="s">tables with an open order</div></div>
       <div class="kpi"><div class="l">On the tables now</div><div class="v">${inr(running.reduce((x, t) => x + t.order.amount, 0))}</div><div class="s">not billed yet</div></div></div>
-    ${areas.map((a) => `${a ? `<h3 class="tarea">${esc(a)}</h3>` : ''}<div class="tgrid">${b.tables.filter((t) => (t.area || '') === a).map((t) => `<a class="ttile ${t.order ? 'busy' : ''}" href="#/table/${t.id}">
+    ${areas.map((a) => `${a ? `<h3 class="tarea">${esc(a)}</h3>` : ''}<div class="tgrid">${b.tables.filter((t) => (t.area || '') === a).map((t) => `<a class="ttile ${t.order ? 'busy' : ''} fs-${t.state || 'free'}" href="#/table/${t.id}"><span class="fstate">${FLOOR[t.state || 'free'][0]}${t.state === 'cooking' && t.kitchen && t.kitchen.oldest ? ' · ' + since(t.kitchen.oldest) : ''}</span>
       <b>${esc(t.name)}</b>${t.order ? `<span class="tamt">${inr(t.order.amount)}</span><span class="muted small">${since(t.order.opened_at)} &middot; ${t.order.items} item${t.order.items === 1 ? '' : 's'}</span>`
-        : `<span class="muted small">Free${t.seats ? ` &middot; ${t.seats} seats` : ''}</span>`}${kotDraft(t.id).length ? '<span class="tnew">not sent</span>' : ''}${t.asks ? `<span class="tnew">&#128276; ${t.asks} from QR</span>` : ''}</a>`).join('')}</div>`).join('')}`;
+        : `<span class="muted small">Free${t.seats ? ` &middot; ${t.seats} seats` : ''}</span>`}${kotDraft(t.id).length ? '<span class="tnew">not sent</span>' : ''}${t.asks && !['pay', 'bill', 'help', 'asked'].includes(t.state) ? `<span class="tnew">&#128276; ${t.asks} from QR</span>` : ''}</a>`).join('')}</div>`).join('')}`;
   wireDineAsks(el, () => render());
   window.__tablesSig = JSON.stringify([b, asks]);
   if ($('#tmore')) $('#tmore').onclick = () => modal('Add tables', [{ k: 'names', label: 'Names (comma or one per line), or leave empty and give a number', type: 'textarea', wide: true },
@@ -7369,6 +7369,13 @@ async function publicTable(token) {
 /* Guest orders and calls wait here until someone answers. Accept makes the KOT (printed like any other); Reject tells the
    guest why. The list is on the Tables page, which checks every 10 seconds and beeps when something new comes in. */
 let dineSeen = new Set();
+/* the live floor: each table's state (most urgent first), its colour and what it means */
+const FLOOR = { pay: ['Payment to check', 'A guest says they paid by UPI'], bill: ['Wants the bill', 'Asked for the bill'], help: ['Needs service', 'Water, cutlery or a call'],
+  ready: ['Food ready', 'Take it to the table'], cooking: ['Cooking', 'KOT with the kitchen'], eating: ['Eating', 'All food served'], asked: ['QR order waiting', 'Accept or reject it above'], free: ['Free', ''] };
+function floorLegend(tables) {
+  const n = {}; tables.forEach((t) => { n[t.state || 'free'] = (n[t.state || 'free'] || 0) + 1; });
+  return `<div class="flegend">${Object.keys(FLOOR).filter((k) => n[k]).map((k) => `<span class="fl fs-${k}" title="${esc(FLOOR[k][1])}"><i></i>${FLOOR[k][0]} <b>${n[k]}</b></span>`).join('')}</div>`;
+}
 /* After an action the list is drawn again and other buttons move into the place just tapped: a second tap within a
    moment (a double tap, or a nervous one) would press one of them (accept the next order, mark a KOT ready as well).
    For a short time after each action these screens take no tap. */
@@ -7400,6 +7407,36 @@ function wireDineAsks(el, after) {
     } catch (er) { toast(er.message, 'err'); b.disabled = false; await after(); dineHush(); }
   };
 }
+route(/^restaurant-live$/, async (el) => {
+  const draw = async () => {
+    if (location.hash !== '#/restaurant-live') return;
+    let x; try { x = await GET('/api/dine/today'); } catch (e) { el.innerHTML = `<div class="err">${esc(e.message)}</div>`; return; }
+    const sig = JSON.stringify(x); if (el.dataset.sig === sig) return; el.dataset.sig = sig;
+    const mins = (m) => (m == null ? '–' : m < 60 ? `${m} min` : `${Math.floor(m / 60)} h ${m % 60} min`);
+    const hmax = Math.max(1, ...x.hours.map((h) => h.n)), moneyTotal = x.money.reduce((a, m) => a + m.amount, 0);
+    el.innerHTML = head('Restaurant today (live)', '<a class="btn" href="#/tables">Tables</a><a class="btn" href="#/kitchen">Kitchen screen</a>') + `
+      <p class="muted small">Updates by itself every 15 seconds · ${fdate(x.day)}</p>
+      <div class="kpis">
+        <div class="kpi"><div class="l">Tables busy now</div><div class="v">${x.busy} / ${x.tables}</div><div class="s">with an order or a call · ${inr(x.running)} on the tables, not billed yet</div></div>
+        <div class="kpi"><div class="l">Billed from tables today</div><div class="v">${inr(x.billed.total)}</div><div class="s">${x.billed.bills} bill${x.billed.bills === 1 ? '' : 's'}</div></div>
+        <div class="kpi"><div class="l">Time at a table</div><div class="v">${mins(x.billed.table_mins)}</div><div class="s">average, opened to billed</div></div>
+        <div class="kpi"><div class="l">Kitchen time</div><div class="v">${mins(x.kitchen_mins)}</div><div class="s">average, KOT to ready (${x.kots_ready} KOT${x.kots_ready === 1 ? '' : 's'})</div></div>
+      </div>
+      <div class="panel"><b>The floor now</b>${floorLegend(Object.entries(x.states).flatMap(([k, n]) => Array(n).fill({ state: k })))}</div>
+      <div class="dashgrid">
+        <div class="panel"><b>QR from the tables today</b><div class="kv2">
+          <span>Orders accepted</span><b>${x.qr.order.accepted || 0}</b><span>Orders turned down</span><b>${x.qr.order.rejected || 0}</b><span>Orders waiting</span><b>${x.qr.order.new || 0}</b>
+          <span>Calls for help</span><b>${x.qr.help}</b><span>UPI payments confirmed</span><b>${x.qr.pay.done || 0}</b><span>UPI payments not received</span><b>${x.qr.pay.rejected || 0}</b></div></div>
+        <div class="panel"><b>Money received today</b>${x.money.length ? `<div class="kv2">${x.money.map((m) => `<span>${esc(m.name)}</span><b>${inr(m.amount)}</b>`).join('')}<span><b>Total</b></span><b>${inr(moneyTotal)}</b></div>
+          <p class="muted small">All receipts today (tables and every other sale).</p>` : '<p class="muted">Nothing received yet today.</p>'}</div>
+        <div class="panel"><b>Selling most today</b>${x.dishes.length ? `<div class="kv2">${x.dishes.map((d) => `<span>${qtyf(d.qty)} × ${esc(d.name)}</span><b>${inr(d.amount)}</b>`).join('')}</div>` : '<p class="muted">No KOT yet today.</p>'}</div>
+        <div class="panel"><b>KOTs by the hour</b>${x.hours.length ? `<div class="hbars">${x.hours.map((h) => `<div title="${h.n} KOT"><i style="height:${Math.round(h.n / hmax * 100)}%"></i><span>${h.h}</span></div>`).join('')}</div>` : '<p class="muted">No KOT yet today.</p>'}</div>
+      </div>`;
+  };
+  await draw();
+  clearInterval(window.__liveTick);
+  window.__liveTick = setInterval(() => { if (location.hash === '#/restaurant-live') draw(); else clearInterval(window.__liveTick); }, 15000);
+});
 route(/^kitchen$/, async (el) => {
   const draw = async () => {
     if (location.hash !== '#/kitchen') return;

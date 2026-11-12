@@ -3,7 +3,7 @@
    Every business table carries org_id: one database serves many businesses (multi-tenant).
    migrate() runs on the first request after each deploy, so no manual migration step is needed. */
 
-export const SCHEMA_VERSION = 49;
+export const SCHEMA_VERSION = 50;
 
 // document types whose monthly totals doc_month keeps (sales and purchase money documents)
 const MONTH_TYPES = `('INV','SRET','CNOTE','BILL','PRET','DNOTE')`;
@@ -773,6 +773,10 @@ export const MIGRATIONS = {
   49: [
     `ALTER TABLE dine_requests ADD COLUMN amount REAL NOT NULL DEFAULT 0`,
     `ALTER TABLE dine_requests ADD COLUMN doc_id INTEGER`,
+  ],
+  /* when a KOT was first marked ready in the kitchen (the owner's kitchen time) */
+  50: [
+    `ALTER TABLE kots ADD COLUMN ready_at TEXT`,
   ],
 };
 
