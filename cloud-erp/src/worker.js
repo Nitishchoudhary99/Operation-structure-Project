@@ -53,7 +53,8 @@ import { tallyXml } from './tally.js';
 import { gstr1, gstr1Sheets, match2b } from './gstr.js';
 import { loyaltyOf, cleanLoyalty, partyPoints, members as loyaltyMembers, adjustPoints } from './loyalty.js';
 import { widgetData, listDashboards, saveDashboard, deleteDashboard, pickDefault } from './widgets.js';
-import { dineBoard, addTables, removeTable, tableDetail, sendKot, voidLine, moveOrder, billOrder, voidOrder, kotLog } from './dine.js';
+import { dineBoard, addTables, removeTable, tableDetail, sendKot, voidLine, moveOrder, billOrder, voidOrder, kotLog, guestMenu, guestSend, guestStatus,
+  dineRequests, acceptRequest, answerRequest, kitchen, kotStatus, dineQr, saveDineSettings, newTableQr } from './dine.js';
 import { secondStep, twoStepStart, twoStepEnable, twoStepDisable, newBackupCodes, twoStepReset, requireTwoStep, stepUp, loginStatement, signInHistory,
   closeBusiness, cancelClose, purgeClosed, notOwnerWhileClosing } from './security.js';
 import { workbook } from './xlsx.js';
@@ -1024,6 +1025,21 @@ router.add('POST', '/api/dine/tables/:id/bill', async (c) => json(await docDetai
 router.add('POST', '/api/dine/tables/:id/void', async (c) => json(await voidOrder(c, +c.params.id, c.body)));
 router.add('POST', '/api/dine/lines/:id/void', async (c) => json(await voidLine(c, +c.params.id, c.body)));
 router.add('GET', '/api/dine/kots', async (c) => json(await kotLog(c, c.url.searchParams.get('day'))));
+/* QR table ordering: guests (no login) see the menu, send an order or call for help and follow their own requests;
+   the staff accept an order into a KOT or turn it down, and the kitchen screen moves each KOT on */
+const noStore = { 'X-Robots-Tag': 'noindex', 'Cache-Control': 'no-store' };
+router.add('GET', '/api/public/dine/:token', async (c) => json(await guestMenu(c, c.params.token), 200, noStore), { public: true });
+router.add('POST', '/api/public/dine/:token', async (c) => json(await guestSend(c, c.params.token, c.body), 200, noStore), { public: true });
+router.add('GET', '/api/public/dine/:token/status', async (c) => json(await guestStatus(c, c.params.token, c.url.searchParams.get('r')), 200, noStore), { public: true });
+router.add('GET', '/api/dine/requests', async (c) => json(await dineRequests(c)));
+router.add('POST', '/api/dine/requests/:id/accept', async (c) => json(await acceptRequest(c, +c.params.id)));
+router.add('POST', '/api/dine/requests/:id/reject', async (c) => json(await answerRequest(c, +c.params.id, c.body, 'rejected')));
+router.add('POST', '/api/dine/requests/:id/done', async (c) => json(await answerRequest(c, +c.params.id, c.body, 'done')));
+router.add('GET', '/api/dine/kitchen', async (c) => json(await kitchen(c)));
+router.add('POST', '/api/dine/kots/:id/status', async (c) => json(await kotStatus(c, +c.params.id, c.body)));
+router.add('GET', '/api/dine/qr', async (c) => json(await dineQr(c)));
+router.add('PUT', '/api/dine/qr', async (c) => json(await saveDineSettings(c, c.body)));
+router.add('POST', '/api/dine/tables/:id/new-qr', async (c) => json(await newTableQr(c, +c.params.id)));
 /* What this customer paid last for each item (their bills of the last year): the bill editor offers it next to the rate */
 router.add('GET', '/api/rates', async (c) => {
   const pid = +c.url.searchParams.get('party_id') || 0;
@@ -2580,6 +2596,9 @@ async function sharePage(request, env, kind, token) {
   } else if (kind === 's') {
     const o = await env.DB.prepare(`SELECT name, city FROM orgs WHERE shop_token = ?`).bind(token).first();
     if (o) { title = `${o.name}${o.city ? ', ' + o.city : ''}: rate list`; desc = 'Dekhiye rate, chuniye saaman, aur order WhatsApp par bhejiye.'; }
+  } else if (kind === 't') {
+    const t = await env.DB.prepare(`SELECT t.name, o.name AS org FROM dine_tables t JOIN orgs o ON o.id = t.org_id WHERE t.qr_token = ?`).bind(token).first();
+    if (t) { title = `${t.org}: menu, table ${t.name}`; desc = 'Menu dekhiye, order bhejiye, aur staff ko bulaiye. Scan to order.'; }
   } else if (kind === 'c') {
     const f = await env.DB.prepare(`SELECT f.balance, o.name AS org FROM confirmations f JOIN orgs o ON o.id = f.org_id WHERE f.token = ?`).bind(token).first();
     if (f) { title = T.cf(f.org); desc = T.cfDesc(inrW(f.balance)); image = `/og-confirm${sfx}.png`; }
@@ -2618,7 +2637,7 @@ async function respond(request, env, url) {
     return new Response(JSON.stringify(fps.length ? [{ relation: ['delegate_permission/common.handle_all_urls'], target: { namespace: 'android_app', package_name: pkg, sha256_cert_fingerprints: fps } }] : []),
       { headers: { 'Content-Type': 'application/json', 'Cache-Control': 'public, max-age=3600', 'Access-Control-Allow-Origin': '*' } });
   }
-  const share = url.pathname.match(/^\/(k|i|c|s)\/([0-9a-f]{24})\/?$/);
+  const share = url.pathname.match(/^\/(k|i|c|s|t)\/([0-9a-f]{24})\/?$/);
   if (share && env.ASSETS) return sharePage(request, env, share[1], share[2]).catch(() => env.ASSETS.fetch(new Request(url.origin + '/', request)));
   if (!url.pathname.startsWith('/api/')) {
     return env.ASSETS ? env.ASSETS.fetch(request) : new Response('Not found', { status: 404 });

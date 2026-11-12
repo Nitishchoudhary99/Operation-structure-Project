@@ -7081,7 +7081,10 @@ function printKot(k) {
   setTimeout(() => { print(); document.body.classList.remove('print-receipt'); }, 50);
 }
 route(/^tables$/, async (el) => {
-  const b = await GET('/api/dine'), canSet = ME.can.settings;
+  const [b, asks] = await Promise.all([GET('/api/dine'), GET('/api/dine/requests').catch(() => ({ requests: [] }))]), canSet = ME.can.settings;
+  const fresh = asks.requests.filter((r) => !dineSeen.has('r' + r.id));
+  if (fresh.length && el.dataset.asked) beep(true);
+  asks.requests.forEach((r) => dineSeen.add('r' + r.id)); el.dataset.asked = '1';
   if (!b.tables.length) {
     el.innerHTML = head('Tables (Restaurant)') + `<div class="panel"><p>For a restaurant, dhaba, cafe or sweet shop with seating: each table keeps its order open while people eat. Send the items to the kitchen as a KOT (kitchen ticket, no prices), add more any time, and make one bill at the end.</p>
       <p class="muted small" lang="hi">हर टेबल का ऑर्डर खुला रहता है; रसोई को KOT भेजें, बाद में और जोड़ें, आख़िर में एक बिल।</p>
@@ -7092,16 +7095,25 @@ route(/^tables$/, async (el) => {
   }
   const areas = [...new Set(b.tables.map((t) => t.area || ''))];
   const running = b.tables.filter((t) => t.order);
-  el.innerHTML = head('Tables (Restaurant)', `<a class="btn" href="#/kots">KOT log</a>${canSet ? '<button class="btn" id="tmore">+ Tables</button>' : ''}`) + `
+  el.innerHTML = head('Tables (Restaurant)', `<a class="btn" href="#/kitchen">Kitchen screen</a><a class="btn" href="#/kots">KOT log</a>${canSet ? '<a class="btn" href="#/table-qr">Table QR</a><button class="btn" id="tmore">+ Tables</button>' : ''}`) + dineAsksHtml(asks) + `
     <div class="kpis"><div class="kpi"><div class="l">Running</div><div class="v">${running.length} / ${b.tables.length}</div><div class="s">tables with an open order</div></div>
       <div class="kpi"><div class="l">On the tables now</div><div class="v">${inr(running.reduce((x, t) => x + t.order.amount, 0))}</div><div class="s">not billed yet</div></div></div>
     ${areas.map((a) => `${a ? `<h3 class="tarea">${esc(a)}</h3>` : ''}<div class="tgrid">${b.tables.filter((t) => (t.area || '') === a).map((t) => `<a class="ttile ${t.order ? 'busy' : ''}" href="#/table/${t.id}">
       <b>${esc(t.name)}</b>${t.order ? `<span class="tamt">${inr(t.order.amount)}</span><span class="muted small">${since(t.order.opened_at)} &middot; ${t.order.items} item${t.order.items === 1 ? '' : 's'}</span>`
-        : `<span class="muted small">Free${t.seats ? ` &middot; ${t.seats} seats` : ''}</span>`}${kotDraft(t.id).length ? '<span class="tnew">not sent</span>' : ''}</a>`).join('')}</div>`).join('')}`;
+        : `<span class="muted small">Free${t.seats ? ` &middot; ${t.seats} seats` : ''}</span>`}${kotDraft(t.id).length ? '<span class="tnew">not sent</span>' : ''}${t.asks ? `<span class="tnew">&#128276; ${t.asks} from QR</span>` : ''}</a>`).join('')}</div>`).join('')}`;
+  wireDineAsks(el, () => render());
+  window.__tablesSig = JSON.stringify([b, asks]);
   if ($('#tmore')) $('#tmore').onclick = () => modal('Add tables', [{ k: 'names', label: 'Names (comma or one per line), or leave empty and give a number', type: 'textarea', wide: true },
     { k: 'count', label: 'Or how many', type: 'number' }, { k: 'prefix', label: 'Name starts with', value: 'T' }, { k: 'area', label: 'Area (optional)' }, { k: 'seats', label: 'Seats', type: 'number', value: 4 }],
   async (v) => { await POST('/api/dine/tables', { ...v, count: +v.count || 0, seats: +v.seats || 0 }); render(); });
-  const tick = setInterval(() => { if (location.hash === '#/tables') render(); else clearInterval(tick); }, 30000);
+  // every 10 seconds, so a guest's QR order or call is seen quickly (one timer, however often the page is drawn)
+  clearInterval(window.__tablesTick);
+  // the page is drawn again only when something changed, so it does not jump while someone reads it
+  window.__tablesTick = setInterval(async () => {
+    if (location.hash !== '#/tables') { clearInterval(window.__tablesTick); return; }
+    if (document.querySelector('.modal')) return;
+    try { const sig = JSON.stringify(await Promise.all([GET('/api/dine'), GET('/api/dine/requests').catch(() => ({ requests: [] }))])); if (sig !== window.__tablesSig) render(); } catch (e) { /* offline: try again */ }
+  }, 10000);
 });
 route(/^table\/(\d+)$/, async (el, m) => {
   const tid = +m[1];
@@ -7200,6 +7212,189 @@ route(/^kots$/, async (el, m, q) => {
       { h: 'KOT', f: (r) => `<b>${r.number}</b>${r.kind === 'cancel' ? ' ' + badge('cancelled') : ''}` }, { h: 'Table', k: 'table_name' }, { h: 'Items', f: (r) => esc(r.items || '') },
       { h: 'By', cls: 'hide-sm', f: (r) => esc(r.user || '') }], x.rows, { empty: 'No KOT on this day.' })}</div>`;
   $('#kday').onsubmit = (e) => { e.preventDefault(); go('kots?day=' + e.target.day.value); };
+});
+/* ======================================================================= QR table ordering (guest page, /t/<token>) */
+/* The guest scans the table's QR: the menu with prices (GST included), a cart, "Send order" and "Call staff". What was sent is
+   kept on this phone with its private token, and the page follows it: waiting for the staff, accepted (cooking, ready, served)
+   or turned down. Nothing reaches the kitchen until a staff member accepts it. */
+const DINE_T = {
+  en: { none: 'This table is not taking orders right now', ask: 'Please ask the staff.', search: 'Search the menu', all: 'All', add: 'Add', order: 'Send order',
+    items: (n) => `${n} item${n === 1 ? '' : 's'}`, total: 'Total', name: 'Your name (optional)', note: 'Note for the kitchen (optional)', back: 'Back', send: 'Send to the staff',
+    sent: 'Order sent. The staff will confirm it in a moment.', mine: 'Your orders', help: 'Need anything?', helpSent: 'The staff have been told.',
+    st: { new: 'Waiting for the staff', accepted: 'Confirmed', accepting: 'Confirming', rejected: 'Not accepted', done: 'Done' },
+    k: { new: 'Sent to the kitchen', cooking: 'Being cooked', ready: 'Ready, coming to you', served: 'Served' },
+    hk: { water: 'Water', cutlery: 'Cutlery', tissues: 'Tissues', bill: 'Bring the bill', other: 'Call staff' }, empty: 'Nothing matches.', lang: 'हिंदी', priv: 'No app, no sign-up, no phone number. Only this restaurant sees your order.' },
+  hi: { none: 'यह टेबल अभी ऑर्डर नहीं ले रही', ask: 'कृपया स्टाफ़ से पूछें।', search: 'मेन्यू में खोजें', all: 'सब', add: 'जोड़ें', order: 'ऑर्डर भेजें',
+    items: (n) => `${n} आइटम`, total: 'कुल', name: 'आपका नाम (ज़रूरी नहीं)', note: 'रसोई के लिए नोट (ज़रूरी नहीं)', back: 'वापस', send: 'स्टाफ़ को भेजें',
+    sent: 'ऑर्डर भेज दिया। स्टाफ़ अभी पक्का करेगा।', mine: 'आपके ऑर्डर', help: 'कुछ चाहिए?', helpSent: 'स्टाफ़ को बता दिया।',
+    st: { new: 'स्टाफ़ का इंतज़ार', accepted: 'पक्का हुआ', accepting: 'पक्का हो रहा', rejected: 'स्वीकार नहीं हुआ', done: 'हो गया' },
+    k: { new: 'रसोई में पहुँचा', cooking: 'बन रहा है', ready: 'तैयार, आ रहा है', served: 'परोस दिया' },
+    hk: { water: 'पानी', cutlery: 'चम्मच-काँटा', tissues: 'टिशू', bill: 'बिल लाइए', other: 'स्टाफ़ बुलाइए' }, empty: 'कुछ नहीं मिला।', lang: 'English', priv: 'न ऐप, न साइन-अप, न फ़ोन नंबर। आपका ऑर्डर सिर्फ़ यही रेस्टोरेंट देखता है।' },
+};
+async function publicTable(token) {
+  const app = $('#app');
+  let L = DINE_T[(() => { try { return localStorage.getItem('st:dine-lang'); } catch (e) { return ''; } })() || (LANG === 'hi' ? 'hi' : 'en')] || DINE_T.en;
+  const api = async (method, path, body) => {
+    const res = await fetch('/api/public/dine/' + token + path, { method, headers: { 'Content-Type': 'application/json', 'X-Requested-With': 'SmartTrader' }, body: body ? JSON.stringify(body) : undefined }).catch(() => null);
+    const d = res ? await res.json().catch(() => ({})) : { error: 'No internet. Please try again.' };
+    if (!res || !res.ok) throw new Error(d.error || 'Something went wrong.');
+    return d;
+  };
+  let d;
+  try { d = await api('GET', ''); } catch (e) { app.innerHTML = `<div class="boot"><h2>${L.none}</h2><p class="muted">${esc(e.message)} ${L.ask}</p></div>`; return; }
+  const key = 'st:dine:' + token, mineKey = 'st:dine-mine:' + token, byId = new Map(d.items.map((i) => [i.id, i]));
+  const load = (k, def) => { try { return JSON.parse(localStorage.getItem(k) || '') || def; } catch (e) { return def; } };
+  const keep = (k, v) => { try { localStorage.setItem(k, JSON.stringify(v)); } catch (e) { /* storage off */ } };
+  let cart = load(key, {}), mine = load(mineKey, []).filter((x) => x && Date.now() - x.at < 12 * 3600e3), status = {};
+  for (const k of Object.keys(cart)) if (!byId.has(+k) || !(cart[k] > 0)) delete cart[k];
+  const cats = [...new Set(d.items.map((i) => i.category).filter(Boolean))];
+  let q = '', cat = '';
+  const shell = () => {
+    document.documentElement.lang = L === DINE_T.hi ? 'hi' : 'en';
+    app.innerHTML = `<div class="shop dine"><header class="shop-head"><div class="row"><div class="grow"><h1>${esc(d.shop.name)}</h1><p class="muted">Table ${esc(d.table)}${d.shop.city ? ' · ' + esc(d.shop.city) : ''}</p></div>
+        <button type="button" class="btn sm" id="dlang">${L.lang}</button></div>${d.shop.note ? `<p class="shop-note">${esc(d.shop.note)}</p>` : ''}
+        <input id="sq" type="search" placeholder="${L.search}" autocomplete="off" aria-label="${L.search}"></header>
+      <section id="dmine" class="panel" hidden></section>
+      <section class="panel dhelp"><b>${L.help}</b><div class="chips" id="dhelp">${d.help.map((h) => `<button type="button" class="chip" data-h="${h}">${L.hk[h] || h}</button>`).join('')}</div><p class="muted small" id="dhelpmsg" aria-live="polite"></p></section>
+      ${cats.length > 1 ? `<div class="chips" id="scats"><button type="button" class="chip on" data-c="">${L.all}</button>${cats.map((c) => `<button type="button" class="chip" data-c="${esc(c)}">${esc(c)}</button>`).join('')}</div>` : ''}
+      <div id="slist" class="shop-list"></div><p class="muted small shop-hint">${L.priv}</p>
+      <div class="shop-bar" id="sbar" hidden><span id="scount"></span><button type="button" class="btn primary" id="sorder">${L.order}</button></div><div id="ssheet"></div></div>`;
+    wire(); draw(); drawMine();
+  };
+  const totalOf = () => Object.entries(cart).reduce((t, [id, n]) => t + byId.get(+id).price * n, 0);
+  const bar = () => { const n = Object.values(cart).reduce((a, b) => a + b, 0); $('#sbar').hidden = !n; $('#scount').textContent = `${L.items(n)} · ${inr(totalOf())}`; };
+  function draw() {
+    const rows = d.items.filter((i) => (!cat || i.category === cat) && (!q || i.name.toLowerCase().includes(q)));
+    $('#slist').innerHTML = rows.length ? rows.map((i) => `<div class="shop-item"><div><b>${esc(i.name)}</b><div class="muted small">${esc(i.unit || '')}</div></div>
+        <div class="shop-price">${inr(i.price)}</div><div class="shop-qty">${cart[i.id] ? `<button type="button" class="btn sm" data-dec="${i.id}" aria-label="One less ${esc(i.name)}">−</button><b>${cart[i.id]}</b><button type="button" class="btn sm" data-inc="${i.id}" aria-label="One more ${esc(i.name)}">+</button>`
+          : `<button type="button" class="btn sm primary" data-inc="${i.id}">${L.add}</button>`}</div></div>`).join('') : `<p class="muted">${L.empty}</p>`;
+    bar();
+  }
+  function drawMine() {
+    const box = $('#dmine'); if (!box) return;
+    const shown = mine.filter((m) => m.kind === 'order');
+    box.hidden = !shown.length;
+    box.innerHTML = `<b>${L.mine}</b>` + shown.slice().reverse().map((m) => {
+      const s = status[m.id], st = s ? s.status : 'new', cls = st === 'rejected' ? 'bad' : st === 'accepted' ? 'ok' : 'wait';
+      const k = s && s.kitchen ? L.k[s.kitchen] : '';
+      return `<div class="dreq ${cls}"><div class="row"><b>${new Date(m.at).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' })}</b><span class="spacer"></span><span class="badge">${k || L.st[st] || st}</span></div>
+        <div class="muted small">${esc((m.lines || []).map((l) => `${l.qty} × ${l.name}`).join(', '))}</div>${s && s.reason ? `<div class="small">${esc(s.reason)}</div>` : ''}</div>`;
+    }).join('');
+  }
+  let timer = 0;
+  async function poll() {
+    clearTimeout(timer);
+    const list = mine.filter((m) => m.token).map((m) => m.id + '.' + m.token).join(',');
+    if (!list) return;
+    try { const r = await api('GET', '/status?r=' + list); r.requests.forEach((x) => { status[x.id] = x; }); drawMine(); } catch (e) { /* try again later */ }
+    const open = mine.some((m) => m.kind === 'order' && (!status[m.id] || (status[m.id].status !== 'rejected' && status[m.id].kitchen !== 'served')));
+    if (open) timer = setTimeout(poll, document.hidden ? 30000 : 8000);
+  }
+  function wire() {
+    $('#dlang').onclick = () => { L = L === DINE_T.hi ? DINE_T.en : DINE_T.hi; try { localStorage.setItem('st:dine-lang', L === DINE_T.hi ? 'hi' : 'en'); } catch (e) { /* */ } shell(); };
+    $('#slist').onclick = (e) => {
+      const inc = e.target.closest('[data-inc]'), dec = e.target.closest('[data-dec]');
+      if (inc) cart[inc.dataset.inc] = Math.min(50, (cart[inc.dataset.inc] || 0) + 1);
+      else if (dec) { cart[dec.dataset.dec] -= 1; if (cart[dec.dataset.dec] <= 0) delete cart[dec.dataset.dec]; } else return;
+      keep(key, cart); draw();
+    };
+    $('#sq').oninput = (e) => { q = e.target.value.trim().toLowerCase(); draw(); };
+    if ($('#scats')) $('#scats').onclick = (e) => { const b = e.target.closest('[data-c]'); if (!b) return; cat = b.dataset.c; $$('#scats .chip').forEach((x) => x.classList.toggle('on', x === b)); draw(); };
+    $('#dhelp').onclick = async (e) => {
+      const b = e.target.closest('[data-h]'); if (!b) return;
+      b.disabled = true;
+      try { const r = await api('POST', '', { kind: 'help', what: b.dataset.h }); if (r.token) { mine.push({ id: r.id, token: r.token, kind: 'help', at: Date.now() }); keep(mineKey, mine); } $('#dhelpmsg').textContent = `${L.hk[b.dataset.h]}: ${L.helpSent}`; }
+      catch (er) { $('#dhelpmsg').textContent = er.message; }
+      setTimeout(() => { b.disabled = false; }, 15000);
+    };
+    $('#sorder').onclick = () => {
+      const lines = Object.entries(cart).map(([id, n]) => { const i = byId.get(+id); return `${n} × ${i.name} = ${inr(i.price * n)}`; });
+      $('#ssheet').innerHTML = `<div class="shop-sheet panel"><h3 style="margin-top:0">${L.order} · Table ${esc(d.table)}</h3><pre class="shop-pre">${esc(lines.join('\n'))}\n${L.total}: ${inr(totalOf())}</pre>
+        <label class="f">${L.name}<input id="sname" maxlength="40" autocomplete="given-name"></label><label class="f">${L.note}<textarea id="snote" rows="2" maxlength="200" placeholder="less spicy, no onion"></textarea></label>
+        <p class="err small" id="serr" role="alert"></p><div class="row"><button type="button" class="btn" id="sback">${L.back}</button><span class="spacer"></span><button type="button" class="btn primary" id="ssend">${L.send}</button></div></div>`;
+      $('#sback').onclick = () => { $('#ssheet').innerHTML = ''; };
+      $('#ssend').onclick = async (ev) => {
+        ev.target.disabled = true;
+        const body = { kind: 'order', name: $('#sname').value, note: $('#snote').value, lines: Object.entries(cart).map(([id, n]) => ({ item_id: +id, qty: n })) };
+        try {
+          const r = await api('POST', '', body);
+          mine.push({ id: r.id, token: r.token, kind: 'order', at: Date.now(), lines: body.lines.map((l) => ({ qty: l.qty, name: byId.get(l.item_id).name })) });
+          keep(mineKey, mine); cart = {}; keep(key, cart); $('#ssheet').innerHTML = `<p class="okbox">${L.sent}</p>`; draw(); drawMine(); poll(); window.scrollTo(0, 0);
+        } catch (er) { $('#serr').textContent = er.message; ev.target.disabled = false; }
+      };
+      $('#ssheet').scrollIntoView({ behavior: 'smooth' });
+    };
+  }
+  shell(); poll();
+}
+
+/* ======================================================================= QR orders for the staff, kitchen screen, table QR posters */
+/* Guest orders and calls wait here until someone answers. Accept makes the KOT (printed like any other); Reject tells the
+   guest why. The list is on the Tables page, which checks every 10 seconds and beeps when something new comes in. */
+let dineSeen = new Set();
+function dineAsksHtml(x) {
+  if (!x.requests.length) return '';
+  return `<div class="panel dasks"><div class="row"><b>From the tables (QR)</b><span class="spacer"></span><span class="muted small">${x.requests.length} waiting</span></div>
+    ${x.requests.map((r) => `<div class="dask ${r.kind}"><div class="row"><b>Table ${esc(r.table_name)}</b><span class="muted small">${since(r.created_at)} ago${r.guest ? ` · ${esc(r.guest)}` : ''}</span><span class="spacer"></span>
+      ${r.kind === 'help' ? `<span class="badge">${esc(r.help)}</span><button class="btn sm primary" data-rdone="${r.id}">Done</button>`
+        : `<b>${inr(r.total)}</b>`}</div>
+      ${r.kind === 'order' ? `<div class="small">${r.lines.map((l) => `${l.qty} × ${esc(l.name)}${l.note ? ` <i class="muted">(${esc(l.note)})</i>` : ''}`).join('<br>')}</div>
+        ${r.note ? `<div class="small muted">Note: ${esc(r.note)}</div>` : ''}
+        <div class="row"><button class="btn sm danger" data-rrej="${r.id}">Reject</button><span class="spacer"></span><button class="btn sm primary" data-racc="${r.id}">Accept &amp; send KOT</button></div>` : ''}</div>`).join('')}</div>`;
+}
+function wireDineAsks(el, after) {
+  el.onclick = async (e) => {
+    const b = e.target.closest('[data-racc],[data-rrej],[data-rdone]'); if (!b) return;
+    b.disabled = true;
+    try {
+      if (b.dataset.racc) { const r = await POST(`/api/dine/requests/${b.dataset.racc}/accept`, {}); printKot(r.kot); toast(`KOT ${r.kot.number} sent, table ${r.kot.table}`); }
+      else if (b.dataset.rrej) { const reason = prompt('Why can it not be taken? The guest sees this (optional):', 'Not available right now'); if (reason === null) { b.disabled = false; return; } await POST(`/api/dine/requests/${b.dataset.rrej}/reject`, { reason }); }
+      else await POST(`/api/dine/requests/${b.dataset.rdone}/done`, {});
+      after();
+    } catch (er) { toast(er.message, 'err'); b.disabled = false; after(); }
+  };
+}
+route(/^kitchen$/, async (el) => {
+  const draw = async () => {
+    if (location.hash !== '#/kitchen') return;
+    let x; try { x = await GET('/api/dine/kitchen'); } catch (e) { return; }
+    const fresh = x.kots.filter((k) => k.kstatus === 'new' && !dineSeen.has('k' + k.id));
+    x.kots.forEach((k) => dineSeen.add('k' + k.id));
+    if (fresh.length && el.dataset.loaded) beep(true);
+    el.dataset.loaded = '1';
+    const next = { new: ['cooking', 'Start cooking'], cooking: ['ready', 'Ready'], ready: ['served', 'Served'] };
+    el.innerHTML = head('Kitchen screen', '<a class="btn" href="#/tables">Tables</a>') + `<p class="muted small">New tickets appear here by themselves and beep. Tap to move each one on; the table's QR page shows the guest where their order is.</p>
+      <div class="kgrid">${x.kots.map((k) => `<div class="kcard ${k.kind === 'cancel' ? 'cancel' : k.kstatus}"><div class="row"><b class="kno">KOT ${k.number}</b><span class="spacer"></span><b>Table ${esc(k.table_name)}</b></div>
+        <div class="muted small">${since(k.created_at)} ago · ${k.kind === 'cancel' ? '<b>CANCEL</b>' : esc(k.kstatus)}</div>
+        <ul>${k.lines.map((l) => `<li><b>${qtyf(l.qty)} × ${esc(l.name)}</b>${l.note ? `<div class="muted small">${esc(l.note)}</div>` : ''}</li>`).join('')}</ul>
+        ${k.kind === 'cancel' ? `<button class="btn" data-ks="${k.id}" data-to="served">Seen</button>` : `<button class="btn primary big" data-ks="${k.id}" data-to="${next[k.kstatus][0]}">${next[k.kstatus][1]}</button>`}</div>`).join('') || '<div class="empty">No tickets waiting. New KOTs appear here.</div>'}</div>`;
+  };
+  el.onclick = async (e) => {
+    const b = e.target.closest('[data-ks]'); if (!b) return;
+    b.disabled = true;
+    try { await POST(`/api/dine/kots/${b.dataset.ks}/status`, { status: b.dataset.to }); } catch (er) { toast(er.message, 'err'); }
+    draw();
+  };
+  await draw();
+  const tick = setInterval(() => { if (location.hash === '#/kitchen') draw(); else clearInterval(tick); }, 8000);
+});
+route(/^table-qr$/, async (el) => {
+  const x = await GET('/api/dine/qr');
+  el.innerHTML = head('Table QR ordering', '<a class="btn" href="#/tables">Tables</a><button class="btn" data-act="print">Print posters</button>') + `
+    <div class="panel no-print"><form id="dqs" class="form"><label class="f" style="display:flex;gap:8px;align-items:center"><input type="checkbox" name="qr" ${x.qr ? 'checked' : ''} style="width:auto"> Guests can order from the table QR</label>
+      <label class="f wide">Note on the menu (optional)<input name="note" maxlength="200" value="${esc(x.note)}" placeholder="Orders are confirmed by our staff. Kitchen open till 11 pm."></label>
+      <label class="f">&nbsp;<button class="btn primary">Save</button></label></form>
+      <p class="muted small">Every order a guest sends waits on the Tables page until a staff member accepts it: only then does it become a KOT. The menu shows your items that have a selling price and are not hidden from the online rate list. If a QR is misused, make a new one for that table: the old one stops at once.</p></div>
+    <div class="qrposters">${x.tables.map((t) => `<div class="qrposter"><b class="qpname">${esc(ME.org.name)}</b><div class="qrbox" data-link="${esc(t.link)}"></div><b class="qptable">Table ${esc(t.name)}</b>
+      <div>Scan to see the menu and order</div><div lang="hi">स्कैन करें, मेन्यू देखें, ऑर्डर करें</div>
+      <div class="no-print row" style="justify-content:center"><a class="btn sm" href="${esc(t.link)}" target="_blank" rel="noopener">Open</a><button class="btn sm" data-newqr="${t.id}">New QR</button></div></div>`).join('') || '<div class="empty">Add tables first.</div>'}</div>`;
+  $$('.qrbox', el).forEach((b) => qrInto(b, b.dataset.link));
+  $('#dqs').onsubmit = async (e) => { e.preventDefault(); try { await api('PUT', '/api/dine/qr', { qr: e.target.qr.checked, note: e.target.note.value }); toast(e.target.qr.checked ? 'QR ordering is on' : 'QR ordering is off'); } catch (er) { toast(er.message, 'err'); } };
+  el.onclick = async (e) => {
+    const b = e.target.closest('[data-newqr]'); if (!b) return;
+    if (!confirm('Make a new QR for this table? The printed one stops working at once; print and stick the new one.')) return;
+    try { await POST(`/api/dine/tables/${b.dataset.newqr}/new-qr`, {}); render(); } catch (er) { toast(er.message, 'err'); }
+  };
 });
 /* ======================================================================= bolkar bill (voice) */
 /* The order spoken in Hindi, Hinglish or English (public/voice.js reads it): what was heard, the item found for each part and
@@ -7873,6 +8068,8 @@ async function boot() {
   if (pc) return publicConfirm(pc[1]);
   const ps = location.pathname.match(/^\/s\/([0-9a-f]{24})\/?$/);       // the online catalogue
   if (ps) return publicShop(ps[1]);
+  const pt = location.pathname.match(/^\/t\/([0-9a-f]{24})\/?$/);       // a restaurant table's QR: menu and ordering
+  if (pt) return publicTable(pt[1]);
   const rt = location.hash.match(/^#\/reset\/([0-9a-f]{64})$/);   // link from the forgot-password e-mail
   if (rt) return renderReset(rt[1]);
   const vt = location.hash.match(/^#\/verify\/([0-9a-f]{64})$/);  // link from the sign-up e-mail

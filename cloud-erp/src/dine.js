@@ -4,7 +4,7 @@
    one ordinary invoice of everything still on the order (createDoc: stock, GST, books, loyalty points as for any sale)
    and frees the table. KOT numbers start again at 1 each day. */
 import { bad, notFound, str, num, nowIso, today, roundQty, uid } from './lib.js';
-import { requireCan, requireCancel } from './auth.js';
+import { requireCan, requireCancel, randomHex, rateLimit } from './auth.js';
 import { createDoc, auditStatement } from './engine.js';
 
 const R = (p) => Math.round(p) / 100;
@@ -14,14 +14,16 @@ const payOf = (l) => l.qty * (l.incl ? l.rate : l.rate * (100 + (l.gst_rate || 0
 
 export async function dineBoard(c) {
   const o = c.org.id;
-  const [tables, orders] = await c.db.batch([
+  const [tables, orders, asks] = await c.db.batch([
     c.db.prepare(`SELECT id, name, area, seats FROM dine_tables WHERE org_id = ? AND active = 1 ORDER BY area, sort, id`).bind(o),
     c.db.prepare(`SELECT d.id, d.table_id, d.opened_at, d.guests, COUNT(l.id) AS items, COALESCE(SUM(${PAY_SQL}), 0) AS amount, MAX(l.created_at) AS last_kot
         FROM dine_orders d LEFT JOIN dine_lines l ON l.order_id = d.id AND l.status = 'ok'
         WHERE d.org_id = ? AND d.status = 'open' GROUP BY d.id`).bind(o),
+    c.db.prepare(`SELECT table_id, COUNT(*) AS n FROM dine_requests WHERE org_id = ? AND status = 'new' GROUP BY table_id`).bind(o),
   ]);
-  const open = new Map(orders.results.map((x) => [x.table_id, x]));
-  return { tables: tables.results.map((t) => { const x = open.get(t.id); return { ...t, order: x ? { ...x, amount: R(x.amount) } : null }; }) };
+  const open = new Map(orders.results.map((x) => [x.table_id, x])), ask = new Map(asks.results.map((x) => [x.table_id, x.n]));
+  return { tables: tables.results.map((t) => { const x = open.get(t.id); return { ...t, asks: ask.get(t.id) || 0, order: x ? { ...x, amount: R(x.amount) } : null }; }),
+    asks: asks.results.reduce((n, x) => n + x.n, 0) };
 }
 
 export async function addTables(c, body) {
@@ -114,8 +116,8 @@ export async function sendKot(c, tableId, body) {
     if (/UNIQUE constraint failed: dine_orders/.test(String(e && e.message))) throw bad('Someone just opened this table. Open it again and send the KOT.');
     throw e;
   }
-  const k = await c.db.prepare(`SELECT number, created_at FROM kots WHERE txk = ?`).bind(key).first();
-  return { kot: { number: k.number, at: k.created_at, kind: 'kot', table: t.name, user: c.user.name || '', lines: lines.map((l) => ({ name: l.it.name, qty: l.qty, note: l.note })) },
+  const k = await c.db.prepare(`SELECT id, number, created_at FROM kots WHERE txk = ?`).bind(key).first();
+  return { kot: { id: k.id, number: k.number, at: k.created_at, kind: 'kot', table: t.name, user: c.user.name || '', lines: lines.map((l) => ({ name: l.it.name, qty: l.qty, note: l.note })) },
     ...(await tableDetail(c, t.id)) };
 }
 
@@ -222,4 +224,180 @@ export async function kotLog(c, day) {
   const text = (m) => [...(m ? m.values() : [])].map((x) => `${Math.round(x.qty * 1000) / 1000} x ${x.name}`).join(', ');
   const rows = kots.results.map((k) => ({ ...k, items: text((k.kind === 'cancel' ? off : sent).get(k.id)) }));
   return { day: d, rows, cancels: rows.filter((r) => r.kind === 'cancel').length };
+}
+
+/* ======================================================================= QR table ordering
+   Each table has its own QR link (/t/<token>). A guest sees the menu (items on sale, prices with GST; never stock, costs or
+   anyone else's order), sends an order or asks for help, and follows only what they sent, with the private token each request
+   gave back. Nothing a guest sends reaches the kitchen by itself: a staff member accepts it, and that makes an ordinary KOT
+   (sendKot, same numbering, printing and billing as any other). The kitchen screen moves each KOT on: new, cooking, ready, served. */
+const HELP = { water: 'Water', cutlery: 'Cutlery', tissues: 'Tissues', bill: 'The bill', other: 'Help' };
+const KSTATUS = ['new', 'cooking', 'ready', 'served'];
+const sha = async (t) => [...new Uint8Array(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(t)))].map((b) => b.toString(16).padStart(2, '0')).join('');
+const same = (a, b) => { a = String(a); b = String(b); if (a.length !== b.length) return false; let d = 0; for (let i = 0; i < a.length; i++) d |= a.charCodeAt(i) ^ b.charCodeAt(i); return d === 0; };
+export const dineSettingsOf = (o) => { let s = {}; try { s = JSON.parse(o.dine || '{}') || {}; } catch (e) { s = {}; } return { qr: !!s.qr, note: String(s.note || '').slice(0, 200) }; };
+const ipOf = (c) => c.request.headers.get('CF-Connecting-IP') || 'local';
+
+/* the table a QR link opens, with its business; null when the link is wrong or the business has QR ordering off */
+async function guestTable(c, token) {
+  if (!/^[0-9a-f]{24}$/.test(String(token || ''))) return null;
+  const t = await c.db.prepare(`SELECT t.id, t.name, t.org_id, o.name AS org, o.city, o.dine FROM dine_tables t JOIN orgs o ON o.id = t.org_id
+      WHERE t.qr_token = ? AND t.active = 1`).bind(token).first();
+  if (!t || !dineSettingsOf(t).qr) return null;
+  return t;
+}
+const noTable = () => notFound('This table QR is not taking orders right now. Please ask the staff.');
+
+export async function guestMenu(c, token) {
+  await rateLimit(c.env, 'dine:' + ipOf(c), 300, 600);
+  const t = await guestTable(c, token);
+  if (!t) throw noTable();
+  const { results } = await c.db.prepare(`SELECT id, name, unit, category, sale_price, gst_rate, price_incl FROM items
+      WHERE org_id = ? AND shop_hide = 0 AND sale_price > 0 AND is_service IN (0, 1) ORDER BY category, name LIMIT 1000`).bind(t.org_id).all();
+  return { shop: { name: t.org, city: t.city || '', note: dineSettingsOf(t).note }, table: t.name, help: Object.keys(HELP),
+    items: results.map((i) => ({ id: i.id, name: i.name, unit: i.unit, category: i.category || '', price: R(i.sale_price * (100 + (i.gst_rate || 0)) / 100) })) };
+}
+
+/* a guest's order or call for help: waits for the staff; the reply carries the private token for following it */
+export async function guestSend(c, token, body) {
+  const ip = ipOf(c);
+  await rateLimit(c.env, 'dine-send:' + ip, 20, 600);
+  const t = await guestTable(c, token);
+  if (!t) throw noTable();
+  const kind = body && body.kind === 'help' ? 'help' : 'order';
+  const waiting = await c.db.prepare(`SELECT COUNT(*) AS n FROM dine_requests WHERE table_id = ? AND status = 'new'`).bind(t.id).first();
+  if (waiting.n >= 8) throw bad('The staff have not seen this table\'s last requests yet. Please wait a moment.');
+  let lines = [], what = '', total = 0;
+  if (kind === 'order') {
+    const raw = Array.isArray(body.lines) ? body.lines : [];
+    if (!raw.length) throw bad('Add something from the menu first.');
+    if (raw.length > 40) throw bad('At most 40 dishes in one order.');
+    const ids = [...new Set(raw.map((l) => +l.item_id || 0))];
+    const { results } = await c.db.prepare(`SELECT id, name, sale_price, gst_rate FROM items WHERE org_id = ? AND shop_hide = 0 AND sale_price > 0
+        AND id IN (${ids.map(() => '?').join(',')})`).bind(t.org_id, ...ids).all();
+    const byId = new Map(results.map((i) => [i.id, i]));
+    lines = raw.map((l) => {
+      const it = byId.get(+l.item_id);
+      if (!it) throw bad('Something in the order is no longer on the menu. Please refresh the menu.');
+      const qty = Math.round(+l.qty);
+      if (!(qty >= 1 && qty <= 50)) throw bad(`${it.name}: choose 1 to 50.`);
+      const price = R(it.sale_price * (100 + (it.gst_rate || 0)) / 100);
+      total += price * qty;
+      return { item_id: it.id, name: it.name, qty, price, note: str(l.note, 80) };
+    });
+  } else {
+    what = Object.hasOwn(HELP, body && body.what) ? body.what : 'other';
+    // the same call twice is one call
+    const dup = await c.db.prepare(`SELECT id FROM dine_requests WHERE table_id = ? AND kind = 'help' AND what = ? AND status = 'new'`).bind(t.id, what).first();
+    if (dup) return { id: dup.id, token: null, again: true };
+  }
+  const secret = randomHex(16);
+  const r = await c.db.prepare(`INSERT INTO dine_requests (org_id, table_id, kind, status, lines, what, note, guest, token_hash, created_at)
+      VALUES (?, ?, ?, 'new', ?, ?, ?, ?, ?, ?) RETURNING id`)
+    .bind(t.org_id, t.id, kind, JSON.stringify(lines), what, str(body && body.note, 200), str(body && body.name, 40), await sha(secret), nowIso()).first();
+  return { id: r.id, token: secret, total: Math.round(total * 100) / 100 };
+}
+
+/* what became of the guest's own requests: ?r=<id>.<token>,... (up to 20); others' requests are never shown */
+export async function guestStatus(c, token, list) {
+  await rateLimit(c.env, 'dine:' + ipOf(c), 300, 600);
+  const t = await guestTable(c, token);
+  if (!t) throw noTable();
+  const want = String(list || '').split(',').slice(0, 20).map((x) => x.split('.')).filter(([id, s]) => /^\d+$/.test(id) && /^[0-9a-f]{32}$/.test(s || ''));
+  const out = [];
+  for (const [id, s] of want) {
+    const r = await c.db.prepare(`SELECT r.id, r.kind, r.status, r.what, r.reason, r.lines, r.created_at, r.token_hash, k.kstatus, k.number AS kot_no
+        FROM dine_requests r LEFT JOIN kots k ON k.id = r.kot_id WHERE r.id = ? AND r.table_id = ?`).bind(+id, t.id).first();
+    if (!r || !same(r.token_hash, await sha(s))) continue;
+    let lines = []; try { lines = JSON.parse(r.lines); } catch (e) { lines = []; }
+    out.push({ id: r.id, kind: r.kind, status: r.status, what: r.what, reason: r.reason, at: r.created_at, kitchen: r.kstatus || null, kot: r.kot_no || null,
+      lines: lines.map((l) => ({ name: l.name, qty: l.qty })) });
+  }
+  return { requests: out };
+}
+
+/* ---- the staff side ---- */
+export async function dineRequests(c) {
+  requireCan(c.user, 'sales');
+  const { results } = await c.db.prepare(`SELECT r.id, r.table_id, r.kind, r.lines, r.what, r.note, r.guest, r.created_at, t.name AS table_name
+      FROM dine_requests r JOIN dine_tables t ON t.id = r.table_id WHERE r.org_id = ? AND r.status = 'new' ORDER BY r.id LIMIT 200`).bind(c.org.id).all();
+  return { requests: results.map((r) => { let lines = []; try { lines = JSON.parse(r.lines); } catch (e) { lines = []; }
+    return { ...r, lines, help: r.kind === 'help' ? HELP[r.what] || 'Help' : '', total: Math.round(lines.reduce((s, l) => s + l.price * l.qty, 0) * 100) / 100 }; }) };
+}
+
+/* accept a guest order: it becomes a KOT now (prices from the menu as it is now, as for any KOT); one staff member wins a race */
+export async function acceptRequest(c, id) {
+  requireCan(c.user, 'sales');
+  const r = await c.db.prepare(`SELECT * FROM dine_requests WHERE id = ? AND org_id = ?`).bind(id, c.org.id).first();
+  if (!r) throw notFound('Request not found.');
+  if (r.kind !== 'order') throw bad('This is a call for help: mark it done.');
+  const hold = await c.db.prepare(`UPDATE dine_requests SET status = 'accepting', handled_by = ?, handled_at = ? WHERE id = ? AND status = 'new'`).bind(c.user.id, nowIso(), r.id).run();
+  if (!hold.meta.changes) throw bad('Someone has already answered this order.');
+  let res;
+  try {
+    const lines = JSON.parse(r.lines).map((l) => ({ item_id: l.item_id, qty: l.qty, note: [l.note, r.guest && `for ${r.guest}`].filter(Boolean).join(' · ').slice(0, 80) }));
+    res = await sendKot(c, r.table_id, { lines });
+  } catch (e) {
+    await c.db.prepare(`UPDATE dine_requests SET status = 'new', handled_by = NULL, handled_at = NULL WHERE id = ? AND status = 'accepting'`).bind(r.id).run();
+    throw e;
+  }
+  await c.db.batch([c.db.prepare(`UPDATE dine_requests SET status = 'accepted', kot_id = ? WHERE id = ?`).bind(res.kot.id, r.id),
+    auditStatement(c, 'QR order accepted', `table ${res.kot.table}, KOT ${res.kot.number}`)]);
+  return { kot: res.kot, ...(await dineRequests(c)) };
+}
+
+export async function answerRequest(c, id, body, status) {
+  requireCan(c.user, 'sales');
+  const reason = status === 'rejected' ? str(body && body.reason, 120) : '';
+  const r = await c.db.prepare(`UPDATE dine_requests SET status = ?, reason = ?, handled_by = ?, handled_at = ? WHERE id = ? AND org_id = ? AND status = 'new'`)
+    .bind(status, reason, c.user.id, nowIso(), id, c.org.id).run();
+  if (!r.meta.changes) throw bad('Someone has already answered this request.');
+  return dineRequests(c);
+}
+
+/* the kitchen screen: today's tickets not yet served (and cancellations not yet seen), oldest first, with their items */
+export async function kitchen(c) {
+  requireCan(c.user, 'sales');
+  const day = today();
+  const [kots, lines] = await c.db.batch([
+    c.db.prepare(`SELECT k.id, k.number, k.kind, k.kstatus, k.created_at, t.name AS table_name FROM kots k JOIN dine_orders o ON o.id = k.order_id
+        JOIN dine_tables t ON t.id = o.table_id WHERE k.org_id = ? AND k.day = ? AND k.kstatus != 'served' ORDER BY k.id LIMIT 200`).bind(c.org.id, day),
+    c.db.prepare(`SELECT l.kot_id, l.void_kot_id, l.name, l.qty, l.note FROM dine_lines l JOIN kots k ON k.id = l.kot_id OR k.id = l.void_kot_id
+        WHERE k.org_id = ? AND k.day = ? AND k.kstatus != 'served'`).bind(c.org.id, day),
+  ]);
+  return { day, kots: kots.results.map((k) => ({ ...k, lines: lines.results.filter((l) => (k.kind === 'cancel' ? l.void_kot_id : l.kot_id) === k.id).map((l) => ({ name: l.name, qty: l.qty, note: l.note })) })) };
+}
+
+export async function kotStatus(c, id, body) {
+  requireCan(c.user, 'sales');
+  const st = body && body.status;
+  if (!KSTATUS.includes(st)) throw bad('Unknown kitchen status.');
+  const r = await c.db.prepare(`UPDATE kots SET kstatus = ?, kstatus_at = ? WHERE id = ? AND org_id = ?`).bind(st, nowIso(), id, c.org.id).run();
+  if (!r.meta.changes) throw notFound('KOT not found.');
+  return kitchen(c);
+}
+
+/* QR set-up: the switch and note, and every table's link (made the first time it is asked for) */
+export async function dineQr(c) {
+  requireCan(c.user, 'settings');
+  const { results } = await c.db.prepare(`SELECT id FROM dine_tables WHERE org_id = ? AND active = 1 AND qr_token IS NULL`).bind(c.org.id).all();
+  if (results.length) await c.db.batch(results.map((t) => c.db.prepare(`UPDATE dine_tables SET qr_token = ? WHERE id = ? AND qr_token IS NULL`).bind(randomHex(12), t.id)));
+  const t = await c.db.prepare(`SELECT id, name, area, qr_token FROM dine_tables WHERE org_id = ? AND active = 1 ORDER BY area, sort, id`).bind(c.org.id).all();
+  const origin = new URL(c.request.url).origin;
+  return { ...dineSettingsOf(c.org), tables: t.results.map((x) => ({ id: x.id, name: x.name, area: x.area, link: `${origin}/t/${x.qr_token}` })) };
+}
+export async function saveDineSettings(c, body) {
+  requireCan(c.user, 'settings');
+  const s = { qr: body && body.qr === true, note: str(body && body.note, 200) };
+  await c.db.batch([c.db.prepare(`UPDATE orgs SET dine = ? WHERE id = ?`).bind(JSON.stringify(s), c.org.id), auditStatement(c, 'QR table ordering', s.qr ? 'on' : 'off')]);
+  c.org.dine = JSON.stringify(s);
+  return dineQr(c);
+}
+/* a new QR for one table: the old one stops working at once (a QR photographed and used from outside) */
+export async function newTableQr(c, id) {
+  requireCan(c.user, 'settings');
+  const r = await c.db.prepare(`UPDATE dine_tables SET qr_token = ? WHERE id = ? AND org_id = ? AND active = 1`).bind(randomHex(12), id, c.org.id).run();
+  if (!r.meta.changes) throw notFound('Table not found.');
+  await c.db.batch([auditStatement(c, 'table QR', `new link for table ${id}`)]);
+  return dineQr(c);
 }

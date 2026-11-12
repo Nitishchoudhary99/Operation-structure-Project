@@ -1205,3 +1205,19 @@ tr.scan-hit td{animation:scanhit 1.2s ease-out}
   .tbl-wrap .t tr.click:hover td:first-child { background: var(--soft); }
   .doc-paper .tbl-wrap .t th:first-child, .doc-paper .tbl-wrap .t td:first-child { position: static; max-width: none; box-shadow: none; }
 }
+
+/* QR table ordering: guest requests on the Tables page, the kitchen screen, table QR posters, the guest's own orders */
+.dasks { border-left: 4px solid var(--warn); display: grid; gap: 10px; }
+.dask { border-top: 1px solid var(--line); padding-top: 8px; display: grid; gap: 6px; }
+.dask.help .badge { background: var(--warn-soft); color: var(--warn); }
+.kgrid { display: grid; gap: 12px; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); }
+.kcard { background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); padding: 12px; display: grid; gap: 8px; box-shadow: var(--shadow); border-top: 6px solid var(--warn); }
+.kcard.cooking { border-top-color: var(--brand); } .kcard.ready { border-top-color: var(--ok); } .kcard.cancel { border-top-color: var(--danger); background: var(--danger-soft); }
+.kcard ul { margin: 0; padding-left: 18px; display: grid; gap: 4px; font-size: 16px; } .kcard .kno { font-size: 20px; }
+.qrposters { display: grid; gap: 12px; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); }
+.qrposter { background: #fff; color: #111; border: 1px solid var(--line); border-radius: var(--radius); padding: 14px; text-align: center; display: grid; gap: 6px; break-inside: avoid; }
+.qrposter .qrbox svg { width: 170px; height: 170px; } .qpname { font-size: 16px; } .qptable { font-size: 22px; }
+.dine .dhelp { display: grid; gap: 6px; } .dreq { border-top: 1px solid var(--line); padding-top: 8px; margin-top: 8px; display: grid; gap: 4px; }
+.dreq.ok .badge { background: var(--ok-soft); color: var(--ok); } .dreq.bad .badge { background: var(--danger-soft); color: var(--danger); } .dreq.wait .badge { background: var(--warn-soft); color: var(--warn); }
+.okbox { background: var(--ok-soft); color: var(--ok); border-radius: var(--radius); padding: 10px 12px; }
+@media print { .qrposters { grid-template-columns: repeat(2, 1fr); } .qrposter { border: 1px solid #999; page-break-inside: avoid; } }
