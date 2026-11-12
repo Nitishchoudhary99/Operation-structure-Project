@@ -3335,6 +3335,20 @@ if (process.env.ERP_AI_MOCK) {
     && (await D('GET', `/api/dine/tables/${t1.id}`)).order !== null, JSON.stringify(s2x.data));
   await W('POST', `/api/dine/requests/${pay2.data.id}/reject`, { reason: 'Pay the rest at the counter' });
   check('a payment marked "not received" tells the guest why', (await st(t1, `${pay2.data.id}.${pay2.data.token}`))[0].reason === 'Pay the rest at the counter');
+  /* the live floor and the owner's live view */
+  const fl = (await D('GET', '/api/dine')).tables;
+  check('the floor shows each table\'s state: T1 cooking (KOTs with the kitchen)', fl.find((t) => t.id === t1.id).state === 'cooking', JSON.stringify(fl.map((t) => [t.name, t.state])));
+  const kT1 = (await W('GET', '/api/dine/kitchen')).data.kots.filter((k) => k.table_name === 'T1' && k.kind === 'kot').pop();   // the newest: the earlier order of T1 was billed
+  for (const sx of ['cooking', 'ready']) await W('POST', `/api/dine/kots/${kT1.id}/status`, { status: sx });
+  { const tt = (await D('GET', '/api/dine')).tables.find((t) => t.id === t1.id); check('a KOT marked ready makes the table "food ready"', tt.state === 'ready', JSON.stringify([tt.state, tt.kitchen, tt.askKinds])); }
+  await G2('POST', `/api/public/dine/${tok(t1)}`, { kind: 'help', what: 'bill' });
+  check('asking for the bill goes above food ready', (await D('GET', '/api/dine')).tables.find((t) => t.id === t1.id).state === 'bill');
+  check('the waiter cannot open the owner\'s live view (money)', (await W('GET', '/api/dine/today')).status === 403);
+  const today = await D('GET', '/api/dine/today');
+  check('the owner\'s live view: bills from tables today with their total, busy tables, kitchen time', today.billed.bills >= 1 && Math.abs(today.billed.total - (bill0.pay + 0)) < 600
+    && today.busy >= 1 && today.busy <= today.tables && today.kitchen_mins !== null && today.kots_ready >= 1, JSON.stringify(today).slice(0, 400));
+  check('the owner\'s live view: dishes selling most, KOTs by hour, QR answers and money by mode', today.dishes.some((d) => d.name === 'Tandoori Roti') && today.hours.length >= 1
+    && today.qr.pay.done >= 1 && today.qr.pay.rejected >= 1 && today.qr.order.accepted >= 1 && today.money.some((m) => m.sys === 'upi' && m.amount > 0), JSON.stringify({ qr: today.qr, money: today.money, dishes: today.dishes.slice(0, 3) }));
   await D('PUT', '/api/dine/qr', { qr: false });
   check('turning QR ordering off closes every table link', (await G2('GET', `/api/public/dine/${newTok}`)).status === 404 && (await G2('POST', `/api/public/dine/${tok(t1)}`, { kind: 'help', what: 'bill' })).status === 404);
 }
