@@ -2527,6 +2527,16 @@ function readArea(url) {
   return hit ? hit[1] : null;
 }
 
+/* the screens that ask every few seconds (tables, kitchen, the kitchen TV): the answer carries a short tag of its content,
+   and when the screen sends the same tag back and nothing changed, the answer is an empty 304: no JSON to send or redraw */
+const POLLED = /^\/api\/(dine|dine\/requests|dine\/kitchen|dine\/menu|public\/kitchen\/[0-9a-f]{24}(\/menu)?)\/?$/;
+async function unchanged(request, res) {
+  const body = await res.text();
+  const tag = '"' + [...new Uint8Array(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(body)))].slice(0, 12).map((b) => b.toString(16).padStart(2, '0')).join('') + '"';
+  const headers = new Headers(res.headers); headers.set('ETag', tag);
+  if (request.headers.get('If-None-Match') === tag) { headers.delete('Content-Type'); return new Response(null, { status: 304, headers }); }
+  return new Response(body, { status: 200, headers });
+}
 async function handleApi(request, env, counter) {
   const url = new URL(request.url);
   if (!env.DB) throw new HttpError(500, 'Database not connected: bind a D1 database as DB in wrangler.toml.');
@@ -2670,7 +2680,8 @@ async function respond(request, env, url) {
   }
   try {
     const counter = env.QUERY_COUNT === '1' ? { n: 0 } : null;
-    const res = await handleApi(request, env, counter);
+    let res = await handleApi(request, env, counter);
+    if (request.method === 'GET' && res.status === 200 && POLLED.test(url.pathname)) res = await unchanged(request, res);
     if (counter) res.headers.set('X-Query-Count', String(counter.n));
     if (counter) res.headers.set('X-Rows', `${counter.read || 0}/${counter.written || 0}`);
     return res;

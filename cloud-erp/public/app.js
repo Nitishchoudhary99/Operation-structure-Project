@@ -127,6 +127,19 @@ async function outboxBadge() {
   b.innerHTML = `&#8635; ${q.length}<span class="hide-sm"> to sync</span>${bad ? ' <b>!</b>' : ''}`;
 }
 const GET = (p) => api('GET', p);
+/* for screens that ask every few seconds: sends back the tag of the last answer; an empty 304 means nothing changed, and
+   the very same object comes back, so the caller can skip drawing again (a === b) */
+const pollTags = new Map();
+async function pollGET(path, base = '') {
+  const prev = pollTags.get(base + path);
+  const res = await fetch(base + path, { credentials: 'same-origin', headers: { 'X-Requested-With': 'SmartTrader', ...(prev ? { 'If-None-Match': prev.tag } : {}) } });
+  if (res.status === 304 && prev) return prev.data;
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data.error || 'Something went wrong.');
+  const tag = res.headers.get('ETag');
+  if (tag) pollTags.set(base + path, { tag, data }); else pollTags.delete(base + path);
+  return data;
+}
 const POST = (p, b = {}, opt) => api('POST', p, b, opt);
 async function master(name) {
   if (!cache[name]) cache[name] = (await GET('/api/' + name)).rows;
@@ -7146,8 +7159,8 @@ route(/^tables$/, async (el) => {
   // the page is drawn again only when something changed, so it does not jump while someone reads it
   window.__tablesTick = setInterval(async () => {
     if (location.hash !== '#/tables') { clearInterval(window.__tablesTick); return; }
-    if (document.querySelector('.modal')) return;
-    try { const sig = JSON.stringify(await Promise.all([GET('/api/dine'), GET('/api/dine/requests').catch(() => ({ requests: [] }))])); if (sig !== window.__tablesSig) render(); } catch (e) { /* offline: try again */ }
+    if (document.querySelector('.modal') || document.hidden) return;
+    try { const sig = JSON.stringify(await Promise.all([pollGET('/api/dine'), pollGET('/api/dine/requests').catch(() => ({ requests: [] }))])); if (sig !== window.__tablesSig) render(); } catch (e) { /* offline: try again */ }
   }, 10000);
 });
 route(/^table\/(\d+)$/, async (el, m) => {
@@ -7453,7 +7466,8 @@ function wireDineAsks(el, after) {
 /* the kitchen display link: the same cards as the kitchen screen, big, for a TV or tablet with no login */
 async function publicKitchen(token) {
   const app = $('#app'); let quiet = 0, seen = new Set(), first = true;
-  const call = async (method, path, body) => { const r = await fetch('/api/public/kitchen/' + token + path, { method, headers: { 'Content-Type': 'application/json', 'X-Requested-With': 'SmartTrader' }, body: body ? JSON.stringify(body) : undefined });
+  let lastX = null, lastM = null, lastAt = 0;
+  const call = async (method, path, body) => { if (method === 'GET') return pollGET(path, '/api/public/kitchen/' + token); const r = await fetch('/api/public/kitchen/' + token + path, { method, headers: { 'Content-Type': 'application/json', 'X-Requested-With': 'SmartTrader' }, body: body ? JSON.stringify(body) : undefined });
     const d = await r.json().catch(() => ({})); if (!r.ok) throw new Error(d.error || 'Something went wrong.'); return d; };
   const next = { new: ['cooking', 'Start cooking'], cooking: ['ready', 'Ready'], ready: ['served', 'Served'] };
   const draw = (x) => {
@@ -7467,13 +7481,15 @@ async function publicKitchen(token) {
   };
   let menu = null, open = null;
   const keepOpen = () => { open = $('.soldpanel') ? $('.soldpanel').open : null; };
-  const load = async () => { try { keepOpen(); const [x, m] = await Promise.all([call('GET', ''), call('GET', '/menu').catch(() => null)]); menu = m; draw(x); } catch (e) { app.innerHTML = `<div class="boot"><h2>${esc(e.message)}</h2></div>`; clearInterval(t); } };
+  const load = async () => { try { keepOpen(); const [x, m] = await Promise.all([call('GET', ''), call('GET', '/menu').catch(() => null)]);
+    if (x === lastX && m === lastM && Date.now() - lastAt < 60000) return;
+    lastX = x; lastM = m; lastAt = Date.now(); menu = m; draw(x); } catch (e) { app.innerHTML = `<div class="boot"><h2>${esc(e.message)}</h2></div>`; clearInterval(t); } };
   app.onclick = async (e) => {
     const so = e.target.closest('[data-so]');
-    if (so && Date.now() >= quiet) { so.disabled = true; quiet = Date.now() + 60000; keepOpen(); try { menu = await call('POST', '/menu/' + so.dataset.so, { sold_out: so.dataset.out === '1' }); draw(await call('GET', '')); } catch (er) { toast(er.message, 'err'); } quiet = Date.now() + 900; return; }
+    if (so && Date.now() >= quiet) { so.disabled = true; quiet = Date.now() + 60000; keepOpen(); try { menu = await call('POST', '/menu/' + so.dataset.so, { sold_out: so.dataset.out === '1' }); draw(await call('GET', '')); } catch (er) { toast(er.message, 'err'); lastAt = 0; } quiet = Date.now() + 900; return; }
     const b = e.target.closest('[data-ks]'); if (!b || Date.now() < quiet) return;
     b.disabled = true; quiet = Date.now() + 60000; keepOpen();
-    try { draw(await call('POST', '/kots/' + b.dataset.ks, { status: b.dataset.to })); } catch (er) { toast(er.message, 'err'); }
+    try { draw(await call('POST', '/kots/' + b.dataset.ks, { status: b.dataset.to })); } catch (er) { toast(er.message, 'err'); lastAt = 0; }
     quiet = Date.now() + 900;
   };
   await load(); const t = setInterval(() => { if (!document.hidden && Date.now() >= quiet) load(); }, 8000);
@@ -7509,9 +7525,13 @@ route(/^restaurant-live$/, async (el) => {
   window.__liveTick = setInterval(() => { if (location.hash === '#/restaurant-live') draw(); else clearInterval(window.__liveTick); }, 15000);
 });
 route(/^kitchen$/, async (el) => {
+  let lastX = null, lastM = null, lastAt = 0;      // this visit's last answers: unchanged ones are not drawn again
   const draw = async () => {
     if (location.hash !== '#/kitchen') return;
-    let x, m; try { [x, m] = await Promise.all([GET('/api/dine/kitchen'), GET('/api/dine/menu').catch(() => null)]); } catch (e) { return; }
+    let x, m; try { [x, m] = await Promise.all([pollGET('/api/dine/kitchen'), pollGET('/api/dine/menu').catch(() => null)]); } catch (e) { return; }
+    // nothing changed: leave the screen as it is (once a minute it is drawn anyway, for the "minutes ago")
+    if (x === lastX && m === lastM && Date.now() - lastAt < 60000) return;
+    lastX = x; lastM = m; lastAt = Date.now();
     const keepOpen = $('.soldpanel', el) ? $('.soldpanel', el).open : null;
     const fresh = x.kots.filter((k) => k.kstatus === 'new' && !dineSeen.has('k' + k.id));
     x.kots.forEach((k) => dineSeen.add('k' + k.id));
@@ -7527,14 +7547,14 @@ route(/^kitchen$/, async (el) => {
   };
   el.onclick = async (e) => {
     const so = e.target.closest('[data-so]');
-    if (so && !dineBusy()) { so.disabled = true; dineHush(60000); try { await POST(`/api/dine/menu/${so.dataset.so}/sold-out`, { sold_out: so.dataset.out === '1' }); } catch (er) { toast(er.message, 'err'); } await draw(); dineHush(); return; }
+    if (so && !dineBusy()) { so.disabled = true; dineHush(60000); try { await POST(`/api/dine/menu/${so.dataset.so}/sold-out`, { sold_out: so.dataset.out === '1' }); } catch (er) { toast(er.message, 'err'); } lastAt = 0; await draw(); dineHush(); return; }
     const b = e.target.closest('[data-ks]'); if (!b || dineBusy()) return;
     b.disabled = true; dineHush(60000);
     try { await POST(`/api/dine/kots/${b.dataset.ks}/status`, { status: b.dataset.to }); } catch (er) { toast(er.message, 'err'); }
-    await draw(); dineHush();
+    lastAt = 0; await draw(); dineHush();
   };
   await draw();
-  const tick = setInterval(() => { if (location.hash === '#/kitchen') draw(); else clearInterval(tick); }, 8000);
+  const tick = setInterval(() => { if (location.hash !== '#/kitchen') clearInterval(tick); else if (!document.hidden) draw(); }, 8000);
 });
 route(/^table-qr$/, async (el) => {
   const canRzp = ME.can.settings;
