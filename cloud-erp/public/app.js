@@ -552,7 +552,7 @@ const MODULES = [
   ['loyalty', 'Loyalty points', 'Customers earn points on bills and use them later', ['loyalty']],
   ['shop', 'Online catalogue', 'Your rate list on a link; orders come on WhatsApp', ['shop']],
   ['channels', 'Amazon / Flipkart / web store orders', 'Import marketplace orders, settlements and returns', ['channels']],
-  ['restaurant', 'Tables & KOT', 'Restaurant tables, kitchen tickets, table bills', ['tables', 'kots']],
+  ['restaurant', 'Tables & KOT', 'Restaurant tables, kitchen tickets, table bills', ['tables', 'kots', 'kitchen']],
   ['jobs', 'Repair & service job cards', 'Device / vehicle intake, status, WhatsApp updates, bill from the job', ['jobs']],
   ['wms', 'Bins, racks & stock count', 'Where each item sits, guided put-away, cycle count', ['bins', 'putaway', 'stockcount']],
   ['batch', 'Batch & expiry', 'Medicines, food, cosmetics: first to expire goes first', ['expiry']],
@@ -570,7 +570,7 @@ const flowOk = (h) => !simple() || (ordersOn() && DISP.has(h));
 const docFlowOk = (k) => !simple() || !ADV_DOCS.includes(k) || (ordersOn() && ['SO', 'DN'].includes(k)) || (k === 'QUOTE' && modState('quotes') === true)
   || (['PO', 'GRN'].includes(k) && modState('procure') === true);
 /* which permission area a menu entry needs (custom roles may not see every area); the gate register also opens with 'gate' */
-const navArea = (h) => h === 'dispatch' ? ['items', 'sales'] : h === 'jobs' ? 'sales' : /^(receipts|payments|expenses|accounts|journal|staff|statutory|bankrec|assets|tds)$/.test(h) ? 'finance' : /^(sales\/|pos$|recurring$|channels$|shop$|loyalty$|tables$|table\/|kots$)/.test(h) ? 'sales' : /^(purchase\/|receive$)/.test(h) ? 'purchase'
+const navArea = (h) => h === 'dispatch' ? ['items', 'sales'] : h === 'jobs' ? 'sales' : /^(receipts|payments|expenses|accounts|journal|staff|statutory|bankrec|assets|tds)$/.test(h) ? 'finance' : h === 'kitchen' ? 'kitchen' : /^(sales\/|pos$|recurring$|channels$|shop$|loyalty$|tables$|table\/|kots$)/.test(h) ? 'sales' : /^(purchase\/|receive$)/.test(h) ? 'purchase'
   : /^gate\/in$/.test(h) ? ['purchase', 'gate'] : /^gate\/out$/.test(h) ? ['items', 'gate'] : h === 'claims' ? ['purchase', 'finance'] : h === 'wa-inbox' ? ['sales', 'khata', 'finance']
   : /^(items|stock|stockcount|pending|bins|expiry|stock-ageing|serials|production|wave|putaway)$/.test(h) ? 'items' : /^(parties|reminders)$/.test(h) ? 'masters' : /^(khata|vaade)$/.test(h) ? 'khata'
   : /^(reports\/|tally$|daybook$|gstr$)/.test(h) ? 'reports' : h === 'plan' ? 'settings' : '';
@@ -589,7 +589,8 @@ const JOBS = {
     'production', 'stockcount', 'wave', 'pending', 'gate/out', 'stock-ageing', 'claims'] },
   packer: { t: 'Packing & dispatch (godown)', home: 'dispatch', screens: ['dispatch', 'pending', 'wave', 'sales/SO', 'sales/DN', 'items', 'stock', 'bins', 'receive', 'putaway', 'stockcount'] },
   gate: { t: 'Gate / security guard', home: 'gate/in', screens: ['gate/in', 'gate/out'] },
-  waiter: { t: 'Waiter / captain (restaurant)', home: 'tables', screens: ['tables', 'kots', 'pos'] },
+  waiter: { t: 'Waiter / captain (restaurant)', home: 'tables', screens: ['tables', 'kitchen', 'kots', 'pos'] },
+  kitchen: { t: 'Kitchen / cook (restaurant)', home: 'kitchen', screens: ['kitchen'] },
   accounts: { t: 'Accountant', home: 'dashboard', screens: ['dashboard', 'sales/INV', 'sales/SRET', 'sales/CNOTE', 'receipts', 'purchase/BILL', 'purchase/PRET', 'purchase/DNOTE', 'payments',
     'parties', 'khata', 'reminders', 'vaade', 'staff', 'statutory', 'expenses', 'bankrec', 'assets', 'tds', 'accounts', 'journal', 'daybook', 'reports/pnl', 'reports/balance-sheet', 'reports/trial-balance', 'reports/gst', 'gstr', 'reports/ageing',
     'reports/register', 'cash', 'tally', 'claims', 'wa-inbox'] },
@@ -635,7 +636,7 @@ const minDate = () => {
 };
 const NAV = [
   ['', [['dashboard', 'Dashboard']]],
-  ['Sales', [['pos', 'Quick Bill (POS)'], ['tables', 'Tables (Restaurant)'], ['sales/INV', 'Invoices'], ['shop', 'Online Catalogue'], ['loyalty', 'Loyalty Points'], ['channels', 'Online Orders (Amazon…)'], ['recurring', 'Recurring Bills'], ['jobs', 'Repair / Job Cards'], ['sales/SO', 'Sales Orders'], ['dispatch', 'Dispatch Desk'], ['sales/DN', 'Delivery Notes'], ['sales/QUOTE', 'Quotations'], ['sales/SRET', 'Sales Returns'], ['sales/CNOTE', 'Credit Notes (rate diff)'], ['receipts', 'Receipts']]],
+  ['Sales', [['pos', 'Quick Bill (POS)'], ['tables', 'Tables (Restaurant)'], ['kitchen', 'Kitchen screen'], ['sales/INV', 'Invoices'], ['shop', 'Online Catalogue'], ['loyalty', 'Loyalty Points'], ['channels', 'Online Orders (Amazon…)'], ['recurring', 'Recurring Bills'], ['jobs', 'Repair / Job Cards'], ['sales/SO', 'Sales Orders'], ['dispatch', 'Dispatch Desk'], ['sales/DN', 'Delivery Notes'], ['sales/QUOTE', 'Quotations'], ['sales/SRET', 'Sales Returns'], ['sales/CNOTE', 'Credit Notes (rate diff)'], ['receipts', 'Receipts']]],
   ['Purchase', [['receive', 'Receive Goods (scan)'], ['purchase/PO', 'Purchase Orders'], ['gate/in', 'Gate Entry (inward)'], ['purchase/GRN', 'Goods Receipts (GRN)'], ['purchase/BILL', 'Purchase Bills'], ['purchase/PRET', 'Purchase Returns'], ['purchase/DNOTE', 'Debit Notes (rate diff)'], ['claims', 'Transit Claims'], ['payments', 'Payments']]],
   ['Inventory', [['items', 'Items'], ['stock', 'Stock & Godowns'], ['stock-ageing', 'Stock Ageing'], ['bins', 'Bins & Racks'], ['expiry', 'Batch & Expiry'], ['serials', 'Serial / IMEI'], ['production', 'Production (BOM)'], ['wave', 'Wave Pick List'], ['stockcount', 'Stock Count'], ['gate/out', 'Gate Pass (outward)'], ['pending', 'Pending Orders']]],
   ['Contacts', [['parties', 'Customers & Suppliers'], ['khata', 'Khata Book'], ['reminders', 'Vasooli (Collections)'], ['vaade', 'Vaade (Promises)'], ['wa-inbox', 'WhatsApp Inbox']]],
@@ -4729,7 +4730,7 @@ route(/^settings\/fields$/, async (el) => {
 });
 
 const AREA_LABEL = { sales: 'Sales & POS', purchase: 'Purchase', items: 'Items & stock', masters: 'Customers & suppliers', finance: 'Money (receipts, payments, expenses)',
-  khata: 'Khata book', reports: 'Reports, profit & costs', settings: 'Settings', gate: 'Gate register (vehicles in / out)' };
+  khata: 'Khata book', reports: 'Reports, profit & costs', settings: 'Settings', gate: 'Gate register (vehicles in / out)', kitchen: 'Kitchen screen (KOTs only, no prices)' };
 /* Settings → Roles: every role made to measure. What it may see and change, limits it works under, and the menu its
    users get (a user's own menu, set in Settings → Users, still wins). The server enforces the rights and limits. */
 const LIMIT_TEXT = [['no_cancel', 'Cannot cancel bills, payments or entries'], ['no_credit', 'No udhaar: every sale is paid in full'],
@@ -4743,6 +4744,7 @@ const uiSummary = (ui) => (ui.screens ? `${ui.screens.length} screens` : ui.job 
 /* ready-made starting points for a new role */
 const ROLE_STARTS = {
   guard: { t: 'Gate guard', perms: { view: ['gate'], edit: ['gate'] }, rules: { no_cancel: true, hide_costs: true }, ui: { job: 'gate' } },
+  kitchen: { t: 'Kitchen / cook', perms: { view: ['kitchen'], edit: ['kitchen'] }, rules: { no_cancel: true, hide_costs: true }, ui: { job: 'kitchen' } },
   counter: { t: 'Billing counter', perms: { view: ['sales', 'items', 'masters', 'khata'], edit: ['sales', 'masters', 'khata'] },
     rules: { no_cancel: true, hide_costs: true, max_discount: 5, backdate_days: 0 }, ui: { job: 'counter' } },
   godown: { t: 'Godown / receiving', perms: { view: ['purchase', 'items', 'masters', 'gate'], edit: ['purchase', 'items', 'gate'] }, rules: { no_cancel: true }, ui: { job: 'store' } },
@@ -7407,6 +7409,29 @@ function wireDineAsks(el, after) {
     } catch (er) { toast(er.message, 'err'); b.disabled = false; await after(); dineHush(); }
   };
 }
+/* the kitchen display link: the same cards as the kitchen screen, big, for a TV or tablet with no login */
+async function publicKitchen(token) {
+  const app = $('#app'); let quiet = 0, seen = new Set(), first = true;
+  const call = async (method, path, body) => { const r = await fetch('/api/public/kitchen/' + token + path, { method, headers: { 'Content-Type': 'application/json', 'X-Requested-With': 'SmartTrader' }, body: body ? JSON.stringify(body) : undefined });
+    const d = await r.json().catch(() => ({})); if (!r.ok) throw new Error(d.error || 'Something went wrong.'); return d; };
+  const next = { new: ['cooking', 'Start cooking'], cooking: ['ready', 'Ready'], ready: ['served', 'Served'] };
+  const draw = (x) => {
+    const fresh = x.kots.filter((k) => !seen.has(k.id)); x.kots.forEach((k) => seen.add(k.id)); if (fresh.length && !first) beep(true); first = false;
+    app.innerHTML = `<main class="page kd"><div class="row"><h1 style="margin:0">${esc(x.shop)} · Kitchen</h1><span class="spacer"></span><span class="muted small">${new Date().toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' })}</span></div>
+      <div class="kgrid">${x.kots.map((k) => `<div class="kcard ${k.kind === 'cancel' ? 'cancel' : k.kstatus}"><div class="row"><b class="kno">KOT ${k.number}</b><span class="spacer"></span><b>Table ${esc(k.table_name)}</b></div>
+        <div class="muted small">${since(k.created_at)} ago · ${k.kind === 'cancel' ? '<b>CANCEL</b>' : esc(k.kstatus)}</div>
+        <ul>${k.lines.map((l) => `<li><b>${qtyf(l.qty)} × ${esc(l.name)}</b>${l.note ? `<div class="muted small">${esc(l.note)}</div>` : ''}</li>`).join('')}</ul>
+        ${k.kind === 'cancel' ? `<button class="btn" data-ks="${k.id}" data-to="served">Seen</button>` : `<button class="btn primary big" data-ks="${k.id}" data-to="${next[k.kstatus][0]}">${next[k.kstatus][1]}</button>`}</div>`).join('') || '<div class="empty">No tickets waiting. New KOTs appear here and beep.</div>'}</div></main>`;
+  };
+  const load = async () => { try { draw(await call('GET', '')); } catch (e) { app.innerHTML = `<div class="boot"><h2>${esc(e.message)}</h2></div>`; clearInterval(t); } };
+  app.onclick = async (e) => {
+    const b = e.target.closest('[data-ks]'); if (!b || Date.now() < quiet) return;
+    b.disabled = true; quiet = Date.now() + 60000;
+    try { draw(await call('POST', '/kots/' + b.dataset.ks, { status: b.dataset.to })); } catch (er) { toast(er.message, 'err'); }
+    quiet = Date.now() + 900;
+  };
+  await load(); const t = setInterval(() => { if (!document.hidden && Date.now() >= quiet) load(); }, 8000);
+}
 route(/^restaurant-live$/, async (el) => {
   const draw = async () => {
     if (location.hash !== '#/restaurant-live') return;
@@ -7468,10 +7493,18 @@ route(/^table-qr$/, async (el) => {
       <label class="f wide">Note on the menu (optional)<input name="note" maxlength="200" value="${esc(x.note)}" placeholder="Orders are confirmed by our staff. Kitchen open till 11 pm."></label>
       <label class="f">&nbsp;<button class="btn primary">Save</button></label></form>
       <p class="muted small">Every order a guest sends waits on the Tables page until a staff member accepts it: only then does it become a KOT. The menu shows your items that have a selling price and are not hidden from the online rate list. If a QR is misused, make a new one for that table: the old one stops at once.</p></div>
+    <div class="panel no-print"><b>Kitchen screen on a TV or tablet</b>
+      <p class="muted small">A link that opens the kitchen screen with no login and no user seat: today's KOTs (tables, dishes, notes; never prices or customers), and the buttons to move them on. Nothing else in your ERP opens with it. If it reaches the wrong person, make a new one: the old link stops at once. A cook who should log in on their own phone can instead get the "Kitchen / cook" role (Settings → Roles).</p>
+      ${x.kitchen_link ? `<div class="row" style="align-items:center;gap:12px;flex-wrap:wrap"><div id="kdqr" style="width:120px"></div><div style="flex:1;min-width:200px"><code style="word-break:break-all">${esc(x.kitchen_link)}</code>
+        <div class="row" style="margin-top:8px"><a class="btn sm" href="${esc(x.kitchen_link)}" target="_blank" rel="noopener">Open</a><button class="btn sm" id="kdnew">New link</button><button class="btn sm danger" id="kdoff">Switch off</button></div></div></div>`
+        : '<button class="btn primary" id="kdnew">Make the kitchen link</button>'}</div>
     <div class="qrposters">${x.tables.map((t) => `<div class="qrposter"><b class="qpname">${esc(ME.org.name)}</b><div class="qrbox" data-link="${esc(t.link)}"></div><b class="qptable">Table ${esc(t.name)}</b>
       <div>Scan to see the menu and order</div><div lang="hi">स्कैन करें, मेन्यू देखें, ऑर्डर करें</div>
       <div class="no-print row" style="justify-content:center"><a class="btn sm" href="${esc(t.link)}" target="_blank" rel="noopener">Open</a><button class="btn sm" data-newqr="${t.id}">New QR</button></div></div>`).join('') || '<div class="empty">Add tables first.</div>'}</div>`;
   $$('.qrbox', el).forEach((b) => qrInto(b, b.dataset.link));
+  if (x.kitchen_link) qrInto($('#kdqr'), x.kitchen_link);
+  if ($('#kdnew')) $('#kdnew').onclick = async () => { if (x.kitchen_link && !confirm('Make a new kitchen link? The old one stops working at once.')) return; try { await POST('/api/dine/kitchen-link', {}); render(); } catch (er) { toast(er.message, 'err'); } };
+  if ($('#kdoff')) $('#kdoff').onclick = async () => { if (!confirm('Switch the kitchen link off?')) return; try { await api('DELETE', '/api/dine/kitchen-link'); render(); } catch (er) { toast(er.message, 'err'); } };
   $('#dqs').onsubmit = async (e) => { e.preventDefault(); try { await api('PUT', '/api/dine/qr', { qr: e.target.qr.checked, note: e.target.note.value }); toast(e.target.qr.checked ? 'QR ordering is on' : 'QR ordering is off'); } catch (er) { toast(er.message, 'err'); } };
   el.onclick = async (e) => {
     const b = e.target.closest('[data-newqr]'); if (!b) return;
@@ -8153,6 +8186,8 @@ async function boot() {
   if (ps) return publicShop(ps[1]);
   const pt = location.pathname.match(/^\/t\/([0-9a-f]{24})\/?$/);       // a restaurant table's QR: menu and ordering
   if (pt) return publicTable(pt[1]);
+  const pk2 = location.pathname.match(/^\/kd\/([0-9a-f]{24})\/?$/);     // the kitchen display link (TV / tablet, no login)
+  if (pk2) return publicKitchen(pk2[1]);
   const rt = location.hash.match(/^#\/reset\/([0-9a-f]{64})$/);   // link from the forgot-password e-mail
   if (rt) return renderReset(rt[1]);
   const vt = location.hash.match(/^#\/verify\/([0-9a-f]{64})$/);  // link from the sign-up e-mail

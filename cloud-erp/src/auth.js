@@ -144,12 +144,14 @@ const WRITE = {
   finance: ['owner', 'admin', 'accountant'],
   khata: ['owner', 'admin', 'accountant', 'sales'],
   gate: ['owner', 'admin', 'accountant', 'store', 'sales'],
+  kitchen: ['owner', 'admin', 'sales'],
 };
 /* Custom roles (role = 'custom', role_id -> roles): per-area "view" and "edit" switches.
    Built-in roles keep the table above and can view everything, unless the owner changed them (Settings → Roles): then
    role_rules.perms holds their own view / edit lists, like a custom role. Only owner/admin manage users and roles.
-   'gate' is the security gate register alone, for a guard who should see and do nothing else. */
-export const AREAS = ['sales', 'purchase', 'items', 'masters', 'finance', 'khata', 'reports', 'settings', 'gate'];
+   'gate' is the security gate register alone, for a guard who should see and do nothing else; 'kitchen' is the kitchen
+   screen alone (KOTs, no prices), for a cook. */
+export const AREAS = ['sales', 'purchase', 'items', 'masters', 'finance', 'khata', 'reports', 'settings', 'gate', 'kitchen'];
 export const BUILT_IN = ['admin', 'accountant', 'store', 'sales'];
 const AREA_OF = { stock: 'items' };
 export function permsOf(user) {
@@ -212,7 +214,7 @@ export function checkBackdate(user, d, today, what = 'an entry') {
 
 /* Each user's own menu (users.ui): a job that picks the screens (the role decides when there is none), or screens the owner
    ticked one by one, and the screen the app opens on. Only what is shown changes: what a user may do stays with the role. */
-export const JOBS = ['all', 'counter', 'store', 'packer', 'gate', 'accounts', 'sales'];
+export const JOBS = ['all', 'counter', 'store', 'packer', 'gate', 'accounts', 'sales', 'waiter', 'kitchen'];
 const SCREEN = /^[a-z][a-zA-Z0-9/-]{0,40}$/;
 export function uiOf(raw) {
   let u = {};

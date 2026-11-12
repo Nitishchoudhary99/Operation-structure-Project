@@ -54,7 +54,7 @@ import { gstr1, gstr1Sheets, match2b } from './gstr.js';
 import { loyaltyOf, cleanLoyalty, partyPoints, members as loyaltyMembers, adjustPoints } from './loyalty.js';
 import { widgetData, listDashboards, saveDashboard, deleteDashboard, pickDefault } from './widgets.js';
 import { dineBoard, addTables, removeTable, tableDetail, sendKot, voidLine, moveOrder, billOrder, voidOrder, kotLog, guestMenu, guestSend, guestStatus,
-  dineRequests, acceptRequest, answerRequest, kitchen, kotStatus, dineQr, saveDineSettings, newTableQr, guestBill, settleRequest, dineToday } from './dine.js';
+  dineRequests, acceptRequest, answerRequest, kitchen, kotStatus, dineQr, saveDineSettings, newTableQr, guestBill, settleRequest, dineToday, kitchenLink, kitchenDisplay, kitchenDisplaySet } from './dine.js';
 import { secondStep, twoStepStart, twoStepEnable, twoStepDisable, newBackupCodes, twoStepReset, requireTwoStep, stepUp, loginStatement, signInHistory,
   closeBusiness, cancelClose, purgeClosed, notOwnerWhileClosing } from './security.js';
 import { workbook } from './xlsx.js';
@@ -277,7 +277,7 @@ router.add('POST', '/api/me/logout-all', async (c) => {
 
 router.add('GET', '/api/me', async (c) => json({
   user: { ...publicUser(c.user), role_key: c.user.role, two_step: !!c.user.totp_on }, org: orgOut(c.org), must_2fa: !!(c.org.require_2fa && !c.user.totp_on),
-  can: Object.fromEntries(['settings', 'users', 'items', 'purchase', 'sales', 'stock', 'finance', 'khata', 'masters', 'gate'].map((a) => [a, can(c.user, a)])),
+  can: Object.fromEntries(['settings', 'users', 'items', 'purchase', 'sales', 'stock', 'finance', 'khata', 'masters', 'gate', 'kitchen'].map((a) => [a, can(c.user, a)])),
   ui: uiOf(c.user.ui), role_ui: uiOf(c.user.role_ui), rules: rulesOf(c.user),
   view: Object.fromEntries(AREAS.map((a) => [a, canView(c.user, a)])), costs: seesCosts(c.user), wa_auto: waConfigured(c.env),
   wa_bot: botReady(c.env), wa_bot_link: c.org.wa_bot ? botLink(c.env, c.org.bot_code) : '',
@@ -1038,6 +1038,10 @@ router.add('POST', '/api/dine/requests/:id/reject', async (c) => json(await answ
 router.add('POST', '/api/dine/requests/:id/settle', async (c) => json(await docDetail(c, (await settleRequest(c, +c.params.id)).doc_id)));
 router.add('POST', '/api/dine/requests/:id/done', async (c) => json(await answerRequest(c, +c.params.id, c.body, 'done')));
 router.add('GET', '/api/dine/today', async (c) => json(await dineToday(c)));
+router.add('POST', '/api/dine/kitchen-link', async (c) => json(await kitchenLink(c, true)));
+router.add('DELETE', '/api/dine/kitchen-link', async (c) => json(await kitchenLink(c, false)));
+router.add('GET', '/api/public/kitchen/:token', async (c) => json(await kitchenDisplay(c, c.params.token), 200, noStore), { public: true });
+router.add('POST', '/api/public/kitchen/:token/kots/:id', async (c) => json(await kitchenDisplaySet(c, c.params.token, +c.params.id, c.body), 200, noStore), { public: true });
 router.add('GET', '/api/dine/kitchen', async (c) => json(await kitchen(c)));
 router.add('POST', '/api/dine/kots/:id/status', async (c) => json(await kotStatus(c, +c.params.id, c.body)));
 router.add('GET', '/api/dine/qr', async (c) => json(await dineQr(c)));
@@ -2467,6 +2471,8 @@ const READ_AREAS = [
   [/^\/api\/items(\/lookup)?\/?$/, ['items', 'sales', 'purchase']],
   [/^\/api\/rates\/?$/, 'sales'],
   [/^\/api\/(loyalty(\/\d+)?|settings\/loyalty)\/?$/, 'sales'],
+  [/^\/api\/dine\/kitchen\/?$/, 'kitchen'],
+  [/^\/api\/dine\/kots\/\d+\/status\/?$/, 'kitchen'],
   [/^\/api\/dine(\/|$)/, 'sales'],
   [/^\/api\/(dash\/widgets|dashboards)\/?$/, OPEN],
   [/^\/api\/settings\/shop\/?$/, ['sales', 'items', 'settings']],
@@ -2599,6 +2605,8 @@ async function sharePage(request, env, kind, token) {
   } else if (kind === 's') {
     const o = await env.DB.prepare(`SELECT name, city FROM orgs WHERE shop_token = ?`).bind(token).first();
     if (o) { title = `${o.name}${o.city ? ', ' + o.city : ''}: rate list`; desc = 'Dekhiye rate, chuniye saaman, aur order WhatsApp par bhejiye.'; }
+  } else if (kind === 'kd') {
+    title = 'Kitchen screen'; desc = 'KOTs for the kitchen.';
   } else if (kind === 't') {
     const t = await env.DB.prepare(`SELECT t.name, o.name AS org FROM dine_tables t JOIN orgs o ON o.id = t.org_id WHERE t.qr_token = ?`).bind(token).first();
     if (t) { title = `${t.org}: menu, table ${t.name}`; desc = 'Menu dekhiye, order bhejiye, aur staff ko bulaiye. Scan to order.'; }
@@ -2640,7 +2648,7 @@ async function respond(request, env, url) {
     return new Response(JSON.stringify(fps.length ? [{ relation: ['delegate_permission/common.handle_all_urls'], target: { namespace: 'android_app', package_name: pkg, sha256_cert_fingerprints: fps } }] : []),
       { headers: { 'Content-Type': 'application/json', 'Cache-Control': 'public, max-age=3600', 'Access-Control-Allow-Origin': '*' } });
   }
-  const share = url.pathname.match(/^\/(k|i|c|s|t)\/([0-9a-f]{24})\/?$/);
+  const share = url.pathname.match(/^\/(k|i|c|s|t|kd)\/([0-9a-f]{24})\/?$/);
   if (share && env.ASSETS) return sharePage(request, env, share[1], share[2]).catch(() => env.ASSETS.fetch(new Request(url.origin + '/', request)));
   if (!url.pathname.startsWith('/api/')) {
     return env.ASSETS ? env.ASSETS.fetch(request) : new Response('Not found', { status: 404 });

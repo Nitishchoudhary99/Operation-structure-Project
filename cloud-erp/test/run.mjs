@@ -3349,6 +3349,32 @@ if (process.env.ERP_AI_MOCK) {
     && today.busy >= 1 && today.busy <= today.tables && today.kitchen_mins !== null && today.kots_ready >= 1, JSON.stringify(today).slice(0, 400));
   check('the owner\'s live view: dishes selling most, KOTs by hour, QR answers and money by mode', today.dishes.some((d) => d.name === 'Tandoori Roti') && today.hours.length >= 1
     && today.qr.pay.done >= 1 && today.qr.pay.rejected >= 1 && today.qr.order.accepted >= 1 && today.money.some((m) => m.sys === 'upi' && m.amount > 0), JSON.stringify({ qr: today.qr, money: today.money, dishes: today.dishes.slice(0, 3) }));
+  /* kitchen access: a cook role with the kitchen alone, and the kitchen display link with no login */
+  const cookRole = await D('POST', '/api/roles', { name: 'Cook', perms: { view: ['kitchen'], edit: ['kitchen'] } });
+  const ckEm = `cook${Date.now()}@test.in`;
+  await D('POST', '/api/users', { name: 'Cook Ramu', email: ckEm, password: 'Cook-pass-12345', role: `c:${cookRole.id}` });
+  const cl = await rq('POST', '/api/auth/login', { email: ckEm, password: 'Cook-pass-12345' }, { ip });
+  const CK = (m, p, b) => rq(m, p, b, { cookie: cl.cookie, ip });
+  const ckK = await CK('GET', '/api/dine/kitchen');
+  check('a cook with the kitchen alone opens the kitchen screen', ckK.status === 200 && ckK.data.kots.length >= 1, JSON.stringify(ckK.data).slice(0, 200));
+  check('the cook cannot open tables, sales or bills', (await CK('GET', '/api/dine')).status === 403 && (await CK('GET', '/api/docs?type=INV')).status === 403 && (await CK('GET', '/api/dine/today')).status === 403);
+  const accEm = `acct${Date.now()}@test.in`;
+  await D('POST', '/api/users', { name: 'Acc', email: accEm, password: 'Acct-pass-12345', role: 'accountant' });
+  const al = await rq('POST', '/api/auth/login', { email: accEm, password: 'Acct-pass-12345' }, { ip });
+  check('an accountant does not get the kitchen', (await rq('GET', '/api/dine/kitchen', undefined, { cookie: al.cookie, ip })).status === 403);
+  check('the kitchen link is off until the owner makes it', !(await D('GET', '/api/dine/qr')).kitchen_link && (await G2('GET', '/api/public/kitchen/' + 'a'.repeat(24))).status === 404);
+  check('a cook cannot make the kitchen link', (await CK('POST', '/api/dine/kitchen-link', {})).status === 403);
+  const kl = (await D('POST', '/api/dine/kitchen-link', {})).kitchen_link, kt1 = kl.split('/kd/')[1];
+  const kd = await G2('GET', '/api/public/kitchen/' + kt1);
+  check('the kitchen link opens the KOTs with no login and no prices', kd.status === 200 && kd.data.kots.length >= 1 && !/"(rate|amount|price|total|party)"/.test(JSON.stringify(kd.data)), JSON.stringify(kd.data).slice(0, 300));
+  const kk = kd.data.kots[kd.data.kots.length - 1];
+  const nx = { new: 'cooking', cooking: 'ready', ready: 'served' }[kk.kstatus] || 'served';
+  check('the kitchen link moves a KOT on', (await G2('POST', `/api/public/kitchen/${kt1}/kots/${kk.id}`, { status: nx })).status === 200);
+  check('the kitchen link cannot touch a KOT that is not this shop\'s', (await G2('POST', `/api/public/kitchen/${kt1}/kots/99999999`, { status: 'ready' })).status === 404);
+  const kt2 = (await D('POST', '/api/dine/kitchen-link', {})).kitchen_link.split('/kd/')[1];
+  check('a new kitchen link stops the old one at once', kt2 !== kt1 && (await G2('GET', '/api/public/kitchen/' + kt1)).status === 404 && (await G2('GET', '/api/public/kitchen/' + kt2)).status === 200);
+  await D('DELETE', '/api/dine/kitchen-link');
+  check('switching the kitchen link off closes it', (await G2('GET', '/api/public/kitchen/' + kt2)).status === 404);
   await D('PUT', '/api/dine/qr', { qr: false });
   check('turning QR ordering off closes every table link', (await G2('GET', `/api/public/dine/${newTok}`)).status === 404 && (await G2('POST', `/api/public/dine/${tok(t1)}`, { kind: 'help', what: 'bill' })).status === 404);
 }
