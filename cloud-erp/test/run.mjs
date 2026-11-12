@@ -3246,6 +3246,66 @@ if (process.env.ERP_AI_MOCK) {
   const vo = await DE('POST', `/api/dine/tables/${t2.id}/void`, { reason: 'left' });
   check('the owner can cancel a whole order; nothing is billed and the table is free', vo.status === 200 && !vo.data.tables.find((t) => t.id === t2.id).order);
   check('a table with an open order cannot be removed', (await DE('DELETE', `/api/dine/tables/${t1.id}`)).status === 400 && (await DE('DELETE', `/api/dine/tables/${t2.id}`)).status === 200);
+
+  /* QR table ordering: the guest's menu, order and help; the staff accept into a KOT or turn it down; the kitchen screen */
+  const G = (m, p, b) => rq(m, p, b, { ip: '203.0.113.160' });
+  check('a waiter cannot open the table QR set-up', (await W('GET', '/api/dine/qr')).status === 403);
+  const q0 = await D('GET', '/api/dine/qr');
+  const tok = (t) => q0.tables.find((x) => x.id === t.id).link.split('/t/')[1];
+  check('every table gets its own QR link; QR ordering starts off', q0.qr === false && q0.tables.length === 3 && q0.tables.every((t) => /\/t\/[0-9a-f]{24}$/.test(t.link)) && new Set(q0.tables.map((t) => t.link)).size === 3);
+  check('with QR ordering off the table link shows nothing', (await G('GET', `/api/public/dine/${tok(t1)}`)).status === 404);
+  await D('PUT', '/api/dine/qr', { qr: true, note: 'Orders are confirmed by our staff' });
+  const menu = await G('GET', `/api/public/dine/${tok(t1)}`);
+  const mi = menu.data.items || [];
+  check('the guest sees the menu with prices including GST, the table and the note, and nothing private', menu.status === 200 && menu.data.table === 'T1' && menu.data.shop.note === 'Orders are confirmed by our staff'
+    && mi.find((i) => i.name === 'Paneer Tikka').price === 262.5 && mi.find((i) => i.name === 'Dal Makhani').price === 210 && !/purchase_price|avg_cost|qty_on_hand|org_id/.test(JSON.stringify(menu.data)), JSON.stringify(menu.data).slice(0, 300));
+  check('a wrong table link is refused', (await G('GET', '/api/public/dine/' + '0'.repeat(24))).status === 404 && (await G('GET', '/api/public/dine/xyz')).status === 404);
+  check('a guest order with an unknown dish, no dishes or a silly quantity is refused', (await G('POST', `/api/public/dine/${tok(t1)}`, { kind: 'order', lines: [{ item_id: 999999, qty: 1 }] })).status === 400
+    && (await G('POST', `/api/public/dine/${tok(t1)}`, { kind: 'order', lines: [] })).status === 400 && (await G('POST', `/api/public/dine/${tok(t1)}`, { kind: 'order', lines: [{ item_id: paneer.id, qty: 500 }] })).status === 400);
+  const linesBefore = (await D('GET', `/api/dine/tables/${t1.id}`)).lines.length;
+  const o1 = await G('POST', `/api/public/dine/${tok(t1)}`, { kind: 'order', name: 'Asha', note: 'less oil', lines: [{ item_id: paneer.id, qty: 2, note: 'extra chutney' }, { item_id: roti.id, qty: 3 }] });
+  check('the guest order is taken, with a private token, and the total at menu prices', o1.status === 200 && /^[0-9a-f]{32}$/.test(o1.data.token) && o1.data.total === 588, JSON.stringify(o1.data));
+  const st = async (t, list) => (await G('GET', `/api/public/dine/${tok(t)}/status?r=${list}`)).data.requests || [];
+  check('the guest follows only their own request: a wrong token or another table\'s link shows nothing', (await st(t1, `${o1.data.id}.${o1.data.token}`))[0].status === 'new'
+    && (await st(t1, `${o1.data.id}.${'0'.repeat(32)}`)).length === 0 && (await st(t3, `${o1.data.id}.${o1.data.token}`)).length === 0);
+  check('nothing reaches the kitchen by itself: no KOT until the staff accept', (await D('GET', `/api/dine/tables/${t1.id}`)).lines.length === linesBefore
+    && (await D('GET', '/api/dine')).tables.find((t) => t.id === t1.id).asks === 1);
+  const rq1 = (await W('GET', '/api/dine/requests')).data.requests.find((r) => r.id === o1.data.id);
+  check('the staff see the request: table, guest, dishes, notes and total', rq1 && rq1.table_name === 'T1' && rq1.guest === 'Asha' && rq1.total === 588 && rq1.lines.length === 2 && rq1.note === 'less oil');
+  const other = await rq('POST', '/api/auth/signup', { business: 'Other Cafe', name: 'O', email: `other${Date.now()}@test.in`, password: 'Other-pass-12345', state: 'Rajasthan' }, { ip: '203.0.113.162' });
+  check('another business cannot see or accept this order', (await rq('POST', `/api/dine/requests/${o1.data.id}/accept`, {}, { cookie: other.cookie, ip: '203.0.113.162' })).status === 404
+    && (await rq('GET', '/api/dine/requests', undefined, { cookie: other.cookie, ip: '203.0.113.162' })).data.requests.length === 0);
+  const acc = await W('POST', `/api/dine/requests/${o1.data.id}/accept`, {});
+  check('a waiter accepts it: it becomes an ordinary KOT on the table, with the guest\'s notes', acc.status === 200 && acc.data.kot.table === 'T1' && acc.data.kot.lines.length === 2
+    && acc.data.kot.lines.some((l) => /extra chutney/.test(l.note) && /Asha/.test(l.note)) && (await D('GET', `/api/dine/tables/${t1.id}`)).lines.filter((l) => l.status === 'ok').length >= 2, JSON.stringify(acc.data.kot || acc.data));
+  check('the same order cannot be accepted twice', (await D('POST', `/api/dine/requests/${o1.data.id}/accept`, {})) && (await DE('POST', `/api/dine/requests/${o1.data.id}/accept`, {})).status === 400);
+  const s1 = (await st(t1, `${o1.data.id}.${o1.data.token}`))[0];
+  check('the guest sees it confirmed, with the KOT number, and new in the kitchen', s1.status === 'accepted' && s1.kitchen === 'new' && s1.kot === acc.data.kot.number);
+  const kit = await W('GET', '/api/dine/kitchen');
+  check('the kitchen screen shows the new KOT with its dishes', kit.status === 200 && kit.data.kots.some((k) => k.id === acc.data.kot.id && k.lines.length === 2 && k.table_name === 'T1'));
+  for (const s of ['cooking', 'ready']) await W('POST', `/api/dine/kots/${acc.data.kot.id}/status`, { status: s });
+  check('the guest sees where it is in the kitchen', (await st(t1, `${o1.data.id}.${o1.data.token}`))[0].kitchen === 'ready');
+  const sv = await W('POST', `/api/dine/kots/${acc.data.kot.id}/status`, { status: 'served' });
+  check('a served KOT leaves the kitchen screen; an unknown status is refused', !sv.data.kots.some((k) => k.id === acc.data.kot.id)
+    && (await W('POST', `/api/dine/kots/${acc.data.kot.id}/status`, { status: 'eaten' })).status === 400
+    && (await rq('POST', `/api/dine/kots/${acc.data.kot.id}/status`, { status: 'new' }, { cookie: other.cookie, ip: '203.0.113.162' })).status === 404);
+  const o2 = await G('POST', `/api/public/dine/${tok(t3)}`, { kind: 'order', lines: [{ item_id: dal.id, qty: 1 }] });
+  await W('POST', `/api/dine/requests/${o2.data.id}/reject`, { reason: 'Dal is finished' });
+  const s2 = (await st(t3, `${o2.data.id}.${o2.data.token}`))[0];
+  check('a turned-down order tells the guest why, and makes no KOT', s2.status === 'rejected' && s2.reason === 'Dal is finished' && (await D('GET', `/api/dine/tables/${t3.id}`)).lines.length === 0);
+  const h1 = await G('POST', `/api/public/dine/${tok(t3)}`, { kind: 'help', what: 'water' }), h2 = await G('POST', `/api/public/dine/${tok(t3)}`, { kind: 'help', what: 'water' });
+  const helps = (await W('GET', '/api/dine/requests')).data.requests.filter((r) => r.kind === 'help');
+  check('a call for water reaches the staff once, however often it is pressed', h1.status === 200 && h2.data.again === true && helps.length === 1 && helps[0].help === 'Water' && helps[0].table_name === 'T3');
+  check('the call is marked done once', (await W('POST', `/api/dine/requests/${h1.data.id}/done`, {})).status === 200 && (await W('POST', `/api/dine/requests/${h1.data.id}/done`, {})).status === 400);
+  for (let i = 0; i < 8; i++) await G('POST', `/api/public/dine/${tok(t3)}`, { kind: 'order', lines: [{ item_id: roti.id, qty: 1 }] });
+  check('a table cannot flood the staff: at most 8 waiting requests', (await G('POST', `/api/public/dine/${tok(t3)}`, { kind: 'order', lines: [{ item_id: roti.id, qty: 1 }] })).status === 400);
+  const q1 = await D('POST', `/api/dine/tables/${t3.id}/new-qr`, {});
+  const newTok = q1.tables.find((x) => x.id === t3.id).link.split('/t/')[1];
+  check('a new QR for a table: the old link stops at once, the new one works', newTok !== tok(t3) && (await G('GET', `/api/public/dine/${tok(t3)}`)).status === 404 && (await G('GET', `/api/public/dine/${newTok}`)).status === 200);
+  const page = await fetch(`${BASE}/t/${newTok}`);
+  check('the table link opens the app with a menu preview card and noindex', page.status === 200 && /Sharma Dhaba: menu, table T3/.test(await page.text()) && /noindex/.test(page.headers.get('x-robots-tag') || ''));
+  await D('PUT', '/api/dine/qr', { qr: false });
+  check('turning QR ordering off closes every table link', (await G('GET', `/api/public/dine/${newTok}`)).status === 404 && (await G('POST', `/api/public/dine/${tok(t1)}`, { kind: 'help', what: 'bill' })).status === 404);
 }
 
 /* --- exports: a foreign-currency invoice under LUT or with IGST, its shipping bill, GSTR-1 table 6A and 3B 3.1(b) --- */

@@ -3,7 +3,7 @@
    Every business table carries org_id: one database serves many businesses (multi-tenant).
    migrate() runs on the first request after each deploy, so no manual migration step is needed. */
 
-export const SCHEMA_VERSION = 47;
+export const SCHEMA_VERSION = 48;
 
 // document types whose monthly totals doc_month keeps (sales and purchase money documents)
 const MONTH_TYPES = `('INV','SRET','CNOTE','BILL','PRET','DNOTE')`;
@@ -751,6 +751,23 @@ export const MIGRATIONS = {
     `ALTER TABLE doc_lines ADD COLUMN picked_qty REAL NOT NULL DEFAULT 0`,
     `ALTER TABLE docs ADD COLUMN packed_by INTEGER`,
     `ALTER TABLE docs ADD COLUMN packed_at TEXT`,
+  ],
+  /* QR table ordering (src/dine.js): each table's own QR link, the shop's switch for it, what guests ask for (an order the
+     staff accept into a KOT, or help: water, the bill) and where each KOT is in the kitchen (new, cooking, ready, served).
+     KOTs made before this are taken as served, so the kitchen screen starts clean. */
+  48: [
+    `ALTER TABLE dine_tables ADD COLUMN qr_token TEXT`,
+    `CREATE UNIQUE INDEX IF NOT EXISTS ux_dine_qr ON dine_tables (qr_token)`,
+    `ALTER TABLE orgs ADD COLUMN dine TEXT NOT NULL DEFAULT '{}'`,
+    `ALTER TABLE kots ADD COLUMN kstatus TEXT NOT NULL DEFAULT 'new'`,
+    `ALTER TABLE kots ADD COLUMN kstatus_at TEXT`,
+    `UPDATE kots SET kstatus = 'served' WHERE kstatus_at IS NULL`,
+    `CREATE TABLE IF NOT EXISTS dine_requests (id INTEGER PRIMARY KEY, org_id INTEGER NOT NULL, table_id INTEGER NOT NULL, kind TEXT NOT NULL,
+      status TEXT NOT NULL DEFAULT 'new', lines TEXT NOT NULL DEFAULT '[]', what TEXT NOT NULL DEFAULT '', note TEXT NOT NULL DEFAULT '',
+      guest TEXT NOT NULL DEFAULT '', token_hash TEXT NOT NULL, created_at TEXT NOT NULL, handled_by INTEGER, handled_at TEXT,
+      reason TEXT NOT NULL DEFAULT '', kot_id INTEGER)`,
+    `CREATE INDEX IF NOT EXISTS ix_dine_requests ON dine_requests (org_id, status)`,
+    `CREATE INDEX IF NOT EXISTS ix_dine_requests_table ON dine_requests (table_id, status)`,
   ],
 };
 
