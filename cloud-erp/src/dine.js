@@ -297,9 +297,13 @@ export async function guestBill(c, token) {
   await rateLimit(c.env, 'dine:' + ipOf(c), 300, 600);
   const t = await guestTable(c, token);
   if (!t) throw noTable();
-  const o = await c.db.prepare(`SELECT upi_id FROM orgs WHERE id = ?`).bind(t.org_id).first();
-  return { table: t.name, shop: t.org, upi: (o && o.upi_id) || '', ...(await tableBill(c, t.id)) };
+  const o = await c.db.prepare(`SELECT upi_id, rzp FROM orgs WHERE id = ?`).bind(t.org_id).first();
+  return { table: t.name, shop: t.org, upi: (o && o.upi_id) || '', online: !!(o && o.rzp), ...(await tableBill(c, t.id)) };
 }
+/* for src/dinepay.js (paying online): the table behind a guest's QR, its bill, a guest's private token */
+export async function guestTableOf(c, token) { const t = await guestTable(c, token); if (!t) throw noTable(); return t; }
+export const tableBillOf = (c, tableId) => tableBill(c, tableId);
+export async function guestSecret() { const token = randomHex(16); return { token, hash: await sha(token) }; }
 
 /* a guest's order or call for help: waits for the staff; the reply carries the private token for following it */
 export async function guestSend(c, token, body) {
@@ -374,7 +378,7 @@ export async function dineRequests(c) {
   const { results } = await c.db.prepare(`SELECT r.id, r.table_id, r.kind, r.lines, r.what, r.note, r.guest, r.created_at, r.amount, t.name AS table_name
       FROM dine_requests r JOIN dine_tables t ON t.id = r.table_id WHERE r.org_id = ? AND r.status = 'new' ORDER BY r.id LIMIT 200`).bind(c.org.id).all();
   return { requests: results.map((r) => { let lines = []; try { lines = JSON.parse(r.lines); } catch (e) { lines = []; }
-    return { ...r, lines, help: r.kind === 'help' ? HELP[r.what] || 'Help' : r.kind === 'pay' ? 'Paid by UPI' : '', total: r.kind === 'pay' ? r.amount : Math.round(lines.reduce((s, l) => s + l.price * l.qty, 0) * 100) / 100 }; }) };
+    return { ...r, lines, help: r.kind === 'help' ? HELP[r.what] || 'Help' : r.kind === 'pay' ? (r.what === 'online' ? 'Paid online, check' : 'Paid by UPI') : '', total: r.kind === 'pay' ? r.amount : Math.round(lines.reduce((s, l) => s + l.price * l.qty, 0) * 100) / 100 }; }) };
 }
 
 /* accept a guest order: it becomes a KOT now (prices from the menu as it is now, as for any KOT); one staff member wins a race */
@@ -405,19 +409,25 @@ export async function settleRequest(c, id) {
   const r = await c.db.prepare(`SELECT * FROM dine_requests WHERE id = ? AND org_id = ?`).bind(id, c.org.id).first();
   if (!r) throw notFound('Request not found.');
   if (r.kind !== 'pay') throw bad('This is not a payment.');
+  return settleCore(c, r, r.note ? (r.what === 'online' ? r.note : 'UPI ' + r.note) : 'UPI at table', 'new');
+}
+/* the bill made and paid to the UPI account; from = the status the request must be in ('new' for the staff, 'online' for
+   Razorpay's webhook), so a payment is settled once whoever comes first */
+export async function settleCore(c, r, reference, from) {
+  // the bill must still be exactly what was paid: never mark a bigger bill paid in full
   const bill = await tableBill(c, r.table_id);
   if (bill.pay !== Math.round(r.amount)) throw bad(`The bill is now ₹${bill.pay}, the guest paid ₹${Math.round(r.amount)}. Settle the difference at the counter and bill the table from its page.`);
   const upi = await c.db.prepare(`SELECT id FROM accounts WHERE org_id = ? AND sys = 'upi'`).bind(c.org.id).first();
   if (!upi) throw bad('There is no UPI account in your books.');
-  const hold = await c.db.prepare(`UPDATE dine_requests SET status = 'accepting', handled_by = ?, handled_at = ? WHERE id = ? AND status = 'new'`).bind(c.user.id, nowIso(), r.id).run();
+  const hold = await c.db.prepare(`UPDATE dine_requests SET status = 'accepting', handled_by = ?, handled_at = ? WHERE id = ? AND status = ?`).bind(c.user.id, nowIso(), r.id, from).run();
   if (!hold.meta.changes) throw bad('Someone has already answered this payment.');
   let b;
-  try { b = await billOrder(c, r.table_id, { payment: { full: true, account_id: upi.id, reference: r.note ? 'UPI ' + r.note : 'UPI at table' } }); } catch (e) {
-    await c.db.prepare(`UPDATE dine_requests SET status = 'new', handled_by = NULL, handled_at = NULL WHERE id = ? AND status = 'accepting'`).bind(r.id).run();
+  try { b = await billOrder(c, r.table_id, { payment: { full: true, account_id: upi.id, reference } }); } catch (e) {
+    await c.db.prepare(`UPDATE dine_requests SET status = ?, handled_by = NULL, handled_at = NULL WHERE id = ? AND status = 'accepting'`).bind(from, r.id).run();
     throw e;
   }
   await c.db.batch([c.db.prepare(`UPDATE dine_requests SET status = 'done', doc_id = ? WHERE id = ?`).bind(b.doc_id, r.id),
-    auditStatement(c, 'table paid by UPI', `₹${Math.round(r.amount)}${r.note ? ', ref ' + r.note : ''}, ${b.number}`)]);
+    auditStatement(c, from === 'online' ? 'table paid online (Razorpay)' : 'table paid by UPI', `₹${Math.round(r.amount)}${r.note ? ', ref ' + r.note : ''}, ${reference}, ${b.number}`.slice(0, 300))]);
   return b;
 }
 

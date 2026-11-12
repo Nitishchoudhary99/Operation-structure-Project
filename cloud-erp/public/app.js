@@ -7233,7 +7233,7 @@ const DINE_T = {
     k: { new: 'Sent to the kitchen', cooking: 'Being cooked', ready: 'Ready, coming to you', served: 'Served' },
     hk: { water: 'Water', cutlery: 'Cutlery', tissues: 'Tissues', bill: 'Bring the bill', other: 'Call staff' }, empty: 'Nothing matches.', lang: 'हिंदी', priv: 'No app, no sign-up, no phone number. Only this restaurant sees your order.',
     bill: 'Bill & pay', yourBill: 'Your bill', noBill: 'Nothing on this table\'s bill yet.', toPay: 'To pay', split: 'Split between', people: (n) => `${n} ${n === 1 ? 'person' : 'people'}`, each: (v) => `${v} each (one of you pays the bill)`,
-    payUpi: (v) => `Pay ${v} by UPI`, scan: 'Or scan with another phone', ref: 'UPI reference / UTR (optional)', paid: 'I have paid', counter: 'Pay at the counter instead',
+    payOnline: (v) => `Pay ${v} online (UPI, card)`, payUpi: (v) => `Pay ${v} by UPI`, scan: 'Or scan with another phone', ref: 'UPI reference / UTR (optional)', paid: 'I have paid', counter: 'Pay at the counter instead',
     payWait: 'Payment sent to the staff to check.', payDone: 'Paid. Thank you!', payNo: 'Payment not confirmed', payRow: (v) => `UPI payment ${v}`, noUpi: 'This restaurant takes payment at the counter.' },
   hi: { none: 'यह टेबल अभी ऑर्डर नहीं ले रही', ask: 'कृपया स्टाफ़ से पूछें।', search: 'मेन्यू में खोजें', all: 'सब', add: 'जोड़ें', order: 'ऑर्डर भेजें',
     items: (n) => `${n} आइटम`, total: 'कुल', name: 'आपका नाम (ज़रूरी नहीं)', note: 'रसोई के लिए नोट (ज़रूरी नहीं)', back: 'वापस', send: 'स्टाफ़ को भेजें',
@@ -7242,7 +7242,7 @@ const DINE_T = {
     k: { new: 'रसोई में पहुँचा', cooking: 'बन रहा है', ready: 'तैयार, आ रहा है', served: 'परोस दिया' },
     hk: { water: 'पानी', cutlery: 'चम्मच-काँटा', tissues: 'टिशू', bill: 'बिल लाइए', other: 'स्टाफ़ बुलाइए' }, empty: 'कुछ नहीं मिला।', lang: 'English', priv: 'न ऐप, न साइन-अप, न फ़ोन नंबर। आपका ऑर्डर सिर्फ़ यही रेस्टोरेंट देखता है।',
     bill: 'बिल और भुगतान', yourBill: 'आपका बिल', noBill: 'इस टेबल के बिल में अभी कुछ नहीं।', toPay: 'देना है', split: 'कितने लोगों में बाँटें', people: (n) => `${n} लोग`, each: (v) => `हर एक का ${v} (बिल एक ही व्यक्ति भरे)`,
-    payUpi: (v) => `${v} UPI से भरें`, scan: 'या दूसरे फ़ोन से स्कैन करें', ref: 'UPI रेफ़रेंस / UTR (ज़रूरी नहीं)', paid: 'मैंने भुगतान कर दिया', counter: 'काउंटर पर भरेंगे',
+    payOnline: (v) => `${v} ऑनलाइन भरें (UPI, कार्ड)`, payUpi: (v) => `${v} UPI से भरें`, scan: 'या दूसरे फ़ोन से स्कैन करें', ref: 'UPI रेफ़रेंस / UTR (ज़रूरी नहीं)', paid: 'मैंने भुगतान कर दिया', counter: 'काउंटर पर भरेंगे',
     payWait: 'भुगतान स्टाफ़ जाँच रहा है।', payDone: 'भुगतान हो गया। धन्यवाद!', payNo: 'भुगतान पक्का नहीं हुआ', payRow: (v) => `UPI भुगतान ${v}`, noUpi: 'यह रेस्टोरेंट काउंटर पर भुगतान लेता है।' },
 };
 async function publicTable(token) {
@@ -7305,7 +7305,7 @@ async function publicTable(token) {
     if (!list) return;
     try { const r = await api('GET', '/status?r=' + list); r.requests.forEach((x) => { status[x.id] = x; }); drawMine(); } catch (e) { /* try again later */ }
     const open = mine.some((m) => (m.kind === 'order' && (!status[m.id] || (status[m.id].status !== 'rejected' && status[m.id].kitchen !== 'served')))
-      || (m.kind === 'pay' && (!status[m.id] || status[m.id].status === 'new' || status[m.id].status === 'accepting')));
+      || (m.kind === 'pay' && (!status[m.id] || ['new', 'accepting', 'online'].includes(status[m.id].status))));
     if (open) timer = setTimeout(poll, document.hidden ? 30000 : 8000);
   }
   async function showBill() {
@@ -7319,7 +7319,8 @@ async function publicTable(token) {
         <div class="row" style="font-size:18px;margin-top:6px"><b>${L.toPay}</b><span class="spacer"></span><b>${inr(b.pay)}</b></div>
         <div class="row small"><span>${L.split}</span><span class="spacer"></span><button type="button" class="btn sm" id="dsm" aria-label="-">−</button><b style="min-width:70px;text-align:center">${L.people(n)}</b><button type="button" class="btn sm" id="dsp" aria-label="+">+</button></div>
         ${n > 1 ? `<p class="muted small">${L.each(inr(Math.ceil(b.pay / n)))}</p>` : ''}
-        ${b.upi ? `<a class="btn primary" style="width:100%;margin-top:8px" href="${esc(upiLink(b.upi, b.shop, b.pay, 'Table ' + b.table))}">${L.payUpi(inr(b.pay))}</a>
+        ${b.online ? `<button type="button" class="btn primary" style="width:100%;margin-top:8px" id="donline">${L.payOnline(inr(b.pay))}</button>` : ''}
+        ${b.upi ? `<a class="btn ${b.online ? '' : 'primary'}" style="width:100%;margin-top:8px" href="${esc(upiLink(b.upi, b.shop, b.pay, 'Table ' + b.table))}">${L.payUpi(inr(b.pay))}</a>
           <details class="small"><summary>${L.scan}</summary><div id="dqr"></div></details>
           <label class="f">${L.ref}<input id="dref" maxlength="30" inputmode="numeric" autocomplete="off"></label>
           <button type="button" class="btn" style="width:100%" id="dpaid">${L.paid}</button>` : `<p class="muted small">${L.noUpi}</p>`}
@@ -7327,6 +7328,11 @@ async function publicTable(token) {
       if ($('#dqr')) qrInto($('#dqr'), upiLink(b.upi, b.shop, b.pay, 'Table ' + b.table));
       $('#dsm').onclick = () => { n = Math.max(1, n - 1); draw(); }; $('#dsp').onclick = () => { n = Math.min(20, n + 1); draw(); };
       $('#dcounter').onclick = async (e) => { e.target.disabled = true; try { await api('POST', '', { kind: 'help', what: 'bill' }); $('#dpayerr').textContent = L.hk.bill + ': ' + L.helpSent; } catch (er) { $('#dpayerr').textContent = er.message; e.target.disabled = false; } };
+      if ($('#donline')) $('#donline').onclick = async (e) => {
+        e.target.disabled = true;
+        try { const r = await api('POST', '/pay-online', { amount: b.pay }); mine.push({ id: r.id, token: r.token, kind: 'pay', at: Date.now(), amount: b.pay }); keep(mineKey, mine); location.href = r.url; }
+        catch (er) { $('#dpayerr').textContent = er.message; e.target.disabled = false; if (/changed/.test(er.message)) setTimeout(showBill, 1500); }
+      };
       if ($('#dpaid')) $('#dpaid').onclick = async (e) => {
         e.target.disabled = true;
         try { const r = await api('POST', '', { kind: 'pay', amount: b.pay, ref: $('#dref').value }); mine.push({ id: r.id, token: r.token, kind: 'pay', at: Date.now(), amount: b.pay }); keep(mineKey, mine); box.innerHTML = `<p class="okbox">${L.payWait}</p>`; drawMine(); poll(); }
@@ -7396,8 +7402,9 @@ function dineAsksHtml(x) {
   return `<div class="panel dasks"><div class="row"><b>From the tables (QR)</b><span class="spacer"></span><span class="muted small">${x.requests.length} waiting</span></div>
     ${x.requests.map((r) => `<div class="dask ${r.kind}"><div class="row"><b>Table ${esc(r.table_name)}</b><span class="muted small">${since(r.created_at)} ago${r.guest ? ` · ${esc(r.guest)}` : ''}</span><span class="spacer"></span>
       ${r.kind === 'help' ? `<span class="badge">${esc(r.help)}</span><button class="btn sm primary" data-rdone="${r.id}">Done</button>`
-        : r.kind === 'pay' ? `<span class="badge">Paid by UPI</span><b>${inr(r.total)}</b>` : `<b>${inr(r.total)}</b>`}</div>
-      ${r.kind === 'pay' ? `<div class="small">Check your UPI app for ${inr(r.total)}${r.note ? `, reference <b>${esc(r.note)}</b>` : ''}. When it has come in, make the bill.</div>
+        : r.kind === 'pay' ? `<span class="badge">${esc(r.help)}</span><b>${inr(r.total)}</b>` : `<b>${inr(r.total)}</b>`}</div>
+      ${r.kind === 'pay' ? `<div class="small">${r.what === 'online' ? `Razorpay says ${inr(r.total)} was paid online (<b>${esc(r.note)}</b>), but it did not match the table's bill, so nothing was billed. Check it in Razorpay, then make the bill and settle any difference at the counter.`
+        : `Check your UPI app for ${inr(r.total)}${r.note ? `, reference <b>${esc(r.note)}</b>` : ''}. When it has come in, make the bill.`}</div>
         <div class="row"><button class="btn sm danger" data-rrej="${r.id}">Not received</button><span class="spacer"></span><button class="btn sm primary" data-rpay="${r.id}">Received: make the bill</button></div>` : ''}
       ${r.kind === 'order' ? `<div class="small">${r.lines.map((l) => `${l.qty} × ${esc(l.name)}${l.note ? ` <i class="muted">(${esc(l.note)})</i>` : ''}`).join('<br>')}</div>
         ${r.note ? `<div class="small muted">Note: ${esc(r.note)}</div>` : ''}
@@ -7503,7 +7510,8 @@ route(/^kitchen$/, async (el) => {
   const tick = setInterval(() => { if (location.hash === '#/kitchen') draw(); else clearInterval(tick); }, 8000);
 });
 route(/^table-qr$/, async (el) => {
-  const x = await GET('/api/dine/qr');
+  const canRzp = ME.can.settings;
+  const [x, rz] = await Promise.all([GET('/api/dine/qr'), canRzp ? GET('/api/dine/razorpay').catch(() => ({ on: false, key_id: '' })) : null]);
   el.innerHTML = head('Table QR ordering', '<a class="btn" href="#/tables">Tables</a><button class="btn" data-act="print">Print posters</button>') + `
     <div class="panel no-print"><form id="dqs" class="form"><label class="f wide" style="flex-direction:row;justify-content:flex-start;gap:8px;align-items:center;font-size:15px;font-weight:600"><input type="checkbox" name="qr" ${x.qr ? 'checked' : ''} style="width:20px;height:20px;margin:0;flex:none"> Guests can order from the table QR</label>
       <label class="f wide">Note on the menu (optional)<input name="note" maxlength="200" value="${esc(x.note)}" placeholder="Orders are confirmed by our staff. Kitchen open till 11 pm."></label>
@@ -7514,12 +7522,21 @@ route(/^table-qr$/, async (el) => {
       ${x.kitchen_link ? `<div class="row" style="align-items:center;gap:12px;flex-wrap:wrap"><div id="kdqr" style="width:120px"></div><div style="flex:1;min-width:200px"><code style="word-break:break-all">${esc(x.kitchen_link)}</code>
         <div class="row" style="margin-top:8px"><a class="btn sm" href="${esc(x.kitchen_link)}" target="_blank" rel="noopener">Open</a><button class="btn sm" id="kdnew">New link</button><button class="btn sm danger" id="kdoff">Switch off</button></div></div></div>`
         : '<button class="btn primary" id="kdnew">Make the kitchen link</button>'}</div>
+    ${canRzp ? `<details class="panel no-print" id="rzpanel"${rz.on ? ' open' : ''}><summary><b>Guests pay online (your Razorpay)</b> <span class="muted small">${rz.on ? `on · ${esc(rz.key_id)}` : 'off'} · the bill is made by itself when Razorpay says paid</span></summary>
+      <p class="muted small">The money goes to your own Razorpay account. Guests tap "Pay online" on their bill, pay by UPI or card on Razorpay's page, and the table's bill is made and paid to your UPI account by itself: no checking screenshots. If the bill changed after they paid, nothing is billed: the payment waits on the Tables page for you.</p>
+      <form id="rzf" class="form"><label class="f">Key Id<input name="key_id" value="${esc(rz.key_id)}" placeholder="rzp_live_XXXXXXXX" autocomplete="off"></label>
+        <label class="f">Key Secret<input name="key_secret" type="password" autocomplete="new-password" placeholder="${rz.on ? 'saved: leave empty to keep' : 'from Razorpay → API Keys'}"></label>
+        <label class="f">Webhook Secret<input name="webhook_secret" type="password" autocomplete="new-password" placeholder="${rz.on ? 'saved: leave empty to keep' : 'any text, the same in Razorpay'}"></label>
+        <div class="f wide row"><button class="btn primary" style="width:auto">Save</button>${rz.on ? '<button type="button" class="btn danger" id="rzoff" style="width:auto">Switch off</button>' : ''}</div></form>
+      ${rz.webhook_url ? `<p class="small">In Razorpay: <b>Settings → Webhooks → Add new webhook</b>. URL <code style="word-break:break-all">${esc(rz.webhook_url)}</code>, secret = the Webhook Secret above, event <b>payment_link.paid</b>.</p>` : ''}</details>` : ''}
     ${ME.can.items ? `<details class="panel no-print" id="fpanel"><summary><b>Veg / non-veg marks on the menu</b> <span class="muted small">guests see the green or brown mark next to each dish</span></summary><div id="flist" class="muted small">Loading…</div></details>` : ''}
     <div class="qrposters">${x.tables.map((t) => `<div class="qrposter"><b class="qpname">${esc(ME.org.name)}</b><div class="qrbox" data-link="${esc(t.link)}"></div><b class="qptable">Table ${esc(t.name)}</b>
       <div>Scan to see the menu and order</div><div lang="hi">स्कैन करें, मेन्यू देखें, ऑर्डर करें</div>
       <div class="no-print row" style="justify-content:center"><a class="btn sm" href="${esc(t.link)}" target="_blank" rel="noopener">Open</a><button class="btn sm" data-newqr="${t.id}">New QR</button></div></div>`).join('') || '<div class="empty">Add tables first.</div>'}</div>`;
   $$('.qrbox', el).forEach((b) => qrInto(b, b.dataset.link));
   if (x.kitchen_link) qrInto($('#kdqr'), x.kitchen_link);
+  if ($('#rzf')) $('#rzf').onsubmit = async (e) => { e.preventDefault(); const f = e.target; try { await api('PUT', '/api/dine/razorpay', { key_id: f.key_id.value, key_secret: f.key_secret.value, webhook_secret: f.webhook_secret.value }); toast('Saved. Add the webhook in Razorpay as shown.'); render(); } catch (er) { toast(er.message, 'err'); } };
+  if ($('#rzoff')) $('#rzoff').onclick = async () => { if (!confirm('Switch online payment off? Guests can still pay by UPI and tell the staff.')) return; try { await api('DELETE', '/api/dine/razorpay'); render(); } catch (er) { toast(er.message, 'err'); } };
   const drawFood = (m) => { $('#flist').innerHTML = m.menu.length ? `<table class="tbl"><tbody>${m.menu.map((i) => `<tr><td>${foodMark(i.food)}${esc(i.name)}<div class="muted small">${esc(i.category)}</div></td><td style="width:150px"><select data-food="${i.id}" aria-label="Mark for ${esc(i.name)}">
       ${[['', 'No mark'], ['veg', 'Veg'], ['nonveg', 'Non-veg'], ['egg', 'Egg']].map(([v, t]) => `<option value="${v}"${i.food === v ? ' selected' : ''}>${t}</option>`).join('')}</select></td></tr>`).join('')}</tbody></table>` : 'No dishes with a selling price yet.'; };
   if ($('#fpanel')) $('#fpanel').addEventListener('toggle', async () => { if ($('#fpanel').open && !$('#fpanel').dataset.got) { $('#fpanel').dataset.got = '1'; try { drawFood(await GET('/api/dine/menu')); } catch (er) { $('#flist').textContent = er.message; } } });

@@ -56,6 +56,7 @@ import { widgetData, listDashboards, saveDashboard, deleteDashboard, pickDefault
 import { dineBoard, addTables, removeTable, tableDetail, sendKot, voidLine, moveOrder, billOrder, voidOrder, kotLog, guestMenu, guestSend, guestStatus,
   dineRequests, acceptRequest, answerRequest, kitchen, kotStatus, dineQr, saveDineSettings, newTableQr, guestBill, settleRequest, dineToday, kitchenLink, kitchenDisplay, kitchenDisplaySet,
   dineMenu, dineSoldOut, dineFood, kitchenMenu, kitchenSoldOut } from './dine.js';
+import { rzpSettings, rzpSave, rzpOff, guestPayOnline, rzpWebhook } from './dinepay.js';
 import { secondStep, twoStepStart, twoStepEnable, twoStepDisable, newBackupCodes, twoStepReset, requireTwoStep, stepUp, loginStatement, signInHistory,
   closeBusiness, cancelClose, purgeClosed, notOwnerWhileClosing } from './security.js';
 import { workbook } from './xlsx.js';
@@ -1039,6 +1040,11 @@ router.add('POST', '/api/dine/requests/:id/reject', async (c) => json(await answ
 router.add('POST', '/api/dine/requests/:id/settle', async (c) => json(await docDetail(c, (await settleRequest(c, +c.params.id)).doc_id)));
 router.add('POST', '/api/dine/requests/:id/done', async (c) => json(await answerRequest(c, +c.params.id, c.body, 'done')));
 router.add('GET', '/api/dine/today', async (c) => json(await dineToday(c)));
+router.add('GET', '/api/dine/razorpay', async (c) => json(await rzpSettings(c)));
+router.add('PUT', '/api/dine/razorpay', async (c) => json(await rzpSave(c)));
+router.add('DELETE', '/api/dine/razorpay', async (c) => json(await rzpOff(c)));
+router.add('POST', '/api/public/dine/:token/pay-online', async (c) => json(await guestPayOnline(c, c.params.token, c.body), 200, noStore), { public: true });
+router.add('POST', '/api/public/pg/razorpay/:tok', async (c) => json(await rzpWebhook(c, c.params.tok)), { public: true, webhook: true });
 router.add('GET', '/api/dine/menu', async (c) => json(await dineMenu(c)));
 router.add('POST', '/api/dine/menu/:id/sold-out', async (c) => json(await dineSoldOut(c, +c.params.id, c.body)));
 router.add('POST', '/api/dine/menu/:id/food', async (c) => json(await dineFood(c, +c.params.id, c.body)));

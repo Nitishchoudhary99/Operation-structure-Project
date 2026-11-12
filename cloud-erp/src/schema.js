@@ -3,7 +3,7 @@
    Every business table carries org_id: one database serves many businesses (multi-tenant).
    migrate() runs on the first request after each deploy, so no manual migration step is needed. */
 
-export const SCHEMA_VERSION = 51;
+export const SCHEMA_VERSION = 52;
 
 // document types whose monthly totals doc_month keeps (sales and purchase money documents)
 const MONTH_TYPES = `('INV','SRET','CNOTE','BILL','PRET','DNOTE')`;
@@ -786,6 +786,15 @@ export const MIGRATIONS = {
     `ALTER TABLE orgs ADD COLUMN kd_token TEXT`,
     `UPDATE orgs SET kd_token = json_extract(dine, '$.kt') WHERE dine LIKE '%"kt":"%' AND json_valid(dine)`,
     `CREATE UNIQUE INDEX IF NOT EXISTS ux_orgs_kd_token ON orgs (kd_token) WHERE kd_token IS NOT NULL AND kd_token != ''`,
+  ],
+  /* paying the table online through the shop's own Razorpay (src/dinepay.js): its sealed keys, the webhook's address token,
+     and the Payment Link a guest's payment went through */
+  52: [
+    `ALTER TABLE orgs ADD COLUMN rzp TEXT`,
+    `ALTER TABLE orgs ADD COLUMN rzp_token TEXT`,
+    `CREATE UNIQUE INDEX IF NOT EXISTS ux_orgs_rzp_token ON orgs (rzp_token) WHERE rzp_token IS NOT NULL`,
+    `ALTER TABLE dine_requests ADD COLUMN pg_ref TEXT`,
+    `CREATE INDEX IF NOT EXISTS ix_dine_requests_pg ON dine_requests (org_id, pg_ref) WHERE pg_ref IS NOT NULL`,
   ],
 };
 
