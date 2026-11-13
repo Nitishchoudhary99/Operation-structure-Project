@@ -257,7 +257,7 @@ const HELP = { water: 'Water', cutlery: 'Cutlery', tissues: 'Tissues', bill: 'Th
 const KSTATUS = ['new', 'cooking', 'ready', 'served'];
 const sha = async (t) => [...new Uint8Array(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(t)))].map((b) => b.toString(16).padStart(2, '0')).join('');
 const same = (a, b) => { a = String(a); b = String(b); if (a.length !== b.length) return false; let d = 0; for (let i = 0; i < a.length; i++) d |= a.charCodeAt(i) ^ b.charCodeAt(i); return d === 0; };
-export const dineSettingsOf = (o) => { let s = {}; try { s = JSON.parse(o.dine || '{}') || {}; } catch (e) { s = {}; } return { qr: !!s.qr, note: String(s.note || '').slice(0, 200) }; };
+export const dineSettingsOf = (o) => { let s = {}; try { s = JSON.parse(o.dine || '{}') || {}; } catch (e) { s = {}; } return { qr: !!s.qr, note: String(s.note || '').slice(0, 200), kt: /^[0-9a-f]{24}$/.test(s.kt || '') ? s.kt : '' }; };
 const ipOf = (c) => c.request.headers.get('CF-Connecting-IP') || 'local';
 
 /* the table a QR link opens, with its business; null when the link is wrong or the business has QR ordering off */
@@ -274,10 +274,12 @@ export async function guestMenu(c, token) {
   await rateLimit(c.env, 'dine:' + ipOf(c), 300, 600);
   const t = await guestTable(c, token);
   if (!t) throw noTable();
-  const { results } = await c.db.prepare(`SELECT id, name, unit, category, sale_price, gst_rate, price_incl FROM items
+  const { results } = await c.db.prepare(`SELECT id, name, unit, category, sale_price, gst_rate, price_incl, food, sold_out FROM items
       WHERE org_id = ? AND shop_hide = 0 AND sale_price > 0 AND is_service IN (0, 1) ORDER BY category, name LIMIT 1000`).bind(t.org_id).all();
+  const day = today();
   return { shop: { name: t.org, city: t.city || '', note: dineSettingsOf(t).note }, table: t.name, help: Object.keys(HELP),
-    items: results.map((i) => ({ id: i.id, name: i.name, unit: i.unit, category: i.category || '', price: R(i.sale_price * (100 + (i.gst_rate || 0)) / 100) })) };
+    items: results.map((i) => ({ id: i.id, name: i.name, unit: i.unit, category: i.category || '', price: R(i.sale_price * (100 + (i.gst_rate || 0)) / 100),
+      food: FOOD.includes(i.food) ? i.food : '', sold_out: i.sold_out === day })) };
 }
 
 /* the table's running bill as the guest sees it: dishes, quantities and amounts with GST, the total to pay (rounded to
@@ -295,9 +297,13 @@ export async function guestBill(c, token) {
   await rateLimit(c.env, 'dine:' + ipOf(c), 300, 600);
   const t = await guestTable(c, token);
   if (!t) throw noTable();
-  const o = await c.db.prepare(`SELECT upi_id FROM orgs WHERE id = ?`).bind(t.org_id).first();
-  return { table: t.name, shop: t.org, upi: (o && o.upi_id) || '', ...(await tableBill(c, t.id)) };
+  const o = await c.db.prepare(`SELECT upi_id, rzp FROM orgs WHERE id = ?`).bind(t.org_id).first();
+  return { table: t.name, shop: t.org, upi: (o && o.upi_id) || '', online: !!(o && o.rzp), ...(await tableBill(c, t.id)) };
 }
+/* for src/dinepay.js (paying online): the table behind a guest's QR, its bill, a guest's private token */
+export async function guestTableOf(c, token) { const t = await guestTable(c, token); if (!t) throw noTable(); return t; }
+export const tableBillOf = (c, tableId) => tableBill(c, tableId);
+export async function guestSecret() { const token = randomHex(16); return { token, hash: await sha(token) }; }
 
 /* a guest's order or call for help: waits for the staff; the reply carries the private token for following it */
 export async function guestSend(c, token, body) {
@@ -314,12 +320,13 @@ export async function guestSend(c, token, body) {
     if (!raw.length) throw bad('Add something from the menu first.');
     if (raw.length > 40) throw bad('At most 40 dishes in one order.');
     const ids = [...new Set(raw.map((l) => +l.item_id || 0))];
-    const { results } = await c.db.prepare(`SELECT id, name, sale_price, gst_rate FROM items WHERE org_id = ? AND shop_hide = 0 AND sale_price > 0
+    const { results } = await c.db.prepare(`SELECT id, name, sale_price, gst_rate, sold_out FROM items WHERE org_id = ? AND shop_hide = 0 AND sale_price > 0
         AND id IN (${ids.map(() => '?').join(',')})`).bind(t.org_id, ...ids).all();
     const byId = new Map(results.map((i) => [i.id, i]));
     lines = raw.map((l) => {
       const it = byId.get(+l.item_id);
       if (!it) throw bad('Something in the order is no longer on the menu. Please refresh the menu.');
+      if (it.sold_out === today()) throw bad(`Sorry, ${it.name} is finished for today. Please take it out of the order.`);
       const qty = Math.round(+l.qty);
       if (!(qty >= 1 && qty <= 50)) throw bad(`${it.name}: choose 1 to 50.`);
       const price = R(it.sale_price * (100 + (it.gst_rate || 0)) / 100);
@@ -371,7 +378,7 @@ export async function dineRequests(c) {
   const { results } = await c.db.prepare(`SELECT r.id, r.table_id, r.kind, r.lines, r.what, r.note, r.guest, r.created_at, r.amount, t.name AS table_name
       FROM dine_requests r JOIN dine_tables t ON t.id = r.table_id WHERE r.org_id = ? AND r.status = 'new' ORDER BY r.id LIMIT 200`).bind(c.org.id).all();
   return { requests: results.map((r) => { let lines = []; try { lines = JSON.parse(r.lines); } catch (e) { lines = []; }
-    return { ...r, lines, help: r.kind === 'help' ? HELP[r.what] || 'Help' : r.kind === 'pay' ? 'Paid by UPI' : '', total: r.kind === 'pay' ? r.amount : Math.round(lines.reduce((s, l) => s + l.price * l.qty, 0) * 100) / 100 }; }) };
+    return { ...r, lines, help: r.kind === 'help' ? HELP[r.what] || 'Help' : r.kind === 'pay' ? (r.what === 'online' ? 'Paid online, check' : 'Paid by UPI') : '', total: r.kind === 'pay' ? r.amount : Math.round(lines.reduce((s, l) => s + l.price * l.qty, 0) * 100) / 100 }; }) };
 }
 
 /* accept a guest order: it becomes a KOT now (prices from the menu as it is now, as for any KOT); one staff member wins a race */
@@ -402,19 +409,25 @@ export async function settleRequest(c, id) {
   const r = await c.db.prepare(`SELECT * FROM dine_requests WHERE id = ? AND org_id = ?`).bind(id, c.org.id).first();
   if (!r) throw notFound('Request not found.');
   if (r.kind !== 'pay') throw bad('This is not a payment.');
+  return settleCore(c, r, r.note ? (r.what === 'online' ? r.note : 'UPI ' + r.note) : 'UPI at table', 'new');
+}
+/* the bill made and paid to the UPI account; from = the status the request must be in ('new' for the staff, 'online' for
+   Razorpay's webhook), so a payment is settled once whoever comes first */
+export async function settleCore(c, r, reference, from) {
+  // the bill must still be exactly what was paid: never mark a bigger bill paid in full
   const bill = await tableBill(c, r.table_id);
   if (bill.pay !== Math.round(r.amount)) throw bad(`The bill is now ₹${bill.pay}, the guest paid ₹${Math.round(r.amount)}. Settle the difference at the counter and bill the table from its page.`);
   const upi = await c.db.prepare(`SELECT id FROM accounts WHERE org_id = ? AND sys = 'upi'`).bind(c.org.id).first();
   if (!upi) throw bad('There is no UPI account in your books.');
-  const hold = await c.db.prepare(`UPDATE dine_requests SET status = 'accepting', handled_by = ?, handled_at = ? WHERE id = ? AND status = 'new'`).bind(c.user.id, nowIso(), r.id).run();
+  const hold = await c.db.prepare(`UPDATE dine_requests SET status = 'accepting', handled_by = ?, handled_at = ? WHERE id = ? AND status = ?`).bind(c.user.id, nowIso(), r.id, from).run();
   if (!hold.meta.changes) throw bad('Someone has already answered this payment.');
   let b;
-  try { b = await billOrder(c, r.table_id, { payment: { full: true, account_id: upi.id, reference: r.note ? 'UPI ' + r.note : 'UPI at table' } }); } catch (e) {
-    await c.db.prepare(`UPDATE dine_requests SET status = 'new', handled_by = NULL, handled_at = NULL WHERE id = ? AND status = 'accepting'`).bind(r.id).run();
+  try { b = await billOrder(c, r.table_id, { payment: { full: true, account_id: upi.id, reference } }); } catch (e) {
+    await c.db.prepare(`UPDATE dine_requests SET status = ?, handled_by = NULL, handled_at = NULL WHERE id = ? AND status = 'accepting'`).bind(from, r.id).run();
     throw e;
   }
   await c.db.batch([c.db.prepare(`UPDATE dine_requests SET status = 'done', doc_id = ? WHERE id = ?`).bind(b.doc_id, r.id),
-    auditStatement(c, 'table paid by UPI', `₹${Math.round(r.amount)}${r.note ? ', ref ' + r.note : ''}, ${b.number}`)]);
+    auditStatement(c, from === 'online' ? 'table paid online (Razorpay)' : 'table paid by UPI', `₹${Math.round(r.amount)}${r.note ? ', ref ' + r.note : ''}, ${reference}, ${b.number}`.slice(0, 300))]);
   return b;
 }
 
@@ -429,26 +442,32 @@ export async function answerRequest(c, id, body, status) {
 
 /* the kitchen screen: today's tickets not yet served (and cancellations not yet seen), oldest first, with their items */
 export async function kitchen(c) {
-  requireCan(c.user, 'sales');
+  requireCan(c.user, 'kitchen');
+  return kitchenOf(c, c.org.id);
+}
+async function kitchenOf(c, orgId) {
   const day = today();
   const [kots, lines] = await c.db.batch([
     c.db.prepare(`SELECT k.id, k.number, k.kind, k.kstatus, k.created_at, t.name AS table_name FROM kots k JOIN dine_orders o ON o.id = k.order_id
-        JOIN dine_tables t ON t.id = o.table_id WHERE k.org_id = ? AND k.day = ? AND k.kstatus != 'served' ORDER BY k.id LIMIT 200`).bind(c.org.id, day),
+        JOIN dine_tables t ON t.id = o.table_id WHERE k.org_id = ? AND k.day = ? AND k.kstatus != 'served' ORDER BY k.id LIMIT 200`).bind(orgId, day),
     c.db.prepare(`SELECT l.kot_id, l.void_kot_id, l.name, l.qty, l.note FROM dine_lines l JOIN kots k ON k.id = l.kot_id OR k.id = l.void_kot_id
-        WHERE k.org_id = ? AND k.day = ? AND k.kstatus != 'served'`).bind(c.org.id, day),
+        WHERE k.org_id = ? AND k.day = ? AND k.kstatus != 'served'`).bind(orgId, day),
   ]);
   return { day, kots: kots.results.map((k) => ({ ...k, lines: lines.results.filter((l) => (k.kind === 'cancel' ? l.void_kot_id : l.kot_id) === k.id).map((l) => ({ name: l.name, qty: l.qty, note: l.note })) })) };
 }
 
 export async function kotStatus(c, id, body) {
-  requireCan(c.user, 'sales');
+  requireCan(c.user, 'kitchen');
+  return setKot(c, c.org.id, id, body);
+}
+async function setKot(c, orgId, id, body) {
   const st = body && body.status;
   if (!KSTATUS.includes(st)) throw bad('Unknown kitchen status.');
   const now = nowIso();
   const r = await c.db.prepare(`UPDATE kots SET kstatus = ?, kstatus_at = ?, ready_at = CASE WHEN ? = 'ready' THEN COALESCE(ready_at, ?) ELSE ready_at END
-      WHERE id = ? AND org_id = ?`).bind(st, now, st, now, id, c.org.id).run();
+      WHERE id = ? AND org_id = ?`).bind(st, now, st, now, id, orgId).run();
   if (!r.meta.changes) throw notFound('KOT not found.');
-  return kitchen(c);
+  return kitchenOf(c, orgId);
 }
 
 /* QR set-up: the switch and note, and every table's link (made the first time it is asked for) */
@@ -458,11 +477,12 @@ export async function dineQr(c) {
   if (results.length) await c.db.batch(results.map((t) => c.db.prepare(`UPDATE dine_tables SET qr_token = ? WHERE id = ? AND qr_token IS NULL`).bind(randomHex(12), t.id)));
   const t = await c.db.prepare(`SELECT id, name, area, qr_token FROM dine_tables WHERE org_id = ? AND active = 1 ORDER BY area, sort, id`).bind(c.org.id).all();
   const origin = new URL(c.request.url).origin;
-  return { ...dineSettingsOf(c.org), tables: t.results.map((x) => ({ id: x.id, name: x.name, area: x.area, link: `${origin}/t/${x.qr_token}` })) };
+  const st = dineSettingsOf(c.org);
+  return { qr: st.qr, note: st.note, kitchen_link: st.kt ? `${origin}/kd/${st.kt}` : '', tables: t.results.map((x) => ({ id: x.id, name: x.name, area: x.area, link: `${origin}/t/${x.qr_token}` })) };
 }
 export async function saveDineSettings(c, body) {
   requireCan(c.user, 'settings');
-  const s = { qr: body && body.qr === true, note: str(body && body.note, 200) };
+  const s = { qr: body && body.qr === true, note: str(body && body.note, 200), kt: dineSettingsOf(c.org).kt };
   await c.db.batch([c.db.prepare(`UPDATE orgs SET dine = ? WHERE id = ?`).bind(JSON.stringify(s), c.org.id), auditStatement(c, 'QR table ordering', s.qr ? 'on' : 'off')]);
   c.org.dine = JSON.stringify(s);
   return dineQr(c);
@@ -509,4 +529,72 @@ export async function dineToday(c) {
     qr: q, dishes: dishes.results.map((d) => ({ name: d.name, qty: Math.round(d.qty * 1000) / 1000, amount: R(d.amount) })),
     hours: hours.results, money: money.results.map((m) => ({ sys: m.sys || '', name: m.name, amount: R(m.amount) })),
   };
+}
+
+/* ======================================================================= the kitchen display link (/kd/<token>)
+   For a TV or tablet in the kitchen: the kitchen screen with no login and no ERP seat. It shows today's KOTs (tables,
+   dishes, notes; never prices or customers) and moves them on, nothing else. The owner makes it, makes a new one (the
+   old one stops at once) or switches it off on the Table QR page. */
+async function kitchenOrg(c, token) {
+  if (!/^[0-9a-f]{24}$/.test(String(token || ''))) return null;
+  const o = await c.db.prepare(`SELECT id, name, dine FROM orgs WHERE kd_token = ?`).bind(token).first();
+  return o && dineSettingsOf(o).kt === token ? o : null;
+}
+export async function kitchenLink(c, on) {
+  requireCan(c.user, 'settings');
+  const st = dineSettingsOf(c.org);
+  const s = { qr: st.qr, note: st.note, kt: on ? randomHex(12) : '' };
+  await c.db.batch([c.db.prepare(`UPDATE orgs SET dine = ?, kd_token = ? WHERE id = ?`).bind(JSON.stringify(s), s.kt || null, c.org.id), auditStatement(c, 'kitchen display link', on ? 'new link' : 'off')]);
+  c.org.dine = JSON.stringify(s);
+  return dineQr(c);
+}
+export async function kitchenDisplay(c, token) {
+  await rateLimit(c.env, 'kd:' + ipOf(c), 600, 600);
+  const o = await kitchenOrg(c, token);
+  if (!o) throw notFound('This kitchen link is not working. Ask the owner for the new one.');
+  return { shop: o.name, ...(await kitchenOf(c, o.id)) };
+}
+export async function kitchenDisplaySet(c, token, id, body) {
+  await rateLimit(c.env, 'kd-set:' + ipOf(c), 300, 600);
+  const o = await kitchenOrg(c, token);
+  if (!o) throw notFound('This kitchen link is not working. Ask the owner for the new one.');
+  return { shop: o.name, ...(await setKot(c, o.id, id, body)) };
+}
+
+/* ======================================================================= the menu for today
+   Each dish can carry a veg / non-veg / egg mark (the guest's menu shows it) and be "sold out" for the day: the kitchen
+   marks it, the guest's menu shows it greyed and cannot order it, and it is back on the menu the next morning by itself. */
+const FOOD = ['veg', 'nonveg', 'egg'];
+async function menuOf(c, orgId) {
+  const { results } = await c.db.prepare(`SELECT id, name, category, food, sold_out FROM items WHERE org_id = ? AND shop_hide = 0 AND sale_price > 0
+      ORDER BY category, name LIMIT 1000`).bind(orgId).all();
+  const day = today();
+  return { menu: results.map((i) => ({ id: i.id, name: i.name, category: i.category || '', food: FOOD.includes(i.food) ? i.food : '', sold_out: i.sold_out === day })) };
+}
+async function setSoldOut(c, orgId, id, body) {
+  const out = !!(body && body.sold_out);
+  const r = await c.db.prepare(`UPDATE items SET sold_out = ? WHERE id = ? AND org_id = ?`).bind(out ? today() : '', id, orgId).run();
+  if (!r.meta.changes) throw notFound('Dish not found.');
+  return menuOf(c, orgId);
+}
+export async function dineMenu(c) { requireCan(c.user, 'kitchen'); return menuOf(c, c.org.id); }
+export async function dineSoldOut(c, id, body) { requireCan(c.user, 'kitchen'); return setSoldOut(c, c.org.id, id, body); }
+export async function dineFood(c, id, body) {
+  requireCan(c.user, 'items');
+  const f = body && FOOD.includes(body.food) ? body.food : '';
+  const r = await c.db.prepare(`UPDATE items SET food = ? WHERE id = ? AND org_id = ?`).bind(f, id, c.org.id).run();
+  if (!r.meta.changes) throw notFound('Dish not found.');
+  return menuOf(c, c.org.id);
+}
+export async function kitchenMenu(c, token) {
+  await rateLimit(c.env, 'kd:' + ipOf(c), 600, 600);
+  const o = await kitchenOrg(c, token);
+  if (!o) throw notFound('This kitchen link is not working. Ask the owner for the new one.');
+  return menuOf(c, o.id);
+}
+export async function kitchenSoldOut(c, token, id, body) {
+  await rateLimit(c.env, 'kd-set:' + ipOf(c), 300, 600);
+  const o = await kitchenOrg(c, token);
+  if (!o) throw notFound('This kitchen link is not working. Ask the owner for the new one.');
+  return setSoldOut(c, o.id, id, body);
 }

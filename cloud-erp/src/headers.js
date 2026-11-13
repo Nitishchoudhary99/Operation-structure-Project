@@ -31,7 +31,7 @@ export const BASE_HEADERS = {
   'Strict-Transport-Security': 'max-age=63072000; includeSubDomains; preload',
   'Cross-Origin-Opener-Policy': 'same-origin-allow-popups',     // Razorpay and Google sign-in may still open their windows
   'X-Permitted-Cross-Domain-Policies': 'none',
-  'Permissions-Policy': 'camera=(self), microphone=(self), geolocation=(), payment=(self "https://checkout.razorpay.com" "https://api.razorpay.com"), usb=(), serial=()',
+  'Permissions-Policy': 'camera=(self), microphone=(self), geolocation=(), payment=(self "https://checkout.razorpay.com" "https://api.razorpay.com"), usb=(self), serial=(), bluetooth=(self)',
 };
 
 /* Adds the headers to a response (copying it when its headers are read-only, as with static assets).

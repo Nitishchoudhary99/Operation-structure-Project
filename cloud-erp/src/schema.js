@@ -3,7 +3,7 @@
    Every business table carries org_id: one database serves many businesses (multi-tenant).
    migrate() runs on the first request after each deploy, so no manual migration step is needed. */
 
-export const SCHEMA_VERSION = 50;
+export const SCHEMA_VERSION = 53;
 
 // document types whose monthly totals doc_month keeps (sales and purchase money documents)
 const MONTH_TYPES = `('INV','SRET','CNOTE','BILL','PRET','DNOTE')`;
@@ -777,6 +777,33 @@ export const MIGRATIONS = {
   /* when a KOT was first marked ready in the kitchen (the owner's kitchen time) */
   50: [
     `ALTER TABLE kots ADD COLUMN ready_at TEXT`,
+  ],
+  /* restaurant menu: a veg / non-veg / egg mark, and "sold out" for one day (the date it ran out; it comes back by itself
+     the next day); the kitchen display link's token in its own indexed column instead of a scan of every shop's settings */
+  51: [
+    `ALTER TABLE items ADD COLUMN food TEXT NOT NULL DEFAULT ''`,
+    `ALTER TABLE items ADD COLUMN sold_out TEXT NOT NULL DEFAULT ''`,
+    `ALTER TABLE orgs ADD COLUMN kd_token TEXT`,
+    `UPDATE orgs SET kd_token = json_extract(dine, '$.kt') WHERE dine LIKE '%"kt":"%' AND json_valid(dine)`,
+    `CREATE UNIQUE INDEX IF NOT EXISTS ux_orgs_kd_token ON orgs (kd_token) WHERE kd_token IS NOT NULL AND kd_token != ''`,
+  ],
+  /* paying the table online through the shop's own Razorpay (src/dinepay.js): its sealed keys, the webhook's address token,
+     and the Payment Link a guest's payment went through */
+  52: [
+    `ALTER TABLE orgs ADD COLUMN rzp TEXT`,
+    `ALTER TABLE orgs ADD COLUMN rzp_token TEXT`,
+    `CREATE UNIQUE INDEX IF NOT EXISTS ux_orgs_rzp_token ON orgs (rzp_token) WHERE rzp_token IS NOT NULL`,
+    `ALTER TABLE dine_requests ADD COLUMN pg_ref TEXT`,
+    `CREATE INDEX IF NOT EXISTS ix_dine_requests_pg ON dine_requests (org_id, pg_ref) WHERE pg_ref IS NOT NULL`,
+  ],
+  /* the online catalogue (src/shop.js): a photo per product, and orders customers place from the catalogue link */
+  53: [
+    `CREATE TABLE IF NOT EXISTS shop_photos (org_id INTEGER NOT NULL, gkey TEXT NOT NULL, data BLOB NOT NULL, mime TEXT NOT NULL, v INTEGER NOT NULL DEFAULT 1,
+      PRIMARY KEY (org_id, gkey))`,
+    `CREATE TABLE IF NOT EXISTS shop_orders (id INTEGER PRIMARY KEY, org_id INTEGER NOT NULL, lines TEXT NOT NULL, name TEXT NOT NULL, phone TEXT NOT NULL,
+      address TEXT NOT NULL DEFAULT '', note TEXT NOT NULL DEFAULT '', total REAL NOT NULL DEFAULT 0, status TEXT NOT NULL DEFAULT 'new', reason TEXT NOT NULL DEFAULT '',
+      doc_id INTEGER, party_id INTEGER, handled_by INTEGER, handled_at TEXT, created_at TEXT NOT NULL)`,
+    `CREATE INDEX IF NOT EXISTS ix_shop_orders ON shop_orders (org_id, status, id)`,
   ],
 };
 

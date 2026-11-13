@@ -3052,17 +3052,18 @@ if (process.env.ERP_AI_MOCK) {
   const tok = (s1.link.match(/\/s\/([0-9a-f]{24})$/) || [])[1];
   check('turning it on gives a link of its own', s1.on && !!tok, JSON.stringify(s1));
   const pub = await rq('GET', `/api/public/shop/${tok}`, undefined, { ip: '203.0.113.156' });
-  const names = pub.data.items.map((i) => i.name), r1 = pub.data.items.find((i) => i.name === 'Rice 5kg'), o1 = pub.data.items.find((i) => i.name === 'Oil 1L');
+  const flat = (d) => d.products.flatMap((p) => p.variants.map((v) => ({ ...v, name: v.opts.length ? [p.name, ...v.opts].join(' - ') : p.name })));
+  const names = flat(pub.data).map((i) => i.name), r1 = flat(pub.data).find((i) => i.name === 'Rice 5kg'), o1 = flat(pub.data).find((i) => i.name === 'Oil 1L');
   check('anyone with the link sees the shop, its items and prices with GST, and in stock or not', pub.status === 200 && pub.data.shop.name === 'Catalogue Kirana' && pub.data.shop.wa === '919876543210'
     && pub.data.shop.note === 'Free delivery above Rs 500' && r1.price === 420 && r1.in_stock === true && o1.in_stock === false, JSON.stringify(pub.data));
   check('items left out or without a price are not there', !names.includes('Secret item') && !names.includes('No price') && names.length === 2, JSON.stringify(names));
-  const keys = new Set(pub.data.items.flatMap((i) => Object.keys(i)));
+  const keys = new Set([...pub.data.products.flatMap((p) => Object.keys(p)), ...pub.data.products.flatMap((p) => p.variants.flatMap((v) => Object.keys(v)))]);
   check('the public page never carries quantities, costs, wholesale prices or ids of anything else', ['qty_on_hand', 'purchase_price', 'avg_cost', 'wholesale_price', 'sale_price', 'org_id'].every((k) => !keys.has(k))
     && !('phone' in pub.data.shop) && !('upi_id' in pub.data.shop), JSON.stringify([...keys]));
   await K('PUT', `/api/items/${rice.id}/shop`, { show: false });
   await K('PUT', '/api/settings/shop', { on: true, stock: false, wa: '9123456780', note: '' });
   const pub2 = (await rq('GET', `/api/public/shop/${tok}`, undefined, { ip: '203.0.113.156' })).data;
-  check('an item can be taken off, stock can be hidden, and orders go to the number given', pub2.items.length === 1 && pub2.items[0].name === 'Oil 1L' && !('in_stock' in pub2.items[0])
+  check('an item can be taken off, stock can be hidden, and orders go to the number given', flat(pub2).length === 1 && flat(pub2)[0].name === 'Oil 1L' && !('in_stock' in flat(pub2)[0])
     && pub2.shop.wa === '919123456780', JSON.stringify(pub2));
   const page = await fetch(`${BASE}/s/${tok}`, { headers: { 'CF-Connecting-IP': '203.0.113.156' } });
   check('the link opens a page with a preview card for WhatsApp', page.status === 200 && /Catalogue Kirana, Jaipur: rate list/.test(await page.text()));
@@ -3078,6 +3079,73 @@ if (process.env.ERP_AI_MOCK) {
   const sl = await rq('POST', '/api/auth/login', { email: stEm, password: 'Shopboy-pass-123' }, { ip });
   check('staff see the catalogue settings but only the owner side changes them; nobody signed out does', (await rq('GET', '/api/settings/shop', undefined, { cookie: sl.cookie, ip })).status === 200
     && (await rq('PUT', '/api/settings/shop', { on: true }, { cookie: sl.cookie, ip })).status === 403 && (await rq('GET', '/api/settings/shop', undefined, { ip })).status === 401 && secret.shop_hide === 1);
+}
+
+/* --- online catalogue: products by design, photos, and orders that become Sales Orders --- */
+{
+  const ip = '203.0.113.181', G = (m, p, b) => rq(m, p, b, { ip: '203.0.113.182' });
+  const su = await rq('POST', '/api/auth/signup', { business: 'Catalogue Kapda', name: 'K', email: `catk${Date.now()}@test.in`, password: 'Catalog-pass-123', state: 'Meghalaya' }, { ip });
+  const K = async (m, p, b) => (await rq(m, p, b, { cookie: su.cookie, ip })).data, KE = (m, p, b) => rq(m, p, b, { cookie: su.cookie, ip });
+  await K('PUT', '/api/org', { name: 'Catalogue Kapda', state: 'Meghalaya', phone: '9876543210' });
+  const rows = [];
+  for (const c of ['Red', 'Blue']) for (const z of ['XL', 'S', 'M']) rows.push({ name: `Kurti 101 - ${c} - ${z}`, category: 'Kurti 101', unit: 'Pcs', sale_price: '799', price_incl: true, gst_rate: '5', opening_qty: c === 'Blue' && z === 'XL' ? '0' : '5' });
+  rows.push({ name: 'Dupatta', unit: 'Pcs', sale_price: '249', price_incl: true, gst_rate: '5', opening_qty: '9' });
+  await K('POST', '/api/import/items', { rows });
+  const tok = (await K('PUT', '/api/settings/shop', { on: true, stock: true, wa: '' })).link.split('/s/')[1];
+  const pub = (await G('GET', `/api/public/shop/${tok}`)).data, kurti = pub.products.find((p) => p.name === 'Kurti 101');
+  check('a design with colours and sizes is one product, not six lines', pub.products.length === 2 && kurti.variants.length === 6
+    && JSON.stringify(kurti.dims) === '[{"name":"Colour","values":["Blue","Red"]},{"name":"Size","values":["S","M","XL"]}]', JSON.stringify(pub.products.map((p) => [p.name, p.dims])));
+  const blueXL = kurti.variants.find((v) => v.opts.join() === 'Blue,XL'), redM = kurti.variants.find((v) => v.opts.join() === 'Red,M'), dup = pub.products.find((p) => p.name === 'Dupatta').variants[0];
+  check('each colour and size knows its own stock and price', blueXL.in_stock === false && redM.in_stock === true && redM.price === 799, JSON.stringify(kurti.variants));
+  // photos
+  const png = 'data:image/png;base64,' + 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==';
+  check('a photo that is not a photo is refused', (await KE('PUT', '/api/shop/photo', { key: 'Kurti 101', data: 'data:image/png;base64,' + btoa('<script>alert(1)</script>') })).status === 400
+    && (await KE('PUT', '/api/shop/photo', { key: 'Kurti 101', data: 'data:text/html;base64,PGI+' })).status === 400);
+  check('a photo for a product that is not there is refused', (await KE('PUT', '/api/shop/photo', { key: 'Nothing', data: png })).status === 404);
+  await K('PUT', '/api/shop/photo', { key: 'Kurti 101', data: png });
+  const pub2 = (await G('GET', `/api/public/shop/${tok}`)).data, kp = pub2.products.find((p) => p.name === 'Kurti 101');
+  const img = await fetch(`${BASE}/api/public/shop/${tok}/photo/${encodeURIComponent('Kurti 101')}?v=${kp.photo}`, { headers: { 'CF-Connecting-IP': '203.0.113.182' } });
+  const bytes = new Uint8Array(await img.arrayBuffer());
+  check('the product has its photo, served as a real image', kp.photo === 1 && img.status === 200 && img.headers.get('content-type') === 'image/png' && bytes[0] === 0x89 && bytes[1] === 0x50, JSON.stringify([kp.photo, img.status, img.headers.get('content-type'), [...bytes.slice(0, 4)]]));
+  const sp = await fetch(`${BASE}/s/${tok}?p=${encodeURIComponent('Kurti 101')}`, { headers: { 'CF-Connecting-IP': '203.0.113.182' } }), spt = await sp.text();
+  check('a product link shows the product and its photo in the WhatsApp preview', /Kurti 101 · Catalogue Kapda/.test(spt) && /photo\/Kurti%20101\?v=1/.test(spt));
+  // show / hide a whole design
+  await K('PUT', '/api/shop/products/show', { ids: kurti.variants.map((v) => v.id), show: false });
+  check('hiding a design hides all its colours and sizes in one go', !(await G('GET', `/api/public/shop/${tok}`)).data.products.some((p) => p.name === 'Kurti 101'));
+  await K('PUT', '/api/shop/products/show', { ids: kurti.variants.map((v) => v.id), show: true });
+  // orders
+  const bad1 = await G('POST', `/api/public/shop/${tok}/order`, { name: 'Meena', phone: '12345', lines: [{ item_id: redM.id, qty: 1 }] });
+  const bad2 = await G('POST', `/api/public/shop/${tok}/order`, { name: 'Meena', phone: '9812345678', lines: [{ item_id: blueXL.id, qty: 1 }] });
+  const bad3 = await G('POST', `/api/public/shop/${tok}/order`, { name: 'Meena', phone: '9812345678', lines: [{ item_id: 999999, qty: 1 }] });
+  check('an order needs a real mobile number, in-stock items, and items of this shop', bad1.status === 400 && bad2.status === 400 && /out of stock/.test(bad2.data.error) && bad3.status === 400, JSON.stringify([bad1.data, bad2.data, bad3.data]));
+  const o = await G('POST', `/api/public/shop/${tok}/order`, { name: 'Meena', phone: '+91 98123 45678', address: 'Laitumkhrah, Shillong', note: 'Gift wrap', lines: [{ item_id: redM.id, qty: 2 }, { item_id: dup.id, qty: 1, price: 1 }] });
+  check('the customer places the order at the shown prices (a price sent from the phone is ignored)', o.status === 200 && o.data.number === 'W-' + o.data.id && o.data.total === 799 * 2 + 249, JSON.stringify(o.data));
+  const list = await K('GET', '/api/shop/orders');
+  check('the shop sees the new order with the customer\'s details', list.orders.length === 1 && list.orders[0].phone === '9812345678' && list.orders[0].lines.length === 2 && list.orders[0].address === 'Laitumkhrah, Shillong', JSON.stringify(list));
+  check('nothing changes in stock or books from the public page', (await K('GET', '/api/items')).rows.find((i) => i.id === redM.id).qty_on_hand === 5);
+  const acc = await K('POST', `/api/shop/orders/${o.data.id}/accept`, {});
+  const so = await K('GET', `/api/docs/${acc.doc_id}`);
+  check('one tap makes it a Sales Order for the customer (added by phone), at the order\'s prices', so.type === 'SO' && so.party.name === 'Meena' && so.total === 1847 && /Online order W-/.test(so.notes) && /Laitumkhrah/.test(so.notes), JSON.stringify([acc, so.type, so.total, so.notes]));
+  check('accepting twice makes one Sales Order', (await KE('POST', `/api/shop/orders/${o.data.id}/accept`, {})).status === 400 && (await K('GET', '/api/docs?type=SO')).rows.length === 1);
+  const o2 = await G('POST', `/api/public/shop/${tok}/order`, { name: 'Meena', phone: '9812345678', lines: [{ item_id: dup.id, qty: 3 }] });
+  const acc2 = await K('POST', `/api/shop/orders/${o2.data.id}/accept`, {});
+  check('the same customer ordering again is found by phone, not added twice', (await K('GET', '/api/parties')).rows.filter((p) => p.phone && p.phone.includes('9812345678')).length === 1 && acc2.party === 'Meena', JSON.stringify(acc2));
+  const o3 = await G('POST', `/api/public/shop/${tok}/order`, { name: 'Prank', phone: '9000000001', lines: [{ item_id: dup.id, qty: 1 }] });
+  await K('POST', `/api/shop/orders/${o3.data.id}/decline`, { reason: 'Fake' });
+  check('an order can be declined; it is kept with the reason', (await K('GET', '/api/shop/orders?status=declined')).orders[0].reason === 'Fake' && (await KE('POST', `/api/shop/orders/${o3.data.id}/accept`, {})).status === 400);
+  // who may do what
+  const em = `catk-acc${Date.now()}@test.in`;
+  await K('POST', '/api/users', { name: 'Acc', email: em, password: 'Acct-pass-12345', role: 'accountant' });
+  const al = await rq('POST', '/api/auth/login', { email: em, password: 'Acct-pass-12345' }, { ip });
+  const sem = `catk-store${Date.now()}@test.in`;
+  await K('POST', '/api/users', { name: 'Godown', email: sem, password: 'Store-pass-12345', role: 'store' });
+  const stl = await rq('POST', '/api/auth/login', { email: sem, password: 'Store-pass-12345' }, { ip });
+  check('godown staff cannot see or accept online orders; an accountant cannot change photos', (await rq('GET', '/api/shop/orders', undefined, { cookie: stl.cookie, ip })).status === 403
+    && (await rq('POST', `/api/shop/orders/${o2.data.id}/accept`, {}, { cookie: stl.cookie, ip })).status === 403
+    && (await rq('PUT', '/api/shop/photo', { key: 'Kurti 101', data: png }, { cookie: al.cookie, ip })).status === 403);
+  check('another shop\'s link cannot read this shop\'s photo', (await G('GET', `/api/public/shop/${'a'.repeat(24)}/photo/${encodeURIComponent('Kurti 101')}`)).status === 404);
+  await K('PUT', '/api/settings/shop', { on: false });
+  check('a closed catalogue takes no orders', (await G('POST', `/api/public/shop/${tok}/order`, { name: 'X', phone: '9812345678', lines: [{ item_id: dup.id, qty: 1 }] })).status === 404);
 }
 
 /* --- Munim ji: what the books say needs a look (Today card) --- */
@@ -3349,6 +3417,46 @@ if (process.env.ERP_AI_MOCK) {
     && today.busy >= 1 && today.busy <= today.tables && today.kitchen_mins !== null && today.kots_ready >= 1, JSON.stringify(today).slice(0, 400));
   check('the owner\'s live view: dishes selling most, KOTs by hour, QR answers and money by mode', today.dishes.some((d) => d.name === 'Tandoori Roti') && today.hours.length >= 1
     && today.qr.pay.done >= 1 && today.qr.pay.rejected >= 1 && today.qr.order.accepted >= 1 && today.money.some((m) => m.sys === 'upi' && m.amount > 0), JSON.stringify({ qr: today.qr, money: today.money, dishes: today.dishes.slice(0, 3) }));
+  /* kitchen access: a cook role with the kitchen alone, and the kitchen display link with no login */
+  const cookRole = await D('POST', '/api/roles', { name: 'Cook', perms: { view: ['kitchen'], edit: ['kitchen'] } });
+  const ckEm = `cook${Date.now()}@test.in`;
+  await D('POST', '/api/users', { name: 'Cook Ramu', email: ckEm, password: 'Cook-pass-12345', role: `c:${cookRole.id}` });
+  const cl = await rq('POST', '/api/auth/login', { email: ckEm, password: 'Cook-pass-12345' }, { ip });
+  const CK = (m, p, b) => rq(m, p, b, { cookie: cl.cookie, ip });
+  const ckK = await CK('GET', '/api/dine/kitchen');
+  check('a cook with the kitchen alone opens the kitchen screen', ckK.status === 200 && ckK.data.kots.length >= 1, JSON.stringify(ckK.data).slice(0, 200));
+  check('the cook cannot open tables, sales or bills', (await CK('GET', '/api/dine')).status === 403 && (await CK('GET', '/api/docs?type=INV')).status === 403 && (await CK('GET', '/api/dine/today')).status === 403);
+  const accEm = `acct${Date.now()}@test.in`;
+  await D('POST', '/api/users', { name: 'Acc', email: accEm, password: 'Acct-pass-12345', role: 'accountant' });
+  const al = await rq('POST', '/api/auth/login', { email: accEm, password: 'Acct-pass-12345' }, { ip });
+  check('an accountant does not get the kitchen', (await rq('GET', '/api/dine/kitchen', undefined, { cookie: al.cookie, ip })).status === 403);
+  check('the kitchen link is off until the owner makes it', !(await D('GET', '/api/dine/qr')).kitchen_link && (await G2('GET', '/api/public/kitchen/' + 'a'.repeat(24))).status === 404);
+  check('a cook cannot make the kitchen link', (await CK('POST', '/api/dine/kitchen-link', {})).status === 403);
+  const kl = (await D('POST', '/api/dine/kitchen-link', {})).kitchen_link, kt1 = kl.split('/kd/')[1];
+  const kd = await G2('GET', '/api/public/kitchen/' + kt1);
+  check('the kitchen link opens the KOTs with no login and no prices', kd.status === 200 && kd.data.kots.length >= 1 && !/"(rate|amount|price|total|party)"/.test(JSON.stringify(kd.data)), JSON.stringify(kd.data).slice(0, 300));
+  const kk = kd.data.kots[kd.data.kots.length - 1];
+  const nx = { new: 'cooking', cooking: 'ready', ready: 'served' }[kk.kstatus] || 'served';
+  check('the kitchen link moves a KOT on', (await G2('POST', `/api/public/kitchen/${kt1}/kots/${kk.id}`, { status: nx })).status === 200);
+  check('the kitchen link cannot touch a KOT that is not this shop\'s', (await G2('POST', `/api/public/kitchen/${kt1}/kots/99999999`, { status: 'ready' })).status === 404);
+  const kt2 = (await D('POST', '/api/dine/kitchen-link', {})).kitchen_link.split('/kd/')[1];
+  check('a new kitchen link stops the old one at once', kt2 !== kt1 && (await G2('GET', '/api/public/kitchen/' + kt1)).status === 404 && (await G2('GET', '/api/public/kitchen/' + kt2)).status === 200);
+  /* the menu for today: veg / non-veg marks, and sold out for the day */
+  const G3 = (m, p, b) => rq(m, p, b, { ip: '203.0.113.171' });
+  check('a cook cannot change the veg mark (items right)', (await CK('POST', `/api/dine/menu/${paneer.id}/food`, { food: 'veg' })).status === 403);
+  await D('POST', `/api/dine/menu/${paneer.id}/food`, { food: 'veg' });
+  check('an unknown mark is cleared, not stored', (await D('POST', `/api/dine/menu/${roti.id}/food`, { food: '<b>x' })).menu.find((i) => i.id === roti.id).food === '');
+  const so = await CK('POST', `/api/dine/menu/${paneer.id}/sold-out`, { sold_out: true });
+  check('the cook marks a dish sold out for today', so.status === 200 && so.data.menu.find((i) => i.id === paneer.id).sold_out === true);
+  const gm = (await G3('GET', `/api/public/dine/${tok(t1)}`)).data.items.find((i) => i.id === paneer.id);
+  check('the guest menu shows the veg mark and sold out', gm.food === 'veg' && gm.sold_out === true, JSON.stringify(gm));
+  const sor = await G3('POST', `/api/public/dine/${tok(t1)}`, { kind: 'order', lines: [{ item_id: paneer.id, qty: 1 }] });
+  check('a guest cannot order a sold-out dish', sor.status === 400 && /finished for today/.test(sor.data.error || ''), JSON.stringify(sor.data));
+  const kmn = await G2('POST', `/api/public/kitchen/${kt2}/menu/${paneer.id}`, { sold_out: false });
+  check('the kitchen link brings it back, and shows the menu', kmn.status === 200 && kmn.data.menu.find((i) => i.id === paneer.id).sold_out === false && (await G2('GET', `/api/public/kitchen/${kt2}/menu`)).status === 200);
+  check('the kitchen link cannot touch a dish that is not this shop\'s', (await G2('POST', `/api/public/kitchen/${kt2}/menu/99999999`, { sold_out: true })).status === 404);
+  await D('DELETE', '/api/dine/kitchen-link');
+  check('switching the kitchen link off closes it', (await G2('GET', '/api/public/kitchen/' + kt2)).status === 404);
   await D('PUT', '/api/dine/qr', { qr: false });
   check('turning QR ordering off closes every table link', (await G2('GET', `/api/public/dine/${newTok}`)).status === 404 && (await G2('POST', `/api/public/dine/${tok(t1)}`, { kind: 'help', what: 'bill' })).status === 404);
 }

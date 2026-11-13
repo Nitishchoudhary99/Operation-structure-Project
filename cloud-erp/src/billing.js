@@ -44,11 +44,11 @@ const keyId = (env) => String(env.RAZORPAY_KEY_ID || PUBLIC_KEY_ID).trim();
 export const grossPaise = (plan) => Math.round(PLANS[plan].price * (1 + GST)) * 100;
 
 const enc = new TextEncoder();
-async function hmacHex(secret, text) {
+export async function hmacHex(secret, text) {
   const k = await crypto.subtle.importKey('raw', enc.encode(String(secret)), { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']);
   return Array.from(new Uint8Array(await crypto.subtle.sign('HMAC', k, enc.encode(text))), (b) => b.toString(16).padStart(2, '0')).join('');
 }
-function same(a, b) {
+export function same(a, b) {
   a = String(a); b = String(b);
   if (a.length !== b.length) return false;
   let d = 0;

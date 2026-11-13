@@ -127,6 +127,19 @@ async function outboxBadge() {
   b.innerHTML = `&#8635; ${q.length}<span class="hide-sm"> to sync</span>${bad ? ' <b>!</b>' : ''}`;
 }
 const GET = (p) => api('GET', p);
+/* for screens that ask every few seconds: sends back the tag of the last answer; an empty 304 means nothing changed, and
+   the very same object comes back, so the caller can skip drawing again (a === b) */
+const pollTags = new Map();
+async function pollGET(path, base = '') {
+  const prev = pollTags.get(base + path);
+  const res = await fetch(base + path, { credentials: 'same-origin', headers: { 'X-Requested-With': 'SmartTrader', ...(prev ? { 'If-None-Match': prev.tag } : {}) } });
+  if (res.status === 304 && prev) return prev.data;
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data.error || 'Something went wrong.');
+  const tag = res.headers.get('ETag');
+  if (tag) pollTags.set(base + path, { tag, data }); else pollTags.delete(base + path);
+  return data;
+}
 const POST = (p, b = {}, opt) => api('POST', p, b, opt);
 async function master(name) {
   if (!cache[name]) cache[name] = (await GET('/api/' + name)).rows;
@@ -552,7 +565,7 @@ const MODULES = [
   ['loyalty', 'Loyalty points', 'Customers earn points on bills and use them later', ['loyalty']],
   ['shop', 'Online catalogue', 'Your rate list on a link; orders come on WhatsApp', ['shop']],
   ['channels', 'Amazon / Flipkart / web store orders', 'Import marketplace orders, settlements and returns', ['channels']],
-  ['restaurant', 'Tables & KOT', 'Restaurant tables, kitchen tickets, table bills', ['tables', 'kots']],
+  ['restaurant', 'Tables & KOT', 'Restaurant tables, kitchen tickets, table bills', ['tables', 'kots', 'kitchen']],
   ['jobs', 'Repair & service job cards', 'Device / vehicle intake, status, WhatsApp updates, bill from the job', ['jobs']],
   ['wms', 'Bins, racks & stock count', 'Where each item sits, guided put-away, cycle count', ['bins', 'putaway', 'stockcount']],
   ['batch', 'Batch & expiry', 'Medicines, food, cosmetics: first to expire goes first', ['expiry']],
@@ -570,7 +583,7 @@ const flowOk = (h) => !simple() || (ordersOn() && DISP.has(h));
 const docFlowOk = (k) => !simple() || !ADV_DOCS.includes(k) || (ordersOn() && ['SO', 'DN'].includes(k)) || (k === 'QUOTE' && modState('quotes') === true)
   || (['PO', 'GRN'].includes(k) && modState('procure') === true);
 /* which permission area a menu entry needs (custom roles may not see every area); the gate register also opens with 'gate' */
-const navArea = (h) => h === 'dispatch' ? ['items', 'sales'] : h === 'jobs' ? 'sales' : /^(receipts|payments|expenses|accounts|journal|staff|statutory|bankrec|assets|tds)$/.test(h) ? 'finance' : /^(sales\/|pos$|recurring$|channels$|shop$|loyalty$|tables$|table\/|kots$)/.test(h) ? 'sales' : /^(purchase\/|receive$)/.test(h) ? 'purchase'
+const navArea = (h) => h === 'dispatch' ? ['items', 'sales'] : h === 'jobs' ? 'sales' : /^(receipts|payments|expenses|accounts|journal|staff|statutory|bankrec|assets|tds)$/.test(h) ? 'finance' : h === 'kitchen' ? 'kitchen' : /^(sales\/|pos$|recurring$|channels$|shop$|loyalty$|tables$|table\/|kots$)/.test(h) ? 'sales' : /^(purchase\/|receive$)/.test(h) ? 'purchase'
   : /^gate\/in$/.test(h) ? ['purchase', 'gate'] : /^gate\/out$/.test(h) ? ['items', 'gate'] : h === 'claims' ? ['purchase', 'finance'] : h === 'wa-inbox' ? ['sales', 'khata', 'finance']
   : /^(items|stock|stockcount|pending|bins|expiry|stock-ageing|serials|production|wave|putaway)$/.test(h) ? 'items' : /^(parties|reminders)$/.test(h) ? 'masters' : /^(khata|vaade)$/.test(h) ? 'khata'
   : /^(reports\/|tally$|daybook$|gstr$)/.test(h) ? 'reports' : h === 'plan' ? 'settings' : '';
@@ -589,7 +602,8 @@ const JOBS = {
     'production', 'stockcount', 'wave', 'pending', 'gate/out', 'stock-ageing', 'claims'] },
   packer: { t: 'Packing & dispatch (godown)', home: 'dispatch', screens: ['dispatch', 'pending', 'wave', 'sales/SO', 'sales/DN', 'items', 'stock', 'bins', 'receive', 'putaway', 'stockcount'] },
   gate: { t: 'Gate / security guard', home: 'gate/in', screens: ['gate/in', 'gate/out'] },
-  waiter: { t: 'Waiter / captain (restaurant)', home: 'tables', screens: ['tables', 'kots', 'pos'] },
+  waiter: { t: 'Waiter / captain (restaurant)', home: 'tables', screens: ['tables', 'kitchen', 'kots', 'pos'] },
+  kitchen: { t: 'Kitchen / cook (restaurant)', home: 'kitchen', screens: ['kitchen'] },
   accounts: { t: 'Accountant', home: 'dashboard', screens: ['dashboard', 'sales/INV', 'sales/SRET', 'sales/CNOTE', 'receipts', 'purchase/BILL', 'purchase/PRET', 'purchase/DNOTE', 'payments',
     'parties', 'khata', 'reminders', 'vaade', 'staff', 'statutory', 'expenses', 'bankrec', 'assets', 'tds', 'accounts', 'journal', 'daybook', 'reports/pnl', 'reports/balance-sheet', 'reports/trial-balance', 'reports/gst', 'gstr', 'reports/ageing',
     'reports/register', 'cash', 'tally', 'claims', 'wa-inbox'] },
@@ -635,7 +649,7 @@ const minDate = () => {
 };
 const NAV = [
   ['', [['dashboard', 'Dashboard']]],
-  ['Sales', [['pos', 'Quick Bill (POS)'], ['tables', 'Tables (Restaurant)'], ['sales/INV', 'Invoices'], ['shop', 'Online Catalogue'], ['loyalty', 'Loyalty Points'], ['channels', 'Online Orders (Amazon…)'], ['recurring', 'Recurring Bills'], ['jobs', 'Repair / Job Cards'], ['sales/SO', 'Sales Orders'], ['dispatch', 'Dispatch Desk'], ['sales/DN', 'Delivery Notes'], ['sales/QUOTE', 'Quotations'], ['sales/SRET', 'Sales Returns'], ['sales/CNOTE', 'Credit Notes (rate diff)'], ['receipts', 'Receipts']]],
+  ['Sales', [['pos', 'Quick Bill (POS)'], ['tables', 'Tables (Restaurant)'], ['kitchen', 'Kitchen screen'], ['sales/INV', 'Invoices'], ['shop', 'Online Catalogue'], ['loyalty', 'Loyalty Points'], ['channels', 'Online Orders (Amazon…)'], ['recurring', 'Recurring Bills'], ['jobs', 'Repair / Job Cards'], ['sales/SO', 'Sales Orders'], ['dispatch', 'Dispatch Desk'], ['sales/DN', 'Delivery Notes'], ['sales/QUOTE', 'Quotations'], ['sales/SRET', 'Sales Returns'], ['sales/CNOTE', 'Credit Notes (rate diff)'], ['receipts', 'Receipts']]],
   ['Purchase', [['receive', 'Receive Goods (scan)'], ['purchase/PO', 'Purchase Orders'], ['gate/in', 'Gate Entry (inward)'], ['purchase/GRN', 'Goods Receipts (GRN)'], ['purchase/BILL', 'Purchase Bills'], ['purchase/PRET', 'Purchase Returns'], ['purchase/DNOTE', 'Debit Notes (rate diff)'], ['claims', 'Transit Claims'], ['payments', 'Payments']]],
   ['Inventory', [['items', 'Items'], ['stock', 'Stock & Godowns'], ['stock-ageing', 'Stock Ageing'], ['bins', 'Bins & Racks'], ['expiry', 'Batch & Expiry'], ['serials', 'Serial / IMEI'], ['production', 'Production (BOM)'], ['wave', 'Wave Pick List'], ['stockcount', 'Stock Count'], ['gate/out', 'Gate Pass (outward)'], ['pending', 'Pending Orders']]],
   ['Contacts', [['parties', 'Customers & Suppliers'], ['khata', 'Khata Book'], ['reminders', 'Vasooli (Collections)'], ['vaade', 'Vaade (Promises)'], ['wa-inbox', 'WhatsApp Inbox']]],
@@ -4729,7 +4743,7 @@ route(/^settings\/fields$/, async (el) => {
 });
 
 const AREA_LABEL = { sales: 'Sales & POS', purchase: 'Purchase', items: 'Items & stock', masters: 'Customers & suppliers', finance: 'Money (receipts, payments, expenses)',
-  khata: 'Khata book', reports: 'Reports, profit & costs', settings: 'Settings', gate: 'Gate register (vehicles in / out)' };
+  khata: 'Khata book', reports: 'Reports, profit & costs', settings: 'Settings', gate: 'Gate register (vehicles in / out)', kitchen: 'Kitchen screen (KOTs only, no prices)' };
 /* Settings → Roles: every role made to measure. What it may see and change, limits it works under, and the menu its
    users get (a user's own menu, set in Settings → Users, still wins). The server enforces the rights and limits. */
 const LIMIT_TEXT = [['no_cancel', 'Cannot cancel bills, payments or entries'], ['no_credit', 'No udhaar: every sale is paid in full'],
@@ -4743,6 +4757,7 @@ const uiSummary = (ui) => (ui.screens ? `${ui.screens.length} screens` : ui.job 
 /* ready-made starting points for a new role */
 const ROLE_STARTS = {
   guard: { t: 'Gate guard', perms: { view: ['gate'], edit: ['gate'] }, rules: { no_cancel: true, hide_costs: true }, ui: { job: 'gate' } },
+  kitchen: { t: 'Kitchen / cook', perms: { view: ['kitchen'], edit: ['kitchen'] }, rules: { no_cancel: true, hide_costs: true }, ui: { job: 'kitchen' } },
   counter: { t: 'Billing counter', perms: { view: ['sales', 'items', 'masters', 'khata'], edit: ['sales', 'masters', 'khata'] },
     rules: { no_cancel: true, hide_costs: true, max_discount: 5, backdate_days: 0 }, ui: { job: 'counter' } },
   godown: { t: 'Godown / receiving', perms: { view: ['purchase', 'items', 'masters', 'gate'], edit: ['purchase', 'items', 'gate'] }, rules: { no_cancel: true }, ui: { job: 'store' } },
@@ -5638,26 +5653,47 @@ route(/^wa-inbox$/, async (el, m, q) => {
 
 /* the counter poster: the shop's QR that opens WhatsApp with its code */
 /* ======================================================================= online catalogue (owner screen, QR poster, the public page) */
-route(/^shop$/, async (el) => {
-  const [s, items] = await Promise.all([GET('/api/settings/shop'), master('items')]), canSet = ME.can.settings, canItems = ME.can.items;
-  const shareText = `${ME.org.name}: hamari rate list dekhiye aur WhatsApp par order kijiye: ${s.link}`;
-  el.innerHTML = head('Online Catalogue') + `
-    <div class="panel"><p>Your rate list on a link of its own. Customers see your items and prices (with GST), pick what they want, and the order comes to your WhatsApp as a message. No commission, nothing for them to install.</p>
-      <p class="muted small" lang="hi">ग्राहक लिंक खोलकर आपके रेट देखते हैं, सामान चुनते हैं और ऑर्डर आपके WhatsApp पर आता है।</p>
-      <form id="shf"><label class="mode-opt"><input type="checkbox" name="on" ${s.on ? 'checked' : ''} ${canSet ? '' : 'disabled'}> <span><b>Catalogue on</b><br>
-        <span class="muted">${s.items} item(s) with a selling price are on it. Leave any out below.</span></span></label>
+route(/^shop$/, async (el, m, q) => {
+  const canSet = ME.can.settings, canItems = ME.can.items, canSales = ME.can.sales;
+  const tab = ['new', 'accepted', 'declined'].includes(q.get('o')) ? q.get('o') : 'new';
+  const [s, pr, od] = await Promise.all([GET('/api/settings/shop'), GET('/api/shop/products'), canSales ? GET('/api/shop/orders?status=' + tab) : { orders: [] }]);
+  const token = (s.link || '').split('/s/')[1] || '';
+  const shareText = `${ME.org.name}: hamari rate list dekhiye aur order kijiye: ${s.link}`;
+  const ph = (p, cls) => p.photo && token ? `<img class="${cls}" src="/api/public/shop/${token}/photo/${encodeURIComponent(p.key)}?v=${p.photo}" alt="">`
+    : `<div class="${cls} sp-ph" style="--h:${[...p.key].reduce((a, ch) => a + ch.charCodeAt(0), 0) % 360}">${esc(p.key.split(/\s+/).map((w) => w[0]).join('').slice(0, 2).toUpperCase())}</div>`;
+  const range = (p) => { const v = p.variants.map((x) => x.price); return Math.min(...v) === Math.max(...v) ? rs(v[0]) : `${rs(Math.min(...v))}–${rs(Math.max(...v))}`; };
+  const shownN = pr.products.filter((p) => p.variants.some((v) => v.shown)).length, withPhoto = pr.products.filter((p) => p.photo).length;
+  el.innerHTML = head('Online Catalogue', s.on && s.link ? `<a class="btn" href="${esc(s.link)}" target="_blank" rel="noopener">Open as a customer</a>` : '') + `
+    ${s.on && s.link ? `<div class="panel"><div class="row qrbox" style="align-items:center;flex-wrap:wrap;gap:14px"><div id="shqr"></div><div style="flex:1;min-width:220px">
+        <b>Your catalogue is on</b> <span class="muted small">· ${shownN} products · ${withPhoto} with a photo</span><br><a href="${esc(s.link)}" target="_blank" rel="noopener" class="small">${esc(s.link)}</a>
+        <div class="row" style="margin-top:8px;flex-wrap:wrap;gap:6px"><button type="button" class="btn sm" id="shcopy">Copy link</button>
+          <a class="btn sm" target="_blank" rel="noopener" href="https://wa.me/?text=${encodeURIComponent(shareText)}">Share on WhatsApp</a><a class="btn sm" href="#/shop-poster">Print QR poster</a></div>
+        <p class="muted small" style="margin-top:6px">Tip: open a product on the link and tap Share to send just that product (Instagram, WhatsApp Status).</p></div></div></div>`
+    : `<div class="panel"><p><b>Your products on a link of your own.</b> Customers see photos and prices, pick colour and size, and place the order. It comes here as an online order, and one tap makes it a Sales Order. No commission, nothing to install.</p>
+        <p class="muted small" lang="hi">ग्राहक लिंक खोलकर फ़ोटो और रेट देखते हैं, रंग-साइज़ चुनते हैं और ऑर्डर करते हैं। ऑर्डर यहाँ आता है, एक टैप में सेल्स ऑर्डर।</p></div>`}
+    ${canSales ? `<div class="panel flush"><div class="row" style="padding:12px 16px 0;flex-wrap:wrap;gap:8px"><h3 style="margin:0">Online orders</h3><span class="spacer"></span>
+        <div class="tabs" style="margin:0">${[['new', `New${pr.new_orders ? ` (${pr.new_orders})` : ''}`], ['accepted', 'Done'], ['declined', 'Declined']].map(([k, t]) => `<a href="#/shop?o=${k}" class="${k === tab ? 'on' : ''}">${t}</a>`).join('')}</div></div>
+      <div class="so-list">${od.orders.map((o) => `<div class="so-card"><div class="row"><b>${o.number}</b><span class="muted small">${since(o.created_at)} ago</span><span class="spacer"></span><b>${rs(o.total)}</b></div>
+        <div><b>${esc(o.name)}</b> · <a href="tel:${esc(o.phone)}">${esc(o.phone)}</a> · <a target="_blank" rel="noopener" href="https://wa.me/91${esc(o.phone)}?text=${encodeURIComponent(`Namaste ${o.name} ji, ${ME.org.name} se. Aapka order ${o.number} mil gaya hai.`)}">WhatsApp</a></div>
+        ${o.address ? `<div class="muted small">📍 ${esc(o.address)}</div>` : ''}${o.note ? `<div class="muted small">📝 ${esc(o.note)}</div>` : ''}
+        <ul class="so-lines">${o.lines.map((l) => `<li>${l.qty} × ${esc(l.name)} <span class="muted">${rs(l.price)}</span></li>`).join('')}</ul>
+        ${o.status === 'new' ? `<div class="row"><button class="btn sm danger" data-odec="${o.id}">Decline</button><span class="spacer"></span><button class="btn sm primary" data-oacc="${o.id}">Make Sales Order</button></div>`
+          : o.status === 'accepted' ? `<div class="small">✅ <a href="#/doc/${o.doc_id}">${esc(o.doc_number)}</a></div>` : `<div class="small muted">Declined${o.reason ? `: ${esc(o.reason)}` : ''}</div>`}</div>`).join('')
+        || `<div class="empty">${tab === 'new' ? 'No new orders. When a customer orders from your link, it shows here.' : 'None yet.'}</div>`}</div></div>` : ''}
+    <div class="panel flush"><div class="row" style="padding:12px 16px 0;flex-wrap:wrap;gap:8px"><h3 style="margin:0">Products</h3><span class="muted small">one card per design; its colours and sizes are chosen on the card</span><span class="spacer"></span>
+        <input id="pfind" type="search" placeholder="Find a product" style="max-width:220px"></div>
+      <div class="sp-own" id="plist">${pr.products.map((p, n) => { const on = p.variants.filter((v) => v.shown).length;
+        return `<div class="sp-orow" data-name="${esc(p.key.toLowerCase())}">${ph(p, 'sp-oimg')}<div class="sp-oinfo"><b>${esc(p.key)}</b><div class="muted small">${range(p)} · ${p.variants.length > 1 ? `${p.variants.length} variants${p.dims.length ? ` (${p.dims.map((x) => `${x.values.length} ${x.name.toLowerCase()}`).join(' × ')})` : ''}` : 'single item'}${on && on < p.variants.length ? ` · <b>${on} shown</b>` : ''}</div>
+          <div class="row" style="gap:6px;margin-top:6px;flex-wrap:wrap">${canItems ? `<label class="btn sm">📷 ${p.photo ? 'Change photo' : 'Add photo'}<input type="file" accept="image/*" data-photo="${n}" hidden></label>${p.photo ? `<button class="btn sm" data-nophoto="${n}">Remove photo</button>` : ''}` : ''}
+          ${p.variants.length > 1 ? `<button class="btn sm" data-vars="${n}">Colours &amp; sizes</button>` : ''}</div><div class="sp-vars" id="vars${n}" hidden></div></div>
+          <label class="check sp-otog"><input type="checkbox" data-show="${n}" ${on ? 'checked' : ''} ${canItems ? '' : 'disabled'}> shown</label></div>`; }).join('') || '<div class="empty">Add items with a selling price first.</div>'}</div></div>
+    <details class="panel" ${s.on ? '' : 'open'}><summary><b>Settings</b> <span class="muted small">on / off, WhatsApp number, note, stock</span></summary>
+      <form id="shf" style="margin-top:10px"><label class="mode-opt"><input type="checkbox" name="on" ${s.on ? 'checked' : ''} ${canSet ? '' : 'disabled'}> <span><b>Catalogue on</b><br>
+        <span class="muted">Turning it off closes the link at once; your products and photos stay.</span></span></label>
         <div class="form"><label class="f">WhatsApp number for orders<input name="wa" value="${esc(s.wa)}" inputmode="numeric" maxlength="12" placeholder="${esc(ME.org.phone || '10-digit mobile')}"><small class="help">Empty = your business phone.</small></label>
           <label class="f wide">Note on the page<input name="note" value="${esc(s.note)}" maxlength="200" placeholder="Free home delivery above ₹500 · Open 9 am to 9 pm"></label></div>
-        <label class="check"><input type="checkbox" name="stock" ${s.stock ? 'checked' : ''}> Show "out of stock" on items you have none of (never how many you have)</label>
-        <div class="row" style="margin-top:10px"><span class="spacer"></span><button class="btn primary" ${canSet ? '' : 'disabled'}>Save</button></div></form></div>
-    ${s.on && s.link ? `<div class="panel"><div class="row qrbox"><div id="shqr"></div><div><b>Your catalogue link</b><br><a href="${esc(s.link)}" target="_blank" rel="noopener" class="small">${esc(s.link)}</a>
-        <div class="row" style="margin-top:8px"><button type="button" class="btn sm" id="shcopy">Copy link</button>
-          <a class="btn sm" target="_blank" rel="noopener" href="https://wa.me/?text=${encodeURIComponent(shareText)}">Share on WhatsApp</a><a class="btn sm" href="#/shop-poster">Print QR poster</a>
-          ${canSet ? '<button type="button" class="btn sm danger" id="shnew">New link (the old one stops)</button>' : ''}</div></div></div></div>` : ''}
-    <div class="panel flush"><div style="padding:14px 16px 0"><h3 style="margin:0">Items in the catalogue</h3><p class="muted small">Price shown to customers is the selling price with GST. Wholesale prices, costs and stock counts are never shown.</p></div>
-      ${table([{ h: 'Item', f: (i) => `<b>${esc(i.name)}</b>${i.category ? `<div class="muted small">${esc(i.category)}</div>` : ''}` }, { h: 'Price', num: 1, f: (i) => inr(i.sale_price_incl) },
-        { h: 'In catalogue', f: (i) => (i.sale_price > 0 ? `<label class="check"><input type="checkbox" data-shop="${i.id}" ${i.shop_hide ? '' : 'checked'} ${canItems ? '' : 'disabled'}> shown</label>` : '<span class="muted small">no price</span>') }],
-      items, { empty: 'Add items with a selling price first.' })}</div>`;
+        <label class="check"><input type="checkbox" name="stock" ${s.stock ? 'checked' : ''}> Show "out of stock" (never how many you have); out-of-stock colours and sizes cannot be ordered</label>
+        <div class="row" style="margin-top:10px">${canSet && s.link ? '<button type="button" class="btn sm danger" id="shnew">New link (the old one stops)</button>' : ''}<span class="spacer"></span><button class="btn primary" ${canSet ? '' : 'disabled'}>Save</button></div></form></details>`;
   if ($('#shqr')) qrInto($('#shqr'), s.link);
   $('#shf').onsubmit = async (e) => {
     e.preventDefault(); const f = e.target;
@@ -5666,13 +5702,51 @@ route(/^shop$/, async (el) => {
   };
   if ($('#shcopy')) $('#shcopy').onclick = async () => { try { await navigator.clipboard.writeText(s.link); toast('Link copied'); } catch (x) { toast(s.link); } };
   if ($('#shnew')) $('#shnew').onclick = async () => {
-    if (!confirm('Make a new link? The old link and its QR stop working at once.')) return;
+    if (!confirm('Make a new link? The old link, its QR and the product links you shared stop working at once.')) return;
     try { await POST('/api/settings/shop/new-link'); toast('New link made'); render(); } catch (x) { toast(x.message, 'err'); }
   };
-  $$('[data-shop]', el).forEach((b) => { b.onchange = async () => {
-    try { await api('PUT', `/api/items/${b.dataset.shop}/shop`, { show: b.checked }); dirty('items'); } catch (x) { b.checked = !b.checked; toast(x.message, 'err'); }
-  }; });
+  $('#pfind').oninput = (e) => { const t = e.target.value.trim().toLowerCase(); $$('.sp-orow', el).forEach((r) => { r.hidden = !!t && !r.dataset.name.includes(t); }); };
+  let busy = false;
+  el.onclick = async (e) => {
+    const b = e.target.closest('[data-oacc],[data-odec],[data-vars],[data-nophoto]');
+    if (!b || busy) return;
+    if (b.dataset.vars !== undefined) {
+      const p = pr.products[+b.dataset.vars], box = $('#vars' + b.dataset.vars);
+      box.hidden = !box.hidden;
+      box.innerHTML = p.variants.map((v) => `<label class="check"><input type="checkbox" data-var="${v.id}" ${v.shown ? 'checked' : ''} ${canItems ? '' : 'disabled'}> ${esc(v.opts.join(' / ') || p.key)} <span class="muted small">${rs(v.price)}${v.in_stock ? '' : ' · out of stock'}</span></label>`).join('');
+      return;
+    }
+    busy = true; b.disabled = true;
+    try {
+      if (b.dataset.oacc) { const r = await POST(`/api/shop/orders/${b.dataset.oacc}/accept`, {}); toast(`${r.number} made for ${r.party}`); go('doc/' + r.doc_id); return; }
+      if (b.dataset.odec) { const why = prompt('Decline this order? Why (the customer is not told automatically):', 'Out of stock'); if (why === null) return; await POST(`/api/shop/orders/${b.dataset.odec}/decline`, { reason: why }); toast('Declined'); render(); return; }
+      if (b.dataset.nophoto) { if (!confirm('Remove this photo?')) return; await api('DELETE', '/api/shop/photo?key=' + encodeURIComponent(pr.products[+b.dataset.nophoto].key)); toast('Photo removed'); render(); }
+    } catch (x) { toast(x.message, 'err'); } finally { busy = false; b.disabled = false; }
+  };
+  el.onchange = async (e) => {
+    const t = e.target;
+    if (t.dataset.show !== undefined) {
+      const p = pr.products[+t.dataset.show];
+      try { await api('PUT', '/api/shop/products/show', { ids: p.variants.map((v) => v.id), show: t.checked }); p.variants.forEach((v) => { v.shown = t.checked; }); dirty('items'); toast(t.checked ? `${p.key} is shown` : `${p.key} is hidden`); }
+      catch (x) { t.checked = !t.checked; toast(x.message, 'err'); }
+    } else if (t.dataset.var) {
+      try { await api('PUT', `/api/items/${t.dataset.var}/shop`, { show: t.checked }); dirty('items'); } catch (x) { t.checked = !t.checked; toast(x.message, 'err'); }
+    } else if (t.dataset.photo !== undefined && t.files && t.files[0]) {
+      const p = pr.products[+t.dataset.photo];
+      try { toast('Uploading…'); await api('PUT', '/api/shop/photo', { key: p.key, data: await smallPhoto(t.files[0]) }); toast('Photo saved'); render(); }
+      catch (x) { toast(x.message, 'err'); }
+    }
+  };
 });
+/* a photo from the phone made small enough for the catalogue: at most 900 px, JPEG, under 390 KB */
+async function smallPhoto(file) {
+  const img = await createImageBitmap(file).catch(() => { throw new Error('That file is not a photo this browser can open.'); });
+  const k = Math.min(1, 900 / Math.max(img.width, img.height)), c = document.createElement('canvas');
+  c.width = Math.round(img.width * k); c.height = Math.round(img.height * k);
+  const g = c.getContext('2d'); g.fillStyle = '#fff'; g.fillRect(0, 0, c.width, c.height); g.drawImage(img, 0, 0, c.width, c.height);
+  for (const qy of [0.82, 0.7, 0.55, 0.4]) { const u = c.toDataURL('image/jpeg', qy); if (u.length * 0.75 < 390 * 1024) return u; }
+  throw new Error('The photo is too big even when made small. Try another photo.');
+}
 /* ======================================================================= loyalty points */
 const waNum = (ph) => { const d = String(ph || '').replace(/\D/g, ''); return d.length === 10 ? '91' + d : d; };
 const PTS_KIND = { earn: 'Earned', redeem: 'Used', unredeem: 'Use undone', return: 'Goods returned', cancel: 'Bill cancelled', adjust: 'Changed' };
@@ -5730,65 +5804,144 @@ route(/^shop-poster$/, async (el) => {
       <p class="muted">स्कैन करें, रेट देखें, WhatsApp पर ऑर्डर करें · Scan to see prices and order on WhatsApp</p></div>`;
   qrInto($('#shpq'), s.link);
 });
-/* The public rate list: /s/<token>. The cart stays on the customer's phone; the order is a WhatsApp message to the shop. */
+/* The public catalogue: /s/<token>. Products in a grid of cards (one card per design, with its photo); a product opens
+   with its colours and sizes; the cart stays on the customer's phone; the order is saved for the shop (it becomes a Sales
+   Order there) and WhatsApp opens with its number. ?p=<product> opens one product (to share on Instagram or WhatsApp). */
 const SHOP_T = {
-  hl: { search: 'Saaman khojein…', all: 'Sab', add: 'Add', out: 'Stock khatam', items: (n) => `${n} saaman`, order: 'WhatsApp par order', name: 'Aapka naam', addr: 'Pata / note (delivery ke liye)',
-    send: 'WhatsApp par bhejein', back: 'Wapas', total: 'Kul', none: 'Yeh rate list abhi band hai.', hint: 'Rate GST sahit. Final bill dukaan dega.', empty: 'Koi saaman nahi mila.',
-    msg: (shop) => `Namaste ${shop}, mujhe ye chahiye:`, nameL: 'Naam', addrL: 'Pata / note', foot: '(SmartTrader rate list se)' },
-  en: { search: 'Search items…', all: 'All', add: 'Add', out: 'Out of stock', items: (n) => `${n} item(s)`, order: 'Order on WhatsApp', name: 'Your name', addr: 'Address / note (for delivery)',
-    send: 'Send on WhatsApp', back: 'Back', total: 'Total', none: 'This rate list is not available now.', hint: 'Prices include GST. The shop gives the final bill.', empty: 'No items found.',
-    msg: (shop) => `Hello ${shop}, I would like to order:`, nameL: 'Name', addrL: 'Address / note', foot: '(from the SmartTrader rate list)' },
-  hi: { search: 'सामान खोजें…', all: 'सब', add: 'जोड़ें', out: 'स्टॉक खत्म', items: (n) => `${n} सामान`, order: 'WhatsApp पर ऑर्डर', name: 'आपका नाम', addr: 'पता / नोट (डिलीवरी के लिए)',
-    send: 'WhatsApp पर भेजें', back: 'वापस', total: 'कुल', none: 'यह रेट लिस्ट अभी बंद है।', hint: 'रेट GST सहित। आखिरी बिल दुकान देगी।', empty: 'कोई सामान नहीं मिला।',
-    msg: (shop) => `नमस्ते ${shop}, मुझे यह चाहिए:`, nameL: 'नाम', addrL: 'पता / नोट', foot: '(SmartTrader रेट लिस्ट से)' },
+  hl: { search: 'Saaman khojein…', all: 'Sab', add: 'Cart mein daalein', out: 'Stock khatam', items: (n) => `${n} saaman`, cart: 'Cart dekhein', order: 'Order karein', name: 'Aapka naam',
+    phone: 'Mobile number', addr: 'Pata (delivery ke liye)', note: 'Kuch aur? (optional)', send: 'Order bhejein', back: 'Wapas', total: 'Kul', none: 'Yeh rate list abhi band hai.',
+    hint: 'Rate GST sahit. Final bill dukaan dega.', empty: 'Koi saaman nahi mila.', from: 'se shuru', choose: (d) => `${d} chunein`, pick: 'Pehle sab chunein',
+    done: (n) => `Order ${n} mil gaya! 🎉`, doneSub: 'Dukaan aapko jaldi call ya WhatsApp karegi.', wa: 'WhatsApp par bhi bhejein', share: 'Share', copied: 'Link copy ho gaya',
+    msg: (shop, n) => `Namaste ${shop}, maine order ${n} bheja hai:`, nameL: 'Naam', phoneL: 'Mobile', addrL: 'Pata', noteL: 'Note', remove: 'Hatayein', qty: 'Kitne',
+    dims: { Colour: 'Rang', Size: 'Size', Option: 'Option' }, opts: (n) => `${n} option` },
+  en: { search: 'Search…', all: 'All', add: 'Add to cart', out: 'Out of stock', items: (n) => `${n} item${n === 1 ? '' : 's'}`, cart: 'View cart', order: 'Place order', name: 'Your name',
+    phone: 'Mobile number', addr: 'Address (for delivery)', note: 'Anything else? (optional)', send: 'Send order', back: 'Back', total: 'Total', none: 'This rate list is not available now.',
+    hint: 'Prices include GST. The shop gives the final bill.', empty: 'Nothing found.', from: 'onwards', choose: (d) => `Choose ${d.toLowerCase()}`, pick: 'Choose all options first',
+    done: (n) => `Order ${n} received! 🎉`, doneSub: 'The shop will call or WhatsApp you soon.', wa: 'Also send on WhatsApp', share: 'Share', copied: 'Link copied',
+    msg: (shop, n) => `Hello ${shop}, I have placed order ${n}:`, nameL: 'Name', phoneL: 'Mobile', addrL: 'Address', noteL: 'Note', remove: 'Remove', qty: 'Qty',
+    dims: { Colour: 'Colour', Size: 'Size', Option: 'Option' }, opts: (n) => `${n} option${n === 1 ? '' : 's'}` },
+  hi: { search: 'खोजें…', all: 'सब', add: 'कार्ट में डालें', out: 'स्टॉक खत्म', items: (n) => `${n} सामान`, cart: 'कार्ट देखें', order: 'ऑर्डर करें', name: 'आपका नाम',
+    phone: 'मोबाइल नंबर', addr: 'पता (डिलीवरी के लिए)', note: 'कुछ और? (ज़रूरी नहीं)', send: 'ऑर्डर भेजें', back: 'वापस', total: 'कुल', none: 'यह रेट लिस्ट अभी बंद है।',
+    hint: 'रेट GST सहित। आखिरी बिल दुकान देगी।', empty: 'कुछ नहीं मिला।', from: 'से शुरू', choose: (d) => `${d} चुनें`, pick: 'पहले सब चुनें',
+    done: (n) => `ऑर्डर ${n} मिल गया! 🎉`, doneSub: 'दुकान आपको जल्दी कॉल या WhatsApp करेगी।', wa: 'WhatsApp पर भी भेजें', share: 'शेयर', copied: 'लिंक कॉपी हो गया',
+    msg: (shop, n) => `नमस्ते ${shop}, मैंने ऑर्डर ${n} भेजा है:`, nameL: 'नाम', phoneL: 'मोबाइल', addrL: 'पता', noteL: 'नोट', remove: 'हटाएं', qty: 'कितने',
+    dims: { Colour: 'रंग', Size: 'साइज़', Option: 'विकल्प' }, opts: (n) => `${n} विकल्प` },
 };
+// ₹799, not ₹799.00; paise only when there are some
+const rs = (v) => '₹' + (Math.round(v * 100) % 100 ? (+v).toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : Math.round(v).toLocaleString('en-IN'));
+const SWATCH = { red: '#dc2626', blue: '#2563eb', black: '#111827', green: '#16a34a', white: '#ffffff', yellow: '#facc15', pink: '#ec4899', maroon: '#7f1d1d', navy: '#1e3a8a',
+  grey: '#6b7280', gray: '#6b7280', orange: '#f97316', purple: '#7c3aed', brown: '#78350f', beige: '#e7d8b8', cream: '#fdf6e3', gold: '#d4a017', silver: '#c0c0c0', peach: '#fbbf9a',
+  mustard: '#c9a227', teal: '#0d9488', olive: '#6b7c2e', magenta: '#c026d3', sky: '#38bdf8', 'sky blue': '#38bdf8', wine: '#5b1a2e', rust: '#b7410e', lavender: '#b9a7e8', mint: '#a7f3d0' };
 async function publicShop(token) {
-  const app = $('#app'), l = new URLSearchParams(location.search).get('l'), L = SHOP_T[l] || (LANG === 'hi' ? SHOP_T.hi : SHOP_T.hl);
+  const app = $('#app'), sp = new URLSearchParams(location.search), L = SHOP_T[sp.get('l')] || (LANG === 'hi' ? SHOP_T.hi : SHOP_T.hl);
   document.documentElement.lang = L === SHOP_T.hi ? 'hi' : 'en';
   const res = await fetch('/api/public/shop/' + token).catch(() => null), d = res ? await res.json().catch(() => ({})) : {};
   if (!res || !res.ok) { app.innerHTML = `<div class="boot"><h2>${L.none}</h2><p class="muted">${esc(d.error || '')}</p></div>`; return; }
-  const key = 'st:cart:' + token, items = d.items, byId = new Map(items.map((i) => [i.id, i]));
+  const P = d.products, byId = new Map(), pOf = new Map();
+  P.forEach((p) => p.variants.forEach((v) => { byId.set(v.id, v); pOf.set(v.id, p); }));
+  const vName = (v) => { const p = pOf.get(v.id); return v.opts.length ? `${p.name} (${v.opts.join(', ')})` : p.name; };
+  const key = 'st:cart:' + token, me = 'st:shopme';
   let cart = {}; try { cart = JSON.parse(localStorage.getItem(key) || '{}') || {}; } catch (e) { cart = {}; }
-  for (const k of Object.keys(cart)) if (!byId.has(+k) || !(cart[k] > 0)) delete cart[k];
+  for (const k of Object.keys(cart)) if (!byId.has(+k) || !(cart[k] > 0) || byId.get(+k).in_stock === false) delete cart[k];
   const save = () => { try { localStorage.setItem(key, JSON.stringify(cart)); } catch (e) { /* storage off */ } };
-  const cats = [...new Set(items.map((i) => i.category).filter(Boolean))];
+  const photo = (p, cls) => p.photo ? `<img class="${cls}" src="/api/public/shop/${token}/photo/${encodeURIComponent(p.key)}?v=${p.photo}" alt="${esc(p.name)}" loading="lazy">`
+    : `<div class="${cls} sp-ph" style="--h:${[...p.name].reduce((a, ch) => a + ch.charCodeAt(0), 0) % 360}">${esc(p.name.split(/\s+/).map((w) => w[0]).join('').slice(0, 2).toUpperCase())}</div>`;
+  const prices = (p) => { const v = p.variants.map((x) => x.price); return Math.min(...v) === Math.max(...v) ? rs(v[0]) : `${rs(Math.min(...v))} ${L.from}`; };
+  const cats = [...new Set(P.map((p) => p.category).filter(Boolean))];
   let q = '', cat = '';
-  app.innerHTML = `<div class="shop"><header class="shop-head"><h1>${esc(d.shop.name)}</h1>${d.shop.city ? `<p class="muted">${esc(d.shop.city)}</p>` : ''}
+  app.innerHTML = `<div class="shop sp"><header class="shop-head"><h1>${esc(d.shop.name)}</h1>${d.shop.city ? `<p class="muted">${esc(d.shop.city)}</p>` : ''}
       ${d.shop.note ? `<p class="shop-note">${esc(d.shop.note)}</p>` : ''}<input id="sq" type="search" placeholder="${L.search}" autocomplete="off" aria-label="${L.search}"></header>
     ${cats.length > 1 ? `<div class="chips" id="scats"><button type="button" class="chip on" data-c="">${L.all}</button>${cats.map((c) => `<button type="button" class="chip" data-c="${esc(c)}">${esc(c)}</button>`).join('')}</div>` : ''}
-    <div id="slist" class="shop-list"></div><p class="muted small shop-hint">${L.hint}</p>
-    <div class="shop-bar" id="sbar" hidden><span id="scount"></span><button type="button" class="btn primary" id="sorder">${L.order}</button></div><div id="ssheet"></div></div>`;
+    <div id="slist" class="sp-grid"></div><p class="muted small shop-hint">${L.hint}</p>
+    <div class="shop-bar" id="sbar" hidden><span id="scount"></span><button type="button" class="btn primary" id="scart">${L.cart}</button></div><div id="ssheet"></div></div>`;
   const totalOf = () => Object.entries(cart).reduce((t, [id, n]) => t + byId.get(+id).price * n, 0);
-  const bar = () => { const n = Object.values(cart).reduce((a, b) => a + b, 0); $('#sbar').hidden = !n; $('#scount').textContent = `${L.items(n)} · ${inr(totalOf())}`; };
+  const count = () => Object.values(cart).reduce((a, b) => a + b, 0);
+  const bar = () => { const n = count(); $('#sbar').hidden = !n; $('#scount').textContent = `${L.items(n)} · ${rs(totalOf())}`; };
   const draw = () => {
-    const rows = items.filter((i) => (!cat || i.category === cat) && (!q || i.name.toLowerCase().includes(q)));
-    $('#slist').innerHTML = rows.length ? rows.map((i) => `<div class="shop-item${i.in_stock === false ? ' out' : ''}"><div><b>${esc(i.name)}</b><div class="muted small">${esc(i.unit)}${i.in_stock === false ? ` · ${L.out}` : ''}</div></div>
-        <div class="shop-price">${inr(i.price)}</div><div class="shop-qty">${cart[i.id] ? `<button type="button" class="btn sm" data-dec="${i.id}" aria-label="-">−</button><b>${cart[i.id]}</b><button type="button" class="btn sm" data-inc="${i.id}" aria-label="+">+</button>`
-          : `<button type="button" class="btn sm primary" data-inc="${i.id}" ${i.in_stock === false ? 'disabled' : ''}>${L.add}</button>`}</div></div>`).join('') : `<p class="muted">${L.empty}</p>`;
+    const ql = q.toLowerCase();
+    const rows = P.filter((p) => (!cat || p.category === cat) && (!ql || p.name.toLowerCase().includes(ql) || p.variants.some((v) => v.opts.join(' ').toLowerCase().includes(ql))));
+    $('#slist').innerHTML = rows.length ? rows.map((p) => { const out = p.variants.every((v) => v.in_stock === false), n = p.variants.length;
+      return `<button type="button" class="sp-card${out ? ' out' : ''}" data-p="${esc(p.key)}">${photo(p, 'sp-img')}<span class="sp-name">${esc(p.name)}</span>
+        <span class="sp-price">${prices(p)}</span><span class="sp-sub">${out ? L.out : p.dims.length ? p.dims.map((x) => `${x.values.length} ${L.dims[x.name] || x.name}`).join(' · ') : esc(p.variants[0].unit)}</span></button>`; }).join('')
+      : `<p class="muted">${L.empty}</p>`;
     bar();
   };
-  $('#slist').onclick = (e) => {
-    const inc = e.target.closest('[data-inc]'), dec = e.target.closest('[data-dec]');
-    if (inc) cart[inc.dataset.inc] = (cart[inc.dataset.inc] || 0) + 1;
-    else if (dec) { cart[dec.dataset.dec] -= 1; if (cart[dec.dataset.dec] <= 0) delete cart[dec.dataset.dec]; } else return;
-    save(); draw();
-  };
-  $('#sq').oninput = (e) => { q = e.target.value.trim().toLowerCase(); draw(); };
-  if ($('#scats')) $('#scats').onclick = (e) => { const b = e.target.closest('[data-c]'); if (!b) return; cat = b.dataset.c; $$('#scats .chip').forEach((x) => x.classList.toggle('on', x === b)); draw(); };
-  $('#sorder').onclick = () => {
-    const lines = Object.entries(cart).map(([id, n], k) => { const i = byId.get(+id); return `${k + 1}. ${i.name} (${i.unit}) × ${n} = ${inr(i.price * n)}`; });
-    $('#ssheet').innerHTML = `<div class="shop-sheet panel"><h3 style="margin-top:0">${L.order}</h3><pre class="shop-pre">${esc(lines.join('\n'))}\n${L.total}: ${inr(totalOf())}</pre>
-      <label class="f">${L.name}<input id="sname" maxlength="60" autocomplete="name"></label><label class="f">${L.addr}<textarea id="saddr" rows="2" maxlength="300"></textarea></label>
-      <div class="row"><button type="button" class="btn" id="sback">${L.back}</button><span class="spacer"></span><button type="button" class="btn primary" id="ssend">${L.send}</button></div></div>`;
-    $('#sback').onclick = () => { $('#ssheet').innerHTML = ''; };
-    $('#ssend').onclick = () => {
-      const nm = $('#sname').value.trim(), ad = $('#saddr').value.trim();
-      const text = [L.msg(d.shop.name), ...lines, `${L.total}: ${inr(totalOf())}`, nm ? `${L.nameL}: ${nm}` : '', ad ? `${L.addrL}: ${ad}` : '', L.foot].filter(Boolean).join('\n');
-      window.open(`https://wa.me/${d.shop.wa}?text=${encodeURIComponent(text)}`, '_blank', 'noopener');
+  const sheet = (html) => { $('#ssheet').innerHTML = `<div class="sp-back" id="spb"></div><div class="sp-sheet" role="dialog">${html}</div>`; $('#spb').onclick = close; document.body.style.overflow = 'hidden'; };
+  const close = () => { $('#ssheet').innerHTML = ''; document.body.style.overflow = ''; if (sp.get('p')) { sp.delete('p'); history.replaceState(null, '', location.pathname + (sp.toString() ? '?' + sp : '')); } };
+  /* one product: its photo, its choices (a choice with no variant in stock is crossed out), how many, add */
+  const product = (p) => {
+    const pick = p.dims.map((x) => (x.values.length === 1 ? x.values[0] : null));
+    let qty = 1;
+    const match = () => p.variants.find((v) => p.dims.every((x, k) => v.opts[k] === pick[k])) || (p.dims.length ? null : p.variants[0]);
+    const can = (k, val) => p.variants.some((v) => v.opts[k] === val && v.in_stock !== false && p.dims.every((x, j) => j === k || !pick[j] || v.opts[j] === pick[j]));
+    const paint = () => {
+      const v = match();
+      sheet(`<button type="button" class="sp-x" id="spx" aria-label="${L.back}">✕</button>${photo(p, 'sp-big')}
+        <h2 class="sp-h">${esc(p.name)}</h2><div class="sp-hp">${v ? rs(v.price) : prices(p)}</div>
+        ${p.dims.map((x, k) => `<div class="sp-dim"><b>${L.dims[x.name] || x.name}${pick[k] ? `: <span>${esc(pick[k])}</span>` : ''}</b><div class="sp-opts">${x.values.map((val) => {
+          const sw = x.name === 'Colour' && SWATCH[val.toLowerCase()];
+          return `<button type="button" class="sp-opt${pick[k] === val ? ' on' : ''}${can(k, val) ? '' : ' no'}${sw ? ' sw' : ''}" data-k="${k}" data-v="${esc(val)}" ${can(k, val) ? '' : 'disabled'}>${sw ? `<i style="background:${sw}"></i>` : ''}${esc(val)}</button>`; }).join('')}</div></div>`).join('')}
+        ${v && v.in_stock === false ? `<p class="err">${L.out}</p>` : ''}
+        <div class="sp-row"><div class="sp-qty"><button type="button" id="qm" aria-label="-">−</button><b>${qty}</b><button type="button" id="qp" aria-label="+">+</button></div>
+          <button type="button" class="btn primary sp-add" id="sadd" ${v && v.in_stock !== false ? '' : 'disabled'}>${v ? L.add : L.pick}</button></div>
+        <button type="button" class="btn sm sp-share" id="sshare">↗ ${L.share}</button>`);
+      $('#spx').onclick = close;
+      $$('.sp-opt').forEach((b) => { b.onclick = () => { const k = +b.dataset.k; pick[k] = pick[k] === b.dataset.v ? null : b.dataset.v; paint(); }; });
+      $('#qm').onclick = () => { qty = Math.max(1, qty - 1); paint(); }; $('#qp').onclick = () => { qty = Math.min(99, qty + 1); paint(); };
+      $('#sadd').onclick = () => { const w = match(); if (!w) return; cart[w.id] = Math.min(99, (cart[w.id] || 0) + qty); save(); close(); draw(); toast(`✓ ${vName(w)} × ${qty}`); };
+      $('#sshare').onclick = async () => {
+        const url = `${location.origin}/s/${token}?p=${encodeURIComponent(p.key)}`, title = `${p.name}: ${prices(p)} · ${d.shop.name}`;
+        try { if (navigator.share) await navigator.share({ title, text: title, url }); else { await navigator.clipboard.writeText(url); toast(L.copied); } } catch (e) { /* closed */ }
+      };
     };
-    $('#ssheet').scrollIntoView({ behavior: 'smooth' });
+    paint();
   };
+  /* the cart, then the customer's details, then the order is saved and WhatsApp opens with its number */
+  const showCart = () => {
+    let who = {}; try { who = JSON.parse(localStorage.getItem(me) || '{}') || {}; } catch (e) { who = {}; }
+    const lines = Object.entries(cart).map(([id, n]) => ({ v: byId.get(+id), n }));
+    sheet(`<button type="button" class="sp-x" id="spx" aria-label="${L.back}">✕</button><h2 class="sp-h">${L.order}</h2>
+      <div class="sp-lines">${lines.map(({ v, n }) => `<div class="sp-line"><div><b>${esc(vName(v))}</b><div class="muted small">${rs(v.price)} × ${n}</div></div>
+        <div class="sp-qty sm"><button type="button" data-cm="${v.id}">−</button><b>${n}</b><button type="button" data-cp="${v.id}">+</button></div><b>${rs(v.price * n)}</b></div>`).join('')}</div>
+      <div class="sp-tot"><span>${L.total}</span><b>${rs(totalOf())}</b></div>
+      <form id="sform" class="sp-form"><label class="f">${L.name}<input name="name" required maxlength="60" autocomplete="name" value="${esc(who.name || '')}"></label>
+        <label class="f">${L.phone}<input name="phone" required inputmode="tel" maxlength="14" autocomplete="tel" value="${esc(who.phone || '')}"></label>
+        <label class="f">${L.addr}<textarea name="address" rows="2" maxlength="300" autocomplete="street-address">${esc(who.address || '')}</textarea></label>
+        <label class="f">${L.note}<input name="note" maxlength="200"></label>
+        <p class="err small" id="serr" role="alert"></p><button class="btn primary sp-add" id="ssend">${L.send} · ${rs(totalOf())}</button></form>`);
+    $('#spx').onclick = close;
+    $('.sp-lines').onclick = (e) => {
+      const m = e.target.closest('[data-cm]'), p2 = e.target.closest('[data-cp]');
+      if (m) { cart[m.dataset.cm] -= 1; if (cart[m.dataset.cm] <= 0) delete cart[m.dataset.cm]; } else if (p2) cart[p2.dataset.cp] = Math.min(99, cart[p2.dataset.cp] + 1); else return;
+      save(); draw(); if (count()) showCart(); else close();
+    };
+    $('#sform').onsubmit = async (e) => {
+      e.preventDefault();
+      const f = e.target, b = $('#ssend'), body = { name: f.name.value.trim(), phone: f.phone.value.trim(), address: f.address.value.trim(), note: f.note.value.trim(),
+        lines: Object.entries(cart).map(([id, n]) => ({ item_id: +id, qty: n })) };
+      b.disabled = true; $('#serr').textContent = '';
+      try {
+        const r = await fetch(`/api/public/shop/${token}/order`, { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Requested-With': 'SmartTrader' }, body: JSON.stringify(body) });
+        const o = await r.json().catch(() => ({}));
+        if (!r.ok) throw new Error(o.error || 'Please try again.');
+        try { localStorage.setItem(me, JSON.stringify({ name: body.name, phone: body.phone, address: body.address })); } catch (x) { /* storage off */ }
+        const text = [L.msg(d.shop.name, o.number), ...o.lines.map((l, k) => `${k + 1}. ${l.name} × ${l.qty} = ${rs(l.price * l.qty)}`), `${L.total}: ${rs(o.total)}`,
+          `${L.nameL}: ${body.name}`, `${L.phoneL}: ${body.phone}`, body.address ? `${L.addrL}: ${body.address}` : '', body.note ? `${L.noteL}: ${body.note}` : ''].filter(Boolean).join('\n');
+        cart = {}; save(); draw();
+        sheet(`<div class="sp-done"><div class="sp-tick">✓</div><h2>${L.done(o.number)}</h2><p class="muted">${L.doneSub}</p>
+          ${d.shop.wa ? `<a class="btn primary sp-add" target="_blank" rel="noopener" href="https://wa.me/${d.shop.wa}?text=${encodeURIComponent(text)}">${L.wa}</a>` : ''}
+          <button type="button" class="btn" id="sdone">${L.back}</button></div>`);
+        $('#sdone').onclick = close;
+      } catch (x) { $('#serr').textContent = x.message; b.disabled = false; }
+    };
+  };
+  $('#slist').onclick = (e) => { const c = e.target.closest('[data-p]'); if (c) { const p = P.find((x) => x.key === c.dataset.p); if (p) product(p); } };
+  $('#scart').onclick = showCart;
+  $('#sq').oninput = (e) => { q = e.target.value.trim(); draw(); };
+  if ($('#scats')) $('#scats').onclick = (e) => { const b = e.target.closest('[data-c]'); if (!b) return; cat = b.dataset.c; $$('#scats .chip').forEach((x) => x.classList.toggle('on', x === b)); draw(); };
   draw();
+  const want = sp.get('p') && P.find((x) => x.key === sp.get('p'));
+  if (want) product(want);
 }
 route(/^wa-poster$/, async (el) => {
   if (!ME.wa_bot_link) { el.innerHTML = head('WhatsApp QR poster') + `<div class="panel">${emptyCta('Turn on the WhatsApp bot in Settings first.', '<a class="btn primary" href="#/settings">Settings</a>')}</div>`; return; }
@@ -7070,7 +7223,19 @@ const kotDraft = (tid, set) => {
   try { return JSON.parse(storeGet(kotDraftKey(tid)) || '[]') || []; } catch (e) { return []; }
 };
 const since = (iso) => { const m = Math.max(0, Math.round((Date.now() - Date.parse(iso)) / 60000)); return m < 60 ? `${m} min` : `${Math.floor(m / 60)} h ${m % 60} min`; };
-function printKot(k) {
+/* the Indian food mark: a green dot in a square for veg, a brown triangle for non-veg, a yellow one for egg */
+const FOOD_T = { veg: 'Veg', nonveg: 'Non-veg', egg: 'Egg' };
+const foodMark = (f) => (FOOD_T[f] ? `<span class="fmark ${f}" title="${FOOD_T[f]}" aria-label="${FOOD_T[f]}"></span>` : '');
+/* "sold out today" chips for the kitchen: tap a dish when it runs out; it is back on the menu by itself tomorrow */
+const soldOutHtml = (m) => `<details class="panel soldpanel"${m.menu.some((i) => i.sold_out) ? ' open' : ''}><summary><b>Sold out today</b> <span class="muted small">${m.menu.filter((i) => i.sold_out).length} of ${m.menu.length} dishes · tap a dish when it runs out; guests cannot order it, and it is back tomorrow by itself</span></summary>
+  <div class="sochips">${m.menu.map((i) => `<button type="button" class="sochip${i.sold_out ? ' on' : ''}" data-so="${i.id}" data-out="${i.sold_out ? 0 : 1}">${foodMark(i.food)}${esc(i.name)}${i.sold_out ? ' ✕' : ''}</button>`).join('') || '<span class="muted small">No dishes with a selling price yet.</span>'}</div></details>`;
+/* the thermal printer (public/escpos.js, loaded only when used): connected → the slip goes straight to it; otherwise,
+   or if it fails, the browser prints as before */
+let escpos = null;
+const escposWanted = () => { try { return !!localStorage.getItem('st:printer'); } catch (e) { return false; } };
+async function escposMod() { if (!escpos) escpos = await import('/escpos.js'); return escpos; }
+async function printKot(k) {
+  if (escposWanted()) { try { const m = await escposMod(); if (await m.send(m.kotBytes(k, ME.org.name))) return; toast('Thermal printer not connected: printing through the browser.', 'err'); } catch (e) { /* the browser prints */ } }
   let r = $('#receipt');
   if (!r) { r = document.createElement('div'); r.id = 'receipt'; r.className = 'receipt'; document.body.appendChild(r); }
   const t = new Date(k.at).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' });
@@ -7079,6 +7244,26 @@ function printKot(k) {
     <table>${k.lines.map((l) => `<tr><td class="kq">${qtyf(l.qty)}</td><td><b>${esc(l.name)}</b>${l.note ? `<div class="kn">${esc(l.note)}</div>` : ''}</td></tr>`).join('')}</table>`;
   document.body.classList.add('print-receipt');
   setTimeout(() => { print(); document.body.classList.remove('print-receipt'); }, 50);
+}
+async function printerDialog() {
+  const m = await escposMod(), sup = m.supported();
+  let root = $('#printer-root'); if (!root) { root = document.createElement('div'); root.id = 'printer-root'; document.body.appendChild(root); }
+  const draw = () => { const st = m.status();
+    root.innerHTML = `<div class="modal-bg"><div class="modal" role="dialog" aria-label="Thermal printer"><h2>Thermal printer (KOT)</h2>
+      <p class="muted small">KOTs go straight to a 58 or 80 mm thermal printer, without the print dialog. Until one is connected, or if it stops answering, they print through the browser as before.</p>
+      <p><b>${st.connected ? `Connected: ${esc(st.name)}` : st.wanted ? 'Not connected right now' : 'No printer connected'}</b></p>
+      ${sup.bluetooth || sup.usb ? `<div class="row" style="flex-wrap:wrap;gap:8px">${sup.bluetooth ? '<button class="btn primary" data-pc="bluetooth">Connect Bluetooth printer</button>' : ''}${sup.usb ? '<button class="btn" data-pc="usb">Connect USB printer</button>' : ''}</div>`
+        : '<p class="warnbox small">This browser cannot talk to printers. Use Chrome or Edge (on Android, Windows or Mac).</p>'}
+      <label class="f" style="margin-top:10px">Paper width<select id="pw"><option value="32"${st.width === 32 ? ' selected' : ''}>58 mm (32 letters)</option><option value="48"${st.width === 48 ? ' selected' : ''}>80 mm (48 letters)</option></select></label>
+      <p class="muted small">A KOT with Hindi dish names prints as a picture, so it reads as typed. A Bluetooth printer is asked for again after the page reloads; a USB one is remembered.</p>
+      <div class="row" style="margin-top:10px;gap:8px">${st.connected ? '<button class="btn" id="ptest">Test print</button>' : ''}${st.wanted ? '<button class="btn danger" id="pforget">Stop using it</button>' : ''}<span class="spacer"></span><button class="btn" id="pclose">Close</button></div></div></div>`;
+    root.querySelectorAll('[data-pc]').forEach((b) => { b.onclick = async () => { b.disabled = true; try { await m.connect(b.dataset.pc, +$('#pw').value); toast('Printer connected'); } catch (e) { if (e.name !== 'NotFoundError') toast(e.message, 'err'); } draw(); }; });
+    $('#pw').onchange = () => m.setWidth(+$('#pw').value);
+    if ($('#ptest')) $('#ptest').onclick = async () => { if (!(await m.test(ME.org.name))) toast('The printer did not answer.', 'err'); draw(); };
+    if ($('#pforget')) $('#pforget').onclick = () => { m.forget(); draw(); };
+    $('#pclose').onclick = () => { root.innerHTML = ''; };
+  };
+  await m.reconnect(); draw();
 }
 route(/^tables$/, async (el) => {
   const [b, asks] = await Promise.all([GET('/api/dine'), GET('/api/dine/requests').catch(() => ({ requests: [] }))]), canSet = ME.can.settings;
@@ -7095,7 +7280,7 @@ route(/^tables$/, async (el) => {
   }
   const areas = [...new Set(b.tables.map((t) => t.area || ''))];
   const running = b.tables.filter((t) => t.order);
-  el.innerHTML = head('Tables (Restaurant)', `${ME.can.finance ? '<a class="btn" href="#/restaurant-live">Owner dashboard</a>' : ''}<a class="btn" href="#/kitchen">Kitchen screen</a><a class="btn" href="#/kots">KOT log</a>${canSet ? '<a class="btn" href="#/table-qr">Table QR</a><button class="btn" id="tmore">+ Tables</button>' : ''}`) + dineAsksHtml(asks) + floorLegend(b.tables) + `
+  el.innerHTML = head('Tables (Restaurant)', `${ME.can.finance ? '<a class="btn" href="#/restaurant-live">Owner dashboard</a>' : ''}<a class="btn" href="#/kitchen">Kitchen screen</a><a class="btn" href="#/kots">KOT log</a><button class="btn" id="tprinter" title="Thermal printer for KOTs">🖨 Printer</button>${canSet ? '<a class="btn" href="#/table-qr">Table QR</a><button class="btn" id="tmore">+ Tables</button>' : ''}`) + dineAsksHtml(asks) + floorLegend(b.tables) + `
     <div class="kpis"><div class="kpi"><div class="l">Running</div><div class="v">${running.length} / ${b.tables.length}</div><div class="s">tables with an open order</div></div>
       <div class="kpi"><div class="l">On the tables now</div><div class="v">${inr(running.reduce((x, t) => x + t.order.amount, 0))}</div><div class="s">not billed yet</div></div></div>
     ${areas.map((a) => `${a ? `<h3 class="tarea">${esc(a)}</h3>` : ''}<div class="tgrid">${b.tables.filter((t) => (t.area || '') === a).map((t) => `<a class="ttile ${t.order ? 'busy' : ''} fs-${t.state || 'free'}" href="#/table/${t.id}"><span class="fstate">${FLOOR[t.state || 'free'][0]}${t.state === 'cooking' && t.kitchen && t.kitchen.oldest ? ' · ' + since(t.kitchen.oldest) : ''}</span>
@@ -7103,6 +7288,7 @@ route(/^tables$/, async (el) => {
         : `<span class="muted small">Free${t.seats ? ` &middot; ${t.seats} seats` : ''}</span>`}${kotDraft(t.id).length ? '<span class="tnew">not sent</span>' : ''}${t.asks && !['pay', 'bill', 'help', 'asked'].includes(t.state) ? `<span class="tnew">&#128276; ${t.asks} from QR</span>` : ''}</a>`).join('')}</div>`).join('')}`;
   wireDineAsks(el, () => render());
   window.__tablesSig = JSON.stringify([b, asks]);
+  if ($('#tprinter')) $('#tprinter').onclick = () => printerDialog().catch((e) => toast(e.message, 'err'));
   if ($('#tmore')) $('#tmore').onclick = () => modal('Add tables', [{ k: 'names', label: 'Names (comma or one per line), or leave empty and give a number', type: 'textarea', wide: true },
     { k: 'count', label: 'Or how many', type: 'number' }, { k: 'prefix', label: 'Name starts with', value: 'T' }, { k: 'area', label: 'Area (optional)' }, { k: 'seats', label: 'Seats', type: 'number', value: 4 }],
   async (v) => { await POST('/api/dine/tables', { ...v, count: +v.count || 0, seats: +v.seats || 0 }); render(); });
@@ -7111,8 +7297,8 @@ route(/^tables$/, async (el) => {
   // the page is drawn again only when something changed, so it does not jump while someone reads it
   window.__tablesTick = setInterval(async () => {
     if (location.hash !== '#/tables') { clearInterval(window.__tablesTick); return; }
-    if (document.querySelector('.modal')) return;
-    try { const sig = JSON.stringify(await Promise.all([GET('/api/dine'), GET('/api/dine/requests').catch(() => ({ requests: [] }))])); if (sig !== window.__tablesSig) render(); } catch (e) { /* offline: try again */ }
+    if (document.querySelector('.modal') || document.hidden) return;
+    try { const sig = JSON.stringify(await Promise.all([pollGET('/api/dine'), pollGET('/api/dine/requests').catch(() => ({ requests: [] }))])); if (sig !== window.__tablesSig) render(); } catch (e) { /* offline: try again */ }
   }, 10000);
 });
 route(/^table\/(\d+)$/, async (el, m) => {
@@ -7225,7 +7411,7 @@ const DINE_T = {
     k: { new: 'Sent to the kitchen', cooking: 'Being cooked', ready: 'Ready, coming to you', served: 'Served' },
     hk: { water: 'Water', cutlery: 'Cutlery', tissues: 'Tissues', bill: 'Bring the bill', other: 'Call staff' }, empty: 'Nothing matches.', lang: 'हिंदी', priv: 'No app, no sign-up, no phone number. Only this restaurant sees your order.',
     bill: 'Bill & pay', yourBill: 'Your bill', noBill: 'Nothing on this table\'s bill yet.', toPay: 'To pay', split: 'Split between', people: (n) => `${n} ${n === 1 ? 'person' : 'people'}`, each: (v) => `${v} each (one of you pays the bill)`,
-    payUpi: (v) => `Pay ${v} by UPI`, scan: 'Or scan with another phone', ref: 'UPI reference / UTR (optional)', paid: 'I have paid', counter: 'Pay at the counter instead',
+    payOnline: (v) => `Pay ${v} online (UPI, card)`, payUpi: (v) => `Pay ${v} by UPI`, scan: 'Or scan with another phone', ref: 'UPI reference / UTR (optional)', paid: 'I have paid', counter: 'Pay at the counter instead',
     payWait: 'Payment sent to the staff to check.', payDone: 'Paid. Thank you!', payNo: 'Payment not confirmed', payRow: (v) => `UPI payment ${v}`, noUpi: 'This restaurant takes payment at the counter.' },
   hi: { none: 'यह टेबल अभी ऑर्डर नहीं ले रही', ask: 'कृपया स्टाफ़ से पूछें।', search: 'मेन्यू में खोजें', all: 'सब', add: 'जोड़ें', order: 'ऑर्डर भेजें',
     items: (n) => `${n} आइटम`, total: 'कुल', name: 'आपका नाम (ज़रूरी नहीं)', note: 'रसोई के लिए नोट (ज़रूरी नहीं)', back: 'वापस', send: 'स्टाफ़ को भेजें',
@@ -7234,7 +7420,7 @@ const DINE_T = {
     k: { new: 'रसोई में पहुँचा', cooking: 'बन रहा है', ready: 'तैयार, आ रहा है', served: 'परोस दिया' },
     hk: { water: 'पानी', cutlery: 'चम्मच-काँटा', tissues: 'टिशू', bill: 'बिल लाइए', other: 'स्टाफ़ बुलाइए' }, empty: 'कुछ नहीं मिला।', lang: 'English', priv: 'न ऐप, न साइन-अप, न फ़ोन नंबर। आपका ऑर्डर सिर्फ़ यही रेस्टोरेंट देखता है।',
     bill: 'बिल और भुगतान', yourBill: 'आपका बिल', noBill: 'इस टेबल के बिल में अभी कुछ नहीं।', toPay: 'देना है', split: 'कितने लोगों में बाँटें', people: (n) => `${n} लोग`, each: (v) => `हर एक का ${v} (बिल एक ही व्यक्ति भरे)`,
-    payUpi: (v) => `${v} UPI से भरें`, scan: 'या दूसरे फ़ोन से स्कैन करें', ref: 'UPI रेफ़रेंस / UTR (ज़रूरी नहीं)', paid: 'मैंने भुगतान कर दिया', counter: 'काउंटर पर भरेंगे',
+    payOnline: (v) => `${v} ऑनलाइन भरें (UPI, कार्ड)`, payUpi: (v) => `${v} UPI से भरें`, scan: 'या दूसरे फ़ोन से स्कैन करें', ref: 'UPI रेफ़रेंस / UTR (ज़रूरी नहीं)', paid: 'मैंने भुगतान कर दिया', counter: 'काउंटर पर भरेंगे',
     payWait: 'भुगतान स्टाफ़ जाँच रहा है।', payDone: 'भुगतान हो गया। धन्यवाद!', payNo: 'भुगतान पक्का नहीं हुआ', payRow: (v) => `UPI भुगतान ${v}`, noUpi: 'यह रेस्टोरेंट काउंटर पर भुगतान लेता है।' },
 };
 async function publicTable(token) {
@@ -7252,7 +7438,7 @@ async function publicTable(token) {
   const load = (k, def) => { try { return JSON.parse(localStorage.getItem(k) || '') || def; } catch (e) { return def; } };
   const keep = (k, v) => { try { localStorage.setItem(k, JSON.stringify(v)); } catch (e) { /* storage off */ } };
   let cart = load(key, {}), mine = load(mineKey, []).filter((x) => x && Date.now() - x.at < 12 * 3600e3), status = {};
-  for (const k of Object.keys(cart)) if (!byId.has(+k) || !(cart[k] > 0)) delete cart[k];
+  for (const k of Object.keys(cart)) if (!byId.has(+k) || !(cart[k] > 0) || byId.get(+k).sold_out) delete cart[k];
   const cats = [...new Set(d.items.map((i) => i.category).filter(Boolean))];
   let q = '', cat = '';
   const shell = () => {
@@ -7272,8 +7458,9 @@ async function publicTable(token) {
   const bar = () => { const n = Object.values(cart).reduce((a, b) => a + b, 0); $('#sbar').hidden = !n; $('#scount').textContent = `${L.items(n)} · ${inr(totalOf())}`; };
   function draw() {
     const rows = d.items.filter((i) => (!cat || i.category === cat) && (!q || i.name.toLowerCase().includes(q)));
-    $('#slist').innerHTML = rows.length ? rows.map((i) => `<div class="shop-item"><div><b>${esc(i.name)}</b><div class="muted small">${esc(i.unit || '')}</div></div>
-        <div class="shop-price">${inr(i.price)}</div><div class="shop-qty">${cart[i.id] ? `<button type="button" class="btn sm" data-dec="${i.id}" aria-label="One less ${esc(i.name)}">−</button><b>${cart[i.id]}</b><button type="button" class="btn sm" data-inc="${i.id}" aria-label="One more ${esc(i.name)}">+</button>`
+    const out = L === DINE_T.hi ? 'आज ख़त्म' : 'Sold out today';
+    $('#slist').innerHTML = rows.length ? rows.map((i) => `<div class="shop-item${i.sold_out ? ' soldout' : ''}"><div><b>${foodMark(i.food)}${esc(i.name)}</b><div class="muted small">${esc(i.unit || '')}</div></div>
+        <div class="shop-price">${inr(i.price)}</div><div class="shop-qty">${i.sold_out ? `<span class="muted small">${out}</span>` : cart[i.id] ? `<button type="button" class="btn sm" data-dec="${i.id}" aria-label="One less ${esc(i.name)}">−</button><b>${cart[i.id]}</b><button type="button" class="btn sm" data-inc="${i.id}" aria-label="One more ${esc(i.name)}">+</button>`
           : `<button type="button" class="btn sm primary" data-inc="${i.id}">${L.add}</button>`}</div></div>`).join('') : `<p class="muted">${L.empty}</p>`;
     bar();
   }
@@ -7296,7 +7483,7 @@ async function publicTable(token) {
     if (!list) return;
     try { const r = await api('GET', '/status?r=' + list); r.requests.forEach((x) => { status[x.id] = x; }); drawMine(); } catch (e) { /* try again later */ }
     const open = mine.some((m) => (m.kind === 'order' && (!status[m.id] || (status[m.id].status !== 'rejected' && status[m.id].kitchen !== 'served')))
-      || (m.kind === 'pay' && (!status[m.id] || status[m.id].status === 'new' || status[m.id].status === 'accepting')));
+      || (m.kind === 'pay' && (!status[m.id] || ['new', 'accepting', 'online'].includes(status[m.id].status))));
     if (open) timer = setTimeout(poll, document.hidden ? 30000 : 8000);
   }
   async function showBill() {
@@ -7310,7 +7497,8 @@ async function publicTable(token) {
         <div class="row" style="font-size:18px;margin-top:6px"><b>${L.toPay}</b><span class="spacer"></span><b>${inr(b.pay)}</b></div>
         <div class="row small"><span>${L.split}</span><span class="spacer"></span><button type="button" class="btn sm" id="dsm" aria-label="-">−</button><b style="min-width:70px;text-align:center">${L.people(n)}</b><button type="button" class="btn sm" id="dsp" aria-label="+">+</button></div>
         ${n > 1 ? `<p class="muted small">${L.each(inr(Math.ceil(b.pay / n)))}</p>` : ''}
-        ${b.upi ? `<a class="btn primary" style="width:100%;margin-top:8px" href="${esc(upiLink(b.upi, b.shop, b.pay, 'Table ' + b.table))}">${L.payUpi(inr(b.pay))}</a>
+        ${b.online ? `<button type="button" class="btn primary" style="width:100%;margin-top:8px" id="donline">${L.payOnline(inr(b.pay))}</button>` : ''}
+        ${b.upi ? `<a class="btn ${b.online ? '' : 'primary'}" style="width:100%;margin-top:8px" href="${esc(upiLink(b.upi, b.shop, b.pay, 'Table ' + b.table))}">${L.payUpi(inr(b.pay))}</a>
           <details class="small"><summary>${L.scan}</summary><div id="dqr"></div></details>
           <label class="f">${L.ref}<input id="dref" maxlength="30" inputmode="numeric" autocomplete="off"></label>
           <button type="button" class="btn" style="width:100%" id="dpaid">${L.paid}</button>` : `<p class="muted small">${L.noUpi}</p>`}
@@ -7318,6 +7506,11 @@ async function publicTable(token) {
       if ($('#dqr')) qrInto($('#dqr'), upiLink(b.upi, b.shop, b.pay, 'Table ' + b.table));
       $('#dsm').onclick = () => { n = Math.max(1, n - 1); draw(); }; $('#dsp').onclick = () => { n = Math.min(20, n + 1); draw(); };
       $('#dcounter').onclick = async (e) => { e.target.disabled = true; try { await api('POST', '', { kind: 'help', what: 'bill' }); $('#dpayerr').textContent = L.hk.bill + ': ' + L.helpSent; } catch (er) { $('#dpayerr').textContent = er.message; e.target.disabled = false; } };
+      if ($('#donline')) $('#donline').onclick = async (e) => {
+        e.target.disabled = true;
+        try { const r = await api('POST', '/pay-online', { amount: b.pay }); mine.push({ id: r.id, token: r.token, kind: 'pay', at: Date.now(), amount: b.pay }); keep(mineKey, mine); location.href = r.url; }
+        catch (er) { $('#dpayerr').textContent = er.message; e.target.disabled = false; if (/changed/.test(er.message)) setTimeout(showBill, 1500); }
+      };
       if ($('#dpaid')) $('#dpaid').onclick = async (e) => {
         e.target.disabled = true;
         try { const r = await api('POST', '', { kind: 'pay', amount: b.pay, ref: $('#dref').value }); mine.push({ id: r.id, token: r.token, kind: 'pay', at: Date.now(), amount: b.pay }); keep(mineKey, mine); box.innerHTML = `<p class="okbox">${L.payWait}</p>`; drawMine(); poll(); }
@@ -7387,8 +7580,9 @@ function dineAsksHtml(x) {
   return `<div class="panel dasks"><div class="row"><b>From the tables (QR)</b><span class="spacer"></span><span class="muted small">${x.requests.length} waiting</span></div>
     ${x.requests.map((r) => `<div class="dask ${r.kind}"><div class="row"><b>Table ${esc(r.table_name)}</b><span class="muted small">${since(r.created_at)} ago${r.guest ? ` · ${esc(r.guest)}` : ''}</span><span class="spacer"></span>
       ${r.kind === 'help' ? `<span class="badge">${esc(r.help)}</span><button class="btn sm primary" data-rdone="${r.id}">Done</button>`
-        : r.kind === 'pay' ? `<span class="badge">Paid by UPI</span><b>${inr(r.total)}</b>` : `<b>${inr(r.total)}</b>`}</div>
-      ${r.kind === 'pay' ? `<div class="small">Check your UPI app for ${inr(r.total)}${r.note ? `, reference <b>${esc(r.note)}</b>` : ''}. When it has come in, make the bill.</div>
+        : r.kind === 'pay' ? `<span class="badge">${esc(r.help)}</span><b>${inr(r.total)}</b>` : `<b>${inr(r.total)}</b>`}</div>
+      ${r.kind === 'pay' ? `<div class="small">${r.what === 'online' ? `Razorpay says ${inr(r.total)} was paid online (<b>${esc(r.note)}</b>), but it did not match the table's bill, so nothing was billed. Check it in Razorpay, then make the bill and settle any difference at the counter.`
+        : `Check your UPI app for ${inr(r.total)}${r.note ? `, reference <b>${esc(r.note)}</b>` : ''}. When it has come in, make the bill.`}</div>
         <div class="row"><button class="btn sm danger" data-rrej="${r.id}">Not received</button><span class="spacer"></span><button class="btn sm primary" data-rpay="${r.id}">Received: make the bill</button></div>` : ''}
       ${r.kind === 'order' ? `<div class="small">${r.lines.map((l) => `${l.qty} × ${esc(l.name)}${l.note ? ` <i class="muted">(${esc(l.note)})</i>` : ''}`).join('<br>')}</div>
         ${r.note ? `<div class="small muted">Note: ${esc(r.note)}</div>` : ''}
@@ -7406,6 +7600,37 @@ function wireDineAsks(el, after) {
       await after(); dineHush();
     } catch (er) { toast(er.message, 'err'); b.disabled = false; await after(); dineHush(); }
   };
+}
+/* the kitchen display link: the same cards as the kitchen screen, big, for a TV or tablet with no login */
+async function publicKitchen(token) {
+  const app = $('#app'); let quiet = 0, seen = new Set(), first = true;
+  let lastX = null, lastM = null, lastAt = 0;
+  const call = async (method, path, body) => { if (method === 'GET') return pollGET(path, '/api/public/kitchen/' + token); const r = await fetch('/api/public/kitchen/' + token + path, { method, headers: { 'Content-Type': 'application/json', 'X-Requested-With': 'SmartTrader' }, body: body ? JSON.stringify(body) : undefined });
+    const d = await r.json().catch(() => ({})); if (!r.ok) throw new Error(d.error || 'Something went wrong.'); return d; };
+  const next = { new: ['cooking', 'Start cooking'], cooking: ['ready', 'Ready'], ready: ['served', 'Served'] };
+  const draw = (x) => {
+    const fresh = x.kots.filter((k) => !seen.has(k.id)); x.kots.forEach((k) => seen.add(k.id)); if (fresh.length && !first) beep(true); first = false;
+    app.innerHTML = `<main class="page kd"><div class="row"><h1 style="margin:0">${esc(x.shop)} · Kitchen</h1><span class="spacer"></span><span class="muted small">${new Date().toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' })}</span></div>
+      <div class="kgrid">${x.kots.map((k) => `<div class="kcard ${k.kind === 'cancel' ? 'cancel' : k.kstatus}"><div class="row"><b class="kno">KOT ${k.number}</b><span class="spacer"></span><b>Table ${esc(k.table_name)}</b></div>
+        <div class="muted small">${since(k.created_at)} ago · ${k.kind === 'cancel' ? '<b>CANCEL</b>' : esc(k.kstatus)}</div>
+        <ul>${k.lines.map((l) => `<li><b>${qtyf(l.qty)} × ${esc(l.name)}</b>${l.note ? `<div class="muted small">${esc(l.note)}</div>` : ''}</li>`).join('')}</ul>
+        ${k.kind === 'cancel' ? `<button class="btn" data-ks="${k.id}" data-to="served">Seen</button>` : `<button class="btn primary big" data-ks="${k.id}" data-to="${next[k.kstatus][0]}">${next[k.kstatus][1]}</button>`}</div>`).join('') || '<div class="empty">No tickets waiting. New KOTs appear here and beep.</div>'}</div>${menu ? soldOutHtml(menu) : ''}</main>`;
+    if (open !== null && $('.soldpanel')) $('.soldpanel').open = open;
+  };
+  let menu = null, open = null;
+  const keepOpen = () => { open = $('.soldpanel') ? $('.soldpanel').open : null; };
+  const load = async () => { try { keepOpen(); const [x, m] = await Promise.all([call('GET', ''), call('GET', '/menu').catch(() => null)]);
+    if (x === lastX && m === lastM && Date.now() - lastAt < 60000) return;
+    lastX = x; lastM = m; lastAt = Date.now(); menu = m; draw(x); } catch (e) { app.innerHTML = `<div class="boot"><h2>${esc(e.message)}</h2></div>`; clearInterval(t); } };
+  app.onclick = async (e) => {
+    const so = e.target.closest('[data-so]');
+    if (so && Date.now() >= quiet) { so.disabled = true; quiet = Date.now() + 60000; keepOpen(); try { menu = await call('POST', '/menu/' + so.dataset.so, { sold_out: so.dataset.out === '1' }); draw(await call('GET', '')); } catch (er) { toast(er.message, 'err'); lastAt = 0; } quiet = Date.now() + 900; return; }
+    const b = e.target.closest('[data-ks]'); if (!b || Date.now() < quiet) return;
+    b.disabled = true; quiet = Date.now() + 60000; keepOpen();
+    try { draw(await call('POST', '/kots/' + b.dataset.ks, { status: b.dataset.to })); } catch (er) { toast(er.message, 'err'); lastAt = 0; }
+    quiet = Date.now() + 900;
+  };
+  await load(); const t = setInterval(() => { if (!document.hidden && Date.now() >= quiet) load(); }, 8000);
 }
 route(/^restaurant-live$/, async (el) => {
   const draw = async () => {
@@ -7438,9 +7663,14 @@ route(/^restaurant-live$/, async (el) => {
   window.__liveTick = setInterval(() => { if (location.hash === '#/restaurant-live') draw(); else clearInterval(window.__liveTick); }, 15000);
 });
 route(/^kitchen$/, async (el) => {
+  let lastX = null, lastM = null, lastAt = 0;      // this visit's last answers: unchanged ones are not drawn again
   const draw = async () => {
     if (location.hash !== '#/kitchen') return;
-    let x; try { x = await GET('/api/dine/kitchen'); } catch (e) { return; }
+    let x, m; try { [x, m] = await Promise.all([pollGET('/api/dine/kitchen'), pollGET('/api/dine/menu').catch(() => null)]); } catch (e) { return; }
+    // nothing changed: leave the screen as it is (once a minute it is drawn anyway, for the "minutes ago")
+    if (x === lastX && m === lastM && Date.now() - lastAt < 60000) return;
+    lastX = x; lastM = m; lastAt = Date.now();
+    const keepOpen = $('.soldpanel', el) ? $('.soldpanel', el).open : null;
     const fresh = x.kots.filter((k) => k.kstatus === 'new' && !dineSeen.has('k' + k.id));
     x.kots.forEach((k) => dineSeen.add('k' + k.id));
     if (fresh.length && el.dataset.loaded) beep(true);
@@ -7450,28 +7680,54 @@ route(/^kitchen$/, async (el) => {
       <div class="kgrid">${x.kots.map((k) => `<div class="kcard ${k.kind === 'cancel' ? 'cancel' : k.kstatus}"><div class="row"><b class="kno">KOT ${k.number}</b><span class="spacer"></span><b>Table ${esc(k.table_name)}</b></div>
         <div class="muted small">${since(k.created_at)} ago · ${k.kind === 'cancel' ? '<b>CANCEL</b>' : esc(k.kstatus)}</div>
         <ul>${k.lines.map((l) => `<li><b>${qtyf(l.qty)} × ${esc(l.name)}</b>${l.note ? `<div class="muted small">${esc(l.note)}</div>` : ''}</li>`).join('')}</ul>
-        ${k.kind === 'cancel' ? `<button class="btn" data-ks="${k.id}" data-to="served">Seen</button>` : `<button class="btn primary big" data-ks="${k.id}" data-to="${next[k.kstatus][0]}">${next[k.kstatus][1]}</button>`}</div>`).join('') || '<div class="empty">No tickets waiting. New KOTs appear here.</div>'}</div>`;
+        ${k.kind === 'cancel' ? `<button class="btn" data-ks="${k.id}" data-to="served">Seen</button>` : `<button class="btn primary big" data-ks="${k.id}" data-to="${next[k.kstatus][0]}">${next[k.kstatus][1]}</button>`}</div>`).join('') || '<div class="empty">No tickets waiting. New KOTs appear here.</div>'}</div>${m ? soldOutHtml(m) : ''}`;
+    if (keepOpen !== null && $('.soldpanel', el)) $('.soldpanel', el).open = keepOpen;
   };
   el.onclick = async (e) => {
+    const so = e.target.closest('[data-so]');
+    if (so && !dineBusy()) { so.disabled = true; dineHush(60000); try { await POST(`/api/dine/menu/${so.dataset.so}/sold-out`, { sold_out: so.dataset.out === '1' }); } catch (er) { toast(er.message, 'err'); } lastAt = 0; await draw(); dineHush(); return; }
     const b = e.target.closest('[data-ks]'); if (!b || dineBusy()) return;
     b.disabled = true; dineHush(60000);
     try { await POST(`/api/dine/kots/${b.dataset.ks}/status`, { status: b.dataset.to }); } catch (er) { toast(er.message, 'err'); }
-    await draw(); dineHush();
+    lastAt = 0; await draw(); dineHush();
   };
   await draw();
-  const tick = setInterval(() => { if (location.hash === '#/kitchen') draw(); else clearInterval(tick); }, 8000);
+  const tick = setInterval(() => { if (location.hash !== '#/kitchen') clearInterval(tick); else if (!document.hidden) draw(); }, 8000);
 });
 route(/^table-qr$/, async (el) => {
-  const x = await GET('/api/dine/qr');
+  const canRzp = ME.can.settings;
+  const [x, rz] = await Promise.all([GET('/api/dine/qr'), canRzp ? GET('/api/dine/razorpay').catch(() => ({ on: false, key_id: '' })) : null]);
   el.innerHTML = head('Table QR ordering', '<a class="btn" href="#/tables">Tables</a><button class="btn" data-act="print">Print posters</button>') + `
-    <div class="panel no-print"><form id="dqs" class="form"><label class="f" style="display:flex;gap:8px;align-items:center"><input type="checkbox" name="qr" ${x.qr ? 'checked' : ''} style="width:auto"> Guests can order from the table QR</label>
+    <div class="panel no-print"><form id="dqs" class="form"><label class="f wide" style="flex-direction:row;justify-content:flex-start;gap:8px;align-items:center;font-size:15px;font-weight:600"><input type="checkbox" name="qr" ${x.qr ? 'checked' : ''} style="width:20px;height:20px;margin:0;flex:none"> Guests can order from the table QR</label>
       <label class="f wide">Note on the menu (optional)<input name="note" maxlength="200" value="${esc(x.note)}" placeholder="Orders are confirmed by our staff. Kitchen open till 11 pm."></label>
-      <label class="f">&nbsp;<button class="btn primary">Save</button></label></form>
+      <div class="f wide"><button class="btn primary" style="width:auto;align-self:flex-start">Save</button></div></form>
       <p class="muted small">Every order a guest sends waits on the Tables page until a staff member accepts it: only then does it become a KOT. The menu shows your items that have a selling price and are not hidden from the online rate list. If a QR is misused, make a new one for that table: the old one stops at once.</p></div>
+    <div class="panel no-print"><b>Kitchen screen on a TV or tablet</b>
+      <p class="muted small">A link that opens the kitchen screen with no login and no user seat: today's KOTs (tables, dishes, notes; never prices or customers), and the buttons to move them on. Nothing else in your ERP opens with it. If it reaches the wrong person, make a new one: the old link stops at once. A cook who should log in on their own phone can instead get the "Kitchen / cook" role (Settings → Roles).</p>
+      ${x.kitchen_link ? `<div class="row" style="align-items:center;gap:12px;flex-wrap:wrap"><div id="kdqr" style="width:120px"></div><div style="flex:1;min-width:200px"><code style="word-break:break-all">${esc(x.kitchen_link)}</code>
+        <div class="row" style="margin-top:8px"><a class="btn sm" href="${esc(x.kitchen_link)}" target="_blank" rel="noopener">Open</a><button class="btn sm" id="kdnew">New link</button><button class="btn sm danger" id="kdoff">Switch off</button></div></div></div>`
+        : '<button class="btn primary" id="kdnew">Make the kitchen link</button>'}</div>
+    ${canRzp ? `<details class="panel no-print" id="rzpanel"${rz.on ? ' open' : ''}><summary><b>Guests pay online (your Razorpay)</b> <span class="muted small">${rz.on ? `on · ${esc(rz.key_id)}` : 'off'} · the bill is made by itself when Razorpay says paid</span></summary>
+      <p class="muted small">The money goes to your own Razorpay account. Guests tap "Pay online" on their bill, pay by UPI or card on Razorpay's page, and the table's bill is made and paid to your UPI account by itself: no checking screenshots. If the bill changed after they paid, nothing is billed: the payment waits on the Tables page for you.</p>
+      <form id="rzf" class="form"><label class="f">Key Id<input name="key_id" value="${esc(rz.key_id)}" placeholder="rzp_live_XXXXXXXX" autocomplete="off"></label>
+        <label class="f">Key Secret<input name="key_secret" type="password" autocomplete="new-password" placeholder="${rz.on ? 'saved: leave empty to keep' : 'from Razorpay → API Keys'}"></label>
+        <label class="f">Webhook Secret<input name="webhook_secret" type="password" autocomplete="new-password" placeholder="${rz.on ? 'saved: leave empty to keep' : 'any text, the same in Razorpay'}"></label>
+        <div class="f wide row"><button class="btn primary" style="width:auto">Save</button>${rz.on ? '<button type="button" class="btn danger" id="rzoff" style="width:auto">Switch off</button>' : ''}</div></form>
+      ${rz.webhook_url ? `<p class="small">In Razorpay: <b>Settings → Webhooks → Add new webhook</b>. URL <code style="word-break:break-all">${esc(rz.webhook_url)}</code>, secret = the Webhook Secret above, event <b>payment_link.paid</b>.</p>` : ''}</details>` : ''}
+    ${ME.can.items ? `<details class="panel no-print" id="fpanel"><summary><b>Veg / non-veg marks on the menu</b> <span class="muted small">guests see the green or brown mark next to each dish</span></summary><div id="flist" class="muted small">Loading…</div></details>` : ''}
     <div class="qrposters">${x.tables.map((t) => `<div class="qrposter"><b class="qpname">${esc(ME.org.name)}</b><div class="qrbox" data-link="${esc(t.link)}"></div><b class="qptable">Table ${esc(t.name)}</b>
       <div>Scan to see the menu and order</div><div lang="hi">स्कैन करें, मेन्यू देखें, ऑर्डर करें</div>
       <div class="no-print row" style="justify-content:center"><a class="btn sm" href="${esc(t.link)}" target="_blank" rel="noopener">Open</a><button class="btn sm" data-newqr="${t.id}">New QR</button></div></div>`).join('') || '<div class="empty">Add tables first.</div>'}</div>`;
   $$('.qrbox', el).forEach((b) => qrInto(b, b.dataset.link));
+  if (x.kitchen_link) qrInto($('#kdqr'), x.kitchen_link);
+  if ($('#rzf')) $('#rzf').onsubmit = async (e) => { e.preventDefault(); const f = e.target; try { await api('PUT', '/api/dine/razorpay', { key_id: f.key_id.value, key_secret: f.key_secret.value, webhook_secret: f.webhook_secret.value }); toast('Saved. Add the webhook in Razorpay as shown.'); render(); } catch (er) { toast(er.message, 'err'); } };
+  if ($('#rzoff')) $('#rzoff').onclick = async () => { if (!confirm('Switch online payment off? Guests can still pay by UPI and tell the staff.')) return; try { await api('DELETE', '/api/dine/razorpay'); render(); } catch (er) { toast(er.message, 'err'); } };
+  const drawFood = (m) => { $('#flist').innerHTML = m.menu.length ? `<table class="tbl"><tbody>${m.menu.map((i) => `<tr><td>${foodMark(i.food)}${esc(i.name)}<div class="muted small">${esc(i.category)}</div></td><td style="width:150px"><select data-food="${i.id}" aria-label="Mark for ${esc(i.name)}">
+      ${[['', 'No mark'], ['veg', 'Veg'], ['nonveg', 'Non-veg'], ['egg', 'Egg']].map(([v, t]) => `<option value="${v}"${i.food === v ? ' selected' : ''}>${t}</option>`).join('')}</select></td></tr>`).join('')}</tbody></table>` : 'No dishes with a selling price yet.'; };
+  if ($('#fpanel')) $('#fpanel').addEventListener('toggle', async () => { if ($('#fpanel').open && !$('#fpanel').dataset.got) { $('#fpanel').dataset.got = '1'; try { drawFood(await GET('/api/dine/menu')); } catch (er) { $('#flist').textContent = er.message; } } });
+  el.onchange = async (e) => { const sel = e.target.closest('[data-food]'); if (!sel) return; sel.disabled = true; try { drawFood(await POST(`/api/dine/menu/${sel.dataset.food}/food`, { food: sel.value })); toast('Saved'); } catch (er) { toast(er.message, 'err'); sel.disabled = false; } };
+  if ($('#kdnew')) $('#kdnew').onclick = async () => { if (x.kitchen_link && !confirm('Make a new kitchen link? The old one stops working at once.')) return; try { await POST('/api/dine/kitchen-link', {}); render(); } catch (er) { toast(er.message, 'err'); } };
+  if ($('#kdoff')) $('#kdoff').onclick = async () => { if (!confirm('Switch the kitchen link off?')) return; try { await api('DELETE', '/api/dine/kitchen-link'); render(); } catch (er) { toast(er.message, 'err'); } };
   $('#dqs').onsubmit = async (e) => { e.preventDefault(); try { await api('PUT', '/api/dine/qr', { qr: e.target.qr.checked, note: e.target.note.value }); toast(e.target.qr.checked ? 'QR ordering is on' : 'QR ordering is off'); } catch (er) { toast(er.message, 'err'); } };
   el.onclick = async (e) => {
     const b = e.target.closest('[data-newqr]'); if (!b) return;
@@ -8153,6 +8409,8 @@ async function boot() {
   if (ps) return publicShop(ps[1]);
   const pt = location.pathname.match(/^\/t\/([0-9a-f]{24})\/?$/);       // a restaurant table's QR: menu and ordering
   if (pt) return publicTable(pt[1]);
+  const pk2 = location.pathname.match(/^\/kd\/([0-9a-f]{24})\/?$/);     // the kitchen display link (TV / tablet, no login)
+  if (pk2) return publicKitchen(pk2[1]);
   const rt = location.hash.match(/^#\/reset\/([0-9a-f]{64})$/);   // link from the forgot-password e-mail
   if (rt) return renderReset(rt[1]);
   const vt = location.hash.match(/^#\/verify\/([0-9a-f]{64})$/);  // link from the sign-up e-mail
