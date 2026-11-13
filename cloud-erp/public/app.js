@@ -5653,26 +5653,47 @@ route(/^wa-inbox$/, async (el, m, q) => {
 
 /* the counter poster: the shop's QR that opens WhatsApp with its code */
 /* ======================================================================= online catalogue (owner screen, QR poster, the public page) */
-route(/^shop$/, async (el) => {
-  const [s, items] = await Promise.all([GET('/api/settings/shop'), master('items')]), canSet = ME.can.settings, canItems = ME.can.items;
-  const shareText = `${ME.org.name}: hamari rate list dekhiye aur WhatsApp par order kijiye: ${s.link}`;
-  el.innerHTML = head('Online Catalogue') + `
-    <div class="panel"><p>Your rate list on a link of its own. Customers see your items and prices (with GST), pick what they want, and the order comes to your WhatsApp as a message. No commission, nothing for them to install.</p>
-      <p class="muted small" lang="hi">ग्राहक लिंक खोलकर आपके रेट देखते हैं, सामान चुनते हैं और ऑर्डर आपके WhatsApp पर आता है।</p>
-      <form id="shf"><label class="mode-opt"><input type="checkbox" name="on" ${s.on ? 'checked' : ''} ${canSet ? '' : 'disabled'}> <span><b>Catalogue on</b><br>
-        <span class="muted">${s.items} item(s) with a selling price are on it. Leave any out below.</span></span></label>
+route(/^shop$/, async (el, m, q) => {
+  const canSet = ME.can.settings, canItems = ME.can.items, canSales = ME.can.sales;
+  const tab = ['new', 'accepted', 'declined'].includes(q.get('o')) ? q.get('o') : 'new';
+  const [s, pr, od] = await Promise.all([GET('/api/settings/shop'), GET('/api/shop/products'), canSales ? GET('/api/shop/orders?status=' + tab) : { orders: [] }]);
+  const token = (s.link || '').split('/s/')[1] || '';
+  const shareText = `${ME.org.name}: hamari rate list dekhiye aur order kijiye: ${s.link}`;
+  const ph = (p, cls) => p.photo && token ? `<img class="${cls}" src="/api/public/shop/${token}/photo/${encodeURIComponent(p.key)}?v=${p.photo}" alt="">`
+    : `<div class="${cls} sp-ph" style="--h:${[...p.key].reduce((a, ch) => a + ch.charCodeAt(0), 0) % 360}">${esc(p.key.split(/\s+/).map((w) => w[0]).join('').slice(0, 2).toUpperCase())}</div>`;
+  const range = (p) => { const v = p.variants.map((x) => x.price); return Math.min(...v) === Math.max(...v) ? rs(v[0]) : `${rs(Math.min(...v))}–${rs(Math.max(...v))}`; };
+  const shownN = pr.products.filter((p) => p.variants.some((v) => v.shown)).length, withPhoto = pr.products.filter((p) => p.photo).length;
+  el.innerHTML = head('Online Catalogue', s.on && s.link ? `<a class="btn" href="${esc(s.link)}" target="_blank" rel="noopener">Open as a customer</a>` : '') + `
+    ${s.on && s.link ? `<div class="panel"><div class="row qrbox" style="align-items:center;flex-wrap:wrap;gap:14px"><div id="shqr"></div><div style="flex:1;min-width:220px">
+        <b>Your catalogue is on</b> <span class="muted small">· ${shownN} products · ${withPhoto} with a photo</span><br><a href="${esc(s.link)}" target="_blank" rel="noopener" class="small">${esc(s.link)}</a>
+        <div class="row" style="margin-top:8px;flex-wrap:wrap;gap:6px"><button type="button" class="btn sm" id="shcopy">Copy link</button>
+          <a class="btn sm" target="_blank" rel="noopener" href="https://wa.me/?text=${encodeURIComponent(shareText)}">Share on WhatsApp</a><a class="btn sm" href="#/shop-poster">Print QR poster</a></div>
+        <p class="muted small" style="margin-top:6px">Tip: open a product on the link and tap Share to send just that product (Instagram, WhatsApp Status).</p></div></div></div>`
+    : `<div class="panel"><p><b>Your products on a link of your own.</b> Customers see photos and prices, pick colour and size, and place the order. It comes here as an online order, and one tap makes it a Sales Order. No commission, nothing to install.</p>
+        <p class="muted small" lang="hi">ग्राहक लिंक खोलकर फ़ोटो और रेट देखते हैं, रंग-साइज़ चुनते हैं और ऑर्डर करते हैं। ऑर्डर यहाँ आता है, एक टैप में सेल्स ऑर्डर।</p></div>`}
+    ${canSales ? `<div class="panel flush"><div class="row" style="padding:12px 16px 0;flex-wrap:wrap;gap:8px"><h3 style="margin:0">Online orders</h3><span class="spacer"></span>
+        <div class="tabs" style="margin:0">${[['new', `New${pr.new_orders ? ` (${pr.new_orders})` : ''}`], ['accepted', 'Done'], ['declined', 'Declined']].map(([k, t]) => `<a href="#/shop?o=${k}" class="${k === tab ? 'on' : ''}">${t}</a>`).join('')}</div></div>
+      <div class="so-list">${od.orders.map((o) => `<div class="so-card"><div class="row"><b>${o.number}</b><span class="muted small">${since(o.created_at)} ago</span><span class="spacer"></span><b>${rs(o.total)}</b></div>
+        <div><b>${esc(o.name)}</b> · <a href="tel:${esc(o.phone)}">${esc(o.phone)}</a> · <a target="_blank" rel="noopener" href="https://wa.me/91${esc(o.phone)}?text=${encodeURIComponent(`Namaste ${o.name} ji, ${ME.org.name} se. Aapka order ${o.number} mil gaya hai.`)}">WhatsApp</a></div>
+        ${o.address ? `<div class="muted small">📍 ${esc(o.address)}</div>` : ''}${o.note ? `<div class="muted small">📝 ${esc(o.note)}</div>` : ''}
+        <ul class="so-lines">${o.lines.map((l) => `<li>${l.qty} × ${esc(l.name)} <span class="muted">${rs(l.price)}</span></li>`).join('')}</ul>
+        ${o.status === 'new' ? `<div class="row"><button class="btn sm danger" data-odec="${o.id}">Decline</button><span class="spacer"></span><button class="btn sm primary" data-oacc="${o.id}">Make Sales Order</button></div>`
+          : o.status === 'accepted' ? `<div class="small">✅ <a href="#/doc/${o.doc_id}">${esc(o.doc_number)}</a></div>` : `<div class="small muted">Declined${o.reason ? `: ${esc(o.reason)}` : ''}</div>`}</div>`).join('')
+        || `<div class="empty">${tab === 'new' ? 'No new orders. When a customer orders from your link, it shows here.' : 'None yet.'}</div>`}</div></div>` : ''}
+    <div class="panel flush"><div class="row" style="padding:12px 16px 0;flex-wrap:wrap;gap:8px"><h3 style="margin:0">Products</h3><span class="muted small">one card per design; its colours and sizes are chosen on the card</span><span class="spacer"></span>
+        <input id="pfind" type="search" placeholder="Find a product" style="max-width:220px"></div>
+      <div class="sp-own" id="plist">${pr.products.map((p, n) => { const on = p.variants.filter((v) => v.shown).length;
+        return `<div class="sp-orow" data-name="${esc(p.key.toLowerCase())}">${ph(p, 'sp-oimg')}<div class="sp-oinfo"><b>${esc(p.key)}</b><div class="muted small">${range(p)} · ${p.variants.length > 1 ? `${p.variants.length} variants${p.dims.length ? ` (${p.dims.map((x) => `${x.values.length} ${x.name.toLowerCase()}`).join(' × ')})` : ''}` : 'single item'}${on && on < p.variants.length ? ` · <b>${on} shown</b>` : ''}</div>
+          <div class="row" style="gap:6px;margin-top:6px;flex-wrap:wrap">${canItems ? `<label class="btn sm">📷 ${p.photo ? 'Change photo' : 'Add photo'}<input type="file" accept="image/*" data-photo="${n}" hidden></label>${p.photo ? `<button class="btn sm" data-nophoto="${n}">Remove photo</button>` : ''}` : ''}
+          ${p.variants.length > 1 ? `<button class="btn sm" data-vars="${n}">Colours &amp; sizes</button>` : ''}</div><div class="sp-vars" id="vars${n}" hidden></div></div>
+          <label class="check sp-otog"><input type="checkbox" data-show="${n}" ${on ? 'checked' : ''} ${canItems ? '' : 'disabled'}> shown</label></div>`; }).join('') || '<div class="empty">Add items with a selling price first.</div>'}</div></div>
+    <details class="panel" ${s.on ? '' : 'open'}><summary><b>Settings</b> <span class="muted small">on / off, WhatsApp number, note, stock</span></summary>
+      <form id="shf" style="margin-top:10px"><label class="mode-opt"><input type="checkbox" name="on" ${s.on ? 'checked' : ''} ${canSet ? '' : 'disabled'}> <span><b>Catalogue on</b><br>
+        <span class="muted">Turning it off closes the link at once; your products and photos stay.</span></span></label>
         <div class="form"><label class="f">WhatsApp number for orders<input name="wa" value="${esc(s.wa)}" inputmode="numeric" maxlength="12" placeholder="${esc(ME.org.phone || '10-digit mobile')}"><small class="help">Empty = your business phone.</small></label>
           <label class="f wide">Note on the page<input name="note" value="${esc(s.note)}" maxlength="200" placeholder="Free home delivery above ₹500 · Open 9 am to 9 pm"></label></div>
-        <label class="check"><input type="checkbox" name="stock" ${s.stock ? 'checked' : ''}> Show "out of stock" on items you have none of (never how many you have)</label>
-        <div class="row" style="margin-top:10px"><span class="spacer"></span><button class="btn primary" ${canSet ? '' : 'disabled'}>Save</button></div></form></div>
-    ${s.on && s.link ? `<div class="panel"><div class="row qrbox"><div id="shqr"></div><div><b>Your catalogue link</b><br><a href="${esc(s.link)}" target="_blank" rel="noopener" class="small">${esc(s.link)}</a>
-        <div class="row" style="margin-top:8px"><button type="button" class="btn sm" id="shcopy">Copy link</button>
-          <a class="btn sm" target="_blank" rel="noopener" href="https://wa.me/?text=${encodeURIComponent(shareText)}">Share on WhatsApp</a><a class="btn sm" href="#/shop-poster">Print QR poster</a>
-          ${canSet ? '<button type="button" class="btn sm danger" id="shnew">New link (the old one stops)</button>' : ''}</div></div></div></div>` : ''}
-    <div class="panel flush"><div style="padding:14px 16px 0"><h3 style="margin:0">Items in the catalogue</h3><p class="muted small">Price shown to customers is the selling price with GST. Wholesale prices, costs and stock counts are never shown.</p></div>
-      ${table([{ h: 'Item', f: (i) => `<b>${esc(i.name)}</b>${i.category ? `<div class="muted small">${esc(i.category)}</div>` : ''}` }, { h: 'Price', num: 1, f: (i) => inr(i.sale_price_incl) },
-        { h: 'In catalogue', f: (i) => (i.sale_price > 0 ? `<label class="check"><input type="checkbox" data-shop="${i.id}" ${i.shop_hide ? '' : 'checked'} ${canItems ? '' : 'disabled'}> shown</label>` : '<span class="muted small">no price</span>') }],
-      items, { empty: 'Add items with a selling price first.' })}</div>`;
+        <label class="check"><input type="checkbox" name="stock" ${s.stock ? 'checked' : ''}> Show "out of stock" (never how many you have); out-of-stock colours and sizes cannot be ordered</label>
+        <div class="row" style="margin-top:10px">${canSet && s.link ? '<button type="button" class="btn sm danger" id="shnew">New link (the old one stops)</button>' : ''}<span class="spacer"></span><button class="btn primary" ${canSet ? '' : 'disabled'}>Save</button></div></form></details>`;
   if ($('#shqr')) qrInto($('#shqr'), s.link);
   $('#shf').onsubmit = async (e) => {
     e.preventDefault(); const f = e.target;
@@ -5681,13 +5702,51 @@ route(/^shop$/, async (el) => {
   };
   if ($('#shcopy')) $('#shcopy').onclick = async () => { try { await navigator.clipboard.writeText(s.link); toast('Link copied'); } catch (x) { toast(s.link); } };
   if ($('#shnew')) $('#shnew').onclick = async () => {
-    if (!confirm('Make a new link? The old link and its QR stop working at once.')) return;
+    if (!confirm('Make a new link? The old link, its QR and the product links you shared stop working at once.')) return;
     try { await POST('/api/settings/shop/new-link'); toast('New link made'); render(); } catch (x) { toast(x.message, 'err'); }
   };
-  $$('[data-shop]', el).forEach((b) => { b.onchange = async () => {
-    try { await api('PUT', `/api/items/${b.dataset.shop}/shop`, { show: b.checked }); dirty('items'); } catch (x) { b.checked = !b.checked; toast(x.message, 'err'); }
-  }; });
+  $('#pfind').oninput = (e) => { const t = e.target.value.trim().toLowerCase(); $$('.sp-orow', el).forEach((r) => { r.hidden = !!t && !r.dataset.name.includes(t); }); };
+  let busy = false;
+  el.onclick = async (e) => {
+    const b = e.target.closest('[data-oacc],[data-odec],[data-vars],[data-nophoto]');
+    if (!b || busy) return;
+    if (b.dataset.vars !== undefined) {
+      const p = pr.products[+b.dataset.vars], box = $('#vars' + b.dataset.vars);
+      box.hidden = !box.hidden;
+      box.innerHTML = p.variants.map((v) => `<label class="check"><input type="checkbox" data-var="${v.id}" ${v.shown ? 'checked' : ''} ${canItems ? '' : 'disabled'}> ${esc(v.opts.join(' / ') || p.key)} <span class="muted small">${rs(v.price)}${v.in_stock ? '' : ' · out of stock'}</span></label>`).join('');
+      return;
+    }
+    busy = true; b.disabled = true;
+    try {
+      if (b.dataset.oacc) { const r = await POST(`/api/shop/orders/${b.dataset.oacc}/accept`, {}); toast(`${r.number} made for ${r.party}`); go('doc/' + r.doc_id); return; }
+      if (b.dataset.odec) { const why = prompt('Decline this order? Why (the customer is not told automatically):', 'Out of stock'); if (why === null) return; await POST(`/api/shop/orders/${b.dataset.odec}/decline`, { reason: why }); toast('Declined'); render(); return; }
+      if (b.dataset.nophoto) { if (!confirm('Remove this photo?')) return; await api('DELETE', '/api/shop/photo?key=' + encodeURIComponent(pr.products[+b.dataset.nophoto].key)); toast('Photo removed'); render(); }
+    } catch (x) { toast(x.message, 'err'); } finally { busy = false; b.disabled = false; }
+  };
+  el.onchange = async (e) => {
+    const t = e.target;
+    if (t.dataset.show !== undefined) {
+      const p = pr.products[+t.dataset.show];
+      try { await api('PUT', '/api/shop/products/show', { ids: p.variants.map((v) => v.id), show: t.checked }); p.variants.forEach((v) => { v.shown = t.checked; }); dirty('items'); toast(t.checked ? `${p.key} is shown` : `${p.key} is hidden`); }
+      catch (x) { t.checked = !t.checked; toast(x.message, 'err'); }
+    } else if (t.dataset.var) {
+      try { await api('PUT', `/api/items/${t.dataset.var}/shop`, { show: t.checked }); dirty('items'); } catch (x) { t.checked = !t.checked; toast(x.message, 'err'); }
+    } else if (t.dataset.photo !== undefined && t.files && t.files[0]) {
+      const p = pr.products[+t.dataset.photo];
+      try { toast('Uploading…'); await api('PUT', '/api/shop/photo', { key: p.key, data: await smallPhoto(t.files[0]) }); toast('Photo saved'); render(); }
+      catch (x) { toast(x.message, 'err'); }
+    }
+  };
 });
+/* a photo from the phone made small enough for the catalogue: at most 900 px, JPEG, under 390 KB */
+async function smallPhoto(file) {
+  const img = await createImageBitmap(file).catch(() => { throw new Error('That file is not a photo this browser can open.'); });
+  const k = Math.min(1, 900 / Math.max(img.width, img.height)), c = document.createElement('canvas');
+  c.width = Math.round(img.width * k); c.height = Math.round(img.height * k);
+  const g = c.getContext('2d'); g.fillStyle = '#fff'; g.fillRect(0, 0, c.width, c.height); g.drawImage(img, 0, 0, c.width, c.height);
+  for (const qy of [0.82, 0.7, 0.55, 0.4]) { const u = c.toDataURL('image/jpeg', qy); if (u.length * 0.75 < 390 * 1024) return u; }
+  throw new Error('The photo is too big even when made small. Try another photo.');
+}
 /* ======================================================================= loyalty points */
 const waNum = (ph) => { const d = String(ph || '').replace(/\D/g, ''); return d.length === 10 ? '91' + d : d; };
 const PTS_KIND = { earn: 'Earned', redeem: 'Used', unredeem: 'Use undone', return: 'Goods returned', cancel: 'Bill cancelled', adjust: 'Changed' };
@@ -5745,65 +5804,144 @@ route(/^shop-poster$/, async (el) => {
       <p class="muted">स्कैन करें, रेट देखें, WhatsApp पर ऑर्डर करें · Scan to see prices and order on WhatsApp</p></div>`;
   qrInto($('#shpq'), s.link);
 });
-/* The public rate list: /s/<token>. The cart stays on the customer's phone; the order is a WhatsApp message to the shop. */
+/* The public catalogue: /s/<token>. Products in a grid of cards (one card per design, with its photo); a product opens
+   with its colours and sizes; the cart stays on the customer's phone; the order is saved for the shop (it becomes a Sales
+   Order there) and WhatsApp opens with its number. ?p=<product> opens one product (to share on Instagram or WhatsApp). */
 const SHOP_T = {
-  hl: { search: 'Saaman khojein…', all: 'Sab', add: 'Add', out: 'Stock khatam', items: (n) => `${n} saaman`, order: 'WhatsApp par order', name: 'Aapka naam', addr: 'Pata / note (delivery ke liye)',
-    send: 'WhatsApp par bhejein', back: 'Wapas', total: 'Kul', none: 'Yeh rate list abhi band hai.', hint: 'Rate GST sahit. Final bill dukaan dega.', empty: 'Koi saaman nahi mila.',
-    msg: (shop) => `Namaste ${shop}, mujhe ye chahiye:`, nameL: 'Naam', addrL: 'Pata / note', foot: '(SmartTrader rate list se)' },
-  en: { search: 'Search items…', all: 'All', add: 'Add', out: 'Out of stock', items: (n) => `${n} item(s)`, order: 'Order on WhatsApp', name: 'Your name', addr: 'Address / note (for delivery)',
-    send: 'Send on WhatsApp', back: 'Back', total: 'Total', none: 'This rate list is not available now.', hint: 'Prices include GST. The shop gives the final bill.', empty: 'No items found.',
-    msg: (shop) => `Hello ${shop}, I would like to order:`, nameL: 'Name', addrL: 'Address / note', foot: '(from the SmartTrader rate list)' },
-  hi: { search: 'सामान खोजें…', all: 'सब', add: 'जोड़ें', out: 'स्टॉक खत्म', items: (n) => `${n} सामान`, order: 'WhatsApp पर ऑर्डर', name: 'आपका नाम', addr: 'पता / नोट (डिलीवरी के लिए)',
-    send: 'WhatsApp पर भेजें', back: 'वापस', total: 'कुल', none: 'यह रेट लिस्ट अभी बंद है।', hint: 'रेट GST सहित। आखिरी बिल दुकान देगी।', empty: 'कोई सामान नहीं मिला।',
-    msg: (shop) => `नमस्ते ${shop}, मुझे यह चाहिए:`, nameL: 'नाम', addrL: 'पता / नोट', foot: '(SmartTrader रेट लिस्ट से)' },
+  hl: { search: 'Saaman khojein…', all: 'Sab', add: 'Cart mein daalein', out: 'Stock khatam', items: (n) => `${n} saaman`, cart: 'Cart dekhein', order: 'Order karein', name: 'Aapka naam',
+    phone: 'Mobile number', addr: 'Pata (delivery ke liye)', note: 'Kuch aur? (optional)', send: 'Order bhejein', back: 'Wapas', total: 'Kul', none: 'Yeh rate list abhi band hai.',
+    hint: 'Rate GST sahit. Final bill dukaan dega.', empty: 'Koi saaman nahi mila.', from: 'se shuru', choose: (d) => `${d} chunein`, pick: 'Pehle sab chunein',
+    done: (n) => `Order ${n} mil gaya! 🎉`, doneSub: 'Dukaan aapko jaldi call ya WhatsApp karegi.', wa: 'WhatsApp par bhi bhejein', share: 'Share', copied: 'Link copy ho gaya',
+    msg: (shop, n) => `Namaste ${shop}, maine order ${n} bheja hai:`, nameL: 'Naam', phoneL: 'Mobile', addrL: 'Pata', noteL: 'Note', remove: 'Hatayein', qty: 'Kitne',
+    dims: { Colour: 'Rang', Size: 'Size', Option: 'Option' }, opts: (n) => `${n} option` },
+  en: { search: 'Search…', all: 'All', add: 'Add to cart', out: 'Out of stock', items: (n) => `${n} item${n === 1 ? '' : 's'}`, cart: 'View cart', order: 'Place order', name: 'Your name',
+    phone: 'Mobile number', addr: 'Address (for delivery)', note: 'Anything else? (optional)', send: 'Send order', back: 'Back', total: 'Total', none: 'This rate list is not available now.',
+    hint: 'Prices include GST. The shop gives the final bill.', empty: 'Nothing found.', from: 'onwards', choose: (d) => `Choose ${d.toLowerCase()}`, pick: 'Choose all options first',
+    done: (n) => `Order ${n} received! 🎉`, doneSub: 'The shop will call or WhatsApp you soon.', wa: 'Also send on WhatsApp', share: 'Share', copied: 'Link copied',
+    msg: (shop, n) => `Hello ${shop}, I have placed order ${n}:`, nameL: 'Name', phoneL: 'Mobile', addrL: 'Address', noteL: 'Note', remove: 'Remove', qty: 'Qty',
+    dims: { Colour: 'Colour', Size: 'Size', Option: 'Option' }, opts: (n) => `${n} option${n === 1 ? '' : 's'}` },
+  hi: { search: 'खोजें…', all: 'सब', add: 'कार्ट में डालें', out: 'स्टॉक खत्म', items: (n) => `${n} सामान`, cart: 'कार्ट देखें', order: 'ऑर्डर करें', name: 'आपका नाम',
+    phone: 'मोबाइल नंबर', addr: 'पता (डिलीवरी के लिए)', note: 'कुछ और? (ज़रूरी नहीं)', send: 'ऑर्डर भेजें', back: 'वापस', total: 'कुल', none: 'यह रेट लिस्ट अभी बंद है।',
+    hint: 'रेट GST सहित। आखिरी बिल दुकान देगी।', empty: 'कुछ नहीं मिला।', from: 'से शुरू', choose: (d) => `${d} चुनें`, pick: 'पहले सब चुनें',
+    done: (n) => `ऑर्डर ${n} मिल गया! 🎉`, doneSub: 'दुकान आपको जल्दी कॉल या WhatsApp करेगी।', wa: 'WhatsApp पर भी भेजें', share: 'शेयर', copied: 'लिंक कॉपी हो गया',
+    msg: (shop, n) => `नमस्ते ${shop}, मैंने ऑर्डर ${n} भेजा है:`, nameL: 'नाम', phoneL: 'मोबाइल', addrL: 'पता', noteL: 'नोट', remove: 'हटाएं', qty: 'कितने',
+    dims: { Colour: 'रंग', Size: 'साइज़', Option: 'विकल्प' }, opts: (n) => `${n} विकल्प` },
 };
+// ₹799, not ₹799.00; paise only when there are some
+const rs = (v) => '₹' + (Math.round(v * 100) % 100 ? (+v).toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : Math.round(v).toLocaleString('en-IN'));
+const SWATCH = { red: '#dc2626', blue: '#2563eb', black: '#111827', green: '#16a34a', white: '#ffffff', yellow: '#facc15', pink: '#ec4899', maroon: '#7f1d1d', navy: '#1e3a8a',
+  grey: '#6b7280', gray: '#6b7280', orange: '#f97316', purple: '#7c3aed', brown: '#78350f', beige: '#e7d8b8', cream: '#fdf6e3', gold: '#d4a017', silver: '#c0c0c0', peach: '#fbbf9a',
+  mustard: '#c9a227', teal: '#0d9488', olive: '#6b7c2e', magenta: '#c026d3', sky: '#38bdf8', 'sky blue': '#38bdf8', wine: '#5b1a2e', rust: '#b7410e', lavender: '#b9a7e8', mint: '#a7f3d0' };
 async function publicShop(token) {
-  const app = $('#app'), l = new URLSearchParams(location.search).get('l'), L = SHOP_T[l] || (LANG === 'hi' ? SHOP_T.hi : SHOP_T.hl);
+  const app = $('#app'), sp = new URLSearchParams(location.search), L = SHOP_T[sp.get('l')] || (LANG === 'hi' ? SHOP_T.hi : SHOP_T.hl);
   document.documentElement.lang = L === SHOP_T.hi ? 'hi' : 'en';
   const res = await fetch('/api/public/shop/' + token).catch(() => null), d = res ? await res.json().catch(() => ({})) : {};
   if (!res || !res.ok) { app.innerHTML = `<div class="boot"><h2>${L.none}</h2><p class="muted">${esc(d.error || '')}</p></div>`; return; }
-  const key = 'st:cart:' + token, items = d.items, byId = new Map(items.map((i) => [i.id, i]));
+  const P = d.products, byId = new Map(), pOf = new Map();
+  P.forEach((p) => p.variants.forEach((v) => { byId.set(v.id, v); pOf.set(v.id, p); }));
+  const vName = (v) => { const p = pOf.get(v.id); return v.opts.length ? `${p.name} (${v.opts.join(', ')})` : p.name; };
+  const key = 'st:cart:' + token, me = 'st:shopme';
   let cart = {}; try { cart = JSON.parse(localStorage.getItem(key) || '{}') || {}; } catch (e) { cart = {}; }
-  for (const k of Object.keys(cart)) if (!byId.has(+k) || !(cart[k] > 0)) delete cart[k];
+  for (const k of Object.keys(cart)) if (!byId.has(+k) || !(cart[k] > 0) || byId.get(+k).in_stock === false) delete cart[k];
   const save = () => { try { localStorage.setItem(key, JSON.stringify(cart)); } catch (e) { /* storage off */ } };
-  const cats = [...new Set(items.map((i) => i.category).filter(Boolean))];
+  const photo = (p, cls) => p.photo ? `<img class="${cls}" src="/api/public/shop/${token}/photo/${encodeURIComponent(p.key)}?v=${p.photo}" alt="${esc(p.name)}" loading="lazy">`
+    : `<div class="${cls} sp-ph" style="--h:${[...p.name].reduce((a, ch) => a + ch.charCodeAt(0), 0) % 360}">${esc(p.name.split(/\s+/).map((w) => w[0]).join('').slice(0, 2).toUpperCase())}</div>`;
+  const prices = (p) => { const v = p.variants.map((x) => x.price); return Math.min(...v) === Math.max(...v) ? rs(v[0]) : `${rs(Math.min(...v))} ${L.from}`; };
+  const cats = [...new Set(P.map((p) => p.category).filter(Boolean))];
   let q = '', cat = '';
-  app.innerHTML = `<div class="shop"><header class="shop-head"><h1>${esc(d.shop.name)}</h1>${d.shop.city ? `<p class="muted">${esc(d.shop.city)}</p>` : ''}
+  app.innerHTML = `<div class="shop sp"><header class="shop-head"><h1>${esc(d.shop.name)}</h1>${d.shop.city ? `<p class="muted">${esc(d.shop.city)}</p>` : ''}
       ${d.shop.note ? `<p class="shop-note">${esc(d.shop.note)}</p>` : ''}<input id="sq" type="search" placeholder="${L.search}" autocomplete="off" aria-label="${L.search}"></header>
     ${cats.length > 1 ? `<div class="chips" id="scats"><button type="button" class="chip on" data-c="">${L.all}</button>${cats.map((c) => `<button type="button" class="chip" data-c="${esc(c)}">${esc(c)}</button>`).join('')}</div>` : ''}
-    <div id="slist" class="shop-list"></div><p class="muted small shop-hint">${L.hint}</p>
-    <div class="shop-bar" id="sbar" hidden><span id="scount"></span><button type="button" class="btn primary" id="sorder">${L.order}</button></div><div id="ssheet"></div></div>`;
+    <div id="slist" class="sp-grid"></div><p class="muted small shop-hint">${L.hint}</p>
+    <div class="shop-bar" id="sbar" hidden><span id="scount"></span><button type="button" class="btn primary" id="scart">${L.cart}</button></div><div id="ssheet"></div></div>`;
   const totalOf = () => Object.entries(cart).reduce((t, [id, n]) => t + byId.get(+id).price * n, 0);
-  const bar = () => { const n = Object.values(cart).reduce((a, b) => a + b, 0); $('#sbar').hidden = !n; $('#scount').textContent = `${L.items(n)} · ${inr(totalOf())}`; };
+  const count = () => Object.values(cart).reduce((a, b) => a + b, 0);
+  const bar = () => { const n = count(); $('#sbar').hidden = !n; $('#scount').textContent = `${L.items(n)} · ${rs(totalOf())}`; };
   const draw = () => {
-    const rows = items.filter((i) => (!cat || i.category === cat) && (!q || i.name.toLowerCase().includes(q)));
-    $('#slist').innerHTML = rows.length ? rows.map((i) => `<div class="shop-item${i.in_stock === false ? ' out' : ''}"><div><b>${esc(i.name)}</b><div class="muted small">${esc(i.unit)}${i.in_stock === false ? ` · ${L.out}` : ''}</div></div>
-        <div class="shop-price">${inr(i.price)}</div><div class="shop-qty">${cart[i.id] ? `<button type="button" class="btn sm" data-dec="${i.id}" aria-label="-">−</button><b>${cart[i.id]}</b><button type="button" class="btn sm" data-inc="${i.id}" aria-label="+">+</button>`
-          : `<button type="button" class="btn sm primary" data-inc="${i.id}" ${i.in_stock === false ? 'disabled' : ''}>${L.add}</button>`}</div></div>`).join('') : `<p class="muted">${L.empty}</p>`;
+    const ql = q.toLowerCase();
+    const rows = P.filter((p) => (!cat || p.category === cat) && (!ql || p.name.toLowerCase().includes(ql) || p.variants.some((v) => v.opts.join(' ').toLowerCase().includes(ql))));
+    $('#slist').innerHTML = rows.length ? rows.map((p) => { const out = p.variants.every((v) => v.in_stock === false), n = p.variants.length;
+      return `<button type="button" class="sp-card${out ? ' out' : ''}" data-p="${esc(p.key)}">${photo(p, 'sp-img')}<span class="sp-name">${esc(p.name)}</span>
+        <span class="sp-price">${prices(p)}</span><span class="sp-sub">${out ? L.out : p.dims.length ? p.dims.map((x) => `${x.values.length} ${L.dims[x.name] || x.name}`).join(' · ') : esc(p.variants[0].unit)}</span></button>`; }).join('')
+      : `<p class="muted">${L.empty}</p>`;
     bar();
   };
-  $('#slist').onclick = (e) => {
-    const inc = e.target.closest('[data-inc]'), dec = e.target.closest('[data-dec]');
-    if (inc) cart[inc.dataset.inc] = (cart[inc.dataset.inc] || 0) + 1;
-    else if (dec) { cart[dec.dataset.dec] -= 1; if (cart[dec.dataset.dec] <= 0) delete cart[dec.dataset.dec]; } else return;
-    save(); draw();
-  };
-  $('#sq').oninput = (e) => { q = e.target.value.trim().toLowerCase(); draw(); };
-  if ($('#scats')) $('#scats').onclick = (e) => { const b = e.target.closest('[data-c]'); if (!b) return; cat = b.dataset.c; $$('#scats .chip').forEach((x) => x.classList.toggle('on', x === b)); draw(); };
-  $('#sorder').onclick = () => {
-    const lines = Object.entries(cart).map(([id, n], k) => { const i = byId.get(+id); return `${k + 1}. ${i.name} (${i.unit}) × ${n} = ${inr(i.price * n)}`; });
-    $('#ssheet').innerHTML = `<div class="shop-sheet panel"><h3 style="margin-top:0">${L.order}</h3><pre class="shop-pre">${esc(lines.join('\n'))}\n${L.total}: ${inr(totalOf())}</pre>
-      <label class="f">${L.name}<input id="sname" maxlength="60" autocomplete="name"></label><label class="f">${L.addr}<textarea id="saddr" rows="2" maxlength="300"></textarea></label>
-      <div class="row"><button type="button" class="btn" id="sback">${L.back}</button><span class="spacer"></span><button type="button" class="btn primary" id="ssend">${L.send}</button></div></div>`;
-    $('#sback').onclick = () => { $('#ssheet').innerHTML = ''; };
-    $('#ssend').onclick = () => {
-      const nm = $('#sname').value.trim(), ad = $('#saddr').value.trim();
-      const text = [L.msg(d.shop.name), ...lines, `${L.total}: ${inr(totalOf())}`, nm ? `${L.nameL}: ${nm}` : '', ad ? `${L.addrL}: ${ad}` : '', L.foot].filter(Boolean).join('\n');
-      window.open(`https://wa.me/${d.shop.wa}?text=${encodeURIComponent(text)}`, '_blank', 'noopener');
+  const sheet = (html) => { $('#ssheet').innerHTML = `<div class="sp-back" id="spb"></div><div class="sp-sheet" role="dialog">${html}</div>`; $('#spb').onclick = close; document.body.style.overflow = 'hidden'; };
+  const close = () => { $('#ssheet').innerHTML = ''; document.body.style.overflow = ''; if (sp.get('p')) { sp.delete('p'); history.replaceState(null, '', location.pathname + (sp.toString() ? '?' + sp : '')); } };
+  /* one product: its photo, its choices (a choice with no variant in stock is crossed out), how many, add */
+  const product = (p) => {
+    const pick = p.dims.map((x) => (x.values.length === 1 ? x.values[0] : null));
+    let qty = 1;
+    const match = () => p.variants.find((v) => p.dims.every((x, k) => v.opts[k] === pick[k])) || (p.dims.length ? null : p.variants[0]);
+    const can = (k, val) => p.variants.some((v) => v.opts[k] === val && v.in_stock !== false && p.dims.every((x, j) => j === k || !pick[j] || v.opts[j] === pick[j]));
+    const paint = () => {
+      const v = match();
+      sheet(`<button type="button" class="sp-x" id="spx" aria-label="${L.back}">✕</button>${photo(p, 'sp-big')}
+        <h2 class="sp-h">${esc(p.name)}</h2><div class="sp-hp">${v ? rs(v.price) : prices(p)}</div>
+        ${p.dims.map((x, k) => `<div class="sp-dim"><b>${L.dims[x.name] || x.name}${pick[k] ? `: <span>${esc(pick[k])}</span>` : ''}</b><div class="sp-opts">${x.values.map((val) => {
+          const sw = x.name === 'Colour' && SWATCH[val.toLowerCase()];
+          return `<button type="button" class="sp-opt${pick[k] === val ? ' on' : ''}${can(k, val) ? '' : ' no'}${sw ? ' sw' : ''}" data-k="${k}" data-v="${esc(val)}" ${can(k, val) ? '' : 'disabled'}>${sw ? `<i style="background:${sw}"></i>` : ''}${esc(val)}</button>`; }).join('')}</div></div>`).join('')}
+        ${v && v.in_stock === false ? `<p class="err">${L.out}</p>` : ''}
+        <div class="sp-row"><div class="sp-qty"><button type="button" id="qm" aria-label="-">−</button><b>${qty}</b><button type="button" id="qp" aria-label="+">+</button></div>
+          <button type="button" class="btn primary sp-add" id="sadd" ${v && v.in_stock !== false ? '' : 'disabled'}>${v ? L.add : L.pick}</button></div>
+        <button type="button" class="btn sm sp-share" id="sshare">↗ ${L.share}</button>`);
+      $('#spx').onclick = close;
+      $$('.sp-opt').forEach((b) => { b.onclick = () => { const k = +b.dataset.k; pick[k] = pick[k] === b.dataset.v ? null : b.dataset.v; paint(); }; });
+      $('#qm').onclick = () => { qty = Math.max(1, qty - 1); paint(); }; $('#qp').onclick = () => { qty = Math.min(99, qty + 1); paint(); };
+      $('#sadd').onclick = () => { const w = match(); if (!w) return; cart[w.id] = Math.min(99, (cart[w.id] || 0) + qty); save(); close(); draw(); toast(`✓ ${vName(w)} × ${qty}`); };
+      $('#sshare').onclick = async () => {
+        const url = `${location.origin}/s/${token}?p=${encodeURIComponent(p.key)}`, title = `${p.name}: ${prices(p)} · ${d.shop.name}`;
+        try { if (navigator.share) await navigator.share({ title, text: title, url }); else { await navigator.clipboard.writeText(url); toast(L.copied); } } catch (e) { /* closed */ }
+      };
     };
-    $('#ssheet').scrollIntoView({ behavior: 'smooth' });
+    paint();
   };
+  /* the cart, then the customer's details, then the order is saved and WhatsApp opens with its number */
+  const showCart = () => {
+    let who = {}; try { who = JSON.parse(localStorage.getItem(me) || '{}') || {}; } catch (e) { who = {}; }
+    const lines = Object.entries(cart).map(([id, n]) => ({ v: byId.get(+id), n }));
+    sheet(`<button type="button" class="sp-x" id="spx" aria-label="${L.back}">✕</button><h2 class="sp-h">${L.order}</h2>
+      <div class="sp-lines">${lines.map(({ v, n }) => `<div class="sp-line"><div><b>${esc(vName(v))}</b><div class="muted small">${rs(v.price)} × ${n}</div></div>
+        <div class="sp-qty sm"><button type="button" data-cm="${v.id}">−</button><b>${n}</b><button type="button" data-cp="${v.id}">+</button></div><b>${rs(v.price * n)}</b></div>`).join('')}</div>
+      <div class="sp-tot"><span>${L.total}</span><b>${rs(totalOf())}</b></div>
+      <form id="sform" class="sp-form"><label class="f">${L.name}<input name="name" required maxlength="60" autocomplete="name" value="${esc(who.name || '')}"></label>
+        <label class="f">${L.phone}<input name="phone" required inputmode="tel" maxlength="14" autocomplete="tel" value="${esc(who.phone || '')}"></label>
+        <label class="f">${L.addr}<textarea name="address" rows="2" maxlength="300" autocomplete="street-address">${esc(who.address || '')}</textarea></label>
+        <label class="f">${L.note}<input name="note" maxlength="200"></label>
+        <p class="err small" id="serr" role="alert"></p><button class="btn primary sp-add" id="ssend">${L.send} · ${rs(totalOf())}</button></form>`);
+    $('#spx').onclick = close;
+    $('.sp-lines').onclick = (e) => {
+      const m = e.target.closest('[data-cm]'), p2 = e.target.closest('[data-cp]');
+      if (m) { cart[m.dataset.cm] -= 1; if (cart[m.dataset.cm] <= 0) delete cart[m.dataset.cm]; } else if (p2) cart[p2.dataset.cp] = Math.min(99, cart[p2.dataset.cp] + 1); else return;
+      save(); draw(); if (count()) showCart(); else close();
+    };
+    $('#sform').onsubmit = async (e) => {
+      e.preventDefault();
+      const f = e.target, b = $('#ssend'), body = { name: f.name.value.trim(), phone: f.phone.value.trim(), address: f.address.value.trim(), note: f.note.value.trim(),
+        lines: Object.entries(cart).map(([id, n]) => ({ item_id: +id, qty: n })) };
+      b.disabled = true; $('#serr').textContent = '';
+      try {
+        const r = await fetch(`/api/public/shop/${token}/order`, { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Requested-With': 'SmartTrader' }, body: JSON.stringify(body) });
+        const o = await r.json().catch(() => ({}));
+        if (!r.ok) throw new Error(o.error || 'Please try again.');
+        try { localStorage.setItem(me, JSON.stringify({ name: body.name, phone: body.phone, address: body.address })); } catch (x) { /* storage off */ }
+        const text = [L.msg(d.shop.name, o.number), ...o.lines.map((l, k) => `${k + 1}. ${l.name} × ${l.qty} = ${rs(l.price * l.qty)}`), `${L.total}: ${rs(o.total)}`,
+          `${L.nameL}: ${body.name}`, `${L.phoneL}: ${body.phone}`, body.address ? `${L.addrL}: ${body.address}` : '', body.note ? `${L.noteL}: ${body.note}` : ''].filter(Boolean).join('\n');
+        cart = {}; save(); draw();
+        sheet(`<div class="sp-done"><div class="sp-tick">✓</div><h2>${L.done(o.number)}</h2><p class="muted">${L.doneSub}</p>
+          ${d.shop.wa ? `<a class="btn primary sp-add" target="_blank" rel="noopener" href="https://wa.me/${d.shop.wa}?text=${encodeURIComponent(text)}">${L.wa}</a>` : ''}
+          <button type="button" class="btn" id="sdone">${L.back}</button></div>`);
+        $('#sdone').onclick = close;
+      } catch (x) { $('#serr').textContent = x.message; b.disabled = false; }
+    };
+  };
+  $('#slist').onclick = (e) => { const c = e.target.closest('[data-p]'); if (c) { const p = P.find((x) => x.key === c.dataset.p); if (p) product(p); } };
+  $('#scart').onclick = showCart;
+  $('#sq').oninput = (e) => { q = e.target.value.trim(); draw(); };
+  if ($('#scats')) $('#scats').onclick = (e) => { const b = e.target.closest('[data-c]'); if (!b) return; cat = b.dataset.c; $$('#scats .chip').forEach((x) => x.classList.toggle('on', x === b)); draw(); };
   draw();
+  const want = sp.get('p') && P.find((x) => x.key === sp.get('p'));
+  if (want) product(want);
 }
 route(/^wa-poster$/, async (el) => {
   if (!ME.wa_bot_link) { el.innerHTML = head('WhatsApp QR poster') + `<div class="panel">${emptyCta('Turn on the WhatsApp bot in Settings first.', '<a class="btn primary" href="#/settings">Settings</a>')}</div>`; return; }

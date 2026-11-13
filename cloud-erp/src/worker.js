@@ -57,6 +57,7 @@ import { dineBoard, addTables, removeTable, tableDetail, sendKot, voidLine, move
   dineRequests, acceptRequest, answerRequest, kitchen, kotStatus, dineQr, saveDineSettings, newTableQr, guestBill, settleRequest, dineToday, kitchenLink, kitchenDisplay, kitchenDisplaySet,
   dineMenu, dineSoldOut, dineFood, kitchenMenu, kitchenSoldOut } from './dine.js';
 import { rzpSettings, rzpSave, rzpOff, guestPayOnline, rzpWebhook } from './dinepay.js';
+import { shopOf, publicShop, publicPhoto, placeOrder, shopProducts, showProduct, savePhoto, deletePhoto, shopOrders, acceptOrder, declineOrder } from './shop.js';
 import { secondStep, twoStepStart, twoStepEnable, twoStepDisable, newBackupCodes, twoStepReset, requireTwoStep, stepUp, loginStatement, signInHistory,
   closeBusiness, cancelClose, purgeClosed, notOwnerWhileClosing } from './security.js';
 import { workbook } from './xlsx.js';
@@ -951,7 +952,6 @@ const itemOut = (i, c) => {
 /* Online catalogue: the business's rate list on a public link of its own (opt-in). Customers pick items and the order goes to
    the shop's WhatsApp as a message; nothing is written from the public page. It shows names, units and prices with GST, and, if the
    shop wants, in stock or not; never quantities, costs, wholesale prices or anything about other customers. */
-const shopOf = (o) => { let s = {}; try { s = JSON.parse(o.shop || '{}') || {}; } catch (e) { s = {}; } return { on: !!s.on, stock: s.stock !== false, wa: String(s.wa || ''), note: String(s.note || '') }; };
 const shopOut = (c, o) => ({ ...shopOf(o), link: o.shop_token ? `${new URL(c.request.url).origin}/s/${o.shop_token}` : '' });
 router.add('GET', '/api/settings/shop', async (c) => {
   const n = await c.db.prepare(`SELECT COUNT(*) AS n FROM items WHERE org_id = ? AND shop_hide = 0 AND sale_price > 0`).bind(c.org.id).first();
@@ -979,19 +979,16 @@ router.add('PUT', '/api/items/:id/shop', async (c) => {
   if (!r.meta.changes) throw notFound('Item not found.');
   return json({ ok: true });
 });
-router.add('GET', '/api/public/shop/:token', async (c) => {
-  await rateLimit(c.env, 'shop:' + clientIp(c), 120, 600);
-  const token = str(c.params.token, 40);
-  const o = /^[0-9a-f]{24}$/.test(token) && await c.db.prepare(`SELECT id, name, city, phone, address, upi_id, shop FROM orgs WHERE shop_token = ?`).bind(token).first();
-  const s = o ? shopOf(o) : null;
-  if (!o || !s.on) throw notFound('This rate list is not available. Ask the shop for a new link.');
-  const { results } = await c.db.prepare(`SELECT id, name, unit, category, sale_price, gst_rate, qty_on_hand, is_service FROM items
-      WHERE org_id = ? AND shop_hide = 0 AND sale_price > 0 ORDER BY category, name LIMIT 1000`).bind(o.id).all();
-  const wa = (s.wa || String(o.phone || '').replace(/\D/g, '')).replace(/^(\d{10})$/, '91$1');
-  return json({ shop: { name: o.name, city: o.city || '', note: s.note, wa: /^91\d{10}$/.test(wa) ? wa : '' },
-    items: results.map((i) => ({ id: i.id, name: i.name, unit: i.unit, category: i.category || '', price: R(i.sale_price * (100 + (i.gst_rate || 0)) / 100),
-      ...(s.stock ? { in_stock: !!i.is_service || i.qty_on_hand > 0 } : {}) })) }, 200, { 'X-Robots-Tag': 'noindex', 'Cache-Control': 'no-store' });
-}, { public: true });
+router.add('GET', '/api/public/shop/:token', async (c) => json(await publicShop(c, c.params.token), 200, { 'X-Robots-Tag': 'noindex', 'Cache-Control': 'no-store' }), { public: true });
+router.add('GET', '/api/public/shop/:token/photo/:key', async (c) => publicPhoto(c, c.params.token, decodeURIComponent(c.params.key)), { public: true });
+router.add('POST', '/api/public/shop/:token/order', async (c) => json(await placeOrder(c, c.params.token, c.body), 200, { 'Cache-Control': 'no-store' }), { public: true });
+router.add('GET', '/api/shop/products', async (c) => json(await shopProducts(c)));
+router.add('PUT', '/api/shop/products/show', async (c) => json(await showProduct(c, c.body)));
+router.add('PUT', '/api/shop/photo', async (c) => json(await savePhoto(c, c.body)), { bodyMax: 600000 });
+router.add('DELETE', '/api/shop/photo', async (c) => json(await deletePhoto(c, c.url.searchParams.get('key'))));
+router.add('GET', '/api/shop/orders', async (c) => json(await shopOrders(c, c.url.searchParams.get('status'))));
+router.add('POST', '/api/shop/orders/:id/accept', async (c) => json(await acceptOrder(c, +c.params.id)));
+router.add('POST', '/api/shop/orders/:id/decline', async (c) => json(await declineOrder(c, +c.params.id, c.body)));
 /* Loyalty points: src/loyalty.js. The rules (owner/admin), the members list, one customer's points, and the owner's own change. */
 router.add('GET', '/api/settings/loyalty', async (c) => json(loyaltyOf(c.org)));
 router.add('PUT', '/api/settings/loyalty', async (c) => {
@@ -2491,6 +2488,8 @@ const READ_AREAS = [
   [/^\/api\/dine(\/|$)/, 'sales'],
   [/^\/api\/(dash\/widgets|dashboards)\/?$/, OPEN],
   [/^\/api\/settings\/shop\/?$/, ['sales', 'items', 'settings']],
+  [/^\/api\/shop\/products\/?$/, ['sales', 'items', 'settings']],
+  [/^\/api\/shop\/orders\/?$/, 'sales'],
   [/^\/api\/items\/\d+\/moves\/?$/, 'items'],
   [/^\/api\/reports\/(stock|stock-ageing|expiry)\/?$/, 'items'],
   [/^\/api\/items\/\d+\/lots\/?$/, ['items', 'sales', 'purchase']],
@@ -2628,8 +2627,15 @@ async function sharePage(request, env, kind, token) {
       image = `/og-khata${sfx}.png`;
     }
   } else if (kind === 's') {
-    const o = await env.DB.prepare(`SELECT name, city FROM orgs WHERE shop_token = ?`).bind(token).first();
+    const o = await env.DB.prepare(`SELECT id, name, city, shop FROM orgs WHERE shop_token = ?`).bind(token).first();
     if (o) { title = `${o.name}${o.city ? ', ' + o.city : ''}: rate list`; desc = 'Dekhiye rate, chuniye saaman, aur order WhatsApp par bhejiye.'; }
+    // one product's link (?p=Kurti 101): its name and its photo in the preview
+    const pk = String(url.searchParams.get('p') || '').slice(0, 120);
+    if (o && pk && shopOf(o).on) {
+      const ph = await env.DB.prepare(`SELECT v FROM shop_photos WHERE org_id = ? AND gkey = ?`).bind(o.id, pk).first();
+      title = `${pk} · ${o.name}`; desc = 'Rang aur size chuniye, aur order kijiye.';
+      if (ph) image = `/api/public/shop/${token}/photo/${encodeURIComponent(pk)}?v=${ph.v}`;
+    }
   } else if (kind === 'kd') {
     title = 'Kitchen screen'; desc = 'KOTs for the kitchen.';
   } else if (kind === 't') {
@@ -2652,7 +2658,7 @@ async function sharePage(request, env, kind, token) {
 <meta property="og:type" content="website"><meta property="og:site_name" content="SmartTrader ERP">
 <meta property="og:title" content="${attr(title)}"><meta property="og:description" content="${attr(desc)}">
 <meta property="og:url" content="${attr(url.origin + url.pathname + (lang === 'hl' ? '' : '?l=' + lang))}">
-<meta property="og:image" content="${attr(url.origin + image)}"><meta property="og:image:width" content="1200"><meta property="og:image:height" content="630">
+<meta property="og:image" content="${attr(url.origin + image)}">${image.startsWith('/og-') ? '<meta property="og:image:width" content="1200"><meta property="og:image:height" content="630">' : ''}
 <meta name="twitter:card" content="summary_large_image"><meta name="robots" content="noindex">`;
   html = html.replace(/<title>[\s\S]*?<\/title>/, '').replace(/<meta (name|property)="(description|robots|og:[^"]*|twitter:[^"]*)"[^>]*>/g, '')
     .replace(/<link rel="canonical"[^>]*>/, '').replace(/<script type="application\/ld\+json">[\s\S]*?<\/script>/g, '').replace('</head>', tags + '\n</head>');
