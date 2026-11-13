@@ -3531,6 +3531,16 @@ if (process.env.ERP_AI_MOCK) {
   check('profit for the period is sales less cost of goods', w.profit.value === 1000, JSON.stringify(w.profit));
   check('a chart has one value per day of the period, and an unknown widget is ignored', w.sales_trend.kind === 'series' && w.sales_trend.labels.length === w.sales_trend.series[0].values.length
     && w.sales_trend.series[0].values.reduce((a, b) => a + b, 0) === 5000 && !('nonsense' in w), JSON.stringify(w.sales_trend).slice(0, 200));
+  // cash put into the bank is the business's own money moving: not money in, not money out
+  const bank = (await D('GET', '/api/accounts')).rows.find((a) => a.is_cash && a.sys !== 'cash');
+  await D('POST', '/api/journals', { narration: 'Cash deposited in bank', lines: [{ account_id: bank.id, debit: 1500 }, { account_id: cash.id, credit: 1500 }] });
+  const cf = (await D('GET', '/api/dash/widgets?ids=cash_flow&range=month')).widgets.cash_flow, tot = (k) => cf.series[k].values.reduce((a, b) => a + b, 0);
+  check('cash flow counts money in from the bill, not the cash moved into the bank (no fake in and out)', tot(0) === 2100 && tot(1) === 0, JSON.stringify([tot(0), tot(1)]));
+  const walk = (await D('GET', '/api/parties')).rows.find((p) => p.name === 'Walk-in Customer');
+  const winv = await D('POST', '/api/docs', { type: 'INV', party_id: walk.id, lines: [{ item_id: rice.id, qty: 1 }] });
+  const wd = (await D('GET', '/api/dash/widgets?ids=customer_dues')).widgets.customer_dues.rows.find((r) => r.label === 'Walk-in Customer');
+  check('a walk-in bill left unpaid says so, and leads to the unpaid bills (there is nobody to ask)', wd && /not marked paid/.test(wd.note) && wd.href === 'sales/INV?status=unpaid', JSON.stringify(wd));
+  await D('POST', `/api/docs/${winv.id}/cancel`, {});      // the checks below count the two bills above only
   const fy = await D('GET', '/api/dash/widgets?ids=sales_trend&range=fy');
   check('a long period is charted by month', fy.period.key === 'fy' && /^\d{4}-\d{2}$/.test(fy.widgets.sales_trend.labels[0]), JSON.stringify(fy.period));
   const bad = await DE('POST', '/api/dashboards', { name: 'Too big', layout: { widgets: Array.from({ length: 41 }, () => ({ w: 'sales_today' })) } });

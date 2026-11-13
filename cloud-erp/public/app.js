@@ -1105,7 +1105,7 @@ function spark(values, cls = '') {
 const shortLabel = (k, monthly) => (monthly ? new Date(k + '-01').toLocaleString('en-IN', { month: 'short', year: '2-digit' }) : new Date(k).toLocaleString('en-IN', { day: 'numeric', month: 'short' }));
 function seriesChart(d) {
   const W = 600, H = 170, n = d.labels.length;
-  if (!n) return '<div class="wempty">No data in this period.</div>';
+  if (!n || d.series.every((s) => s.values.every((v) => !v))) return '<div class="wempty">Nothing in this period.</div>';
   const max = Math.max(1, ...d.series.flatMap((s) => s.values));
   const y = (v) => H - 4 - Math.max(0, v) / max * (H - 12);
   let body = '';
@@ -1123,7 +1123,8 @@ function seriesChart(d) {
   }
   const total = d.series.map((s) => s.values.reduce((a, b) => a + b, 0));
   const mid = Math.floor((n - 1) / 2);
-  return `<div class="ctop"><span class="muted small">up to ${inr0(max)}</span><span class="legend">${d.series.map((s, j) => `<span><i class="k${d.bars ? 'b' + j : s.faint ? 'f' : 'l'}"></i>${esc(s.name)} <b>${inr0(total[j])}</b></span>`).join('')}</span></div>
+  // the dotted line is half the top: say both, so a bar above the line does not look like it passes "up to"
+  return `<div class="ctop"><span class="muted small">top ${inr0(max)} · dotted line ${inr0(max / 2)}</span><span class="legend">${d.series.map((s, j) => `<span><i class="k${d.bars ? 'b' + j : s.faint ? 'f' : 'l'}"></i>${esc(s.name)} <b>${inr0(total[j])}</b></span>`).join('')}</span></div>
     <svg class="wchart" viewBox="0 0 ${W} ${H}" preserveAspectRatio="none" role="img" aria-label="${esc(d.series.map((s, j) => `${s.name} ${inr0(total[j])}`).join(', '))}">
       <line x1="0" y1="${H - 4}" x2="${W}" y2="${H - 4}" class="ax"/><line x1="0" y1="${y(max / 2)}" x2="${W}" y2="${y(max / 2)}" class="gr"/>${body}</svg>
     <div class="cx muted small"><span>${shortLabel(d.labels[0], d.monthly)}</span>${n > 2 ? `<span>${shortLabel(d.labels[mid], d.monthly)}</span>` : ''}<span>${shortLabel(d.labels[n - 1], d.monthly)}</span></div>`;
@@ -1940,6 +1941,11 @@ route(/^new\/([A-Z]+)$/, async (el, m, q) => {
     if (isShort) body.short = true;
     if (f.due_date && f.due_date.value) body.due_date = f.due_date.value;
     if (f.pay_amount && +f.pay_amount.value > 0) body.payment = { amount: +f.pay_amount.value, account_id: +f.pay_account.value };
+    // a walk-in sale left unpaid becomes a due nobody can be asked for: offer to take it as paid (the default account, cash)
+    const pSel = f.party_id && f.party_id.selectedOptions && f.party_id.selectedOptions[0];
+    if (type === 'INV' && !body.payment && f.pay_account && pSel && pSel.textContent.trim().startsWith('Walk-in Customer')
+      && confirm('Walk-in Customer ka bill bina payment ke save ho raha hai: ye udhaar me dikhega, jo kisi se vasool nahi hoga.\n\nOK = poora paid maan kar save karein (' + (f.pay_account.selectedOptions[0] || {}).textContent + ')\nCancel = unpaid hi save karein'))
+      body.payment = { amount: 1e9, account_id: +f.pay_account.value };      // the server takes what the bill comes to
     if (ptsValue() > 0) body.redeem_points = Math.min(ptsUse(), ptsMost());
     if (isExp()) {
       if (expCur() && !(expFx() > 0)) { toast(`Type the rupee rate for 1 ${expCur()}.`, 'err'); return; }
@@ -7655,7 +7661,7 @@ route(/^restaurant-live$/, async (el) => {
         <div class="panel"><b>Money received today</b>${x.money.length ? `<div class="kv2">${x.money.map((m) => `<span>${esc(m.name)}</span><b>${inr(m.amount)}</b>`).join('')}<span><b>Total</b></span><b>${inr(moneyTotal)}</b></div>
           <p class="muted small">All receipts today (tables and every other sale).</p>` : '<p class="muted">Nothing received yet today.</p>'}</div>
         <div class="panel"><b>Selling most today</b>${x.dishes.length ? `<div class="kv2">${x.dishes.map((d) => `<span>${qtyf(d.qty)} × ${esc(d.name)}</span><b>${inr(d.amount)}</b>`).join('')}</div>` : '<p class="muted">No KOT yet today.</p>'}</div>
-        <div class="panel"><b>KOTs by the hour</b>${x.hours.length ? `<div class="hbars">${x.hours.map((h) => `<div title="${h.n} KOT"><i style="height:${Math.round(h.n / hmax * 100)}%"></i><span>${h.h}</span></div>`).join('')}</div>` : '<p class="muted">No KOT yet today.</p>'}</div>
+        <div class="panel"><b>KOTs by the hour</b>${x.hours.length ? `<div class="hourbars">${x.hours.map((h) => `<div title="${h.n} KOT"><i style="height:${Math.round(h.n / hmax * 100)}%"></i><span>${h.h}</span></div>`).join('')}</div>` : '<p class="muted">No KOT yet today.</p>'}</div>
       </div>`;
   };
   await draw();

@@ -100,7 +100,9 @@ export const WIDGETS = {
     const rows = await all(c, `SELECT p.id, p.name, SUM(d.total - d.paid) AS v, MIN(COALESCE(d.due_date, d.date)) AS due FROM docs d JOIN parties p ON p.id = d.party_id
       WHERE d.org_id = ? AND d.type = 'INV' AND d.status IN ('unpaid','partial') GROUP BY d.party_id ORDER BY v DESC LIMIT 8`, c.org.id);
     const t = today();
-    return { kind: 'bars', rows: rows.map((r) => ({ label: r.name, value: R(r.v), note: r.due < t ? `late since ${fmtD(r.due)}` : `due ${fmtD(r.due)}`, warn: r.due < t, href: `party/${r.id}` })) };
+    // walk-in bills left unpaid are usually cash sales whose payment was not entered: say so, there is nobody to ask
+    return { kind: 'bars', rows: rows.map((r) => ({ label: r.name, value: R(r.v), note: r.name === 'Walk-in Customer' ? 'cash bills not marked paid: check'
+      : r.due < t ? `late since ${fmtD(r.due)}` : `due ${fmtD(r.due)}`, warn: r.due < t, href: r.name === 'Walk-in Customer' ? 'sales/INV?status=unpaid' : `party/${r.id}` })) };
   } },
   // purchase
   purchase_period: { cat: 'Purchase', label: 'Purchases', area: 'purchase', size: 1, link: 'purchase/BILL', down: true, async run(c, p) {
@@ -199,8 +201,12 @@ export const WIDGETS = {
   } },
   cash_flow: { cat: 'Finance', label: 'Cash flow', area: 'finance', size: 2, link: 'cash', async run(c, p) {
     const keys = buckets(p);
+    // money moved between the business's own cash, bank and UPI accounts (cash deposited in the bank) is neither in nor out:
+    // an entry whose every line is a cash account is left out, or it showed twice, once as in and once as out
     const rows = await all(c, `SELECT ${bucketSql(p, 'jl.date')} AS k, SUM(jl.debit) AS i, SUM(jl.credit) AS o FROM journal_lines jl JOIN accounts a ON a.id = jl.account_id
-      WHERE jl.org_id = ? AND a.is_cash = 1 AND jl.date >= ? AND jl.date <= ? GROUP BY k`, c.org.id, p.from, p.to);
+      WHERE jl.org_id = ? AND a.is_cash = 1 AND jl.date >= ? AND jl.date <= ?
+        AND EXISTS (SELECT 1 FROM journal_lines x JOIN accounts xa ON xa.id = x.account_id WHERE x.journal_id = jl.journal_id AND xa.is_cash = 0)
+      GROUP BY k`, c.org.id, p.from, p.to);
     return { kind: 'series', labels: keys, series: [{ name: 'Money in', values: fill(keys, rows, 'i') }, { name: 'Money out', values: fill(keys, rows, 'o'), tone: 'out' }], monthly: p.monthly, bars: true };
   } },
   gst_payable: { cat: 'Finance', label: 'GST for the period', area: 'reports', size: 1, link: 'gstr', async run(c, p) {
