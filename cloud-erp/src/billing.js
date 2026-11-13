@@ -42,6 +42,12 @@ export function billingMode(env) { return hubOn(env) && !rzpFirst(env) ? 'upi' :
 const keyId = (env) => String(env.RAZORPAY_KEY_ID || PUBLIC_KEY_ID).trim();
 /* Plan prices are before GST; the customer pays the price plus 18% GST, rounded to the rupee. */
 export const grossPaise = (plan) => Math.round(PLANS[plan].price * (1 + GST)) * 100;
+/* A Rs 1 test payment, only for the e-mails in the worker variable OWNER_EMAILS or PAY_TEST_EMAILS (neither set = it does not exist). It goes
+   the same way as a real one (UPI hub or Razorpay, signature, exact amount, once only, history, audit) but changes no plan,
+   so the owner can prove with real money that payments switch on by themselves. */
+export const testPayOk = (env, email) => !!email && `${env.PAY_TEST_EMAILS || ''},${env.OWNER_EMAILS || ''}`.toLowerCase().split(/[\s,;]+/).filter(Boolean).includes(String(email).toLowerCase());
+const specOf = (plan) => (plan === 'test' ? { plan, months: 0, paise: 100, label: 'Test payment', desc: 'SmartTrader ERP test payment (changes no plan)' }
+  : { plan, months: 12, paise: grossPaise(plan), label: `${PLANS[plan].label} 12 months`, desc: `SmartTrader ERP ${PLANS[plan].label} - 1 year (incl. GST)` });
 
 const enc = new TextEncoder();
 export async function hmacHex(secret, text) {
@@ -70,7 +76,8 @@ async function activate(db, rec, paymentId, paidPaise) {
     .bind(paymentId, nowIso(), rec.id).run();
   if (!claim.meta.changes) return { ...rec, status: 'paid' };
   const org = await db.prepare(`SELECT * FROM orgs WHERE id = ?`).bind(rec.org_id).first();
-  const until = await extendPlan(db, org, rec.plan, rec.months);
+  // a test payment proves the whole way to here; it leaves the plan as it is
+  const until = rec.plan === 'test' ? (org.plan_until || '') : await extendPlan(db, org, rec.plan, rec.months);
   await db.prepare(`UPDATE billing_orders SET plan_until = ? WHERE id = ?`).bind(until, rec.id).run();
   await db.prepare(`INSERT INTO audit (org_id, user_id, at, action, detail) VALUES (?, ?, ?, 'plan paid', ?)`)
     .bind(rec.org_id, rec.user_id, nowIso(), `${rec.plan} ${rec.months} months, ${rec.paise / 100} INR, ${paymentId}`).run();
@@ -113,7 +120,7 @@ const upiOut = (h) => ({
 export async function billingStart(c) {
   const rzp = razorpayMode(c.env), upi = hubOn(c.env);
   const plan = String(c.body.plan || '');
-  if (!Object.hasOwn(PLANS, plan) || plan === 'free') throw bad('Please choose a plan.');
+  if (plan === 'test' ? !testPayOk(c.env, c.user.email) : !Object.hasOwn(PLANS, plan) || plan === 'free') throw bad('Please choose a plan.');
   const wantRzp = c.body.method === 'razorpay';
   if (wantRzp && rzp === 'off') throw bad('Card payment is not available. Please pay by UPI.');
   if (!wantRzp && upi && !rzpFirst(c.env)) {
@@ -128,13 +135,13 @@ export async function billingStart(c) {
 
 /* A checkout through DocBrisk Pay. Returns null when the hub cannot take it now (not set up, busy, down). */
 async function upiStart(c, plan) {
-  const months = 12, paise = grossPaise(plan), ref = randomRef();
+  const { months, paise, label, desc } = specOf(plan), ref = randomRef();
   // the row exists before the hub knows the ref, so a callback can always find it
   await c.db.prepare(`INSERT INTO billing_orders (org_id, user_id, ref, plan, months, paise, status, created_at, method) VALUES (?, ?, ?, ?, ?, ?, 'created', ?, 'upi')`)
     .bind(c.org.id, c.user.id, ref, plan, months, paise, nowIso()).run();
   const owner = await c.db.prepare(`SELECT email FROM users WHERE id = ?`).bind(c.user.id).first();
   const r = await hubFetch(c.env, 'POST', '/api/pay/hub/orders', {
-    product: PRODUCT, client_ref: ref, base_paise: paise, plan, label: `SmartTrader ${PLANS[plan].label} 12 months`,
+    product: PRODUCT, client_ref: ref, base_paise: paise, plan, label: `SmartTrader ${label}`,
     buyer: { email: (owner && owner.email) || undefined, name: String(c.org.name || '').slice(0, 80), ip: c.request.headers.get('CF-Connecting-IP') || undefined },
   });
   const h = r.data || {};
@@ -144,13 +151,13 @@ async function upiStart(c, plan) {
     .bind(String(h.order_id).slice(0, 40), h.amount_paise, new Date(+h.expires_at || Date.now()).toISOString(), ref).run();
   return {
     mode: 'upi', method: 'upi', ref, plan, amount: paise, currency: 'INR', upi: upiOut(h), razorpay: razorpayMode(c.env) !== 'off',
-    description: `SmartTrader ERP ${PLANS[plan].label} - 1 year (incl. GST)`,
+    description: desc,
   };
 }
 
 /* A checkout through Razorpay (order or webhook way) */
 async function razorpayStart(c, plan, mode) {
-  const months = 12, paise = grossPaise(plan), ref = randomRef();
+  const { months, paise, desc } = specOf(plan), ref = randomRef();
   const owner = await c.db.prepare(`SELECT email, name FROM users WHERE id = ?`).bind(c.user.id).first();
   const notes = { product: PRODUCT, ref, org: String(c.org.id), plan };
   let orderId = null;
@@ -171,7 +178,7 @@ async function razorpayStart(c, plan, mode) {
     .bind(c.org.id, c.user.id, ref, orderId, plan, months, paise, nowIso()).run();
   return {
     mode, method: 'razorpay', ref, key_id: keyId(c.env), order_id: orderId, amount: paise, currency: 'INR', notes,
-    description: `SmartTrader ERP ${PLANS[plan].label} - 1 year (incl. GST)`, name: owner && owner.name, email: owner && owner.email, business: c.org.name,
+    description: desc, name: owner && owner.name, email: owner && owner.email, business: c.org.name,
   };
 }
 

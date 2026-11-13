@@ -8116,6 +8116,9 @@ route(/^plan$/, async (el, m, q) => {
       <div><span>Users</span><b>${u.users} / ${lim(cur.users)}</b>${bar(u.users, cur.users)}</div>
       <div><span>Godowns</span><b>${u.warehouses} / ${lim(cur.warehouses)}</b>${bar(u.warehouses, cur.warehouses)}</div></div></div>
     <div id="paystate"></div>
+    ${P.test_pay && online ? `<div class="panel warnbox"><b>Test payment (only you see this)</b>
+      <p class="small">Pay ₹1 to check that payments switch on by themselves. It goes exactly like a real payment, is listed below as "test", and changes no plan.</p>
+      <div class="row" style="gap:8px;flex-wrap:wrap">${upiOn ? '<button class="btn" data-testpay="">Pay ₹1 by UPI</button>' : ''}${cardOn || !upiOn ? '<button class="btn" data-testpay="razorpay">Pay ₹1 by card / Razorpay</button>' : ''}</div></div>` : ''}
     <div class="plans">${P.plans.map((p) => `<div class="plan ${p.key === cur.key ? 'cur' : ''} ${p.key === 'growth' ? 'pop' : ''}">
       ${p.key === 'growth' ? '<div class="badge b-open">Most popular</div>' : ''}<h2>${esc(p.label)}</h2>
       <div class="price">${p.price ? '₹' + p.price.toLocaleString('en-IN') + '<span>/year + GST</span>' : '₹0<span>forever</span>'}</div>
@@ -8134,6 +8137,7 @@ route(/^plan$/, async (el, m, q) => {
   const state = (html) => { $('#paystate').innerHTML = html; $('#paystate').scrollIntoView({ behavior: 'smooth', block: 'center' }); };
   const done = async (s) => {
     ME = await GET('/api/me');
+    if (s.plan === 'test') { state(`<div class="panel okbox"><b>✓ Test payment of ₹1 received and confirmed by itself.</b> Payments switch plans on automatically.${s.payment_id ? ` <span class="muted">Payment ${esc(s.payment_id)}</span>` : ''}</div>`); setTimeout(render, 4000); return; }
     state(`<div class="panel okbox"><b>✓ ${esc(ME.plan.label)} plan is active</b>${s.plan_until ? ` till ${fdate(s.plan_until)}` : ''}. Thank you!${s.payment_id ? ` <span class="muted">Payment ${esc(s.payment_id)}</span>` : ''}</div>`);
     setTimeout(render, 2500);
   };
@@ -8339,6 +8343,10 @@ route(/^plan$/, async (el, m, q) => {
   $$('[data-buy]', el).forEach((b) => b.onclick = async () => {
     b.disabled = true;
     try { await startPay(b.dataset.buy); } catch (e) { toast(e.message, 'err'); } finally { b.disabled = false; }
+  });
+  $$('[data-testpay]', el).forEach((b) => b.onclick = async () => {
+    b.disabled = true;
+    try { await startPay('test', b.dataset.testpay || undefined); } catch (e) { toast(e.message, 'err'); } finally { b.disabled = false; }
   });
 });
 
