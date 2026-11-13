@@ -63,7 +63,7 @@ import { secondStep, twoStepStart, twoStepEnable, twoStepDisable, newBackupCodes
 import { workbook } from './xlsx.js';
 import { printOf, cleanPrint, imageFromDataUrl, shortHash, imageResponse, FILE_KINDS, seriesOf, numberSpec, formatNumber, cleanSeries, fyParts,
   fieldsOf, extraOf, cleanField, cleanExtra, extraFilter, printExtra, LAYOUTS } from './custom.js';
-import { billingMode, razorpayMode, grossPaise, billingStart, billingVerify, billingWebhook, billingStatus, billingHistory, hubFetch, hubOn,
+import { billingMode, razorpayMode, grossPaise, testPayOk, billingStart, billingVerify, billingWebhook, billingStatus, billingHistory, hubFetch, hubOn,
   billingUpiCallback, billingUpiClaim, billingUpiCancel } from './billing.js';
 
 const R = (p) => Math.round(p) / 100;
@@ -1580,6 +1580,7 @@ router.add('GET', '/api/plan', async (c) => json({
   plans: Object.entries(PLANS).map(([k, p]) => ({ key: k, ...p, invoices_per_month: p.invoices_per_month === Infinity ? null : p.invoices_per_month,
     users: p.users === Infinity ? null : p.users, warehouses: p.warehouses === Infinity ? null : p.warehouses, pay: p.price ? grossPaise(k) / 100 : 0 })),
   billing: billingMode(c.env), razorpay: razorpayMode(c.env), history: canView(c.user, 'settings') ? await billingHistory(c) : [], support_whatsapp: c.env.SUPPORT_WHATSAPP || '',
+  test_pay: testPayOk(c.env, c.user.email),
 }));
 /* Online payment (DocBrisk Pay UPI; Razorpay optional): see src/billing.js */
 router.add('POST', '/api/billing/start', async (c) => { requireCan(c.user, 'settings'); await rateLimit(c.env, 'pay:' + c.org.id, 20, 3600); return json(await billingStart(c)); });
