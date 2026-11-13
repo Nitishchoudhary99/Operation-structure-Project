@@ -25,6 +25,8 @@ jobs:
         run: node test/run.mjs http://localhost:8787
       - name: Courier booking against a stand-in Shiprocket (rates, AWB, label, tracking, token renewal, NDR, returns)
         run: node test/courier.mjs http://localhost:8787
+      - name: Reverse logic (two taps at once, wrong order, wrong source, silly numbers and dates, other businesses)
+        run: node test/chaos.mjs http://localhost:8787
       - name: Table bills paid online against a stand-in Razorpay (payment link, signed webhook, mismatches, replays)
         run: node test/dinepay.mjs http://localhost:8787
       - name: Speed budgets (D1 calls and rows per screen; no screen reads another business's rows)

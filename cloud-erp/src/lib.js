@@ -46,7 +46,9 @@ export function num(v, name, { min = -1e12, max = 1e12, def } = {}) {
 export const int = (v, name, opts) => Math.trunc(num(v, name, opts));
 export function date(v, name = 'Date') {
   const s = str(v, 10) || today();
-  if (!/^\d{4}-\d{2}-\d{2}$/.test(s) || isNaN(Date.parse(s + 'T00:00:00Z'))) throw bad(`${name} must be a date (YYYY-MM-DD).`);
+  // a real day of the calendar: "2026-02-30" parses as 2 March, so the date must come back as itself
+  const t = Date.parse(s + 'T00:00:00Z');
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(s) || isNaN(t) || new Date(t).toISOString().slice(0, 10) !== s) throw bad(`${name} must be a real date (YYYY-MM-DD).`);
   return s;
 }
 export const today = () => new Date(Date.now() + 5.5 * 3600e3).toISOString().slice(0, 10);   // India time
