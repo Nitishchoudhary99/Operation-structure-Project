@@ -54,7 +54,19 @@ const offClear = () => Promise.all([idbDo('get', 'readwrite', (s) => s.clear()),
    (a save, a payment, a sync) empties it, so a page never shows its own old data after a write. */
 const pageCache = new Map();
 let rendering = false;
+/* asked for at start-up, alongside /api/me, for the screen that opens first (the dashboard): on a slow phone line the
+   three answers come together instead of one after another. Each is used once; a failed or refused one is asked again. */
+const PRE = new Map();
+function prefetch(paths) {
+  for (const p of paths) PRE.set(p, fetch(p, { credentials: 'same-origin', headers: { 'X-Requested-With': 'SmartTrader' } })
+    .then((r) => (r.ok ? r.json() : null)).catch(() => null));
+}
 async function api(method, path, body, opt = {}) {
+  if (method === 'GET' && PRE.has(path)) {
+    const pre = PRE.get(path); PRE.delete(path);
+    const d = await pre;
+    if (d) return d;
+  }
   if (method === 'GET' && rendering) {
     const hit = pageCache.get(path);
     if (hit && Date.now() - hit.at < 20000) return structuredClone(hit.data);
@@ -1197,7 +1209,9 @@ route(/^dashboard$/, async (el, m, q) => {
   const load = async () => {
     const list = widgets(), ids = [...new Set(list.filter((x) => !meta[x.w].client).map((x) => x.w))];
     data = {};
-    const tasks = [ids.length ? GET(`/api/dash/widgets?ids=${ids.join(',')}&range=${encodeURIComponent(range)}`).then((r) => { data = r.widgets; extra.period = r.period; }) : Promise.resolve()];
+    const wq = `/api/dash/widgets?ids=${ids.join(',')}&range=${encodeURIComponent(range)}`;
+    try { localStorage.setItem('st:dashq', wq); } catch (e) { /* storage off */ }
+    const tasks = [ids.length ? GET(wq).then((r) => { data = r.widgets; extra.period = r.period; }) : Promise.resolve()];
     if (list.some((x) => x.w === 'today_tasks')) {
       tasks.push(Promise.all([GET('/api/today').catch(() => null), ME.view && ME.view.khata === false ? null : GET('/api/vaade/summary').catch(() => null)])
         .then(([td, vs]) => { extra.today = (todayCard(td) + vaadaCard(vs)) || ''; }));
@@ -1417,12 +1431,15 @@ route(/^(sales|purchase)\/([A-Z]+)$/, async (el, m, q) => {
   const { rows } = await GET('/api/docs?' + p);
   const money = ['INV', 'BILL'].includes(type);
   const cols = [
-    { h: 'Number', k: 'number', f: (r) => `<a href="#/doc/${r.id}">${esc(r.number)}</a>` }, { h: 'Date', k: 'date', f: (r) => fdate(r.date) },
-    { h: T.side === 'sales' ? 'Customer' : 'Supplier', k: 'party' },
+    // on a phone the date rides under the number and the balance under the total, so total and status fit on the screen
+    { h: 'Number', k: 'number', f: (r) => `<a href="#/doc/${r.id}">${esc(r.number)}</a><div class="muted small show-sm-b">${fdate(r.date)}</div>`, csv: (r) => r.number },
+    { h: 'Date', k: 'date', f: (r) => fdate(r.date), cls: 'hide-sm' },
+    { h: T.side === 'sales' ? 'Customer' : 'Supplier', k: 'party', cls: 'wrap' },
     ...(money ? [{ h: 'Due', k: 'due_date', f: (r) => fdate(r.due_date), cls: 'hide-sm' }] : []),
-    { h: 'Taxable', k: 'taxable', num: 1, cls: 'hide-sm', f: (r) => inr(r.taxable) }, { h: 'Total', k: 'total', num: 1, f: (r) => inr(r.total) },
-    ...(money ? [{ h: 'Balance', k: 'balance', num: 1, f: (r) => inr(r.balance) }] : []), ...cfCols('doc', T.side),
-    { h: 'Status', k: 'status', f: (r) => badge(r.status) }];
+    { h: 'Taxable', k: 'taxable', num: 1, cls: 'hide-sm', f: (r) => inr(r.taxable) },
+    { h: 'Total', k: 'total', num: 1, f: (r) => `${inr(r.total)}${money && r.balance > 0 && r.balance < r.total ? `<div class="muted small show-sm-b">${inr(r.balance)} due</div>` : ''}<div class="show-sm-b">${badge(r.status)}</div>`, csv: (r) => r.total },
+    ...(money ? [{ h: 'Balance', k: 'balance', num: 1, f: (r) => inr(r.balance), cls: 'hide-sm' }] : []), ...cfCols('doc', T.side),
+    { h: 'Status', k: 'status', f: (r) => badge(r.status), cls: 'hide-sm' }];
   el.innerHTML = head(esc(T.label) + 's', `<button class="btn" id="csv">Export CSV</button>${make ? `<a class="btn primary" href="#/new/${type}">+ New ${esc(T.label)}</a>` : ''}`) + `
     <div class="panel"><form class="row flt" id="flt">
       <input name="q" type="search" placeholder="Search number or party" value="${esc(q.get('q') || '')}" style="max-width:260px">
@@ -2276,7 +2293,8 @@ const sendReceipt = (r, lang) => sendDialog({ title: `Send receipt ${r.number}`,
 const payList = (kind) => async (el, m, q) => {
   const { rows } = await GET('/api/payments?kind=' + kind);
   el.innerHTML = head(kind === 'receipt' ? 'Receipts' : 'Payments', `<button class="btn primary" id="new">+ ${kind === 'receipt' ? 'Receive payment' : 'Pay supplier'}</button>`) +
-    `<div class="panel flush">${table([{ h: 'Number', k: 'number' }, { h: 'Date', f: (r) => fdate(r.date) }, { h: 'Party', k: 'party' }, { h: 'Account', k: 'account' },
+    `<div class="panel flush">${table([{ h: 'Number', f: (r) => `${esc(r.number)}<div class="muted small show-sm-b">${fdate(r.date)}</div>` }, { h: 'Date', f: (r) => fdate(r.date), cls: 'hide-sm' },
+      { h: 'Party', k: 'party', cls: 'wrap' }, { h: 'Account', k: 'account', cls: 'hide-sm' },
       { h: 'Reference', k: 'reference', cls: 'hide-sm' }, { h: 'Amount', num: 1, f: (r) => inr(r.amount) },
       { h: '', f: (r) => r.void ? badge('cancelled') : `${kind === 'receipt' ? `<button class="btn sm got" data-rcpt="${r.id}">WhatsApp</button> ` : ''}${ME.can.finance && !limits().no_cancel ? `<button class="btn sm danger" data-void="${r.id}">Void</button>` : ''}` }], rows,
     { empty: emptyCta(kind === 'receipt' ? 'Money you get from customers shows here. Record it to clear their bills.' : 'Money you pay to suppliers shows here.',
@@ -8421,6 +8439,10 @@ async function boot() {
   if (rt) return renderReset(rt[1]);
   const vt = location.hash.match(/^#\/verify\/([0-9a-f]{64})$/);  // link from the sign-up e-mail
   if (vt) return renderVerify(vt[1]);
+  if (/^(#\/?(dashboard)?(\?.*)?)?$/.test(location.hash)) {
+    let w = ''; try { w = localStorage.getItem('st:dashq') || ''; } catch (e) { w = ''; }
+    prefetch(['/api/dashboards', '/api/today', ...(/^\/api\/dash\/widgets\?ids=[\w,]+&range=[\w-]+$/.test(w) ? [w] : [])]);
+  }
   try { ME = await GET('/api/me'); } catch (e) {
     if (e.status === 401 && /^#\/admin/.test(location.hash)) {   // admin works with the ADMIN_KEY alone
       $('#app').innerHTML = '<main class="page" id="page"></main>';
