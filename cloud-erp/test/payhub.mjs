@@ -1,7 +1,7 @@
 /* Paying for a plan by UPI through DocBrisk Pay (src/billing.js), against a stand-in hub that checks every request's
    signature like the real one, and the Rs 1 test payment. Run with the worker started as:
      npx wrangler dev --port 8789 --var PAYHUB_URL:http://127.0.0.1:8896 --var PAYHUB_SECRET:test-hub-secret-0123456789
-       --var PAY_PRIMARY:upi --var PAY_TEST_EMAILS:owner-paytest@test.in
+       --var PAY_PRIMARY:upi --var OWNER_EMAILS:owner-paytest@test.in
    then:  node test/payhub.mjs http://localhost:8789          The real hub and real money are never used. */
 import http from 'node:http';
 import crypto from 'node:crypto';

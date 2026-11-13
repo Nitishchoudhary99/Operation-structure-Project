@@ -42,10 +42,10 @@ export function billingMode(env) { return hubOn(env) && !rzpFirst(env) ? 'upi' :
 const keyId = (env) => String(env.RAZORPAY_KEY_ID || PUBLIC_KEY_ID).trim();
 /* Plan prices are before GST; the customer pays the price plus 18% GST, rounded to the rupee. */
 export const grossPaise = (plan) => Math.round(PLANS[plan].price * (1 + GST)) * 100;
-/* A Rs 1 test payment, only for the e-mails in the worker variable PAY_TEST_EMAILS (none set = it does not exist). It goes
+/* A Rs 1 test payment, only for the e-mails in the worker variable OWNER_EMAILS or PAY_TEST_EMAILS (neither set = it does not exist). It goes
    the same way as a real one (UPI hub or Razorpay, signature, exact amount, once only, history, audit) but changes no plan,
    so the owner can prove with real money that payments switch on by themselves. */
-export const testPayOk = (env, email) => !!email && String(env.PAY_TEST_EMAILS || '').toLowerCase().split(/[\s,;]+/).filter(Boolean).includes(String(email).toLowerCase());
+export const testPayOk = (env, email) => !!email && `${env.PAY_TEST_EMAILS || ''},${env.OWNER_EMAILS || ''}`.toLowerCase().split(/[\s,;]+/).filter(Boolean).includes(String(email).toLowerCase());
 const specOf = (plan) => (plan === 'test' ? { plan, months: 0, paise: 100, label: 'Test payment', desc: 'SmartTrader ERP test payment (changes no plan)' }
   : { plan, months: 12, paise: grossPaise(plan), label: `${PLANS[plan].label} 12 months`, desc: `SmartTrader ERP ${PLANS[plan].label} - 1 year (incl. GST)` });
 
