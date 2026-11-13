@@ -1297,3 +1297,13 @@ tr.scan-hit td{animation:scanhit 1.2s ease-out}
 .sp-oinfo { flex: 1; min-width: 0; }
 .sp-otog { flex: none; }
 .sp-vars { display: grid; grid-template-columns: repeat(auto-fill, minmax(190px, 1fr)); gap: 4px 12px; margin-top: 8px; }
+/* phone: a line shown only on small screens (the date under a bill number), and a shadow at the right edge of a
+   table that has more columns to the side, which goes away when scrolled to the end */
+.show-sm-b { display: none; }
+@media (max-width: 860px) {
+  .show-sm-b { display: block; }
+  .tbl-wrap { background: linear-gradient(to left, var(--panel) 40%, transparent) right center / 32px 100% no-repeat local,
+    radial-gradient(farthest-side at 100% 50%, rgba(0, 0, 0, .22), transparent) right center / 14px 100% no-repeat scroll; }
+}
+/* phone: a long customer name wraps onto two lines instead of pushing the amount and status off the screen */
+@media (max-width: 860px) { .tbl-wrap .t td.wrap { white-space: normal; min-width: 110px; max-width: 42vw; } }
