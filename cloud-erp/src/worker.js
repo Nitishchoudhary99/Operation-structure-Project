@@ -1528,6 +1528,7 @@ router.add('GET', '/api/public/doc/:token', async (c) => {
 
 /* logo / signature on the customer's link: only for a business that has a shared document with this token */
 router.add('GET', '/api/public/doc/:token/file/:kind', async (c) => {
+  await rateLimit(c.env, 'dfile:' + clientIp(c), 300, 600);      // a shared bill loads its logo and signature: a few per view
   const t = String(c.params.token || ''), kind = oneOf(c.params.kind, FILE_KINDS, 'File');
   const row = /^[0-9a-f]{24}$/.test(t) ? await c.db.prepare(`SELECT f.mime, f.data FROM docs d JOIN org_files f ON f.org_id = d.org_id AND f.kind = ?
       WHERE d.share_token = ? AND d.status != 'cancelled' AND d.type IN ('${PUBLIC_DOCS.join("','")}')`).bind(kind, t).first() : null;

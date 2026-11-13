@@ -4,7 +4,7 @@
    Rows created inside a batch are found again through their unique `txk` key. */
 import {
   HttpError, bad, notFound, str, reqStr, num, date, addDays, nowIso, uid, lineCalc, toPaise, roundQty, today, loadByIds, ratePaise, exclOfGst,
-  counterStatements, counterValueSql, own,
+  counterStatements, counterValueSql, own, GST_RATES,
 } from './lib.js';
 import { requireCan, can, requireCancel, checkBackdate, rulesOf } from './auth.js';
 import { lotState, takeOut, putIn, lotStatements, planBatchText, cleanBatch, cleanSerials } from './lots.js';
@@ -275,6 +275,8 @@ export async function createDoc(ctx, body) {
     let rate = raw.rate === undefined || raw.rate === '' || raw.rate === null ? fallbackRate : ratePaise(num(raw.rate, `Line ${n} rate`, { min: 0 }));
     let disc = num(raw.discount_pct, `Line ${n} discount`, { min: 0, max: 100, def: 0 });
     let gst = num(raw.gst_rate, `Line ${n} GST rate`, { min: 0, max: 100, def: item ? item.gst_rate : 0 });
+    // only the rates GST has (or the item's own saved rate, so an older item keeps working): a 7% line would make a wrong return
+    if (!GST_RATES.includes(gst) && !(item && gst === item.gst_rate)) throw bad(`Line ${n}: ${gst}% is not a GST rate (${GST_RATES.join(', ')}).`);
     if (exp && exp.export_type === 'WOPAY') gst = 0;                      // zero-rated under LUT / bond
     if (exp && exp.fcRates && raw.rate !== undefined && raw.rate !== '' && raw.rate !== null) rate = ratePaise(num(raw.rate, `Line ${n} rate`, { min: 0 }) * exp.fx);
     // a rate typed with GST in it (MRP billing): the line keeps the rate before GST, so the line total is that price again
