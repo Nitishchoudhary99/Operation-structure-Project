@@ -961,8 +961,16 @@ else {
   check('admin config needs the admin key', cfgBad.status === 401 && cfgRes.status === 200, cfgBad.status + ' ' + cfgRes.status);
   check('admin config says only yes or no for each secret', Object.values(cfg).every((v) => typeof v === 'boolean') && 'session_secret' in cfg && 'database_key' in cfg, JSON.stringify(cfg));
   check('without SESSION_SECRET the admin config says so (the key is in the database)', process.env.SESSION_SECRET ? true : cfg.session_secret === false && cfg.database_key === true, JSON.stringify(cfg));
+  // wrong keys: after 10 from one network that network is refused, even with the right key; another network is not affected
+  const guess = (k) => fetch(BASE + '/api/admin/orgs', { headers: { 'X-Admin-Key': k, 'CF-Connecting-IP': '203.0.113.77' } });
+  const gst0 = []; for (let i = 0; i < 11; i++) gst0.push((await guess('wrong-key-guess-' + i)).status);
+  check('10 wrong admin keys from one network, then it is refused', gst0.slice(0, 10).every((x) => x === 401) && gst0[10] === 429, gst0.join(','));
+  check('a refused network is refused even with the right key', (await guess(ADMIN)).status === 429);
+  check('the right key from another network still works', (await adm('GET', '/api/admin/orgs')).status === 200);
   const mine = orgs.rows.find((o) => o.id === me.org.id);       // by id: a restored copy of this business has the same name
   await adm('POST', `/api/admin/orgs/${mine.id}/plan`, { plan: 'free', months: 1 });
+  const aud = await api('GET', '/api/audit');
+  check('an admin plan change is written to the business activity log', JSON.stringify(aud).includes('admin: plan set'), JSON.stringify(aud).slice(0, 300));
   const capped = await api('POST', '/api/warehouses', { name: 'Godown 3' }, true);
   check('free plan blocks extra godowns (402)', capped.status === 402 && capped.upgrade, JSON.stringify(capped));
   const tallyFree = await raw('/api/export/tally');

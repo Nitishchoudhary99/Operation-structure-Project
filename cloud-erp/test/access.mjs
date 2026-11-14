@@ -216,7 +216,7 @@ const hasA = (r) => /ZZA/.test(r.text);
     for (const [m, p] of ADMIN) {
       for (const key of [undefined, 'wrong-admin-key-123456']) {
         const r = await rq(m, p, m === 'GET' ? undefined : { plan: 'business', days: 999 }, { ...who[1], headers: key ? { 'X-Admin-Key': key } : {} });
-        if (r.status !== 401 && r.status !== 404) got.push(`${who[0]} ${m} ${p} key=${!!key} -> ${r.status}`);
+        if (r.status !== 401 && r.status !== 404 && r.status !== 429) got.push(`${who[0]} ${m} ${p} key=${!!key} -> ${r.status}`);
       }
     }
   }
