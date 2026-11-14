@@ -8351,10 +8351,14 @@ route(/^plan$/, async (el, m, q) => {
 });
 
 /* ======================================================================= admin (owner of this deployment) */
+/* The admin key lives only in this variable (never in sessionStorage / localStorage, where any script could read it);
+   a reload asks for it again. Keys saved by older versions are wiped. */
+let ADMIN_KEY_MEM = '';
+try { sessionStorage.removeItem('st-admin'); } catch (e) { /* storage blocked */ }
 async function adminPage(el) {
   const again = () => adminPage(el);
   let key = '';
-  try { key = sessionStorage.getItem('st-admin') || ''; } catch (e) { /* storage blocked */ }
+  key = ADMIN_KEY_MEM;
   const call = async (method, path, body) => {
     const res = await fetch(path, { method, headers: { 'Content-Type': 'application/json', 'X-Requested-With': 'SmartTrader', 'X-Admin-Key': key }, body: body ? JSON.stringify(body) : undefined });
     const data = await res.json().catch(() => ({}));
@@ -8362,13 +8366,13 @@ async function adminPage(el) {
     return data;
   };
   const ask = () => modal('Admin key', [{ k: 'key', label: 'ADMIN_KEY (from the worker secrets)', type: 'password', wide: true }], async (v) => {
-    key = v.key; try { sessionStorage.setItem('st-admin', key); } catch (e) { /* ignore */ }
+    key = ADMIN_KEY_MEM = v.key;
     again();
   });
   if (!key) { el.innerHTML = head('Admin') + '<div class="panel">Enter your admin key to manage businesses and plans.</div>'; ask(); return; }
   let data;
   try { data = await call('GET', '/api/admin/orgs'); } catch (e) {
-    try { sessionStorage.removeItem('st-admin'); } catch (x) { /* ignore */ }
+    ADMIN_KEY_MEM = '';
     el.innerHTML = head('Admin') + `<div class="err">${esc(e.message)}</div>`; if (e.status === 401) ask(); return;
   }
   const pays = await call('GET', '/api/admin/payments').catch(() => ({ rows: [], mode: '?' }));
@@ -8389,7 +8393,7 @@ async function adminPage(el) {
   const planOpts = data.plans.map((p) => ({ v: p, t: p }));
   $$('[data-o]', el).forEach((b) => b.onclick = () => modal('Set plan', [{ k: 'plan', label: 'Plan', type: 'select', options: planOpts, value: 'growth' },
     { k: 'months', label: 'Months (1200 = lifetime)', type: 'number', value: 12 }], async (v) => { await call('POST', `/api/admin/orgs/${b.dataset.o}/plan`, v); toast('Plan updated'); again(); }));
-  $('#lock').onclick = () => { try { sessionStorage.removeItem('st-admin'); } catch (e) { /* ignore */ } if (ME) go('dashboard'); else location.href = '/'; };
+  $('#lock').onclick = () => { ADMIN_KEY_MEM = ''; if (ME) go('dashboard'); else location.href = '/'; };
   // data checks: every count should be 0 (they read whole tables, so they run only on request)
   el.insertAdjacentHTML('beforeend', `<div class="panel" id="integ"><h3>Data checks</h3><p class="muted small">Looks for lines whose document is gone, links to another business's records and journals that do not balance. Every count should be 0.</p><button class="btn" id="integRun">Run data checks</button><div id="integOut"></div></div>`);
   $('#integRun').onclick = async () => {

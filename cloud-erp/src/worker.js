@@ -1595,9 +1595,19 @@ router.add('POST', '/api/billing/upi-cancel', async (c) => { requireCan(c.user, 
 async function requireAdmin(c) {
   const key = adminKey(c.env);
   if (!key) throw new HttpError(404, 'Admin is switched off. Add an ADMIN_KEY secret (16+ characters) to the worker to use it.');
-  await rateLimit(c.env, 'admin:' + (clientIp(c)), 60, 600);
-  if (!sameText(c.request.headers.get('X-Admin-Key') || '', key)) throw new HttpError(401, 'Wrong admin key.');
+  // Only wrong keys are counted (like sign-in): 10 per 15 minutes and 40 per day from one network, then that network is refused.
+  const ip = clientIp(c), gate = [['adm-ip:' + ip, 10, 900], ['adm-day:' + ip, 40, 86400]];
+  const now = Math.floor(Date.now() / 1000);
+  const { results } = await c.db.prepare(`SELECT k, n, reset_at FROM rate_limits WHERE k IN (?, ?)`).bind(gate[0][0], gate[1][0]).all();
+  for (const r of results) { const max = gate.find((g) => g[0] === r.k)[1]; if (r.reset_at >= now && r.n >= max) throw new HttpError(429, 'Too many wrong admin keys from this network. Try again later.'); }
+  if (!sameText(c.request.headers.get('X-Admin-Key') || '', key)) {
+    for (const [k, max, win] of gate) { try { await rateLimit(c.env, k, max + 1000, win); } catch (e) { /* counted */ } }
+    throw new HttpError(401, 'Wrong admin key.');
+  }
 }
+/* Every admin change is written to the business's activity log, so a misused key leaves a trace. */
+const adminAudit = (c, orgId, action, detail) => c.db.prepare(`INSERT INTO audit (org_id, user_id, at, action, detail) VALUES (?, NULL, ?, ?, ?)`)
+  .bind(orgId || 0, new Date().toISOString(), 'admin: ' + action, String(detail || '').slice(0, 300) + ' · from ' + clientIp(c)).run();
 router.add('GET', '/api/admin/orgs', async (c) => {
   await requireAdmin(c);
   const { results } = await c.db.prepare(`SELECT o.id, o.name, o.gstin, o.state, o.phone, o.plan, o.plan_until, o.created_at,
@@ -1613,12 +1623,16 @@ router.add('POST', '/api/admin/orgs/:id/plan', async (c) => {
   const org = await c.db.prepare(`SELECT * FROM orgs WHERE id = ?`).bind(+c.params.id).first();
   if (!org) throw notFound('Business not found.');
   const plan = oneOf(c.body.plan, Object.keys(PLANS), 'Plan');
-  const until = await extendPlan(c.db, org, plan, int(c.body.months, 'Months', { min: 1, max: 1200, def: 12 }));
+  const months = int(c.body.months, 'Months', { min: 1, max: 1200, def: 12 });
+  const until = await extendPlan(c.db, org, plan, months);
+  await adminAudit(c, org.id, 'plan set', `${org.plan || 'free'} → ${plan} for ${months} months, until ${until || '-'}`);
   return json({ ok: true, plan, until });
 }, { public: true });
 router.add('POST', '/api/admin/purge', async (c) => {
   await requireAdmin(c);
-  return json({ ok: true, purged: await purgeClosed(c.env, { orgId: +c.body.org_id || 0 }) });
+  const purged = await purgeClosed(c.env, { orgId: +c.body.org_id || 0 });
+  await adminAudit(c, +c.body.org_id || 0, 'purge closed businesses', JSON.stringify(purged));
+  return json({ ok: true, purged });
 }, { public: true });
 router.add('GET', '/api/admin/payments', async (c) => {
   await requireAdmin(c);
