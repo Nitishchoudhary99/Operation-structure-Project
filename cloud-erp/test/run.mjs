@@ -865,6 +865,45 @@ check('e-way bill JSON', ew.billLists[0].vehicleNo === 'RJ14AB1234' && ew.billLi
 await api('PUT', `/api/docs/${inv.id}/gst-refs`, { irn: 'a'.repeat(64), ack_no: '112410000000001', ewb_no: '321000000001' });
 check('IRN saved on invoice', (await api('GET', `/api/docs/${inv.id}`)).irn.length === 64);
 {
+  // e-way bills: the Rs 50,000 warning, validity, purchases / returns, ship-to
+  const t0 = (await api('GET', '/api/me')).today, plus = (n) => { const x = new Date(t0 + 'T00:00:00Z'); x.setUTCDate(x.getUTCDate() + n); return x.toISOString().slice(0, 10); };
+  const small = await api('POST', '/api/docs', { type: 'INV', party_id: cust.id, lines: [{ item_id: oil.id, qty: 1, rate: 2450 }] });
+  check('a bill under Rs 50,000 does not ask for an e-way bill', (await api('GET', `/api/docs/${small.id}`)).needs_ewb === false);
+  await api('POST', '/api/docs', { type: 'BILL', party_id: sup.id, lines: [{ item_id: rice.id, qty: 40, rate: 1800 }] });
+  const big = await api('POST', '/api/docs', { type: 'INV', party_id: cust.id, lines: [{ item_id: rice.id, qty: 25, rate: 2200 }] });
+  check('a sale over Rs 50,000 with no e-way bill is flagged', (await api('GET', `/api/docs/${big.id}`)).needs_ewb === true);
+  let list = await api('GET', '/api/ewaybills');
+  check('it is on the e-way bill list', list.missing.some((x) => x.id === big.id) && !list.missing.some((x) => x.id === small.id));
+  const badNo = await api('PUT', `/api/docs/${big.id}/gst-refs`, { ewb_no: '12345' }, true);
+  check('an e-way bill number must have 12 digits', badNo.status === 400);
+  await api('PUT', `/api/docs/${big.id}/gst-refs`, { ewb_no: '3210 0000 0002', ewb_date: plus(-2), ewb_km: 350 });
+  const bd = await api('GET', `/api/docs/${big.id}`);
+  check('validity: 350 km = 2 days from the e-way bill date', bd.ewb_valid === plus(0) && bd.ewb_km === 350 && bd.ewb_no === '321000000002' && bd.needs_ewb === false, JSON.stringify([bd.ewb_valid, plus(0), bd.ewb_km, bd.ewb_no]));
+  list = await api('GET', '/api/ewaybills');
+  check('one running out today is on the expiring list, and off the missing list', list.expiring.some((x) => x.id === big.id && !x.expired) && !list.missing.some((x) => x.id === big.id));
+  await api('PUT', `/api/docs/${big.id}/gst-refs`, { ewb_no: '321000000002', ewb_date: '10/01/2020 10:30 AM', ewb_km: 100 });
+  check('the portal\'s date format is read too (1 day for 100 km)', (await api('GET', `/api/docs/${big.id}`)).ewb_valid === '2020-01-11');
+  await api('PUT', `/api/docs/${big.id}/gst-refs`, { ewb_no: '321000000002', ewb_date: plus(-5), ewb_km: 100 });
+  check('one that ran out is shown as expired', (await api('GET', '/api/ewaybills')).expiring.some((x) => x.id === big.id && x.expired));
+  // ship to another place: bill-to stays the customer, the address the goods go to changes
+  const sh = await (await raw(`/api/docs/${big.id}/ewaybill?distance=80&vehicle_no=RJ14AB1234&ship_name=Mehta Godown&ship_addr=Plot 9 RIICO&ship_place=Ajmer&ship_pin=305001&ship_state=Rajasthan`)).json();
+  const b0 = sh.billLists && sh.billLists[0];
+  check('ship-to: transaction type 2, goods go to the ship-to PIN, bill-to GSTIN kept', b0 && b0.transactionType === 2 && b0.toPincode === 305001 && b0.toGstin === '08AAACM1234A1Z2' && b0.shipToTradeName === 'Mehta Godown', JSON.stringify(b0 || sh).slice(0, 300));
+  const shBad = await raw(`/api/docs/${big.id}/ewaybill?distance=80&vehicle_no=RJ14AB1234&ship_name=X`);
+  check('ship-to without address / PIN / state is refused', shBad.status === 400);
+  // purchase bill: inward, from the supplier to us, with the supplier's own bill number
+  await api('PUT', `/api/parties/${sup.id}`, { ...sup, gstin: '08AAACG1234A1Z5', pincode: '302003', address: 'Gupta Market', city: 'Jaipur' });
+  const pb = await api('POST', '/api/docs', { type: 'BILL', party_id: sup.id, party_ref: 'GW/778', lines: [{ item_id: rice.id, qty: 30, rate: 1800 }] });
+  const pj = await (await raw(`/api/docs/${pb.id}/ewaybill?distance=10&vehicle_no=RJ14CD5678`)).json();
+  const p0 = pj.billLists && pj.billLists[0];
+  check('purchase e-way bill: inward, from the supplier to us, supplier\'s bill number', p0 && p0.supplyType === 'I' && p0.fromGstin === '08AAACG1234A1Z5' && p0.toGstin === meNow.org.gstin && p0.toPincode === 302001 && p0.docNo === 'GW/778', JSON.stringify(p0 || pj).slice(0, 300));
+  check('the purchase over Rs 50,000 is flagged too', (await api('GET', `/api/docs/${pb.id}`)).needs_ewb === true);
+  const pr = await api('POST', '/api/docs', { type: 'PRET', party_id: sup.id, ref_id: pb.id, lines: [{ item_id: rice.id, qty: 2, rate: 1800, src_line_id: pb.lines[0].id }] });
+  const rj = await (await raw(`/api/docs/${pr.id}/ewaybill?distance=10&vehicle_no=RJ14CD5678`)).json();
+  check('purchase return e-way bill: outward to the supplier', rj.billLists && rj.billLists[0].supplyType === 'O' && rj.billLists[0].subSupplyType === 8 && rj.billLists[0].toGstin === '08AAACG1234A1Z5', JSON.stringify(rj).slice(0, 300));
+  await api('POST', `/api/docs/${small.id}/cancel`, {});
+}
+{
   const cp = await api('GET', `/api/docs/${inv.id}/copy`);
   check('repeat gives a draft of the same invoice dated today, not linked', cp.type === 'INV' && cp.party_id === inv.party_id && cp.lines.length === (await api('GET', `/api/docs/${inv.id}`)).lines.length && !cp.ref_id && cp.lines.every((l) => !l.src_line_id) && cp.date === (await api('GET', '/api/me')).today);
 }

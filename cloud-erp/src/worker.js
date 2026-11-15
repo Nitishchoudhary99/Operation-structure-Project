@@ -47,7 +47,7 @@ import { queue as vasooliQueue, logReminder, summary as vasooliSummary, summaryT
   answerConfirmation, recoveryFile, stepFor, toneFor } from './vasooli.js';
 import { cleanVaada, splitPlan, planOptions, minPart, risk, riskStatements, riskInput, setStatements, evalSet, writeBackStatements, promiseOut, pctOf,
   forecast, inr0, FREE_OPEN_MAX } from './vaada.js';
-import { STATES, CURRENCIES, einvoiceJson, ewaybillJson } from './gst.js';
+import { STATES, CURRENCIES, einvoiceJson, ewaybillJson, ewbValidUntil, needsEwb, EWB_TYPES, EWB_LIMIT } from './gst.js';
 import { listBins, addBins, deleteBin, binContents, moveInBins, itemLots, expiryReport, serialLookup, putawayPlan, wavePick } from './lots.js';
 import { tallyXml } from './tally.js';
 import { gstr1, gstr1Sheets, match2b } from './gstr.js';
@@ -1326,6 +1326,7 @@ async function docDetail(c, id) {
   return {
     ...d, extra: extraOf(d.extra), print_fields: [...printExtra(defs, 'doc', d.extra, side), ...printExtra(defs, 'party', party && party.extra)], taxable: money(d.taxable), cgst: money(d.cgst), sgst: money(d.sgst), igst: money(d.igst), round_off: money(d.round_off),
     total: money(d.total), paid: money(d.paid), balance: money(d.total - d.paid), label: DOC_TYPES[d.type].label, side: DOC_TYPES[d.type].side,
+    needs_ewb: needsEwb({ ...d, total: money(d.total) }), ewb_limit: EWB_LIMIT,
     party: party && { ...party, extra: extraOf(party.extra) }, parent, children: children.results.map((x) => ({ ...x, total: money(x.total) })),
     settlements: pays.results.map((p) => ({ ...p, amount: money(p.amount), number: p.number || p.note_number })), write_offs: wos.results.map(writeOffOut),
     lines: lines.results.map(({ item_extra, ...l }) => ({ ...l, print_extra: printExtra(defs, 'item', item_extra).map((x) => `${x.label}: ${x.value}`).join(' · '), rate: l.rate / 100, taxable: money(l.taxable), cgst: money(l.cgst), sgst: money(l.sgst), igst: money(l.igst),
@@ -1433,14 +1434,34 @@ router.add('GET', '/api/docs/:id/ewaybill', async (c) => {
   const d = await docDetail(c, +c.params.id);
   return download(`ewaybill-${d.number}.json`, JSON.stringify(ewaybillJson(d, Object.fromEntries(c.url.searchParams)), null, 2));
 });
+/* E-way bills to act on: goods over Rs 50,000 moved without one (last 60 days), and ones that run out within 2 days or ran out
+   in the last 7. Only for document kinds this role may see. */
+router.add('GET', '/api/ewaybills', async (c) => {
+  const types = EWB_TYPES.filter((t) => canView(c.user, DOC_TYPES[t].side));
+  if (!types.length) throw forbidden();
+  const q = types.map(() => '?').join(','), t0 = today(), soon = addDays(t0, 2), from = addDays(t0, -60), since = addDays(t0, -7);
+  const sel = `SELECT d.id, d.type, d.number, d.date, d.total, d.ewb_no, d.ewb_date, d.ewb_valid, p.name AS party FROM docs d LEFT JOIN parties p ON p.id = d.party_id`;
+  const [miss, exp] = await c.db.batch([
+    c.db.prepare(`${sel} WHERE d.org_id = ? AND d.type IN (${q}) AND d.status != 'cancelled' AND d.ewb_no = '' AND d.total > ? AND d.date >= ? ORDER BY d.date DESC, d.id DESC LIMIT 200`)
+      .bind(c.org.id, ...types, EWB_LIMIT * 100, from),
+    c.db.prepare(`${sel} WHERE d.org_id = ? AND d.type IN (${q}) AND d.status != 'cancelled' AND d.ewb_no != '' AND d.ewb_valid != '' AND d.ewb_valid BETWEEN ? AND ? ORDER BY d.ewb_valid, d.id LIMIT 200`)
+      .bind(c.org.id, ...types, since, soon),
+  ]);
+  const out = (r) => ({ ...r, total: R(r.total), label: DOC_TYPES[r.type].label });
+  return json({ limit: EWB_LIMIT, today: t0, missing: miss.results.map(out), expiring: exp.results.map((r) => ({ ...out(r), expired: r.ewb_valid < t0 })) });
+});
 router.add('PUT', '/api/docs/:id/gst-refs', async (c) => {
   requireCan(c.user, 'sales');
   const b = c.body;
   // an export's shipping bill comes after the invoice: port code, shipping bill number and date (left as they are when not sent)
   const keep = (k, v) => (b[k] === undefined ? null : v);
-  const r = await c.db.prepare(`UPDATE docs SET irn = ?, ack_no = ?, ack_date = ?, ewb_no = ?, ewb_date = ?,
+  // e-way bill validity: typed in, or worked out from the bill's date and the distance (1 day per 200 km)
+  const ewbNo = str(b.ewb_no, 20).replace(/\s+/g, ''), ewbKm = Math.max(0, Math.min(4000, Math.round(+b.ewb_km || 0)));
+  if (ewbNo && !/^\d{12}$/.test(ewbNo)) throw bad('An e-way bill number has 12 digits.');
+  const ewbValid = !ewbNo ? '' : b.ewb_valid ? date(b.ewb_valid, 'Valid until') : ewbValidUntil(b.ewb_date, ewbKm);
+  const r = await c.db.prepare(`UPDATE docs SET irn = ?, ack_no = ?, ack_date = ?, ewb_no = ?, ewb_date = ?, ewb_km = ?, ewb_valid = ?,
       port_code = COALESCE(?, port_code), sb_no = COALESCE(?, sb_no), sb_date = COALESCE(?, sb_date) WHERE id = ? AND org_id = ?`)
-    .bind(str(b.irn, 64), str(b.ack_no, 20), str(b.ack_date, 30), str(b.ewb_no, 20), str(b.ewb_date, 30),
+    .bind(str(b.irn, 64), str(b.ack_no, 20), str(b.ack_date, 30), ewbNo, ewbNo ? str(b.ewb_date, 30) : '', ewbNo ? ewbKm : 0, ewbValid,
       keep('port_code', str(b.port_code, 10).toUpperCase().replace(/[^A-Z0-9]/g, '')), keep('sb_no', str(b.sb_no, 20).replace(/[^0-9A-Za-z]/g, '')),
       keep('sb_date', b.sb_date ? date(b.sb_date, 'Shipping bill date') : ''), +c.params.id, c.org.id).run();
   if (!r.meta.changes) throw notFound('Document not found.');

@@ -3,7 +3,7 @@
    Every business table carries org_id: one database serves many businesses (multi-tenant).
    migrate() runs on the first request after each deploy, so no manual migration step is needed. */
 
-export const SCHEMA_VERSION = 53;
+export const SCHEMA_VERSION = 54;
 
 // document types whose monthly totals doc_month keeps (sales and purchase money documents)
 const MONTH_TYPES = `('INV','SRET','CNOTE','BILL','PRET','DNOTE')`;
@@ -804,6 +804,11 @@ export const MIGRATIONS = {
       address TEXT NOT NULL DEFAULT '', note TEXT NOT NULL DEFAULT '', total REAL NOT NULL DEFAULT 0, status TEXT NOT NULL DEFAULT 'new', reason TEXT NOT NULL DEFAULT '',
       doc_id INTEGER, party_id INTEGER, handled_by INTEGER, handled_at TEXT, created_at TEXT NOT NULL)`,
     `CREATE INDEX IF NOT EXISTS ix_shop_orders ON shop_orders (org_id, status, id)`,
+  ],
+  // e-way bill: distance and the date it is valid to (worked out from the date and distance), for the expiry list
+  54: [
+    `ALTER TABLE docs ADD COLUMN ewb_km INTEGER NOT NULL DEFAULT 0`,
+    `ALTER TABLE docs ADD COLUMN ewb_valid TEXT NOT NULL DEFAULT ''`,
   ],
 };
 
