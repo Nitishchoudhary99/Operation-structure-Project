@@ -10,6 +10,8 @@ const esc = (v) => String(v ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '
 const inr = (n) => (n < 0 ? '−' : '') + '₹' + Math.abs(Number(n || 0)).toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 /* an amount in a foreign currency (export invoices): "USD 1,234.50" */
 const fcMoney = (n, c) => `${n < 0 ? '−' : ''}${c} ${Math.abs(Number(n || 0)).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+/* YYYY-MM-DD from an e-way bill date as typed or as the portal prints it ("15/11/2026 10:30 AM") */
+const ewbIso = (t) => { const s = String(t || ''); let m = /^(\d{4})-(\d{2})-(\d{2})/.exec(s); if (m) return m[0]; m = /^(\d{1,2})[/.-](\d{1,2})[/.-](\d{4})/.exec(s); return m ? `${m[3]}-${m[2].padStart(2, '0')}-${m[1].padStart(2, '0')}` : ''; };
 const inr0 = (n) => (n < 0 ? '−' : '') + '₹' + Math.abs(Number(n || 0)).toLocaleString('en-IN', { maximumFractionDigits: 0 });
 const qtyf = (n) => Number(n || 0).toLocaleString('en-IN', { maximumFractionDigits: 3 });
 const fdate = (d) => d ? new Date(d + 'T00:00:00').toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' }) : '';
@@ -595,7 +597,7 @@ const flowOk = (h) => !simple() || (ordersOn() && DISP.has(h));
 const docFlowOk = (k) => !simple() || !ADV_DOCS.includes(k) || (ordersOn() && ['SO', 'DN'].includes(k)) || (k === 'QUOTE' && modState('quotes') === true)
   || (['PO', 'GRN'].includes(k) && modState('procure') === true);
 /* which permission area a menu entry needs (custom roles may not see every area); the gate register also opens with 'gate' */
-const navArea = (h) => h === 'dispatch' ? ['items', 'sales'] : h === 'jobs' ? 'sales' : /^(receipts|payments|expenses|accounts|journal|staff|statutory|bankrec|assets|tds)$/.test(h) ? 'finance' : h === 'kitchen' ? 'kitchen' : /^(sales\/|pos$|recurring$|channels$|shop$|loyalty$|tables$|table\/|kots$)/.test(h) ? 'sales' : /^(purchase\/|receive$)/.test(h) ? 'purchase'
+const navArea = (h) => h === 'dispatch' ? ['items', 'sales'] : h === 'ewaybills' ? ['sales', 'purchase'] : h === 'jobs' ? 'sales' : /^(receipts|payments|expenses|accounts|journal|staff|statutory|bankrec|assets|tds)$/.test(h) ? 'finance' : h === 'kitchen' ? 'kitchen' : /^(sales\/|pos$|recurring$|channels$|shop$|loyalty$|tables$|table\/|kots$)/.test(h) ? 'sales' : /^(purchase\/|receive$)/.test(h) ? 'purchase'
   : /^gate\/in$/.test(h) ? ['purchase', 'gate'] : /^gate\/out$/.test(h) ? ['items', 'gate'] : h === 'claims' ? ['purchase', 'finance'] : h === 'wa-inbox' ? ['sales', 'khata', 'finance']
   : /^(items|stock|stockcount|pending|bins|expiry|stock-ageing|serials|production|wave|putaway)$/.test(h) ? 'items' : /^(parties|reminders)$/.test(h) ? 'masters' : /^(khata|vaade)$/.test(h) ? 'khata'
   : /^(reports\/|tally$|daybook$|gstr$)/.test(h) ? 'reports' : h === 'plan' ? 'settings' : '';
@@ -666,7 +668,7 @@ const NAV = [
   ['Inventory', [['items', 'Items'], ['stock', 'Stock & Godowns'], ['stock-ageing', 'Stock Ageing'], ['bins', 'Bins & Racks'], ['expiry', 'Batch & Expiry'], ['serials', 'Serial / IMEI'], ['production', 'Production (BOM)'], ['wave', 'Wave Pick List'], ['stockcount', 'Stock Count'], ['gate/out', 'Gate Pass (outward)'], ['pending', 'Pending Orders']]],
   ['Contacts', [['parties', 'Customers & Suppliers'], ['khata', 'Khata Book'], ['reminders', 'Vasooli (Collections)'], ['vaade', 'Vaade (Promises)'], ['wa-inbox', 'WhatsApp Inbox']]],
   ['Accounts', [['staff', 'Staff & Salary'], ['statutory', 'PF / ESI Return'], ['expenses', 'Expenses'], ['bankrec', 'Bank Reconciliation'], ['assets', 'Fixed Assets'], ['tds', 'TDS'], ['accounts', 'Chart of Accounts'], ['journal', 'Journal Voucher'], ['daybook', 'Day Book']]],
-  ['Reports', [['reports/pnl', 'Profit & Loss'], ['reports/balance-sheet', 'Balance Sheet'], ['reports/trial-balance', 'Trial Balance'], ['reports/gst', 'GST Summary'], ['gstr', 'GST Returns (GSTR-1, 2B)'], ['reports/ageing', 'Outstanding (Ageing)'], ['reports/register', 'Registers'], ['cash', 'Kal ka Cash'], ['tally', 'Tally Export']]],
+  ['Reports', [['reports/pnl', 'Profit & Loss'], ['reports/balance-sheet', 'Balance Sheet'], ['reports/trial-balance', 'Trial Balance'], ['reports/gst', 'GST Summary'], ['gstr', 'GST Returns (GSTR-1, 2B)'], ['ewaybills', 'E-way Bills'], ['reports/ageing', 'Outstanding (Ageing)'], ['reports/register', 'Registers'], ['cash', 'Kal ka Cash'], ['tally', 'Tally Export']]],
   ['Settings', [['settings', 'Settings'], ['plan', 'Plan & Billing']]],
 ];
 
@@ -2074,7 +2076,7 @@ function docPaper(d) {
           ${inter ? `<div><span>IGST</span><span>${inr(d.igst)}</span></div>` : `<div><span>CGST</span><span>${inr(d.cgst)}</span></div><div><span>SGST</span><span>${inr(d.sgst)}</span></div>`}
           ${d.round_off ? `<div><span>Round off</span><span>${inr(d.round_off)}</span></div>` : ''}<div class="grand"><span>Total</span><span>${inr(d.total)}</span></div>
           ${fc ? `<div class="grand"><span>Total</span><span>${F(d.total)}</span></div>` : ''}</div></div>
-      ${d.irn || d.ewb_no ? `<div style="margin-top:12px;font-size:12px">${d.irn ? `IRN: <b>${esc(d.irn)}</b>${d.ack_no ? ` &middot; Ack No: ${esc(d.ack_no)}` : ''}${d.ack_date ? ` &middot; Ack Date: ${esc(d.ack_date)}` : ''}<br>` : ''}${d.ewb_no ? `E-way bill: <b>${esc(d.ewb_no)}</b>${d.ewb_date ? ` &middot; ${esc(d.ewb_date)}` : ''}` : ''}</div>` : ''}
+      ${d.irn || d.ewb_no ? `<div style="margin-top:12px;font-size:12px">${d.irn ? `IRN: <b>${esc(d.irn)}</b>${d.ack_no ? ` &middot; Ack No: ${esc(d.ack_no)}` : ''}${d.ack_date ? ` &middot; Ack Date: ${esc(d.ack_date)}` : ''}<br>` : ''}${d.ewb_no ? `E-way bill: <b>${esc(d.ewb_no)}</b>${d.ewb_date ? ` &middot; ${esc(d.ewb_date)}` : ''}${d.ewb_valid ? ` &middot; valid till ${fdate(d.ewb_valid)}` : ''}` : ''}</div>` : ''}
       ${ours && P.terms ? `<div class="terms"><b>Terms &amp; conditions</b><div>${esc(P.terms).replace(/\n/g, '<br>')}</div></div>` : ''}
       <div class="foot"><div id="upiqr"></div><div class="sign">For ${esc(o.name)}<br>${d.sign_url ? `<img class="sig" src="${esc(d.sign_url)}" alt="">` : '<br><br>'}<br>${P.signatory ? esc(P.signatory) + '<br>' : ''}Authorised signatory</div></div>
       ${P.footer ? `<div class="pfoot">${esc(P.footer)}</div>` : ''}
@@ -2153,8 +2155,9 @@ route(/^doc\/(\d+)$/, async (el, m) => {
     if (dispatchOn() && ['SO', 'DN'].includes(d.type) && onMenu('dispatch')) more.push('<a class="btn" href="#/dispatch">Dispatch Desk</a>');
     if (['BILL', 'GRN', 'PO'].includes(d.type) && ME.can.items) more.push(`<a class="btn" href="#/labels-doc/${d.id}">Print item labels (QR / barcode)</a>`);
     if (!simple() && ['INV', 'SRET', 'CNOTE'].includes(d.type)) more.push(`<a class="btn" href="/api/docs/${d.id}/einvoice" id="einv">E-invoice JSON</a>`);
-    if (!simple() && ['INV', 'DN'].includes(d.type)) more.push(`<button class="btn" id="ewb">E-way bill</button>`);
-    if (!simple() && ['INV', 'SRET', 'DN'].includes(d.type)) more.push(`<button class="btn" id="refs">${d.irn || d.ewb_no ? 'Edit' : 'Add'} IRN / EWB no.${d.export_type ? ' / shipping bill' : ''}</button>`);
+    const ewbKind = ['INV', 'DN', 'BILL', 'SRET', 'PRET'].includes(d.type) && d.status !== 'cancelled';
+    if (ewbKind && (!simple() || d.needs_ewb || d.ewb_no)) more.push(`<button class="btn" id="ewb">E-way bill</button>`);
+    if ((!simple() && ['INV', 'SRET', 'DN'].includes(d.type)) || (ewbKind && (!simple() || d.needs_ewb || d.ewb_no))) more.push(`<button class="btn" id="refs">${d.irn || d.ewb_no ? 'Edit' : 'Add'} IRN / EWB no.${d.export_type ? ' / shipping bill' : ''}</button>`);
     else if (d.export_type && d.type === 'INV') more.push(`<button class="btn" id="refs">${d.sb_no ? 'Edit' : 'Add'} shipping bill</button>`);
     if (['INV', 'BILL', 'QUOTE', 'SO', 'PO'].includes(d.type)) more.push(`<a class="btn" href="#/new/${d.type}?copy=${d.id}">Repeat (new copy, today)</a>`);
     if (['INV', 'BILL'].includes(d.type)) more.push('<button class="btn" id="recur">Make it every month / week…</button>');
@@ -2164,6 +2167,8 @@ route(/^doc\/(\d+)$/, async (el, m) => {
   main.push(`<button class="btn primary" data-act="print">Print / PDF</button>`);
   const actions = [...main, more.length ? `<details class="more-menu"><summary class="btn" aria-label="More actions">More &#9662;</summary><div class="menu">${more.join('')}</div></details>` : ''];
   el.innerHTML = head(`${esc(d.number)} ${badge(d.status)}`, actions.join('')) + `
+    ${d.needs_ewb ? `<div class="panel warnbox no-print"><b>E-way bill needed?</b> Goods worth more than ${inr0(d.ewb_limit)} are moving with this ${esc(d.label.split(' (')[0].toLowerCase())} and it has no e-way bill number yet. Make one before the goods leave (a few states allow more inside the state). <button class="btn small" id="ewbGo">Make e-way bill</button></div>` : ''}
+    ${d.ewb_valid && d.ewb_valid < ME.today && d.status !== 'cancelled' ? `<div class="panel warnbox no-print">The e-way bill <b>${esc(d.ewb_no)}</b> ran out on ${fdate(d.ewb_valid)}. If the goods have not arrived, extend it on ewaybillgst.gov.in before moving them.</div>` : ''}
     ${toCome > 0.0005 ? `<div class="panel warnbox no-print">Goods on the way: <b>${qtyf(toCome)}</b> of ${qtyf(d.lines.filter((l) => l.item_id && !l.is_service).reduce((s, l) => s + l.qty, 0))} still to come${d.lines.some((l) => l.to_receive > 0.0005 && l.to_receive < l.qty) ? ' (part received)' : ''}. Stock goes up as they are received.</div>` : ''}
     ${d.short ? `<div class="panel muted no-print">Shortage: goods billed on ${d.parent ? esc(d.parent.number) : 'the bill'} that never came.</div>` : ''}
     ${(d.write_offs || []).length ? `<div class="panel flush no-print"><h2 class="ph">Damaged / lost on the way</h2>${table([
@@ -2201,9 +2206,17 @@ route(/^doc\/(\d+)$/, async (el, m) => {
     { k: 'distance', label: 'Distance (km)', type: 'number', required: true }, { k: 'vehicle_no', label: 'Vehicle number', placeholder: 'RJ14AB1234' },
     { k: 'mode', label: 'Mode', type: 'select', options: [{ v: '1', t: 'Road' }, { v: '2', t: 'Rail' }, { v: '3', t: 'Air' }, { v: '4', t: 'Ship' }] },
     { k: 'transporter_id', label: 'Transporter ID (GSTIN/TRANSIN)' }, { k: 'transporter_name', label: 'Transporter name' },
-    { k: 'trans_doc_no', label: 'LR / RR number' }, { k: 'trans_doc_date', label: 'LR date', type: 'date' }],
-  async (v) => fileDownload(`/api/docs/${d.id}/ewaybill?${new URLSearchParams(v)}`), { submit: 'Download JSON',
-    intro: '<p class="muted">Upload the file at ewaybillgst.gov.in → e-Waybill → Generate Bulk. Then save the e-way bill number here with “Add IRN / EWB no.”</p>' });
+    { k: 'trans_doc_no', label: 'LR / RR number' }, { k: 'trans_doc_date', label: 'LR date', type: 'date' },
+    { k: 'odc', label: 'Over-dimensional cargo', type: 'select', options: [{ v: '', t: 'No' }, { v: '1', t: 'Yes (validity 1 day per 20 km)' }], more: true },
+    { k: 'ship_name', label: 'Ship to: name (if goods go to another place)', more: true }, { k: 'ship_gstin', label: 'Ship to: GSTIN', more: true },
+    { k: 'ship_addr', label: 'Ship to: address', more: true, wide: true }, { k: 'ship_place', label: 'Ship to: city', more: true },
+    { k: 'ship_pin', label: 'Ship to: PIN code', more: true }, { k: 'ship_state', label: 'Ship to: state', type: 'select', options: [{ v: '', t: '-' }, ...STATES.map((x) => ({ v: x, t: x }))], more: true },
+    { k: 'disp_name', label: 'Dispatch from: name (if goods leave from another place)', more: true }, { k: 'disp_gstin', label: 'Dispatch from: GSTIN', more: true },
+    { k: 'disp_addr', label: 'Dispatch from: address', more: true, wide: true }, { k: 'disp_place', label: 'Dispatch from: city', more: true },
+    { k: 'disp_pin', label: 'Dispatch from: PIN code', more: true }, { k: 'disp_state', label: 'Dispatch from: state', type: 'select', options: [{ v: '', t: '-' }, ...STATES.map((x) => ({ v: x, t: x }))], more: true }],
+  async (v) => { try { sessionStorage.setItem('ewb-km-' + d.id, v.distance || ''); } catch (e) { /* storage blocked */ } return fileDownload(`/api/docs/${d.id}/ewaybill?${new URLSearchParams(Object.fromEntries(Object.entries(v).filter(([, x]) => x !== '' && x != null)))}`); }, { submit: 'Download JSON',
+    intro: '<p class="muted">Upload the file at ewaybillgst.gov.in → e-Waybill → Generate Bulk. Then save the 12-digit e-way bill number here with “Add IRN / EWB no.”: SmartTrader then works out till when it is valid and warns you before it runs out.</p>' });
+  if ($('#ewbGo')) $('#ewbGo').onclick = () => $('#ewb') ? $('#ewb').click() : null;
   if ($('#recur')) $('#recur').onclick = () => {
     const nm = new Date(ME.today + 'T00:00:00Z'); nm.setUTCMonth(nm.getUTCMonth() + 1);
     modal(`Repeat ${d.number} automatically`, [
@@ -2216,7 +2229,9 @@ route(/^doc\/(\d+)$/, async (el, m) => {
   };
   if ($('#refs')) $('#refs').onclick = () => modal('GST portal numbers', [
     { k: 'irn', label: 'IRN (e-invoice)', value: d.irn, wide: true }, { k: 'ack_no', label: 'Ack No', value: d.ack_no }, { k: 'ack_date', label: 'Ack date', value: d.ack_date },
-    { k: 'ewb_no', label: 'E-way bill no.', value: d.ewb_no }, { k: 'ewb_date', label: 'E-way bill date', value: d.ewb_date },
+    { k: 'ewb_no', label: 'E-way bill no. (12 digits)', value: d.ewb_no }, { k: 'ewb_date', label: 'E-way bill date', type: 'date', value: ewbIso(d.ewb_date) || (d.ewb_no ? '' : ME.today) },
+    { k: 'ewb_km', label: 'Distance (km)', type: 'number', value: d.ewb_km || (() => { try { return sessionStorage.getItem('ewb-km-' + d.id) || ''; } catch (e) { return ''; } })(), help: 'Validity: 1 day for every 200 km.' },
+    { k: 'ewb_valid', label: 'Valid until (leave empty to work it out)', type: 'date', value: d.ewb_valid || '' },
     ...(d.export_type ? [{ k: 'port_code', label: 'Port code (e.g. INNSA1)', value: d.port_code }, { k: 'sb_no', label: 'Shipping bill no.', value: d.sb_no },
       { k: 'sb_date', label: 'Shipping bill date', type: 'date', value: d.sb_date }] : [])],
   async (v) => { await api('PUT', `/api/docs/${d.id}/gst-refs`, v); toast('Saved'); render(); },
@@ -7052,6 +7067,19 @@ route(/^expiry$/, async (el, m, q) => {
 });
 
 /* ======================================================================= stock ageing: how old the stock on hand is */
+/* E-way bills to act on: goods over Rs 50,000 moved without one, and ones running out */
+route(/^ewaybills$/, async (el) => {
+  const r = await GET('/api/ewaybills');
+  const link = (x) => `<a href="#/doc/${x.id}">${esc(x.number)}</a>`;
+  el.innerHTML = head('E-way Bills') + `
+    <div class="panel"><p class="muted" style="margin:0">An e-way bill is needed when goods worth more than ${inr0(r.limit)} move (sale, delivery, purchase or return). Make the JSON from the document (E-way bill), upload it at ewaybillgst.gov.in → Generate Bulk, then save the number with “Add IRN / EWB no.”. Validity is 1 day per 200 km.</p></div>
+    <div class="panel flush"><div style="padding:14px 16px 0"><h3>Over ${inr0(r.limit)} without an e-way bill (last 60 days)</h3></div>
+      ${r.missing.length ? table([{ h: 'Date', f: (x) => fdate(x.date) }, { h: 'Document', f: link }, { h: 'Type', f: (x) => esc(x.label.split(' (')[0]), cls: 'hide-sm' }, { h: 'Party', k: 'party' }, { h: 'Amount', num: 1, f: (x) => inr(x.total) }], r.missing)
+        : '<p class="muted" style="padding:0 16px 14px">None. Every document over the limit has an e-way bill number.</p>'}</div>
+    <div class="panel flush"><div style="padding:14px 16px 0"><h3>Running out (next 2 days) or ran out (last 7 days)</h3></div>
+      ${r.expiring.length ? table([{ h: 'Valid till', f: (x) => `${fdate(x.ewb_valid)}${x.expired ? ' ' + badge('expired') : x.ewb_valid === r.today ? ' <span class="badge">today</span>' : ''}` }, { h: 'E-way bill', f: (x) => esc(x.ewb_no) }, { h: 'Document', f: link }, { h: 'Party', k: 'party', cls: 'hide-sm' }, { h: 'Amount', num: 1, f: (x) => inr(x.total) }], r.expiring)
+        : '<p class="muted" style="padding:0 16px 14px">None running out. Validity is shown once the e-way bill number, date and distance are saved.</p>'}</div>`;
+});
 route(/^stock-ageing$/, async (el, m, q) => {
   const whs = await master('warehouses'), wid = +q.get('wh') || 0, show = q.get('show') || '';
   const r = await GET(`/api/reports/stock-ageing${wid ? '?warehouse_id=' + wid : ''}`), costs = r.totals !== undefined;

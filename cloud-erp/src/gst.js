@@ -91,32 +91,83 @@ export function einvoiceJson(d) {
 }
 
 /* e-way bill bulk-upload JSON for an outward invoice or delivery challan. t = transport details from the user. */
+/* E-way bill kinds by document. Outward: our sale, delivery note, goods returned to a supplier. Inward: a purchase bill,
+   goods a customer sends back. For inward documents the goods move from the other party to us. */
+const EWB_KIND = {
+  INV: { supplyType: 'O', sub: 1, desc: '', docType: 'INV' },
+  DN: { supplyType: 'O', sub: 1, desc: '', docType: 'CHL' },
+  PRET: { supplyType: 'O', sub: 8, desc: 'Purchase return', docType: 'CHL' },
+  BILL: { supplyType: 'I', sub: 1, desc: '', docType: 'INV' },
+  SRET: { supplyType: 'I', sub: 7, desc: '', docType: 'CHL' },
+};
+export const EWB_TYPES = Object.keys(EWB_KIND);
+/* The law asks for an e-way bill when goods worth more than Rs 50,000 move (some states set other limits inside the state). */
+export const EWB_LIMIT = 50000;
+export const needsEwb = (d) => EWB_TYPES.includes(d.type) && d.status !== 'cancelled' && !d.ewb_no && (+d.total || 0) > EWB_LIMIT;
+/* Validity (rule 138(10)): 1 day for each 200 km or part of it (20 km for over-dimensional cargo). A day ends at midnight,
+   so a bill made on the 5th for 350 km is valid to the end of the 7th. Returns YYYY-MM-DD, or '' if the inputs are not usable. */
+export function ewbValidUntil(dateText, km, odc) {
+  const iso = isoOf(dateText), n = Math.round(+km || 0);
+  if (!iso || !(n > 0)) return '';
+  const days = Math.max(1, Math.ceil(n / (odc ? 20 : 200)));
+  const dt = new Date(iso + 'T00:00:00Z'); dt.setUTCDate(dt.getUTCDate() + days);
+  return dt.toISOString().slice(0, 10);
+}
+/* YYYY-MM-DD from "2026-11-15", "15/11/2026" or "15/11/2026 10:30 AM" (as the portal prints it) */
+export function isoOf(t) {
+  const s = String(t || '').trim();
+  let m = /^(\d{4})-(\d{2})-(\d{2})/.exec(s);
+  if (m) return `${m[1]}-${m[2]}-${m[3]}`;
+  m = /^(\d{1,2})[/.-](\d{1,2})[/.-](\d{4})/.exec(s);
+  return m ? `${m[3]}-${m[2].padStart(2, '0')}-${m[1].padStart(2, '0')}` : '';
+}
+const GSTIN_RE = /^\d{2}[A-Z0-9]{13}$/;
+
 export function ewaybillJson(d, t = {}) {
-  if (!['INV', 'DN'].includes(d.type)) throw bad('E-way bills are made from sales invoices or delivery notes.');
+  const kind = EWB_KIND[d.type];
+  if (!kind) throw bad('E-way bills are made from sales invoices, delivery notes, purchase bills and returns.');
   if (d.status === 'cancelled') throw bad('This document is cancelled.');
   const { o, p, problems } = sellerAndBuyerProblems(d);
-  if (!pin(p.pincode)) problems.push(`the customer's PIN code`);
+  const who = kind.supplyType === 'I' ? (d.type === 'BILL' ? 'supplier' : 'customer') : (d.type === 'PRET' ? 'supplier' : 'customer');
+  if (!pin(p.pincode)) problems.push(`the ${who}'s PIN code`);
+  // a different place the goods go to / leave from (bill to - ship to, bill from - dispatch from)
+  const ship = { name: cut(t.ship_name, 100), addr: cut(t.ship_addr, 120), place: cut(t.ship_place, 50), pin: pin(t.ship_pin), state: t.ship_state || '', gstin: String(t.ship_gstin || '').toUpperCase().trim() };
+  const disp = { name: cut(t.disp_name, 100), addr: cut(t.disp_addr, 120), place: cut(t.disp_place, 50), pin: pin(t.disp_pin), state: t.disp_state || '', gstin: String(t.disp_gstin || '').toUpperCase().trim() };
+  const hasShip = !!(t.ship_pin || t.ship_addr || t.ship_name), hasDisp = !!(t.disp_pin || t.disp_addr || t.disp_name);
+  if (hasShip && (!ship.pin || !ship.addr || !+stateCode(ship.state, ship.gstin))) problems.push('the ship-to address, PIN code and state');
+  if (hasDisp && (!disp.pin || !disp.addr || !+stateCode(disp.state, disp.gstin))) problems.push('the dispatch-from address, PIN code and state');
   if (problems.length) throw bad('To make the e-way bill, first fill in: ' + problems.join(', ') + '.');
   const distance = Math.round(+t.distance || 0);
   if (!(distance > 0 && distance <= 4000)) throw bad('Enter the approximate distance in km (1 to 4000).');
   const vehicle = String(t.vehicle_no || '').toUpperCase().replace(/[^A-Z0-9]/g, '');
   const transporterId = String(t.transporter_id || '').toUpperCase().trim();
   if (!vehicle && !transporterId) throw bad('Enter the vehicle number, or the transporter ID if the transporter will add the vehicle.');
-  const fromSt = +stateCode(o.state, o.gstin), toSt = +stateCode(p.state, p.gstin) || fromSt;
+  const ourSt = +stateCode(o.state, o.gstin), theirSt = +stateCode(p.state, p.gstin) || ourSt;
+  const us = { gstin: o.gstin, name: cut(o.name, 100), addr: cut(o.address, 120), place: cut(o.city || o.state, 50), pin: pin(o.pincode), st: ourSt };
+  const them = { gstin: GSTIN_RE.test(p.gstin || '') ? p.gstin : 'URP', name: cut(p.name, 100), addr: cut(p.address, 120), place: cut(p.city || p.state, 50), pin: pin(p.pincode), st: theirSt };
+  const inward = kind.supplyType === 'I';
+  const from = inward ? them : us, to = inward ? us : them;
+  // where the goods really leave from / arrive at, when not the billing address
+  const actFrom = hasDisp ? { addr: disp.addr, place: disp.place, pin: disp.pin, st: +stateCode(disp.state, disp.gstin) } : from;
+  const actTo = hasShip ? { addr: ship.addr, place: ship.place, pin: ship.pin, st: +stateCode(ship.state, ship.gstin) } : to;
   const top = d.lines.slice().sort((a, b) => b.taxable - a.taxable)[0] || {};
   const inter = !!d.inter_state;
   return {
     version: '1.0.0621',
     billLists: [{
-      userGstin: o.gstin, supplyType: 'O', subSupplyType: 1, subSupplyDesc: '', docType: d.type === 'DN' ? 'CHL' : 'INV', docNo: d.number, docDate: dmy(d.date),
-      fromGstin: o.gstin, fromTrdName: cut(o.name, 100), fromAddr1: cut(o.address, 120), fromAddr2: '', fromPlace: cut(o.city || o.state, 50), fromPincode: pin(o.pincode),
-      actFromStateCode: fromSt, fromStateCode: fromSt,
-      toGstin: /^\d{2}[A-Z0-9]{13}$/.test(p.gstin || '') ? p.gstin : 'URP', toTrdName: cut(p.name, 100), toAddr1: cut(p.address, 120), toAddr2: '',
-      toPlace: cut(p.city || p.state, 50), toPincode: pin(p.pincode), actToStateCode: toSt, toStateCode: toSt,
-      transactionType: 1, dispatchFromGSTIN: '', dispatchFromTradeName: '', shipToGSTIN: '', shipToTradeName: '',
+      userGstin: o.gstin, supplyType: kind.supplyType, subSupplyType: kind.sub, subSupplyDesc: kind.desc, docType: kind.docType,
+      docNo: d.type === 'BILL' && d.party_ref ? cut(d.party_ref, 16) : d.number, docDate: dmy(d.date),
+      fromGstin: from.gstin, fromTrdName: from.name, fromAddr1: actFrom.addr, fromAddr2: '', fromPlace: actFrom.place, fromPincode: actFrom.pin,
+      actFromStateCode: actFrom.st, fromStateCode: from.st,
+      toGstin: to.gstin, toTrdName: to.name, toAddr1: actTo.addr, toAddr2: '',
+      toPlace: actTo.place, toPincode: actTo.pin, actToStateCode: actTo.st, toStateCode: to.st,
+      // 1 regular, 2 bill to - ship to, 3 bill from - dispatch from, 4 both
+      transactionType: hasShip && hasDisp ? 4 : hasShip ? 2 : hasDisp ? 3 : 1,
+      dispatchFromGSTIN: hasDisp ? (GSTIN_RE.test(disp.gstin) ? disp.gstin : '') : '', dispatchFromTradeName: hasDisp ? disp.name : '',
+      shipToGSTIN: hasShip ? (GSTIN_RE.test(ship.gstin) ? ship.gstin : '') : '', shipToTradeName: hasShip ? ship.name : '',
       otherValue: d.round_off || 0, totalValue: d.taxable, cgstValue: d.cgst, sgstValue: d.sgst, igstValue: d.igst, cessValue: 0, cessNonAdvolValue: 0, totInvValue: d.total,
       transporterId, transporterName: cut(t.transporter_name, 100), transDocNo: cut(t.trans_doc_no, 15), transMode: String(t.mode || '1'), transDistance: String(distance),
-      transDocDate: t.trans_doc_date ? dmy(t.trans_doc_date) : '', vehicleNo: vehicle, vehicleType: vehicle ? 'R' : '',
+      transDocDate: t.trans_doc_date ? dmy(t.trans_doc_date) : '', vehicleNo: vehicle, vehicleType: vehicle ? (t.odc ? 'O' : 'R') : '',
       mainHsnCode: +String(top.hsn || '').replace(/\D/g, '') || 0,
       itemList: d.lines.map((l, i) => ({
         itemNo: i + 1, productName: cut(l.item || l.description, 100), productDesc: cut(l.description || l.item, 100), hsnCode: +String(l.hsn || '').replace(/\D/g, '') || 0,
