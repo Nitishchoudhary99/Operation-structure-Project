@@ -4,7 +4,7 @@
 import json, os, html, re
 OUT = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'public')
 SITE = 'https://erp.docbrisk.com'
-TODAY = '2026-10-25'
+TODAY = '2026-11-18'
 SUPPORT = 'https://wa.me/919068446139'
 NAV = [('/gst-billing-software/', 'GST Billing'), ('/khata-book-app/', 'Khata Book'), ('/inventory-management-software/', 'Inventory'),
        ('/pos-billing-software/', 'POS'), ('/pricing/', 'Pricing')]
@@ -378,11 +378,37 @@ page('/e-invoice-software/', 'E-Invoice & E-Way Bill JSON Software | SmartTrader
       ('Good to know', ul(['E-invoice and e-way bill JSON are in the Growth and Business plans',
                            'Upload is done on the government portals; the app prepares the files', 'Tally export for your CA']))],
      [('Does it generate the IRN itself?', 'It prepares the e-invoice JSON in the official format; you upload it on the IRP and save the IRN on the bill. Direct generation through a GSP is not offered yet.'),
-      ('Can it make e-way bills?', 'It makes the e-way bill JSON for upload on the e-way bill portal and stores the e-way bill number on the invoice.'),
+      ('Can it make e-way bills?', 'Yes: the e-way bill JSON for the portal, with a ₹50,000 warning, validity tracking and expiry alerts. See the E-way bill software page.'),
       ('Which plan has e-invoice?', 'The Growth plan (Rs 2,499 a year) and the Business plan.'),
       ('Does it read e-invoice QR codes of suppliers?', 'Yes. At the gate or on the Receive screen, scanning the QR fills in the supplier, bill number, value and IRN.')],
      'e-invoice software, e-way bill software, e-invoice JSON generator, IRN generation software, GST e-invoicing for small business',
      group='feature', short='E-invoice & e-way bill')
+
+page('/e-way-bill-software/', 'E-Way Bill Software: JSON, Validity & Alerts | SmartTrader',
+     'E-way bill software for Indian traders: a warning on bills over ₹50,000, bulk-upload JSON in one tap, validity worked out, and alerts before it runs out.',
+     'E-way bill software that never lets one slip',
+     'Rs 50,000 se upar ka bill? App khud yaad dilata hai. Ek tap me e-way bill ki JSON, number bill par save, aur validity khatam hone se pehle alert.',
+     [('Everything around the e-way bill', grid([
+         ('₹50,000 warning', 'A sale, delivery note, purchase or return over ₹50,000 without an e-way bill number shows a warning with a “Make e-way bill” button.'),
+         ('JSON in one tap', 'The bill becomes the official bulk-upload JSON: GSTINs, addresses, PIN codes, HSN, units, tax, distance, vehicle or transporter ID.'),
+         ('Validity worked out', 'Save the 12-digit number, date and distance: “valid till” is worked out (1 day per 200 km, 20 km for over-dimensional cargo) and printed on the bill.'),
+         ('Expiry alerts', 'One screen lists bills over the limit with no e-way bill, and e-way bills running out in 2 days or already expired.'),
+         ('Purchases and returns too', 'Inward e-way bills for purchase bills (with the supplier’s bill number) and sales returns, outward ones for goods sent back to a supplier.'),
+         ('Ship to / dispatch from', 'Goods going to a godown or site that is not the billing address, or leaving from another place: bill-to and ship-to are both filled in.')])),
+      ('How it works', steps(['Make the invoice, delivery note or purchase bill as usual.',
+                              'Tap E-way bill, enter distance and vehicle number, and download the JSON.',
+                              'Upload it at ewaybillgst.gov.in → e-Waybill → Generate Bulk.',
+                              'Save the e-way bill number on the bill: validity and alerts are set by themselves.'])),
+      ('Good to know', ul(['E-way bill and e-invoice JSON are in the Growth and Business plans',
+                           'The e-way bill is generated on the government portal from the JSON; the app does not log in to the portal for you',
+                           'The e-way bill number and validity print on the invoice']))],
+     [('Is an e-way bill needed for every bill?', 'It is needed when goods worth more than ₹50,000 move, for a sale, purchase, return or transfer. Some states set a different limit for movement inside the state. The app warns on every document over ₹50,000 that has no e-way bill number.'),
+      ('Does the app generate the e-way bill number itself?', 'It prepares the official bulk-upload JSON. You upload it on ewaybillgst.gov.in and save the number back on the bill. Direct generation through a GSP is not offered yet.'),
+      ('How is e-way bill validity worked out?', 'One day for every 200 km or part of it (20 km for over-dimensional cargo), ending at midnight. Save the date and distance and the app shows “valid till” and warns before it runs out.'),
+      ('Can I make an e-way bill for a purchase or a return?', 'Yes. Purchase bills and sales returns give an inward e-way bill; goods returned to a supplier give an outward one.'),
+      ('What if the goods go to a different address?', 'Fill in the ship-to address in the e-way bill box. The bill-to party stays the same and the e-way bill shows where the goods really go.')],
+     'e-way bill software, eway bill software, e-way bill generation software, e-way bill JSON, e way bill app, e-way bill validity, e-way bill for small business',
+     group='feature', short='E-way bill software')
 
 page('/whatsapp-payment-reminder-app/', 'WhatsApp Payment Reminder App for Shops | SmartTrader',
      'Send payment reminders on WhatsApp with the amount due, bill link and UPI QR, on a smart schedule. Customers pick a pay date and pay by UPI from the link.',
