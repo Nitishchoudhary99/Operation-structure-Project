@@ -62,9 +62,10 @@ if (BASE) {
   // try the demo, no sign-up
   const dm = await rq('POST', '/api/demo', {}, '');
   const dme = (await rq('GET', '/api/me', undefined, dm.cookie)).data;
-  const dinv = (await rq('GET', '/api/docs?type=INV', undefined, dm.cookie)).data;
+  let dinv = { rows: [] };   // the sample bills arrive just after the answer
+  for (let i = 0; i < 30 && (dinv.rows || []).length < 4; i++) { if (i) await new Promise((r) => setTimeout(r, 1000)); dinv = (await rq('GET', '/api/docs?type=INV', undefined, dm.cookie)).data; }
   check('the demo opens a sample shop, signed in, marked as demo and set to be deleted', dm.status === 200 && dme.org && dme.org.demo === 1 && !!dme.org.close_after, JSON.stringify(dme.org && { demo: dme.org.demo, close: dme.org.close_after }));
-  check('the demo shop opens with sample bills (the rest of the month fills in after)', (dinv.rows || []).length >= 4, String((dinv.rows || []).length));
+  check('the demo shop fills with sample bills within seconds', (dinv.rows || []).length >= 4, String((dinv.rows || []).length));
   check('a demo shop cannot buy a plan', (await rq('POST', '/api/billing/start', { plan: 'growth' }, dm.cookie)).status === 400);
   check('the demo gets no free-trial e-mails', dme.plan && !dme.plan.trial);
 }

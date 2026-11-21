@@ -1675,6 +1675,7 @@ router.add('POST', '/api/demo', async (c) => {
   await c.db.prepare(`UPDATE orgs SET demo = 1, trial_end = '', close_after = ?, plan_until = ? WHERE id = ?`)
     .bind(new Date(Date.now() + DEMO_HOURS * 3600e3).toISOString(), addDays(today(), 2), user.org_id).run();
   const token = await issueSession(c.env, user), cookie = sessionCookie(token, c.request).split(';')[0];
+  const seed = async () => {
   const call = async (method, path, body) => {
     try {   // one sample record that fails (a rule the sample did not foresee) must not stop the demo
       const r = await handleApi(new Request(new URL(path, c.request.url), { method, headers: { 'Content-Type': 'application/json', 'X-Requested-With': 'SmartTrader', Cookie: cookie, 'CF-Connecting-IP': ip },
@@ -1701,18 +1702,16 @@ router.add('POST', '/api/demo', async (c) => {
     if (!P[pi] || lines.some(([ii]) => !I[ii])) return;
     made.push([pi, await call('POST', '/api/docs', { type: 'INV', party_id: P[pi].id, date: day(ago), lines: lines.map(([ii, q]) => ({ item_id: I[ii].id, qty: q })) })]);
   };
-  for (const b of bills.slice(0, 4)) await bill(b);
-  const rest = async () => {
-  for (const b of bills.slice(4)) await bill(b);
+  for (const b of bills) await bill(b);
   const cash = accts.cash || accts.upi, upi = accts.upi || accts.cash;
   for (const [k, [pi, d]] of made.entries()) if (d && cash && k % 3 !== 1) await call('POST', '/api/payments', { kind: 'receipt', party_id: P[pi].id, account_id: (k % 2 ? cash : upi).id, amount: d.total });
   if (sup && I[2]) await call('POST', '/api/docs', { type: 'BILL', party_id: sup.id, date: day(4), lines: [{ item_id: I[2].id, qty: 10, rate: 1900 }, { item_id: I[5].id, qty: 24, rate: 110 }] });
   if (accts['6000'] && cash) await call('POST', '/api/expenses', { account_id: accts['6000'].id, paid_from: cash.id, amount: 4000, notes: 'Electricity and staff tea', date: day(10) });
   for (const [name, amt, note] of [['Ramesh (tea stall)', 850, 'Sugar and tea'], ['Sunita ji', 1240, 'Monthly ration']]) await call('POST', '/api/khata', { name, kind: 'gave', amount: amt, note });
   };
-  // the rest of the month fills in while the owner looks around (a slow database must not keep them waiting)
+  // the sample month fills in after the answer: the app shows "Opening a demo shop" until the first bills are there
   const ctx = REQ_CTX.get(c.request);
-  if (ctx) ctx.waitUntil(rest().catch(() => {})); else await rest();
+  if (ctx) ctx.waitUntil(seed().catch(() => {})); else await seed();
   return json({ ok: true, user: publicUser(user), demo: true }, 200, { 'Set-Cookie': sessionCookie(token, c.request) });
 }, { public: true });
 /* Refer & earn: the business's invite link and how it is doing */

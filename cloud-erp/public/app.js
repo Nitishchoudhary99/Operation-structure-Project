@@ -646,7 +646,16 @@ const myUi = () => {
 /* Try the demo: a sample shop, no sign-up, gone after a day */
 async function startDemo() {
   $('#app').innerHTML = `<div class="boot"><h2>${LANG === 'hi' ? 'डेमो दुकान तैयार हो रही है…' : 'Opening a demo shop…'}</h2><p class="muted">${LANG === 'hi' ? 'एक महीने की बिक्री, स्टॉक और खाते के साथ।' : 'With a month of sales, stock and khata in it.'}</p></div>`;
-  try { await POST('/api/demo', {}); storeSet('st:in', '1'); location.replace('/#/'); location.reload(); }
+  try {
+    await POST('/api/demo', {});
+    // the sample bills arrive over the next seconds: wait for the first few (at most ~25 s), then open the dashboard
+    for (let i = 0; i < 25; i++) {
+      const d = await GET('/api/docs?type=INV').catch(() => ({ rows: [] }));
+      if ((d.rows || []).length >= 3) break;
+      await new Promise((r) => setTimeout(r, 1000));
+    }
+    storeSet('st:in', '1'); location.replace('/#/'); location.reload();
+  }
   catch (e) { $('#app').innerHTML = `<div class="boot"><h2>${esc(e.message)}</h2><p><a href="/#signup">Create your free account</a></p></div>`; }
 }
 function demoBar() {
