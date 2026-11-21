@@ -4,11 +4,11 @@
 import json, os, html, re
 OUT = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'public')
 SITE = 'https://erp.docbrisk.com'
-TODAY = '2026-11-18'
+TODAY = '2026-11-21'
 SUPPORT = 'https://wa.me/919068446139'
 NAV = [('/gst-billing-software/', 'GST Billing'), ('/khata-book-app/', 'Khata Book'), ('/inventory-management-software/', 'Inventory'),
        ('/pos-billing-software/', 'POS'), ('/pricing/', 'Pricing')]
-PRICES = [('Free', '₹0', 'forever', ['50 invoices / month', '1 user, 1 godown', 'Unlimited khata entries', 'POS & barcode billing', 'GST reports, P&L, Balance Sheet']),
+PRICES = [('Free', '₹0', 'forever', ['25 invoices / month', '1 user, 1 godown', 'Unlimited khata entries', 'POS & barcode billing', 'GST reports, P&L, Balance Sheet']),
           ('Starter', '₹999', '/year + GST', ['Unlimited invoices', '2 users, 1 godown', 'Everything in Free', 'Tally export']),
           ('Growth', '₹2,499', '/year + GST', ['Unlimited invoices', '5 users, 3 godowns', 'E-invoice & e-way bill JSON', 'Orders, GRN, gate entry']),
           ('Business', '₹4,499', '/year + GST', ['Unlimited invoices', '15 users, unlimited godowns', 'Everything in Growth', 'Priority WhatsApp support (+91 90684 46139)'])]
@@ -88,7 +88,7 @@ def render(p):
     faq = ''.join(f'<details><summary>{html.escape(q)}</summary><p>{html.escape(a)}</p></details>' for q, a in p['faqs'])
     faq_h = 'अक्सर पूछे जाने वाले सवाल' if hi else 'Frequently asked questions'
     cta = (('आज ही शुरू करें', 'फ़्री प्लान में हर महीने 50 बिल और अनलिमिटेड खाता। कार्ड की ज़रूरत नहीं।', 'मुफ़्त अकाउंट बनाएं') if hi else
-           ('Shuru karein aaj hi', 'Free plan me 50 invoices har mahine aur unlimited khata. Card ki zaroorat nahi.', 'Create your free account'))
+           ('Start today', 'Free plan with 25 invoices a month and unlimited khata. No card needed.', 'Create your free account'))
     hero_btn = (('मुफ़्त शुरू करें, कार्ड नहीं चाहिए', 'कीमत देखें', 'मोबाइल, टैबलेट और कंप्यूटर पर चलता है · ऐप की तरह इंस्टॉल करें · भारत के कारोबार के लिए') if hi else
                 ('Start free, no card needed', 'See pricing', 'Works on mobile, tablet and computer · Install as an app · Made for Indian businesses'))
     doc = f'''<!doctype html>
@@ -135,7 +135,7 @@ def render(p):
 page('/gst-billing-software/', 'Free GST Billing Software for Small Business | SmartTrader',
      'Make GST invoices in seconds: CGST/SGST/IGST auto, HSN, UPI QR on the bill, WhatsApp share, e-invoice & e-way bill JSON, GST reports. Free plan.',
      'GST billing software for small businesses',
-     'Bill banaiye 10 second me. CGST, SGST ya IGST apne aap lagta hai, bill par UPI QR chhapta hai, aur customer ko WhatsApp par link jata hai jahan wo bill dekh kar pay kar sakta hai.',
+     'Make a bill in 10 seconds. CGST, SGST or IGST is applied by itself, the bill carries a UPI QR, and the customer gets a WhatsApp link to view the bill and pay.',
      [('Everything a GST bill needs', grid([
          ('Correct GST, every time', 'Intra-state CGST + SGST or inter-state IGST is picked from the GSTIN / state. HSN codes, all GST slabs, round-off to the rupee.'),
          ('Bill with UPI QR', 'Every invoice prints a UPI QR for the exact amount due, so customers pay on the spot with GPay, PhonePe or Paytm.'),
@@ -151,7 +151,7 @@ page('/gst-billing-software/', 'Free GST Billing Software for Small Business | S
                                        'Sales and purchase registers, exportable to CSV', 'Tally XML export with a matching trial balance',
                                        'Profit & Loss, Balance Sheet and Trial Balance from real double-entry accounts'])),
       ('Bill designs and languages', ul(['Several invoice designs with a live preview; pick one per bill',
-                                          'Messages to customers in English, Hindi or Hinglish',
+                                          'Messages to customers in English or Hindi',
                                           'Your logo, UPI ID, bank details and terms on every bill']))],
      [('Is SmartTrader GST billing software free?', 'Yes. The Free plan includes 50 GST invoices a month, unlimited khata entries, POS billing and all reports. Paid plans start at Rs 999 a year.'),
       ('Does it calculate CGST, SGST and IGST automatically?', 'Yes. It compares the state of your business and your customer (from the GSTIN or state name) and applies CGST + SGST or IGST on every line.'),
@@ -163,9 +163,9 @@ page('/gst-billing-software/', 'Free GST Billing Software for Small Business | S
      short='GST billing software', alt={'en-IN': '/gst-billing-software/', 'hi-IN': '/hi/gst-billing-software/', 'x-default': '/gst-billing-software/'})
 
 page('/khata-book-app/', 'Khata Book App with WhatsApp Reminders & UPI | SmartTrader',
-     'Free digital khata (udhaar) book: every entry goes to the customer on WhatsApp/SMS, the customer confirms it online and pays by UPI. Reminders included.',
+     'Free digital khata (credit) book: every entry goes to the customer on WhatsApp/SMS, the customer confirms it online and pays by UPI. Reminders included.',
      'Digital khata book that customers trust',
-     'Udhaar ka hisaab ab saaf. Har entry customer ko WhatsApp ya SMS par jaati hai, customer link khol kar apna poora khata dekhta hai, entry confirm karta hai aur UPI se pay karta hai.',
+     'Credit accounts, kept clear. Every entry goes to the customer on WhatsApp or SMS; they open the link, see their whole khata, confirm the entry and pay by UPI.',
      [('Why shops switch to SmartTrader Khata', grid([
          ('Entry counts only after it is sent', 'A new entry is saved only when you send it to the customer, so nobody can say "yeh entry kab likhi?"'),
          ('Customer confirms each entry', 'The customer opens a private link, sees every entry and the balance, and taps Yes or No. Disputes show up for you at once.'),
@@ -182,14 +182,14 @@ page('/khata-book-app/', 'Khata Book App with WhatsApp Reminders & UPI | SmartTr
       ('Can the customer see their khata?', 'Yes. Every message carries a private link where the customer sees all entries, the balance, and can confirm or dispute each entry.'),
       ('Can I delete a wrong entry?', 'An entry that has not been sent can be discarded. A sent entry stays on record; you reverse it with a correction entry that is also sent to the customer.'),
       ('Does it send payment reminders?', 'Yes. Send a reminder with the balance and your UPI ID on WhatsApp or SMS from the contact or from the Payment Reminders screen.'),
-      ('Is it a Khatabook alternative?', 'Yes. It covers udhaar tracking and reminders, and adds customer confirmation, GST billing, stock and accounts in the same app.')],
+      ('Is it a Khatabook alternative?', 'Yes. It covers credit tracking and reminders, and adds customer confirmation, GST billing, stock and accounts in the same app.')],
      'khata book app, digital khata, udhaar app, Khatabook alternative, credit book app, payment reminder app, udhaar khata online',
      short='Khata book app', alt={'en-IN': '/khata-book-app/', 'hi-IN': '/hi/khata-book-app/', 'x-default': '/khata-book-app/'})
 
 page('/inventory-management-software/', 'Inventory & Stock Management Software | SmartTrader',
      'Multi-godown stock, barcode billing, purchase orders, GRN, gate entry, stock count, reorder alerts and average cost. Cloud inventory for Indian traders.',
      'Inventory software for traders and distributors',
-     'Har godown ka stock live. Purchase order se goods receipt, barcode se billing, reorder alert aur physical stock count, sab ek jagah, phone ya computer par.',
+     'Live stock in every godown. Purchase order to goods receipt, barcode billing, reorder alerts and physical stock counts, all in one place, on phone or computer.',
      [('Stock control without the spreadsheet', grid([
          ('Multi-godown stock', 'Stock per godown, transfers between godowns, adjustments, and moving-average cost valued in your books.'),
          ('Purchase to stock', 'Purchase order, gate entry, goods receipt (GRN) with partial deliveries, purchase bill and payment.'),
@@ -210,15 +210,15 @@ page('/inventory-management-software/', 'Inventory & Stock Management Software |
      short='Inventory software')
 
 page('/pricing/', 'Pricing: Free GST Billing, Khata & Inventory | SmartTrader',
-     'Free plan with 50 invoices a month and unlimited khata. Starter ₹999, Growth ₹2,499 and Business ₹4,499 a year + GST. No hidden charges.',
+     'Free plan with 25 invoices a month and unlimited khata. Starter ₹999, Growth ₹2,499 and Business ₹4,499 a year + GST. No hidden charges.',
      'Simple pricing, lower than the market',
-     'Free se shuru karein. Jab business badhe tab upgrade karein. Saal ka plan, koi chhupa charge nahi.',
+     'Start free. Upgrade when your business grows. Yearly plans, no hidden charges.',
      [('Plans', pricing_html),
       ('Every plan includes', ul(['GST invoices with UPI QR and WhatsApp sharing', 'Unlimited khata with customer confirmation and reminders',
                                   'POS billing with barcode and camera scanning', 'Stock, purchase bills, returns, credit and debit notes',
                                   'Double-entry accounts: Profit & Loss, Balance Sheet, Trial Balance, GST summary', 'Install as an app on Android, iPhone and computer',
                                   'Your data is yours: download a full backup (file or Excel) any time']))],
-     [('Is there really a free plan?', 'Yes. 50 invoices a month, 1 user, unlimited khata, POS and all reports, free forever.'),
+     [('Is there really a free plan?', 'Yes. 25 invoices a month, 1 user, unlimited khata, POS and all reports, free forever.'),
       ('Are prices per month or per year?', 'Per year. Starter is Rs 999, Growth Rs 2,499 and Business Rs 4,499 a year, plus 18% GST.'),
       ('How do I upgrade?', 'Open Plan & Billing in the app and pay by UPI; the plan turns on as soon as the payment is confirmed.'),
       ('Is my data safe?', 'Data is stored on Cloudflare, every business is kept separate, passwords are hashed, and staff get role-based access with an audit trail.')],
@@ -227,25 +227,25 @@ page('/pricing/', 'Pricing: Free GST Billing, Khata & Inventory | SmartTrader',
 
 # ============================================================ by business
 page('/kirana-store-billing-software/', 'Kirana Store Billing Software with Khata | SmartTrader',
-     'Billing software for kirana and general stores: barcode POS, UPI QR on bills, udhaar khata with WhatsApp reminders, low-stock alerts. Works offline.',
+     'Billing software for kirana and general stores: barcode POS, UPI QR on bills, credit khata with WhatsApp reminders, low-stock alerts. Works offline.',
      'Billing software for kirana and general stores',
-     'Counter par bill jaldi, udhaar ka hisaab saaf, aur maal khatam hone se pehle alert. Kirana dukaan ki har roz ki zaroorat, ek hi app me, mobile ya computer par.',
+     'Fast bills at the counter, clear credit accounts, and an alert before stock runs out. Everything a kirana store needs every day, in one app, on mobile or computer.',
      [('Built for a busy counter', grid([
          ('Scan and bill', 'Scan the barcode with a USB scanner or the phone camera; the item, rate and GST fill in. A carton code can count 12 pieces in one scan.'),
-         ('Cash, UPI, card or udhaar', 'Take any payment. For UPI the bill shows a QR for the exact amount; udhaar goes straight to the customer’s khata.'),
-         ('Udhaar khata customers trust', 'Every entry is sent to the customer on WhatsApp or SMS, and the customer confirms it on their own link.'),
+         ('Cash, UPI, card or credit', 'Take any payment. For UPI the bill shows a QR for the exact amount; credit goes straight to the customer’s khata.'),
+         ('A credit khata customers trust', 'Every entry is sent to the customer on WhatsApp or SMS, and the customer confirms it on their own link.'),
          ('Reminders without awkward calls', 'One tap sends the balance and your UPI. The reminder list says who to remind today and who is a VIP customer.'),
          ('Low stock before it runs out', 'Set a reorder level per item; the Today card lists what is running low and makes one purchase order for all of it.'),
          ('No internet? Keep billing', 'Bills made offline wait in the Outbox and go to the cloud by themselves when the internet returns.')])),
       ('A day at the shop', steps(['Open the app: the Today card shows overdue customers, promises due today and low stock.',
                                    'Bill at the counter with the scanner; the customer pays by UPI from the QR.',
-                                   'Note udhaar in the khata; the customer gets the entry on WhatsApp.',
+                                   'Note credit in the khata; the customer gets the entry on WhatsApp.',
                                    'In the evening, see the day’s sales, cash in hand and profit.'])),
       ('Reports a shop owner needs', ul(['Today’s sales, cash and UPI collected', 'Who owes how much, and since when',
                                          'Profit & Loss and stock value', 'GST summary to send to your CA']))],
      [('Can I use a barcode scanner?', 'Yes. Any USB or Bluetooth scanner works like a keyboard, and the phone camera can scan too. A code the app has not seen is taught once and works from then on.'),
       ('Does it work without internet?', 'Yes. Bills and receipts made offline are kept on the device and sent to the cloud automatically when you are back online.'),
-      ('Is the khata part of the billing app?', 'Yes. Udhaar from a bill goes to the same customer’s khata, so billing and khata always match.'),
+      ('Is the khata part of the billing app?', 'Yes. Credit from a bill goes to the same customer’s khata, so billing and khata always match.'),
       ('Is it free for a small kirana shop?', 'The Free plan gives 50 GST invoices a month and unlimited khata. Unlimited bills start at Rs 999 a year.'),
       ('Can I print a receipt?', 'Yes. Print an 80 mm thermal receipt or an A4 bill, or send the bill on WhatsApp.')],
      'kirana store billing software, grocery billing software, general store billing app, kirana shop software, retail billing software with khata',
@@ -271,14 +271,14 @@ page('/medical-store-billing-software/', 'Medical Store Billing Software: Batch 
       ('Does it sell the earliest expiry first?', 'Yes. Billing picks the batch that expires first (FEFO) by default; you can pick a different batch on the line.'),
       ('Will it warn me before medicines expire?', 'Yes. The Today card and the expiry report list expired stock and stock expiring within 30 days, with its value.'),
       ('Can I enter supplier bills quickly?', 'Yes. Take a photo or open the PDF of the supplier bill; it is read on your phone and the purchase bill is filled in for you to check.'),
-      ('Is there a free plan?', 'Yes. 50 invoices a month free; unlimited bills from Rs 999 a year.')],
+      ('Is there a free plan?', 'Yes. 25 invoices a month free; unlimited bills from Rs 999 a year.')],
      'medical store billing software, pharmacy billing software, chemist software with batch and expiry, medical shop software India, expiry tracking software',
      group='industry', short='Medical store billing')
 
 page('/wholesale-distributor-software/', 'Wholesale Distributor Software & Collections | SmartTrader',
      'Software for wholesalers and distributors: sales orders to delivery and invoice, multi-godown stock, credit limits, field collections and e-way bill JSON.',
      'Software for wholesalers and distributors',
-     'Order se delivery aur bill tak, godown ka stock, aur market me phansa paisa wapas laane ka poora system. Salesman ko utna hi dikhe jitna zaroori hai.',
+     'From order to delivery and bill, godown stock, and a full system to bring back money stuck in the market. Salesmen see only what they need.',
      [('From order to money in the bank', grid([
          ('Orders that do not slip', 'Quotation → sales order → delivery note → invoice, with pending quantities tracked until everything is delivered and billed.'),
          ('Stock across godowns', 'Stock per godown, transfers, and one combined pick list for many orders walked rack by rack.'),
@@ -303,7 +303,7 @@ page('/wholesale-distributor-software/', 'Wholesale Distributor Software & Colle
 page('/mobile-shop-billing-software/', 'Mobile Shop Billing Software, IMEI Tracking | SmartTrader',
      'Billing for mobile and electronics shops: IMEI / serial number on every sale, warranty lookup, GST invoices with UPI QR, accessories by barcode.',
      'Mobile and electronics shop billing with IMEI tracking',
-     'Har phone ka IMEI bill par. Kaunsa phone kisko kab bika, warranty kab tak hai, ek search me pata. Accessories barcode se, bill WhatsApp par.',
+     'Every phone’s IMEI on the bill. Which phone was sold to whom and when, and how long the warranty runs, in one search. Accessories by barcode, bills on WhatsApp.',
      [('Every serial number accounted for', grid([
          ('IMEI on purchase and sale', 'Scan IMEI or serial numbers when the stock comes in; billing asks for the serial, so the right handset goes out.'),
          ('Warranty lookup', 'Search an IMEI to see who bought it, on which bill and when, and until when the warranty runs.'),
@@ -323,11 +323,11 @@ page('/mobile-shop-billing-software/', 'Mobile Shop Billing Software, IMEI Track
 page('/hardware-shop-billing-software/', 'Hardware Shop Billing Software: Stock by Rack | SmartTrader',
      'Billing and stock for hardware, sanitary and building material shops: racks and bins, quotations for contractors, credit khata, GST invoices.',
      'Billing and stock software for hardware shops',
-     'Hazaron item, har ek ki jagah rack par. Contractor ko quotation, phir bill, aur udhaar ka hisaab, sab ek app me.',
+     'Thousands of items, each with its place on a rack. Quotation to the contractor, then the bill, and the credit account, all in one app.',
      [('Find any item, bill it fast', grid([
          ('Racks and bins', 'Each item has its rack / bin; pick lists are sorted by rack, and labels can be printed for the bins.'),
          ('Quotation to bill', 'Give contractors a quotation, turn it into an order or a bill in one tap, and track what is still to deliver.'),
-         ('Credit for contractors', 'Udhaar goes to the contractor’s khata with reminders and a monthly balance confirmation.'),
+         ('Credit for contractors', 'Credit goes to the contractor’s khata with reminders and a monthly balance confirmation.'),
          ('Goods on the way', 'Book the supplier’s bill before the truck arrives; receive it by scan when it comes, and write off anything broken in transit.'),
          ('Units you sell in', 'Pieces, kg, metre, box or bag, with the HSN and GST rate set per item.'),
          ('Delivery notes', 'Send goods with a delivery note and bill it later; pending deliveries are tracked.')])),
@@ -346,7 +346,7 @@ page('/hardware-shop-billing-software/', 'Hardware Shop Billing Software: Stock 
 page('/pos-billing-software/', 'POS Billing Software with Barcode & UPI QR | SmartTrader',
      'Fast POS billing on phone or computer: barcode or camera scanning, cash, UPI, card or credit, UPI QR for the exact amount, 80 mm receipts, offline mode.',
      'POS billing software for the counter',
-     'Scan karo, bill tayyar. Cash, UPI, card ya udhaar, aur bill par UPI QR. Internet na ho to bhi bill bante rehte hain.',
+     'Scan and the bill is ready. Cash, UPI, card or credit, with a UPI QR on the bill. Bills keep working even without internet.',
      [('Made for speed', grid([
          ('Scan with anything', 'USB or Bluetooth scanner, or the phone camera. Codes not seen before are taught once.'),
          ('Every payment mode', 'Cash with change worked out, UPI, card / bank, or credit to the customer’s khata.'),
@@ -359,7 +359,7 @@ page('/pos-billing-software/', 'POS Billing Software with Barcode & UPI QR | Sma
       ('How it works', steps(['Scan the items or type a name.', 'Choose cash, UPI, card or credit.', 'Complete the sale and print or share the bill.']))],
      [('Does it work on a phone?', 'Yes. It runs in the browser on Android, iPhone and computers, and can be installed as an app.'),
       ('Can I use the phone camera as a scanner?', 'Yes, on phones whose browser supports barcode detection; a USB or Bluetooth scanner works everywhere.'),
-      ('Can I sell on credit from the POS?', 'Yes. Choose Credit (udhaar); the amount goes to the customer’s khata.'),
+      ('Can I sell on credit from the POS?', 'Yes. Choose Credit; the amount goes to the customer’s khata.'),
       ('What happens if the internet goes off?', 'Sales are kept in the Outbox on the device and sent automatically when the connection returns.')],
      'POS billing software, barcode billing software, retail POS India, POS software for shop, billing machine software, POS with UPI QR',
      group='feature', short='POS billing')
@@ -367,7 +367,7 @@ page('/pos-billing-software/', 'POS Billing Software with Barcode & UPI QR | Sma
 page('/e-invoice-software/', 'E-Invoice & E-Way Bill JSON Software | SmartTrader',
      'Create e-invoice (IRN) and e-way bill JSON from your GST invoices in one tap, save the IRN and EWB number on the bill, and keep GST reports ready.',
      'E-invoice and e-way bill from your GST bills',
-     'Bill banaya, e-invoice aur e-way bill ki JSON file ek tap me tayyar. Portal par upload kijiye aur IRN wapas bill par save kijiye.',
+     'Make the bill, and the e-invoice and e-way bill JSON file is ready in one tap. Upload it on the portal and save the IRN back on the bill.',
      [('From bill to portal', grid([
          ('E-invoice JSON', 'The invoice is turned into the e-invoice schema (seller, buyer, items, HSN, tax) for upload on the IRP.'),
          ('E-way bill JSON', 'Make the e-way bill JSON for the invoice, with vehicle and transport details, for the e-way bill portal.'),
@@ -387,7 +387,7 @@ page('/e-invoice-software/', 'E-Invoice & E-Way Bill JSON Software | SmartTrader
 page('/e-way-bill-software/', 'E-Way Bill Software: JSON, Validity & Alerts | SmartTrader',
      'E-way bill software for Indian traders: a warning on bills over ₹50,000, bulk-upload JSON in one tap, validity worked out, and alerts before it runs out.',
      'E-way bill software that never lets one slip',
-     'Rs 50,000 se upar ka bill? App khud yaad dilata hai. Ek tap me e-way bill ki JSON, number bill par save, aur validity khatam hone se pehle alert.',
+     'A bill above Rs 50,000? The app reminds you. E-way bill JSON in one tap, the number saved on the bill, and an alert before validity runs out.',
      [('Everything around the e-way bill', grid([
          ('₹50,000 warning', 'A sale, delivery note, purchase or return over ₹50,000 without an e-way bill number shows a warning with a “Make e-way bill” button.'),
          ('JSON in one tap', 'The bill becomes the official bulk-upload JSON: GSTINs, addresses, PIN codes, HSN, units, tax, distance, vehicle or transporter ID.'),
@@ -413,11 +413,11 @@ page('/e-way-bill-software/', 'E-Way Bill Software: JSON, Validity & Alerts | Sm
 page('/whatsapp-payment-reminder-app/', 'WhatsApp Payment Reminder App for Shops | SmartTrader',
      'Send payment reminders on WhatsApp with the amount due, bill link and UPI QR, on a smart schedule. Customers pick a pay date and pay by UPI from the link.',
      'Payment reminders on WhatsApp that get paid',
-     'Udhaar maangna ab awkward nahi. Sahi din par, sahi bhasha me reminder, bill ka link aur UPI, sab ek message me.',
+     'Asking for payment is no longer awkward. A reminder on the right day, in the right language, with the bill link and UPI, all in one message.',
      [('Reminders that work', grid([
          ('Smart schedule', 'Who to remind today: 3 days before the due date, on it, then 7, 15, 30 and 45 days late. VIP customers get gentler words.'),
          ('Bill link with UPI', 'Every reminder carries a link to the customer’s bills with a Pay button and QR for the amount due.'),
-         ('In their language', 'Messages in English, Hindi or Hinglish, chosen per customer.'),
+         ('In their language', 'Messages in English or Hindi, chosen per customer.'),
          ('Pay date from the customer', 'On the link the customer picks when they will pay, or splits it into instalments; you see it on the Today card.'),
          ('Balance confirmation', 'Once a month, customers confirm their balance with one tap; a wrong bill shows up now, not months later.'),
          ('Weekly report', 'A short weekly summary: collected, promised and still overdue.')])),
@@ -436,7 +436,7 @@ page('/whatsapp-payment-reminder-app/', 'WhatsApp Payment Reminder App for Shops
 page('/accounting-software-for-small-business/', 'Accounting Software for Small Business India | SmartTrader',
      'Double-entry accounting that runs itself from your bills: P&L, Balance Sheet, Trial Balance, cash and bank, expenses, GST summary and Tally export.',
      'Accounting software that keeps itself',
-     'Bill banao, payment lo, kharcha likho. Hisaab-kitaab apne aap double-entry me ban jata hai, aur P&L, Balance Sheet hamesha tayyar.',
+     'Make bills, take payments, note expenses. The books are kept in double entry by themselves, and the P&L and Balance Sheet are always ready.',
      [('Books without a bookkeeper', grid([
          ('Every bill posts itself', 'Sales, purchases, returns, payments and expenses post the right journal entries automatically.'),
          ('Reports that tally', 'Profit & Loss, Balance Sheet and Trial Balance always balance; stock value matches the inventory.'),
@@ -458,7 +458,7 @@ page('/accounting-software-for-small-business/', 'Accounting Software for Small 
 page('/warehouse-management-software/', 'Warehouse Management Software: Racks & Picking | SmartTrader',
      'Simple warehouse software: receive by scan, racks and bins, guided put-away, pick lists by rack, wave picking, batches, serials and stock ageing.',
      'Warehouse management without the complexity',
-     'Maal aaya to scan se receive, rack khud chuna jaye, aur dispatch ke liye rack ke hisaab se pick list. Godown aapki ungli par.',
+     'Receive goods by scan, the rack is chosen for you, and dispatch gets a pick list in rack order. Your godown at your fingertips.',
      [('From the truck to the shelf', grid([
          ('Receive by scan', 'Scan each piece against the supplier’s bill or order; anything not on it, or more than billed, is refused.'),
          ('Racks chosen for you', 'Each item goes to its default bin, a bin that holds it already, or an empty one; new bins are made when needed.'),
@@ -479,7 +479,7 @@ page('/warehouse-management-software/', 'Warehouse Management Software: Racks & 
 page('/purchase-management-software/', 'Purchase Order & Purchase Bill Software | SmartTrader',
      'Purchase orders with approval, gate entry, goods receipt by scan, bills in transit, supplier bill scanning, debit notes and payments due in one place.',
      'Purchase management from order to payment',
-     'Order do, maal receive karo, bill milao aur payment yaad rakho. Supplier ka bill photo se bhar jata hai, aur kam ya toota maal turant pakda jata hai.',
+     'Order, receive goods, match the bill and keep track of payments. A supplier bill fills in from a photo, and short or broken goods are caught at once.',
      [('Buy right, pay right', grid([
          ('Purchase orders with approval', 'Orders above a limit made by staff wait for the owner’s approval.'),
          ('Bill first, goods later', 'Book the supplier’s bill while the goods are on the way; it is received against the bill when the truck comes.'),
@@ -554,7 +554,7 @@ for p in PAGES:
 HOME_FAQ = [
     ('What is SmartTrader ERP?', 'A cloud app for Indian shops, traders and distributors that does GST billing, POS, khata, stock, purchase and double-entry accounts in one place, on mobile and computer.'),
     ('Is it really free?', 'Yes. The Free plan gives 50 GST invoices a month, 1 user, unlimited khata, POS and all reports, with no card needed. Paid plans start at Rs 999 a year.'),
-    ('Does it work in Hindi?', 'Messages to customers go in English, Hindi or Hinglish, and the help pages are in Hindi too.'),
+    ('Does it work in Hindi?', 'Messages to customers go in English or Hindi, and the help pages are in Hindi too.'),
     ('Does it work without internet?', 'Yes. Bills, receipts and expenses made offline are kept on the device and sent to the cloud when you are back online.'),
     ('Is my data safe?', 'Each business is kept separate, passwords are hashed, staff get role-based access with an audit trail, and you can download a full backup or back up to your own Google Drive.'),
     ('Can I move my data to Tally?', 'Yes. Export a Tally XML for any period; the trial balance matches.')]
@@ -563,9 +563,9 @@ landing = f'''<div class="landing">
 {topbar('/', 'en-IN')}
 <main>
 <section class="hero"><h1>Free GST billing, khata and stock software for Indian businesses</h1>
-<p class="lead">SmartTrader ERP: GST bills with UPI QR, a digital khata your customers confirm, stock across godowns, purchase and full accounts. Mobile ya computer, ek hi app me; bills and reminders reach your customers in English, Hindi or Hinglish.</p>
+<p class="lead">SmartTrader ERP: GST bills with UPI QR, a digital khata your customers confirm, stock across godowns, purchase and full accounts. One app on mobile and computer; bills and reminders reach your customers in English or Hindi.</p>
 <p><a class="btn primary big" href="/#signup">Start free, no card needed</a> <a class="btn big" href="/#login">Sign in</a></p>
-{ul(['Free plan forever: 50 bills a month, unlimited khata', 'Works on Android, iPhone and computer, even offline', 'Bills and reminders on WhatsApp with UPI', 'Bring your items and customers from Excel, Vyapar, myBillBook or Tally in one go', 'Your data is yours: full backup any time'])}
+{ul(['Free plan forever: 25 bills a month, unlimited khata', 'Works on Android, iPhone and computer, even offline', 'Bills and reminders on WhatsApp with UPI', 'Bring your items and customers from Excel, Vyapar, myBillBook or Tally in one go', 'Your data is yours: full backup any time'])}
 </section>
 <section><h2>Everything your business runs on</h2>{cards('core')}{cards('feature')}</section>
 <section><h2>Made for your kind of business</h2>{cards('industry')}</section>
@@ -573,7 +573,7 @@ landing = f'''<div class="landing">
 <section><h2>Pricing</h2>{pricing_html}</section>
 <section><h2>Frequently asked questions</h2>{''.join(f'<details><summary>{html.escape(q)}</summary><p>{html.escape(a)}</p></details>' for q, a in HOME_FAQ)}</section>
 <section><h2>हिंदी में पढ़ें</h2>{cards('hi')}</section>
-<section class="cta"><h2>Shuru karein aaj hi</h2><p>Free plan me 50 invoices har mahine aur unlimited khata. Card ki zaroorat nahi.</p><a class="btn primary big" href="/#signup">Create your free account</a></section>
+<section class="cta"><h2>Start today</h2><p>Free plan with 25 invoices a month and unlimited khata. No card needed.</p><a class="btn primary big" href="/#signup">Create your free account</a></section>
 </main>
 {footer('/', 'en-IN')}
 </div>'''
