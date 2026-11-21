@@ -238,14 +238,14 @@ async function sendBill(env, org, doc, party, period) {
   if (!waConfigured(env) || !org.auto_wa || !hasFeature(org, 'autowa')) return false;
   const to = waNumber(party.phone);
   if (!to || party.wa_optout) return false;
-  const lang = party.lang || org.msg_lang || 'hl', base = (env.APP_URL || 'https://erp.docbrisk.com').replace(/\/$/, '');
+  const lang = (party.lang || org.msg_lang) === 'hi' ? 'hi' : 'en', base = (env.APP_URL || 'https://erp.docbrisk.com').replace(/\/$/, '');
   let tok = doc.share_token;
   if (!tok) {
     await env.DB.prepare(`UPDATE docs SET share_token = ? WHERE id = ? AND share_token IS NULL`).bind(randomHex(12), doc.id).run();
     tok = (await env.DB.prepare(`SELECT share_token FROM docs WHERE id = ?`).bind(doc.id).first()).share_token;
   }
-  const link = `${base}/i/${tok}${lang === 'hl' ? '' : '?l=' + lang}`, amount = inr(doc.total);
-  const body = (BILL_TEXT[lang] || BILL_TEXT.hl)(party.name, org.name, amount, period, link);
+  const link = `${base}/i/${tok}${lang === 'hi' ? '?l=hi' : ''}`, amount = inr(doc.total);
+  const body = (BILL_TEXT[lang] || BILL_TEXT.en)(party.name, org.name, amount, period, link);
   try {
     if (await windowOpen(env.DB, to)) await sendText(env, to, body);
     else await sendReminder(env, to, lang, [party.name, org.name, amount, link], env.WHATSAPP_BILL_TEMPLATE);

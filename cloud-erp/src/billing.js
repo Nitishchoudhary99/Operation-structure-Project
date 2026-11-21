@@ -20,7 +20,7 @@
 
    Every way ends in activate(): it claims the billing_orders row first, so a plan is extended exactly once per checkout. */
 import { HttpError, bad, notFound, nowIso } from './lib.js';
-import { PLANS, extendPlan } from './saas.js';
+import { PLANS, extendPlan, trialInfo } from './saas.js';
 export const PRODUCT = 'smarttrader-erp';
 const PUBLIC_KEY_ID = 'rzp_live_Tbn7nsYH0g4Q8e';   // docbrisk.com's public Razorpay key id (public by design)
 const GST = 0.18;
@@ -42,12 +42,17 @@ export function billingMode(env) { return hubOn(env) && !rzpFirst(env) ? 'upi' :
 const keyId = (env) => String(env.RAZORPAY_KEY_ID || PUBLIC_KEY_ID).trim();
 /* Plan prices are before GST; the customer pays the price plus 18% GST, rounded to the rupee. */
 export const grossPaise = (plan) => Math.round(PLANS[plan].price * (1 + GST)) * 100;
+/* What this business pays for a plan now: the first-year offer right after an unbought trial takes OFFER_PCT off. */
+export const payPaise = (plan, org) => {
+  const pct = org ? trialInfo(org).offer_pct : 0;
+  return pct ? Math.round(PLANS[plan].price * (1 - pct / 100) * (1 + GST)) * 100 : grossPaise(plan);
+};
 /* A Rs 1 test payment, only for the e-mails in the worker variable OWNER_EMAILS or PAY_TEST_EMAILS (neither set = it does not exist). It goes
    the same way as a real one (UPI hub or Razorpay, signature, exact amount, once only, history, audit) but changes no plan,
    so the owner can prove with real money that payments switch on by themselves. */
 export const testPayOk = (env, email) => !!email && `${env.PAY_TEST_EMAILS || ''},${env.OWNER_EMAILS || ''}`.toLowerCase().split(/[\s,;]+/).filter(Boolean).includes(String(email).toLowerCase());
-const specOf = (plan) => (plan === 'test' ? { plan, months: 0, paise: 100, label: 'Test payment', desc: 'SmartTrader ERP test payment (changes no plan)' }
-  : { plan, months: 12, paise: grossPaise(plan), label: `${PLANS[plan].label} 12 months`, desc: `SmartTrader ERP ${PLANS[plan].label} - 1 year (incl. GST)` });
+const specOf = (plan, org) => (plan === 'test' ? { plan, months: 0, paise: 100, label: 'Test payment', desc: 'SmartTrader ERP test payment (changes no plan)' }
+  : { plan, months: 12, paise: payPaise(plan, org), label: `${PLANS[plan].label} 12 months`, desc: `SmartTrader ERP ${PLANS[plan].label} - 1 year (incl. GST)` });
 
 const enc = new TextEncoder();
 export async function hmacHex(secret, text) {
@@ -78,6 +83,7 @@ async function activate(db, rec, paymentId, paidPaise) {
   const org = await db.prepare(`SELECT * FROM orgs WHERE id = ?`).bind(rec.org_id).first();
   // a test payment proves the whole way to here; it leaves the plan as it is
   const until = rec.plan === 'test' ? (org.plan_until || '') : await extendPlan(db, org, rec.plan, rec.months);
+  if (rec.plan !== 'test') await db.prepare(`UPDATE orgs SET trial_end = '' WHERE id = ?`).bind(rec.org_id).run();   // a paying business: no trial, no offer
   await db.prepare(`UPDATE billing_orders SET plan_until = ? WHERE id = ?`).bind(until, rec.id).run();
   await db.prepare(`INSERT INTO audit (org_id, user_id, at, action, detail) VALUES (?, ?, ?, 'plan paid', ?)`)
     .bind(rec.org_id, rec.user_id, nowIso(), `${rec.plan} ${rec.months} months, ${rec.paise / 100} INR, ${paymentId}`).run();
@@ -135,7 +141,7 @@ export async function billingStart(c) {
 
 /* A checkout through DocBrisk Pay. Returns null when the hub cannot take it now (not set up, busy, down). */
 async function upiStart(c, plan) {
-  const { months, paise, label, desc } = specOf(plan), ref = randomRef();
+  const { months, paise, label, desc } = specOf(plan, c.org), ref = randomRef();
   // the row exists before the hub knows the ref, so a callback can always find it
   await c.db.prepare(`INSERT INTO billing_orders (org_id, user_id, ref, plan, months, paise, status, created_at, method) VALUES (?, ?, ?, ?, ?, ?, 'created', ?, 'upi')`)
     .bind(c.org.id, c.user.id, ref, plan, months, paise, nowIso()).run();
@@ -157,7 +163,7 @@ async function upiStart(c, plan) {
 
 /* A checkout through Razorpay (order or webhook way) */
 async function razorpayStart(c, plan, mode) {
-  const { months, paise, desc } = specOf(plan), ref = randomRef();
+  const { months, paise, desc } = specOf(plan, c.org), ref = randomRef();
   const owner = await c.db.prepare(`SELECT email, name FROM users WHERE id = ?`).bind(c.user.id).first();
   const notes = { product: PRODUCT, ref, org: String(c.org.id), plan };
   let orderId = null;

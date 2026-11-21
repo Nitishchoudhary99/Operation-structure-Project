@@ -8,9 +8,9 @@ import { bad, addDays } from './lib.js';
 
 export const VAADA_DEFAULTS = { on: true, max_days: 15, part: true, min_part_pct: 25, plans: ['4w'], min_kisht: 500,
   grace: 1, credit_check: 'warn', overdue_days: 30, broken_max: 2 };
-export const PLAN_TYPES = { '2f': { n: 2, every: 15, label: '2 kisht · har 15 din' }, '4w': { n: 4, every: 7, label: '4 kisht · har hafte' },
-  '3m': { n: 3, every: 30, label: '3 kisht · har mahine' }, '6w': { n: 6, every: 7, label: '6 kisht · har hafte' },
-  '6m': { n: 6, every: 30, label: '6 kisht · har mahine' } };
+export const PLAN_TYPES = { '2f': { n: 2, every: 15, label: '2 instalments · every 15 days' }, '4w': { n: 4, every: 7, label: '4 instalments · weekly' },
+  '3m': { n: 3, every: 30, label: '3 instalments · monthly' }, '6w': { n: 6, every: 7, label: '6 instalments · weekly' },
+  '6m': { n: 6, every: 30, label: '6 instalments · monthly' } };
 /* a party's khata balance (sent entries only), for `FROM khata k` */
 export const KHATA_BAL = `COALESCE(SUM(CASE WHEN k.status = 'sent' THEN (CASE WHEN k.kind = 'gave' THEN k.amount ELSE -k.amount END) ELSE 0 END), 0)`;
 export const FREE_OPEN_MAX = 10;
@@ -44,9 +44,9 @@ export const minPart = (due, s) => Math.min(due, Math.max(10000, Math.ceil(due *
 /* §6.1 instalments in whole rupees; the last one absorbs the remainder so the sum is exact */
 export function splitPlan(amountPaise, planKey, today, minKishtRs) {
   const P = Object.prototype.hasOwnProperty.call(PLAN_TYPES, planKey) ? PLAN_TYPES[planKey] : null;
-  if (!P) throw bad('Plan sahi nahi hai.');
+  if (!P) throw bad('This plan is not valid.');
   const unit = Math.floor(amountPaise / (P.n * 100)) * 100;
-  if (unit < minKishtRs * 100 || unit <= 0) throw bad(`Har kisht kam se kam ₹${minKishtRs} honi chahiye.`);
+  if (unit < minKishtRs * 100 || unit <= 0) throw bad(`Each instalment must be at least ₹${minKishtRs}.`);
   const out = [];
   for (let i = 1; i <= P.n; i++) out.push({ n: i, d: addDays(today, P.every * i), a: i < P.n ? unit : amountPaise - unit * (P.n - 1) });
   return out;
@@ -92,12 +92,12 @@ export function risk(input, s) {
   const { party, due = 0, oldest = null, khata = 0, n = 0, pendingBroken = [], kept = 0, broken = 0, newCredit = 0, today } = input;
   const reasons = [];
   const overdueDays = oldest && oldest < today ? days(today) - days(oldest) : 0;
-  if (party.credit_limit > 0 && due + Math.max(0, khata) + newCredit > party.credit_limit) reasons.push(`limit ${inrW(party.credit_limit)} paar`);
-  if (due > 0 && overdueDays >= s.overdue_days) reasons.push(`${inrW(due)} baaki ${overdueDays} din se`);
+  if (party.credit_limit > 0 && due + Math.max(0, khata) + newCredit > party.credit_limit) reasons.push(`over the limit of ${inrW(party.credit_limit)}`);
+  if (due > 0 && overdueDays >= s.overdue_days) reasons.push(`${inrW(due)} unpaid for ${overdueDays} days`);
   const broken90 = n + pendingBroken.length;
-  if (broken90 >= s.broken_max) reasons.push(`${broken90} vaade toote`);
-  else if (pendingBroken.length) reasons.push(`${fd(pendingBroken[0].due)} ka vaada toota`);
-  return { risky: reasons.length > 0, reasons, text: `${party.name}: ${reasons.join(', ')}. Phir bhi udhaar?`,
+  if (broken90 >= s.broken_max) reasons.push(`${broken90} promises broken`);
+  else if (pendingBroken.length) reasons.push(`promise of ${fd(pendingBroken[0].due)} broken`);
+  return { risky: reasons.length > 0, reasons, text: `${party.name}: ${reasons.join(', ')}. Give credit anyway?`,
     kept_pct: kept + broken ? Math.round(100 * kept / (kept + broken)) : null, broken90 };
 }
 /* the one read batch behind risk(): 5 party-indexed statements */

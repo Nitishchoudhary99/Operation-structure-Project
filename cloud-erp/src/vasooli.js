@@ -138,8 +138,7 @@ export async function summary(c) {
 /* the summary as a WhatsApp message for the owner (to forward to a partner or keep) */
 export function summaryText(org, s, lang) {
   const L = { en: ['Your week in collections', 'Received', 'from', 'buyer(s)', 'Promised this week', 'Unpaid, 45+ days late', 'Average days to get paid', 'Top payer', 'Watch out', 'broke', 'promise(s)'],
-    hi: ['इस हफ़्ते की वसूली', 'मिला', 'से', 'ग्राहक', 'इस हफ़्ते वादा', '45+ दिन से बाकी', 'भुगतान में औसत दिन', 'सबसे अच्छा भुगतानकर्ता', 'ध्यान दें', 'ने', 'वादे तोड़े'],
-    hl: ['Is hafte ki vasooli', 'Mila', 'se', 'grahak', 'Is hafte vaada', '45+ din se baaki', 'Payment mein average din', 'Top payer', 'Dhyan dein', 'ne', 'vaade tode'] }[cleanLang(lang)];
+    hi: ['इस हफ़्ते की वसूली', 'मिला', 'से', 'ग्राहक', 'इस हफ़्ते वादा', '45+ दिन से बाकी', 'भुगतान में औसत दिन', 'सबसे अच्छा भुगतानकर्ता', 'ध्यान दें', 'ने', 'वादे तोड़े'], }[cleanLang(lang) === 'hi' ? 'hi' : 'en'];
   const m = (x) => inrW(Math.round(x * 100));
   return [`*${org.name}* · ${L[0]} 📊`, `${fd(s.from)} – ${fd(s.to)}`, '',
     `${L[1]}: *${m(s.received)}* (${s.payers} ${L[3]})`,
