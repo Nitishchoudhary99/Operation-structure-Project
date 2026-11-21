@@ -3,7 +3,7 @@
    Every business table carries org_id: one database serves many businesses (multi-tenant).
    migrate() runs on the first request after each deploy, so no manual migration step is needed. */
 
-export const SCHEMA_VERSION = 56;
+export const SCHEMA_VERSION = 57;
 
 // document types whose monthly totals doc_month keeps (sales and purchase money documents)
 const MONTH_TYPES = `('INV','SRET','CNOTE','BILL','PRET','DNOTE')`;
@@ -826,6 +826,10 @@ export const MIGRATIONS = {
     `ALTER TABLE orgs ADD COLUMN ref_rewarded INTEGER NOT NULL DEFAULT 0`,
     `UPDATE orgs SET ref_code = lower(hex(randomblob(4))) WHERE ref_code IS NULL`,
     `CREATE UNIQUE INDEX IF NOT EXISTS ix_orgs_ref ON orgs (ref_code)`,
+  ],
+  // the try-without-sign-up demo: a throwaway business (no trial e-mails, no invite rewards, no plans to buy), deleted after a day
+  57: [
+    `ALTER TABLE orgs ADD COLUMN demo INTEGER NOT NULL DEFAULT 0`,
   ],
 };
 

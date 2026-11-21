@@ -59,7 +59,7 @@ import { dineBoard, addTables, removeTable, tableDetail, sendKot, voidLine, move
 import { rzpSettings, rzpSave, rzpOff, guestPayOnline, rzpWebhook } from './dinepay.js';
 import { shopOf, publicShop, publicPhoto, placeOrder, shopProducts, showProduct, savePhoto, deletePhoto, shopOrders, acceptOrder, declineOrder } from './shop.js';
 import { secondStep, twoStepStart, twoStepEnable, twoStepDisable, newBackupCodes, twoStepReset, requireTwoStep, stepUp, loginStatement, signInHistory,
-  closeBusiness, cancelClose, purgeClosed, notOwnerWhileClosing } from './security.js';
+  closeBusiness, cancelClose, purgeClosed, purgeOrg, notOwnerWhileClosing } from './security.js';
 import { workbook } from './xlsx.js';
 import { printOf, cleanPrint, imageFromDataUrl, shortHash, imageResponse, FILE_KINDS, seriesOf, numberSpec, formatNumber, cleanSeries, fyParts,
   fieldsOf, extraOf, cleanField, cleanExtra, extraFilter, printExtra, LAYOUTS } from './custom.js';
@@ -1661,6 +1661,51 @@ router.add('GET', '/api/plan', async (c) => json({
   billing: billingMode(c.env), razorpay: razorpayMode(c.env), history: canView(c.user, 'settings') ? await billingHistory(c) : [], support_whatsapp: c.env.SUPPORT_WHATSAPP || '',
   test_pay: testPayOk(c.env, c.user.email),
 }));
+/* Try the demo, no sign-up: a throwaway business filled with a month of sample sales, stock, khata and expenses, made
+   through the app's own API (so it behaves exactly like a real one). It has no real phone numbers or e-mail, gets no
+   trial e-mails, can buy nothing, and is deleted a day later (scheduled job). */
+const DEMO_HOURS = 24;
+router.add('POST', '/api/demo', async (c) => {
+  const ip = clientIp(c);
+  await rateLimit(c.env, 'demo-ip:' + ip, 4, 3600);
+  await rateLimit(c.env, 'demo-all', 300, 86400);
+  const salt = randomHex(16), hash = await hashPassword(randomHex(24), salt), email = `demo-${randomHex(6)}@demo.invalid`;
+  const user = await createBusiness(c, { business: 'Sharma General Store (demo)', name: 'Demo owner', email, hash, salt, state: 'Rajasthan', address: 'MI Road, Jaipur' });
+  await c.db.prepare(`UPDATE orgs SET demo = 1, trial_end = '', close_after = ?, plan_until = ? WHERE id = ?`)
+    .bind(new Date(Date.now() + DEMO_HOURS * 3600e3).toISOString(), addDays(today(), 2), user.org_id).run();
+  const token = await issueSession(c.env, user), cookie = sessionCookie(token, c.request).split(';')[0];
+  const call = async (method, path, body) => {
+    try {   // one sample record that fails (a rule the sample did not foresee) must not stop the demo
+      const r = await handleApi(new Request(new URL(path, c.request.url), { method, headers: { 'Content-Type': 'application/json', 'X-Requested-With': 'SmartTrader', Cookie: cookie, 'CF-Connecting-IP': ip },
+        body: body ? JSON.stringify(body) : undefined }), c.env);
+      return r.ok ? r.json() : null;
+    } catch (e) { return null; }
+  };
+  const day = (n) => addDays(today(), -n);
+  const P = [];
+  for (const [name, credit] of [['Gupta Kirana', 15], ['Mehta Traders', 30], ['Hotel Shree Palace', 15], ['Jain Sweets', 7], ['Raj Caterers', 30], ['Walk-in customers', 0]])
+    P.push(await call('POST', '/api/parties', { name, kind: 'customer', state: 'Rajasthan', credit_days: credit }));
+  const sup = await call('POST', '/api/parties', { name: 'Agarwal Wholesale', kind: 'supplier', state: 'Rajasthan', credit_days: 30 });
+  const I = [];
+  for (const [name, unit, buy, sell, qty, gst, reorder] of [['Basmati Rice 25kg', 'Bag', 1800, 2150, 40, 5, 8], ['Mustard Oil 15L', 'Tin', 2100, 2450, 18, 5, 5],
+    ['Sugar 50kg', 'Bag', 1900, 2150, 4, 5, 6], ['Toor Dal 30kg', 'Bag', 3300, 3750, 12, 5, 4], ['Tata Salt 1kg', 'Pc', 18, 25, 300, 5, 50],
+    ['Surf Excel 1kg', 'Pc', 110, 135, 12, 18, 10], ['Amul Ghee 1L', 'Pc', 520, 590, 30, 12, 10], ['Tea 1kg', 'Pc', 380, 450, 25, 5, 8]])
+    I.push(await call('POST', '/api/items', { name, unit, purchase_price: buy, sale_price: sell, opening_qty: qty, opening_rate: buy, gst_rate: gst, reorder_level: reorder }));
+  const accts = Object.fromEntries((((await call('GET', '/api/accounts')) || {}).rows || []).map((a) => [a.sys || a.code, a]));
+  const bills = [[0, 0, [[0, 2], [4, 20]]], [0, 2, [[1, 1], [6, 4]]], [1, 3, [[3, 2], [7, 3]]], [2, 5, [[0, 3], [1, 2]]], [3, 6, [[2, 1], [6, 6]]],
+    [4, 8, [[3, 1], [0, 1]]], [5, 9, [[4, 40], [5, 6]]], [1, 12, [[0, 4], [7, 5]]], [0, 15, [[2, 1], [1, 1]]], [2, 18, [[6, 5], [3, 1]]], [3, 21, [[7, 4], [4, 30]]], [4, 26, [[0, 2], [1, 2]]]];
+  const made = [];
+  for (const [pi, ago, lines] of bills) {
+    if (!P[pi] || lines.some(([ii]) => !I[ii])) continue;
+    made.push([pi, await call('POST', '/api/docs', { type: 'INV', party_id: P[pi].id, date: day(ago), lines: lines.map(([ii, q]) => ({ item_id: I[ii].id, qty: q })) })]);
+  }
+  const cash = accts.cash || accts.upi, upi = accts.upi || accts.cash;
+  for (const [k, [pi, d]] of made.entries()) if (d && cash && k % 3 !== 1) await call('POST', '/api/payments', { kind: 'receipt', party_id: P[pi].id, account_id: (k % 2 ? cash : upi).id, amount: d.total });
+  if (sup && I[2]) await call('POST', '/api/docs', { type: 'BILL', party_id: sup.id, date: day(4), lines: [{ item_id: I[2].id, qty: 10, rate: 1900 }, { item_id: I[5].id, qty: 24, rate: 110 }] });
+  if (accts['6000'] && cash) await call('POST', '/api/expenses', { account_id: accts['6000'].id, paid_from: cash.id, amount: 4000, notes: 'Electricity and staff tea', date: day(10) });
+  for (const [name, amt, note] of [['Ramesh (tea stall)', 850, 'Sugar and tea'], ['Sunita ji', 1240, 'Monthly ration']]) await call('POST', '/api/khata', { name, kind: 'gave', amount: amt, note });
+  return json({ ok: true, user: publicUser(user), demo: true }, 200, { 'Set-Cookie': sessionCookie(token, c.request) });
+}, { public: true });
 /* Refer & earn: the business's invite link and how it is doing */
 router.add('GET', '/api/referral', async (c) => {
   requireCan(c.user, 'settings');
@@ -1678,7 +1723,7 @@ router.add('GET', '/api/public/ref/:code', async (c) => {
   return json(o ? { ok: true, name: o.name, extra_days: REF_EXTRA_DAYS } : { ok: false });
 }, { public: true });
 /* Online payment (DocBrisk Pay UPI; Razorpay optional): see src/billing.js */
-router.add('POST', '/api/billing/start', async (c) => { requireCan(c.user, 'settings'); await rateLimit(c.env, 'pay:' + c.org.id, 20, 3600); return json(await billingStart(c)); });
+router.add('POST', '/api/billing/start', async (c) => { requireCan(c.user, 'settings'); if (c.org.demo) throw bad('This is a demo shop. Create your free account to buy a plan.'); await rateLimit(c.env, 'pay:' + c.org.id, 20, 3600); return json(await billingStart(c)); });
 router.add('POST', '/api/billing/verify', async (c) => json(await billingVerify(c)));
 router.add('GET', '/api/billing/status', async (c) => json(await billingStatus(c)));
 router.add('POST', '/api/billing/webhook', async (c) => json(await billingWebhook(c)), { public: true, webhook: true });
@@ -2839,6 +2884,9 @@ export default {
       if (w.due) console.log('auto whatsapp', JSON.stringify(w));
       // sign-in history is kept 180 days; businesses whose 7 days to close are over are deleted
       await env.DB.prepare(`DELETE FROM logins WHERE id IN (SELECT id FROM logins WHERE at < ? LIMIT 5000)`).bind(new Date(Date.now() - 180 * 864e5).toISOString()).run();
+      // demo shops end after a day; several go each hour so they never pile up
+      const demos = (await env.DB.prepare(`SELECT id FROM orgs WHERE demo = 1 AND close_after != '' AND close_after <= ? LIMIT 25`).bind(new Date().toISOString()).all()).results;
+      for (const d of demos) await purgeOrg(env.DB, d.id);
       const gone = await purgeClosed(env);
       if (gone.length) console.log('businesses closed', JSON.stringify(gone.map((x) => [x.org_id, x.done])));
     })());

@@ -59,6 +59,14 @@ if (BASE) {
   check('a bad code is ignored: the usual 30-day trial', (await rq('GET', '/api/me', undefined, c.cookie)).data.plan.until === addDays(t, 30));
   check('the inviter sees one shop joined', (await rq('GET', '/api/referral')).data.joined === 1);
   check('a staff-free view: the invite page needs the owner', (await rq('GET', '/api/referral', undefined, '')).status === 401);
+  // try the demo, no sign-up
+  const dm = await rq('POST', '/api/demo', {}, '');
+  const dme = (await rq('GET', '/api/me', undefined, dm.cookie)).data;
+  const dinv = (await rq('GET', '/api/docs?type=INV', undefined, dm.cookie)).data;
+  check('the demo opens a sample shop, signed in, marked as demo and set to be deleted', dm.status === 200 && dme.org && dme.org.demo === 1 && !!dme.org.close_after, JSON.stringify(dme.org && { demo: dme.org.demo, close: dme.org.close_after }));
+  check('the demo shop has a month of sample bills', (dinv.rows || []).length >= 10, String((dinv.rows || []).length));
+  check('a demo shop cannot buy a plan', (await rq('POST', '/api/billing/start', { plan: 'growth' }, dm.cookie)).status === 400);
+  check('the demo gets no free-trial e-mails', dme.plan && !dme.plan.trial);
 }
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

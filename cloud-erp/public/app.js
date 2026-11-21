@@ -442,6 +442,7 @@ function renderAuth(mode = /^#\/?signup/.test(location.hash) ? 'signup' : 'login
         <li>Khata with WhatsApp &amp; UPI payment reminders</li>
         <li>Staff logins with roles, full audit trail</li>
       </ul>
+      <p><a class="btn big demobtn" href="#demo">${LANG === 'hi' ? '▶ डेमो देखें, बिना साइन-अप' : '▶ Try the demo, no sign-up'}</a></p>
       <p class="seo-links"><a href="/gst-billing-software/">GST billing</a> · <a href="/khata-book-app/">Khata book</a> · <a href="/inventory-management-software/">Inventory</a> · <a href="/pricing/">Pricing: free plan</a></p>
     </div>
     <div class="box"><form id="auth-form">
@@ -642,9 +643,21 @@ const myUi = () => {
 };
 /* the owner sees, in the last 7 days of a trial or paid plan, that it ends and what stops (staff logins above the free
    plan's limit are paused), with the way to keep it */
+/* Try the demo: a sample shop, no sign-up, gone after a day */
+async function startDemo() {
+  $('#app').innerHTML = `<div class="boot"><h2>${LANG === 'hi' ? 'डेमो दुकान तैयार हो रही है…' : 'Opening a demo shop…'}</h2><p class="muted">${LANG === 'hi' ? 'एक महीने की बिक्री, स्टॉक और खाते के साथ।' : 'With a month of sales, stock and khata in it.'}</p></div>`;
+  try { await POST('/api/demo', {}); storeSet('st:in', '1'); location.replace('/#/'); location.reload(); }
+  catch (e) { $('#app').innerHTML = `<div class="boot"><h2>${esc(e.message)}</h2><p><a href="/#signup">Create your free account</a></p></div>`; }
+}
+function demoBar() {
+  if (!ME.org.demo) return '';
+  return LANG === 'hi'
+    ? `<div class="demobar">यह <b>डेमो दुकान</b> है: सैंपल डेटा, 24 घंटे में मिट जाएगा। आज़माइए, कुछ भी बिगड़ेगा नहीं। <button class="btn sm primary" type="button" id="demosignup">अपना फ़्री खाता बनाएँ</button></div>`
+    : `<div class="demobar">This is a <b>demo shop</b> with sample data, deleted in 24 hours. Try anything, nothing can break. <button class="btn sm primary" type="button" id="demosignup">Create your free account</button></div>`;
+}
 function planWarn() {
   const p = ME.plan || {}, hi = LANG === 'hi';
-  if (ME.user.role_key !== 'owner') return '';
+  if (ME.user.role_key !== 'owner' || ME.org.demo) return '';
   // just after an unbought trial: the first-year offer, with its last day (written whole in each language)
   if (p.offer_until) return hi
     ? `<div class="closing offer">आपका फ़्री ट्रायल ख़त्म हो गया। <b>पहले साल पर ${p.offer_pct}% छूट</b>, <b>${fdate(p.offer_until)}</b> तक: ई-इनवॉइस, WhatsApp रिमाइंडर, Tally, कल का कैश और स्टाफ़ लॉगिन तुरंत वापस। <a class="btn sm primary" href="#/plan">${p.offer_pct}% छूट लें</a></div>`
@@ -809,12 +822,13 @@ function shell() {
         ${news.length ? `<div class="newmenu"><button class="btn primary" id="newbtn" aria-haspopup="true" aria-expanded="false">+ <span>New</span></button>
           <div class="menu qmenu" id="newmenu" hidden>${news.map(([h, t, , , ic]) => `<a href="#/${h}">${icon(ic)}<span>${t}</span></a>`).join('')}</div></div>` : ''}
       </header>
-      ${planWarn()}${ME.org.close_after && ME.user.role_key === 'owner' ? `<div class="closing">This business will be deleted on <b>${fdate(ME.org.close_after.slice(0, 10))}</b>. <a href="#/settings/security">Keep it (cancel)</a> · <a href="#/settings?backup=1">Download a backup</a></div>` : ''}
+      ${demoBar()}${planWarn()}${ME.org.close_after && ME.user.role_key === 'owner' && !ME.org.demo ? `<div class="closing">This business will be deleted on <b>${fdate(ME.org.close_after.slice(0, 10))}</b>. <a href="#/settings/security">Keep it (cancel)</a> · <a href="#/settings?backup=1">Download a backup</a></div>` : ''}
       <main class="page" id="page"></main>
     </div></div><div class="scrim" id="scrim"></div>
     <nav class="bnav" id="bnav" aria-label="Main">${bnavItems().map(([h, t, ic, act]) => `<a href="${h ? '#/' + h : '#'}" ${act ? `data-bn="${act}"` : `data-h="${h}"`}>${icon(ic)}<span>${t}</span></a>`).join('')}</nav>`;
   hideAmounts(storeGet('st:hideamt') === '1');
   $('#langbtn').onclick = switchLang;
+  if ($('#demosignup')) $('#demosignup').onclick = async () => { await POST('/api/auth/logout').catch(() => {}); await offClear(); ME = null; remember(false); location.hash = '#signup'; renderAuth('signup'); };
   $('#themebtn').onclick = toggleTheme;
   $('#hideamt').onclick = () => { const on = !document.body.classList.contains('hide-amt'); hideAmounts(on); storeSet('st:hideamt', on ? '1' : '0'); };
   $('#burger').onclick = () => menu(!$('#side').classList.contains('open'));
@@ -8550,6 +8564,7 @@ async function boot() {
   if (rt) return renderReset(rt[1]);
   const vt = location.hash.match(/^#\/verify\/([0-9a-f]{64})$/);  // link from the sign-up e-mail
   if (vt) return renderVerify(vt[1]);
+  if (/^#\/?demo$/.test(location.hash)) return startDemo();
   if (/^(#\/?(dashboard)?(\?.*)?)?$/.test(location.hash)) {
     let w = ''; try { w = localStorage.getItem('st:dashq') || ''; } catch (e) { w = ''; }
     prefetch(['/api/dashboards', '/api/today', ...(/^\/api\/dash\/widgets\?ids=[\w,]+&range=[\w-]+$/.test(w) ? [w] : [])]);
@@ -8581,6 +8596,7 @@ window.addEventListener('hashchange', () => {
   // not signed in: the home page's Sign in / Start free links open the forms, and Back returns to the home page
   if (!ME && !/^#\/(admin|reset|verify|k\/)/.test(location.hash)) {
     if (/^#\/?(login|signup)/.test(location.hash)) return renderAuth();
+    if (/^#\/?demo$/.test(location.hash)) return startDemo();
     if (bareHome() && LANDING) { $('#app').innerHTML = LANDING; return; }
   }
   $('#modal-root').innerHTML = '';

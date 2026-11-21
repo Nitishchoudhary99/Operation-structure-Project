@@ -1393,3 +1393,5 @@ table th { color: var(--muted); font-weight: 600; }
 .invited { background: var(--ok-soft); border-color: var(--ok); margin-bottom: 12px; }
 .madewith { display: block; text-align: center; margin: 18px auto 8px; padding: 10px 14px; border-radius: 999px; border: 1px solid var(--line); background: var(--panel); color: var(--brand); font-weight: 600; font-size: 14px; max-width: 420px; text-decoration: none; }
 .madewith:hover { text-decoration: none; border-color: var(--brand); }
+.demobar { background: linear-gradient(90deg, #fff7ed, #fef3c7); color: #7c2d12; padding: 10px 22px; display: flex; gap: 12px; align-items: center; flex-wrap: wrap; border-bottom: 1px solid #fed7aa; font-size: 14px; }
+.demobtn { background: var(--panel); border-color: var(--brand); color: var(--brand); width: 100%; justify-content: center; }
