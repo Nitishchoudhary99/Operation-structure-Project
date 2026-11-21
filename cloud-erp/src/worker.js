@@ -1665,6 +1665,7 @@ router.add('GET', '/api/plan', async (c) => json({
    through the app's own API (so it behaves exactly like a real one). It has no real phone numbers or e-mail, gets no
    trial e-mails, can buy nothing, and is deleted a day later (scheduled job). */
 const DEMO_HOURS = 24;
+const REQ_CTX = new WeakMap();   // request -> its execution context, for work that may finish after the answer (the demo's sample data)
 router.add('POST', '/api/demo', async (c) => {
   const ip = clientIp(c);
   await rateLimit(c.env, 'demo-ip:' + ip, 4, 3600);
@@ -1682,28 +1683,36 @@ router.add('POST', '/api/demo', async (c) => {
     } catch (e) { return null; }
   };
   const day = (n) => addDays(today(), -n);
-  const P = [];
-  for (const [name, credit] of [['Gupta Kirana', 15], ['Mehta Traders', 30], ['Hotel Shree Palace', 15], ['Jain Sweets', 7], ['Raj Caterers', 30], ['Walk-in customers', 0]])
-    P.push(await call('POST', '/api/parties', { name, kind: 'customer', state: 'Rajasthan', credit_days: credit }));
-  const sup = await call('POST', '/api/parties', { name: 'Agarwal Wholesale', kind: 'supplier', state: 'Rajasthan', credit_days: 30 });
-  const I = [];
-  for (const [name, unit, buy, sell, qty, gst, reorder] of [['Basmati Rice 25kg', 'Bag', 1800, 2150, 40, 5, 8], ['Mustard Oil 15L', 'Tin', 2100, 2450, 18, 5, 5],
+  // people and items at once; then bills one after another (each takes stock), the first few before the answer
+  const parties = [['Gupta Kirana', 15], ['Mehta Traders', 30], ['Hotel Shree Palace', 15], ['Jain Sweets', 7], ['Raj Caterers', 30], ['Walk-in customers', 0]];
+  const items = [['Basmati Rice 25kg', 'Bag', 1800, 2150, 40, 5, 8], ['Mustard Oil 15L', 'Tin', 2100, 2450, 18, 5, 5],
     ['Sugar 50kg', 'Bag', 1900, 2150, 4, 5, 6], ['Toor Dal 30kg', 'Bag', 3300, 3750, 12, 5, 4], ['Tata Salt 1kg', 'Pc', 18, 25, 300, 5, 50],
-    ['Surf Excel 1kg', 'Pc', 110, 135, 12, 18, 10], ['Amul Ghee 1L', 'Pc', 520, 590, 30, 12, 10], ['Tea 1kg', 'Pc', 380, 450, 25, 5, 8]])
-    I.push(await call('POST', '/api/items', { name, unit, purchase_price: buy, sale_price: sell, opening_qty: qty, opening_rate: buy, gst_rate: gst, reorder_level: reorder }));
+    ['Surf Excel 1kg', 'Pc', 110, 135, 12, 18, 10], ['Amul Ghee 1L', 'Pc', 520, 590, 30, 12, 10], ['Tea 1kg', 'Pc', 380, 450, 25, 5, 8]];
+  const [P, sup, I] = await Promise.all([
+    Promise.all(parties.map(([name, credit]) => call('POST', '/api/parties', { name, kind: 'customer', state: 'Rajasthan', credit_days: credit }))),
+    call('POST', '/api/parties', { name: 'Agarwal Wholesale', kind: 'supplier', state: 'Rajasthan', credit_days: 30 }),
+    Promise.all(items.map(([name, unit, buy, sell, qty, gst, reorder]) => call('POST', '/api/items', { name, unit, purchase_price: buy, sale_price: sell, opening_qty: qty, opening_rate: buy, gst_rate: gst, reorder_level: reorder }))),
+  ]);
   const accts = Object.fromEntries((((await call('GET', '/api/accounts')) || {}).rows || []).map((a) => [a.sys || a.code, a]));
   const bills = [[0, 0, [[0, 2], [4, 20]]], [0, 2, [[1, 1], [6, 4]]], [1, 3, [[3, 2], [7, 3]]], [2, 5, [[0, 3], [1, 2]]], [3, 6, [[2, 1], [6, 6]]],
     [4, 8, [[3, 1], [0, 1]]], [5, 9, [[4, 40], [5, 6]]], [1, 12, [[0, 4], [7, 5]]], [0, 15, [[2, 1], [1, 1]]], [2, 18, [[6, 5], [3, 1]]], [3, 21, [[7, 4], [4, 30]]], [4, 26, [[0, 2], [1, 2]]]];
   const made = [];
-  for (const [pi, ago, lines] of bills) {
-    if (!P[pi] || lines.some(([ii]) => !I[ii])) continue;
+  const bill = async ([pi, ago, lines]) => {
+    if (!P[pi] || lines.some(([ii]) => !I[ii])) return;
     made.push([pi, await call('POST', '/api/docs', { type: 'INV', party_id: P[pi].id, date: day(ago), lines: lines.map(([ii, q]) => ({ item_id: I[ii].id, qty: q })) })]);
-  }
+  };
+  for (const b of bills.slice(0, 4)) await bill(b);
+  const rest = async () => {
+  for (const b of bills.slice(4)) await bill(b);
   const cash = accts.cash || accts.upi, upi = accts.upi || accts.cash;
   for (const [k, [pi, d]] of made.entries()) if (d && cash && k % 3 !== 1) await call('POST', '/api/payments', { kind: 'receipt', party_id: P[pi].id, account_id: (k % 2 ? cash : upi).id, amount: d.total });
   if (sup && I[2]) await call('POST', '/api/docs', { type: 'BILL', party_id: sup.id, date: day(4), lines: [{ item_id: I[2].id, qty: 10, rate: 1900 }, { item_id: I[5].id, qty: 24, rate: 110 }] });
   if (accts['6000'] && cash) await call('POST', '/api/expenses', { account_id: accts['6000'].id, paid_from: cash.id, amount: 4000, notes: 'Electricity and staff tea', date: day(10) });
   for (const [name, amt, note] of [['Ramesh (tea stall)', 850, 'Sugar and tea'], ['Sunita ji', 1240, 'Monthly ration']]) await call('POST', '/api/khata', { name, kind: 'gave', amount: amt, note });
+  };
+  // the rest of the month fills in while the owner looks around (a slow database must not keep them waiting)
+  const ctx = REQ_CTX.get(c.request);
+  if (ctx) ctx.waitUntil(rest().catch(() => {})); else await rest();
   return json({ ok: true, user: publicUser(user), demo: true }, 200, { 'Set-Cookie': sessionCookie(token, c.request) });
 }, { public: true });
 /* Refer & earn: the business's invite link and how it is doing */
@@ -2891,7 +2900,8 @@ export default {
       if (gone.length) console.log('businesses closed', JSON.stringify(gone.map((x) => [x.org_id, x.done])));
     })());
   },
-  async fetch(request, env) {
+  async fetch(request, env, ctx) {
+    if (ctx) REQ_CTX.set(request, ctx);
     const url = new URL(request.url);
     try { return secure(await respond(request, env, url), url.pathname.startsWith('/api/')); } catch (e) {
       console.error(e && e.stack || e);
