@@ -211,13 +211,13 @@ await api('POST', `/api/khata/entries/${rev.entry_id}/send`, { via: 'whatsapp' }
 check('reversal entry cancels the amount once sent', eq((await api('GET', '/api/khata')).you_will_get, 0) || eq((await api('GET', '/api/khata')).you_will_give, 300));
 check('entry cannot be reversed twice', (await api('POST', `/api/khata/entries/${k.entry_id}/reverse`, {}, true)).status === 400);
 const kpage = await (await fetch(kd.statement_url.replace(/^https?:\/\/[^/]+/, BASE))).text();
-check('khata link page has WhatsApp banner tags', kpage.includes('og:image') && kpage.includes('og-khata.png') && kpage.includes('Ramesh (chai stall) ka khata'), kpage.slice(0, 300));
+check('khata link page has WhatsApp banner tags', kpage.includes('og:image') && kpage.includes('og-khata-en.png') && kpage.includes("Ramesh (chai stall)'s khata"), kpage.slice(0, 300));
 const sh = await api('GET', `/api/docs/${inv.id}/share`);
 check('invoice share link + WhatsApp text', /\/i\/[0-9a-f]{24}$/.test(sh.url) && sh.text.includes(inv.number) && sh.text.includes('SmartTrader ERP'), sh.text);
 const pdoc = await (await fetch(sh.url.replace(/^https?:\/\/[^/]+/, BASE).replace('/i/', '/api/public/doc/'))).json();
 check('public invoice has no cost data', pdoc.number === inv.number && pdoc.lines.length && pdoc.lines.every((l) => l.cost === undefined) && !('id' in pdoc), JSON.stringify(pdoc).slice(0, 200));
 const ipage = await (await fetch(sh.url.replace(/^https?:\/\/[^/]+/, BASE))).text();
-check('invoice link page has banner tags', ipage.includes(`Sales Invoice ${inv.number}`) && ipage.includes('og-invoice.png'));
+check('invoice link page has banner tags', ipage.includes(`Sales Invoice ${inv.number}`) && ipage.includes('og-invoice-en.png'));
 const pbill = await api('GET', `/api/docs/${bill1.id}/share`);
 check('purchase bills are not public', (await fetch(pbill.url.replace(/^https?:\/\/[^/]+/, BASE).replace('/i/', '/api/public/doc/'))).status === 404);
 const badTok = await fetch(`${BASE}/api/public/khata/${'0'.repeat(24)}`);
@@ -1561,7 +1561,7 @@ else {
   const pg = async (u) => (await fetch(u.replace(/^https?:\/\/[^/]+/, BASE))).text();
   const day = (n) => new Date(Date.now() + 5.5 * 3600e3 + n * 864e5).toISOString().slice(0, 10);   // IST, like the server
   const me = await V('GET', '/api/me');
-  check('a new business sends in Hinglish until it picks another language', me.org.msg_lang === 'hl');
+  check('a new business sends in English until it picks another language (no Hinglish)', me.org.msg_lang === 'en');
   await V('PUT', '/api/org', { ...me.org, udyam: 'udyam-rj-17-0012345' });
   check('the Udyam number is saved', (await V('GET', '/api/me')).org.udyam === 'UDYAM-RJ-17-0012345');
   const cu = await V('POST', '/api/parties', { name: 'Gupta Medical', kind: 'customer', phone: '9876500001', state: 'Rajasthan', credit_days: 30 });
@@ -1578,9 +1578,9 @@ else {
   const again = await V('GET', `/api/docs/${inv1.id}/share`);
   check("the customer's language is remembered", again.lang === 'hi' && again.text.includes('राशि'), again.text);
   const en = await V('GET', `/api/docs/${inv1.id}/share?lang=en`);
-  check('bill message in English', en.text.includes('Dear Gupta Medical,') && en.text.includes('Balance due') && en.url.endsWith('?l=en') && !en.text.includes('dekhein'), en.text);
+  check('bill message in English', en.text.includes('Dear Gupta Medical,') && en.text.includes('Balance due') && /\/i\/[0-9a-f]{24}$/.test(en.url) && !en.text.includes('dekhein'), en.text);
   const hl = await V('GET', `/api/docs/${inv1.id}/share?lang=hl`);
-  check('Hinglish keeps the plain link', /\/i\/[0-9a-f]{24}$/.test(hl.url) && hl.text.includes('Namaste Gupta Medical ji'), hl.url);
+  check('the old Hinglish choice now reads English', /\/i\/[0-9a-f]{24}$/.test(hl.url) && hl.text.includes('Dear Gupta Medical,') && !hl.text.includes('Namaste'), hl.url);
   const hiPage = await pg(hi.url);
   check('the link preview is in Hindi too', hiPage.includes('og-invoice-hi.png') && hiPage.includes('राशि') && hiPage.includes('?l=hi'), hiPage.slice(0, 400));
   check('...and in English', (await pg(en.url)).includes('og-invoice-en.png'));
@@ -2613,7 +2613,7 @@ if (process.env.ERP_AI_MOCK) {
     && (await post(forged, 'sha256=' + crypto.createHmac('sha256', 'other').update(forged).digest('hex'))).status === 401
     && (await post(forged, sign(forged + ' '))).status === 401);
   const before0 = sent.length;
-  check('a number no shop knows gets a polite answer: ask the shop for its WhatsApp link', /kisi dukaan ki list mein nahi/.test((await say(9, 'hello')).text) && sent.length === before0 + 1);
+  check('a number no shop knows gets a polite answer: ask the shop for its WhatsApp link', /not on any shop's list/.test((await say(9, 'hello')).text) && sent.length === before0 + 1);
 
   const su = await rq('POST', '/api/auth/signup', { business: 'Gupta Kirana', name: 'G', email: `wabot${Date.now()}@test.in`, password: 'Wabot-pass-1234', state: 'Rajasthan' }, { ip });
   const V = async (m, p, b) => { const r = await rq(m, p, b, { cookie: su.cookie, ip }); if (r.status >= 400) throw new Error(`${m} ${p} -> ${r.status} ${r.data.error}`); return r.data; };
@@ -2640,16 +2640,16 @@ if (process.env.ERP_AI_MOCK) {
   check('sent from the shop\'s WhatsApp number with the server\'s token', sent[sent.length - 1].auth === 'Bearer test-wa');
   r = await say(1, 'Hisab bhejo');
   const links = r.text.match(/\/i\/[0-9a-f]{24}/g) || [];
-  check('hisab: every open bill with its own link (bill + UPI), and the total due', /Bills: ₹500 baaki \(2\)/.test(r.text) && links.length === 2 && r.text.includes(inv1.number) && r.text.includes(inv2.number)
-    && /\*Kul baaki: ₹500\*/.test(r.text), r.text);
+  check('hisab: every open bill with its own link (bill + UPI), and the total due', /Bills: ₹500 due \(2\)/.test(r.text) && links.length === 2 && r.text.includes(inv1.number) && r.text.includes(inv2.number)
+    && /\*Total due: ₹500\*/.test(r.text), r.text);
   const page = await fetch(BASE + links[0]);
   check('the link opens the customer\'s bill', page.status === 200 && (await page.text()).includes(inv1.number));
   r = await say(1, '2');
-  check('2: the last bills, with what is still due on each', r.text.includes(inv1.number) && r.text.includes(inv2.number) && /Aapke pichhle bills/.test(r.text), r.text);
+  check('2: the last bills, with what is still due on each', r.text.includes(inv1.number) && r.text.includes(inv2.number) && /Your last bills/.test(r.text), r.text);
   r = await say(1, '3');
-  check('3: the amount and the link to pay by UPI', /₹500 baaki hain\. Is link par UPI se payment karein: http:\/\/localhost:8787\/i\/[0-9a-f]{24}/.test(r.text), r.text);
+  check('3: the amount and the link to pay by UPI', /₹500 is due\. Pay by UPI on this link: http:\/\/localhost:8787\/i\/[0-9a-f]{24}/.test(r.text), r.text);
   r = await say(1, 'vaada');
-  check('4 / vaada: where to pick a pay date', /Kab tak denge/.test(r.text) && /\/i\/[0-9a-f]{24}/.test(r.text), r.text);
+  check('4 / vaada: where to pick a pay date', /When will you pay/.test(r.text) && /\/i\/[0-9a-f]{24}/.test(r.text), r.text);
   const dupId = `wamid.dup.${stamp}`, d1 = await say(1, 'hisab', dupId), d2 = await say(1, 'hisab', dupId);
   check('a message Meta delivers twice is answered once', d1.data.answered === 1 && d2.status === 200 && d2.data.answered === 0 && !d2.reply, JSON.stringify([d1.data, d2.data]));
   const st = payload({ statuses: [{ id: 'wamid.out.1', status: 'read', recipient_id: wa(1) }] });
@@ -2662,24 +2662,24 @@ if (process.env.ERP_AI_MOCK) {
 
   // STOP: no automatic reminders for this customer; START turns them on again; a reminder inside the 24 hours is free text
   r = await say(1, 'STOP');
-  check('STOP: automatic reminders from this shop are stopped', /automatic reminder band/.test(r.text), r.text);
+  check('STOP: automatic reminders from this shop are stopped', /Automatic reminders from .* are stopped/.test(r.text), r.text);
   await V('PUT', '/api/settings/auto-wa', { on: true });
   let b4 = sent.length, run = await V('POST', '/api/settings/auto-wa/run');
   let out = sent.slice(b4);
   check('a customer who sent STOP gets no reminder; the others still do (approved template)', !out.some((x) => x.body.to === wa(1)) && out.some((x) => x.body.to === wa(2) && x.body.type === 'template')
     && run.skipped >= 1, JSON.stringify([run, out.map((x) => [x.body.to, x.body.type])]));
   r = await say(1, 'start');
-  check('START: reminders are on again', /reminder phir chalu/.test(r.text), r.text);
+  check('START: reminders are on again', /Reminders from .* are on again/.test(r.text), r.text);
   b4 = sent.length; run = await V('POST', '/api/settings/auto-wa/run'); out = sent.slice(b4);
   const fr = out.find((x) => x.body.to === wa(1));
-  check('a reminder to a customer who wrote in the last 24 hours goes as free text, with the bill link', fr && fr.body.type === 'text' && /Namaste Ramesh Kumar ji, aapke ₹500 baaki hain/.test(fr.body.text.body)
+  check('a reminder to a customer who wrote in the last 24 hours goes as free text, with the bill link', fr && fr.body.type === 'text' && /Hello Ramesh Kumar, ₹500 is due/.test(fr.body.text.body)
     && /\/i\/[0-9a-f]{24}/.test(fr.body.text.body) && run.free === 1 && /1 free/.test((await V('GET', '/api/me')).org.auto_wa_note), JSON.stringify([run, fr && fr.body]));
 
   // what the bot cannot answer goes to the shop
   r = await say(1, 'Bhaiya 200 kal de dunga, baaki agle hafte');
-  check('anything else is passed to the shop, and the customer is told so', /Aapka message Gupta Kirana ko bhej diya hai/.test(r.text), r.text);
+  check('anything else is passed to the shop, and the customer is told so', /Your message has gone to Gupta Kirana/.test(r.text), r.text);
   r = await say(1, '5');
-  check('5: talk to the shop', /Woh yahin jawab denge/.test(r.text), r.text);
+  check('5: talk to the shop', /They will reply here/.test(r.text), r.text);
   let ib = await V('GET', '/api/wa/inbox');
   const row = ib.rows.find((x) => x.phone === wa(1));
   check('the inbox shows the customer by name, waiting for an answer, reply free', ib.waiting === 1 && row && row.name === 'Ramesh Kumar' && row.waiting === 2 && row.window_open && row.last.dir === 'out', JSON.stringify(ib));

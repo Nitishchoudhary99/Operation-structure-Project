@@ -77,6 +77,7 @@ const T = {
     start: (s) => `Reminders from ${s} are on again.`,
   },
 };
+T.hl = T.en;   // no Hinglish: the old 'hl' choice reads English
 const COMMANDS = [
   ['stop', /^(stop|unsubscribe|band karo|बंद)$/],
   ['start', /^(start|chalu|चालू)$/],
@@ -154,11 +155,11 @@ async function handleMessage(c, m) {
     return true;
   };
   if (r.choose) {       // this mobile is a customer of several shops: let them pick
-    const lang = 'hl';
+    const lang = 'en';
     await db.prepare(`UPDATE wa_contacts SET org_id = NULL, party_id = NULL, choices = ? WHERE phone = ?`).bind(JSON.stringify(r.choose.map((o) => o.id)), phone).run();
     return say(null, null, T[lang].choose(r.choose.map((o, i) => `${i + 1}. ${o.name}`).join('\n')));
   }
-  if (!r.org) return say(null, null, T.hl.unknown);
+  if (!r.org) return say(null, null, T.en.unknown);
   const org = r.org;
   const party = mobile10(phone) ? await db.prepare(`SELECT * FROM parties WHERE org_id = ? AND phone10 = ? ORDER BY (kind = 'supplier'), id LIMIT 1`).bind(org.id, mobile10(phone)).first() : null;
   const lang = T[(party && party.lang) || org.msg_lang] ? (party && party.lang) || org.msg_lang : 'hl', L = T[lang];

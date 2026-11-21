@@ -3,7 +3,7 @@
    Every business table carries org_id: one database serves many businesses (multi-tenant).
    migrate() runs on the first request after each deploy, so no manual migration step is needed. */
 
-export const SCHEMA_VERSION = 54;
+export const SCHEMA_VERSION = 55;
 
 // document types whose monthly totals doc_month keeps (sales and purchase money documents)
 const MONTH_TYPES = `('INV','SRET','CNOTE','BILL','PRET','DNOTE')`;
@@ -809,6 +809,14 @@ export const MIGRATIONS = {
   54: [
     `ALTER TABLE docs ADD COLUMN ewb_km INTEGER NOT NULL DEFAULT 0`,
     `ALTER TABLE docs ADD COLUMN ewb_valid TEXT NOT NULL DEFAULT ''`,
+  ],
+  // free trial: the day it ends (cleared once a plan is paid), and which trial e-mails went ('d3,d1,d0,offer')
+  55: [
+    `ALTER TABLE orgs ADD COLUMN trial_end TEXT NOT NULL DEFAULT ''`,
+    `ALTER TABLE orgs ADD COLUMN trial_mail TEXT NOT NULL DEFAULT ''`,
+    `UPDATE orgs SET msg_lang = 'en' WHERE msg_lang = 'hl'`,
+    `UPDATE parties SET lang = 'en' WHERE lang = 'hl'`,
+    `UPDATE orgs SET trial_end = plan_until WHERE plan = 'growth' AND plan_until != '' AND id NOT IN (SELECT org_id FROM billing_orders WHERE status = 'paid' AND plan != 'test')`,
   ],
 };
 

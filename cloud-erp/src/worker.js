@@ -36,7 +36,7 @@ import { pickState, pickScan, pickUndo, pickReset, pickSet } from './picking.js'
 import { findItem, codeKey } from './codes.js';
 import { reservedStatement, withReserved } from './engine.js';
 import * as rep from './reports.js';
-import { PLANS, planOut, planOf, usage, checkCount, countError, seatBlocked, seatError, requireFeature, extendPlan, adminKey, trialUntil, hasFeature } from './saas.js';
+import { PLANS, planOut, planOf, usage, checkCount, countError, seatBlocked, seatError, requireFeature, extendPlan, adminKey, trialUntil, hasFeature, freeInvoices, trialInfo } from './saas.js';
 import { secure } from './headers.js';
 import { createRecurring, listRecurring, getRecurring, updateRecurring, copyRecurring, skipRecurring, markSent, stopRecurring, resumeRecurring, runDue } from './recurring.js';
 import { buildBackup, driveRoutes, runDriveBackups, listDriveBackups, readDriveBackup, driveConfigured } from './gdrive.js';
@@ -63,7 +63,7 @@ import { secondStep, twoStepStart, twoStepEnable, twoStepDisable, newBackupCodes
 import { workbook } from './xlsx.js';
 import { printOf, cleanPrint, imageFromDataUrl, shortHash, imageResponse, FILE_KINDS, seriesOf, numberSpec, formatNumber, cleanSeries, fyParts,
   fieldsOf, extraOf, cleanField, cleanExtra, extraFilter, printExtra, LAYOUTS } from './custom.js';
-import { billingMode, razorpayMode, grossPaise, testPayOk, billingStart, billingVerify, billingWebhook, billingStatus, billingHistory, hubFetch, hubOn,
+import { billingMode, razorpayMode, grossPaise, payPaise, testPayOk, billingStart, billingVerify, billingWebhook, billingStatus, billingHistory, hubFetch, hubOn,
   billingUpiCallback, billingUpiClaim, billingUpiCancel } from './billing.js';
 
 const R = (p) => Math.round(p) / 100;
@@ -76,8 +76,8 @@ let migrated = false;
 async function createBusiness(c, { business, name, email, hash, salt, gstin, state, phone, address }) {
   const now = nowIso(), otx = crypto.randomUUID(), db = c.db;
   const st = [
-    db.prepare(`INSERT INTO orgs (name, gstin, state, phone, address, email, plan, plan_until, created_at) VALUES (?, ?, ?, ?, ?, ?, 'growth', ?, ?)`)
-      .bind(business, str(gstin, 15).toUpperCase(), str(state, 60), str(phone, 20), str(address, 300), email, trialUntil(), otx),
+    db.prepare(`INSERT INTO orgs (name, gstin, state, phone, address, email, plan, plan_until, trial_end, created_at) VALUES (?, ?, ?, ?, ?, ?, 'growth', ?, ?, ?)`)
+      .bind(business, str(gstin, 15).toUpperCase(), str(state, 60), str(phone, 20), str(address, 300), email, trialUntil(), trialUntil(), otx),
     db.prepare(`INSERT INTO users (org_id, email, name, role, pw_hash, salt, pw_changed_at, created_at)
                 VALUES ((SELECT id FROM orgs WHERE created_at = ?), ?, ?, 'owner', ?, ?, ?, ?)`).bind(otx, email, name, hash, salt, Date.now(), now),
     ...DEFAULT_ACCOUNTS.map(([code, nm, type, sys, isCash]) => db.prepare(`INSERT INTO accounts (org_id, code, name, type, sys, is_cash)
@@ -215,6 +215,61 @@ async function sendMail(c, kind, { to, name, token, origin }) {
     return res.ok;
   } catch (e) { return false; }
 }
+/* Free-trial e-mails to the owner: 3 days before the trial ends, the day before, on the day, and the day after (the
+   first-year offer). Each goes once (orgs.trial_mail), only on its own day, never to a business that has paid. */
+export function trialMailHtml(st) {
+  const h = (v) => attr(String(v == null ? '' : v));
+  const inr = (n) => '₹' + Number(n).toLocaleString('en-IN');
+  const btn = (href, label) => `<p><a href="${href}" style="display:inline-block;background:#0f9d58;color:#fff;padding:12px 20px;border-radius:8px;text-decoration:none;font-weight:bold">${label}</a></p>`;
+  const lose = `<ul style="padding-left:18px;color:#374151"><li>E-invoice and e-way bill JSON</li><li>Automatic WhatsApp payment reminders</li><li>Tally export</li><li>Kal ka Cash (4-week cash view)</li><li>Staff logins (Free has 1 user) and more than one godown</li><li>Bills above ${st.free_bills} a month</li></ul>`;
+  const when = st.stage === 'd0' ? 'today' : st.stage === 'd1' ? 'tomorrow' : `in ${st.days} days`;
+  let subject, inner;
+  if (st.stage === 'offer') {
+    subject = `${st.offer_pct}% off your first year of SmartTrader, till ${st.offer_until_text}`;
+    inner = `<p>Your free trial of <b>${h(st.org)}</b> has ended and the account is now on the Free plan. Your data is safe.</p>
+      <p>Keep everything you used in the trial for <b>${inr(st.offer_pay)}</b> for the first year instead of ${inr(st.full_pay)} (Growth, incl. GST, about ${inr(Math.round(st.offer_pay / 12))} a month). This price is open till <b>${h(st.offer_until_text)}</b>.</p>
+      ${btn(st.link, `Get ${st.offer_pct}% off`)}`;
+  } else {
+    subject = `Your SmartTrader free trial ends ${when}`;
+    inner = `<p>The free trial of <b>${h(st.org)}</b> ends <b>${when}</b> (${h(st.end_text)}). After that the account moves to the Free plan; your data stays safe, but these stop:</p>${lose}
+      <p>Keep them for <b>${inr(st.full_pay)} a year</b> (Growth, incl. GST, about ${inr(Math.round(st.full_pay / 12))} a month). Pay by UPI in one tap.</p>${btn(st.link, 'Keep my plan')}`;
+  }
+  const html = `<div style="font-family:Arial,sans-serif;max-width:520px;margin:auto;color:#1f2937"><h2 style="color:#0f9d58">SmartTrader ERP</h2><p>Namaste ${h(st.name)},</p>${inner}
+    <p style="color:#6b7280;font-size:13px">Questions? WhatsApp +91 90684 46139. You get this e-mail once for each step of your trial.</p></div>`;
+  return { subject, html };
+}
+const fmtDay = (d) => new Date(d + 'T00:00:00Z').toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric', timeZone: 'UTC' });
+export async function runTrialMails(env) {
+  if (!env.RESEND_API_KEY && !hubOn(env)) return { due: 0 };
+  const t = today(), stageOf = (end) => (end === addDays(t, 3) ? 'd3' : end === addDays(t, 1) ? 'd1' : end === t ? 'd0' : end === addDays(t, -1) ? 'offer' : '');
+  const rows = (await env.DB.prepare(`SELECT o.id, o.name, o.plan, o.plan_until, o.trial_end, o.trial_mail, o.created_at, u.email, u.name AS uname
+      FROM orgs o JOIN users u ON u.org_id = o.id AND u.role = 'owner' AND u.active = 1
+      WHERE o.trial_end IN (?, ?, ?, ?) AND (o.close_after IS NULL OR o.close_after = '') LIMIT 300`)
+    .bind(addDays(t, 3), addDays(t, 1), t, addDays(t, -1)).all()).results;
+  const origin = (() => { try { return new URL(env.APP_URL).origin; } catch (e) { return 'https://erp.docbrisk.com'; } })();
+  let sent = 0;
+  for (const o of rows) {
+    const stage = stageOf(o.trial_end), done = String(o.trial_mail || '').split(',');
+    if (!stage || done.includes(stage) || !o.email) continue;
+    if (stage === 'offer' && o.plan_until > o.trial_end) continue;   // bought or got a plan by hand meanwhile
+    const info = trialInfo(o);
+    const st = { stage, org: o.name, name: o.uname, days: 3, end_text: fmtDay(o.trial_end), free_bills: freeInvoices(o), link: origin + '/#/plan',
+      full_pay: grossPaise('growth') / 100, offer_pay: payPaise('growth', o) / 100, offer_pct: info.offer_pct || 20,
+      offer_until_text: info.offer_until ? fmtDay(info.offer_until) : fmtDay(addDays(o.trial_end, 7)) };
+    // mark first, so a slow or failed send is not repeated every hour
+    const claim = await env.DB.prepare(`UPDATE orgs SET trial_mail = ? WHERE id = ? AND trial_mail = ?`).bind([...done.filter(Boolean), stage].join(','), o.id, o.trial_mail || '').run();
+    if (!claim.meta.changes) continue;
+    try {
+      if (env.RESEND_API_KEY) {
+        const { subject, html } = trialMailHtml(st);
+        await fetch(env.RESEND_URL || 'https://api.resend.com/emails', { method: 'POST', headers: { Authorization: `Bearer ${env.RESEND_API_KEY}`, 'Content-Type': 'application/json' },
+          body: JSON.stringify({ from: env.MAIL_FROM || 'SmartTrader ERP <no-reply@docbrisk.com>', to: [o.email], subject, html }) });
+      } else await hubFetch(env, 'POST', '/api/pay/svc/erp-trial-mail', { to: o.email, origin, ...st, link: undefined });
+      sent++;
+    } catch (e) { /* the mark stays: one e-mail missed is better than one sent every hour */ }
+  }
+  return { due: sent };
+}
 router.add('POST', '/api/auth/forgot', async (c) => {
   const email = str(c.body.email, 120).toLowerCase();
   const ip = clientIp(c);
@@ -333,7 +388,7 @@ router.add('PUT', '/api/org/mode', async (c) => {
   return json({ ok: true, mode });
 });
 /* business row for the app: settings JSON parsed, image URLs ready for <img> */
-const orgOut = (o) => ({ ...o, workflow: workflowOf(o), setup: setupOf(o), print: printOf(o), series: seriesOf(o), fields: fieldsOf(o), vaada: cleanVaada(o.vaada), approvals: approvalsOf(o), loyalty: loyaltyOf(o) });
+const orgOut = (o) => ({ ...o, msg_lang: cleanLang(o.msg_lang), workflow: workflowOf(o), setup: setupOf(o), print: printOf(o), series: seriesOf(o), fields: fieldsOf(o), vaada: cleanVaada(o.vaada), approvals: approvalsOf(o), loyalty: loyaltyOf(o) });
 /* approval rules: purchase orders above po_above rupees made by anyone but the owner or an admin wait for approval */
 router.add('PUT', '/api/settings/approvals', async (c) => {
   requireCan(c.user, 'settings');
@@ -1598,8 +1653,8 @@ router.add('POST', '/api/restore/drive', async (c) => {
 /* ======================================================================= plan & billing (SaaS) */
 router.add('GET', '/api/plan', async (c) => json({
   plan: planOut(c.org), usage: await usage(c.db, c.org),
-  plans: Object.entries(PLANS).map(([k, p]) => ({ key: k, ...p, invoices_per_month: p.invoices_per_month === Infinity ? null : p.invoices_per_month,
-    users: p.users === Infinity ? null : p.users, warehouses: p.warehouses === Infinity ? null : p.warehouses, pay: p.price ? grossPaise(k) / 100 : 0 })),
+  plans: Object.entries(PLANS).map(([k, p]) => ({ key: k, ...p, invoices_per_month: k === 'free' ? freeInvoices(c.org) : p.invoices_per_month === Infinity ? null : p.invoices_per_month,
+    users: p.users === Infinity ? null : p.users, warehouses: p.warehouses === Infinity ? null : p.warehouses, pay: p.price ? payPaise(k, c.org) / 100 : 0, pay_full: p.price ? grossPaise(k) / 100 : 0 })),
   billing: billingMode(c.env), razorpay: razorpayMode(c.env), history: canView(c.user, 'settings') ? await billingHistory(c) : [], support_whatsapp: c.env.SUPPORT_WHATSAPP || '',
   test_pay: testPayOk(c.env, c.user.email),
 }));
@@ -2082,7 +2137,7 @@ router.add('POST', '/api/public/khata/:token/ack', async (c) => {
    made on the phone). Each instalment becomes kept or broken from the receipts when a screen is opened (no cron):
    receipts are never edited silently (void and reverse only), so the record is fair to both sides. Data stays with
    the shop: never shared across businesses, never called a score. Algorithms: src/vaada.js. */
-const VAADA_429 = 'Aaj bahut baar koshish hui. Kal dobara try karein.';
+const VAADA_429 = 'Too many tries today. Please try again tomorrow.';
 async function limitHi(c, key, max, win, msg = VAADA_429) {
   try { await rateLimit(c.env, key, max, win); } catch (e) { if (e instanceof HttpError && e.status === 429) throw new HttpError(429, msg); throw e; }
 }
@@ -2125,11 +2180,11 @@ async function publicVaada(c, org, partyId, book) {
 /* create (or replace) the open promise of a party in one book. by: 'customer' (link) | 'shop' (phone par) */
 async function makePromise(c, { org, partyId, partyName, book, docId, by, body }) {
   const s = cleanVaada(org.vaada), t = today(), db = c.db, shop = by === 'shop';
-  if (!s.on) throw notFound(shop ? 'Vaade band hain. Settings mein chalu karein.' : 'Ye link sahi nahi hai.');
+  if (!s.on) throw notFound(shop ? 'Payment promises are off. Turn them on in Settings.' : 'This link is not valid.');
   const kind = body.kind;
-  if (kind !== 'date' && kind !== 'plan') throw bad('Tareekh ya kisht chunein.');
+  if (kind !== 'date' && kind !== 'plan') throw bad('Choose a date or instalments.');
   const feat = hasFeature(org, 'vaada');
-  if (kind === 'plan' && !feat) throw new HttpError(402, shop ? 'Kisht ke liye Starter plan lein (Settings → Plan & billing).' : 'Kisht ka option abhi nahi hai. Shop se baat karein.', { upgrade: shop });
+  if (kind === 'plan' && !feat) throw new HttpError(402, shop ? 'Instalments need the Starter plan (Settings → Plan & billing).' : 'Instalments are not available right now. Please talk to the shop.', { upgrade: shop });
   const [dueR, openR, kR, cntR] = await db.batch([
     db.prepare(dueSql(book)).bind(org.id, partyId),
     db.prepare(`SELECT * FROM vaade WHERE org_id = ? AND party_id = ? AND book = ? AND status = 'open'`).bind(org.id, partyId, book),
@@ -2137,19 +2192,19 @@ async function makePromise(c, { org, partyId, partyName, book, docId, by, body }
     db.prepare(`SELECT COUNT(*) AS n FROM vaade WHERE org_id = ? AND status = 'open'`).bind(org.id)]);
   const due = dueR.results[0].due || 0, old = openR.results[0] || null;
   if (!feat && !old && cntR.results[0].n >= FREE_OPEN_MAX) {
-    throw new HttpError(402, shop ? `${FREE_OPEN_MAX} se zyada vaade ke liye Starter plan lein.` : 'Abhi vaada nahi le sakte. Shop se baat karein.', { upgrade: shop });
+    throw new HttpError(402, shop ? `For more than ${FREE_OPEN_MAX} promises, take the Starter plan.` : 'A promise cannot be made right now. Please talk to the shop.', { upgrade: shop });
   }
-  if (due <= 0) throw bad('Koi baaki nahi hai.');
+  if (due <= 0) throw bad('Nothing is due.');
   if (old && !shop) {      // the customer may change their own promise once, and only before anything is broken
     const brokenAny = kR.results.some((k) => k.outcome === 'broken' || (!k.outcome && addDays(k.due, s.grace) < t));
-    if (old.made_by !== 'customer' || old.changes || brokenAny) throw new HttpError(409, 'Ye vaada pehle hi badla ja chuka hai. Shop se baat karein.');
+    if (old.made_by !== 'customer' || old.changes || brokenAny) throw new HttpError(409, 'This promise has already been changed once. Please talk to the shop.');
   }
   let kisht, amount;
   if (kind === 'date') {
     const d = str(body.date, 10), max = addDays(t, s.max_days);
-    if (!/^\d{4}-\d{2}-\d{2}$/.test(d) || isNaN(Date.parse(d + 'T00:00:00Z'))) throw bad('Tareekh chunein.');
-    if (d < t) throw bad('Aaj ya aage ki tareekh chunein.');
-    if (d > max) throw bad(`Tareekh ${fd(max)} ya usse pehle ki chunein.`);
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(d) || isNaN(Date.parse(d + 'T00:00:00Z'))) throw bad('Choose a date.');
+    if (d < t) throw bad('Choose today or a later date.');
+    if (d > max) throw bad(`Choose a date on or before ${fd(max)}.`);
     if (body.amount === undefined || body.amount === null || body.amount === '') amount = due;
     else {
       const a = Number(body.amount);
@@ -2157,17 +2212,17 @@ async function makePromise(c, { org, partyId, partyName, book, docId, by, body }
       amount = toPaise(a);
     }
     const minAmt = s.part ? minPart(due, s) : due;
-    if (amount > due) throw bad(`Baaki se zyada ka vaada nahi ho sakta (${inrW(due)}).`);
-    if (amount < minAmt) throw bad(s.part ? `Kam se kam ${inr0(minAmt)} ka vaada karein.` : `Poore ${inrW(due)} ka vaada karein.`);
+    if (amount > due) throw bad(`The promise cannot be more than what is due (${inrW(due)}).`);
+    if (amount < minAmt) throw bad(s.part ? `Promise at least ${inr0(minAmt)}.` : `Promise the full ${inrW(due)}.`);
     kisht = [{ n: 1, d, a: amount }];
   } else {
     const key = str(body.plan, 4);
-    if (!s.plans.includes(key)) throw bad('Ye kisht plan abhi chalu nahi hai.');
+    if (!s.plans.includes(key)) throw bad('This instalment plan is not available right now.');
     amount = due;                                   // instalments always cover the full due
     kisht = splitPlan(due, key, t, s.min_kisht);
   }
   const name = str(body.name, 60), note = shop ? str(body.note, 200) : '';
-  if (shop) await limitHi(c, 'vshop:' + org.id, 300, 3600, 'Bahut zyada vaade ek saath. Thodi der baad try karein.');
+  if (shop) await limitHi(c, 'vshop:' + org.id, 300, 3600, 'Too many promises at once. Please try again in a little while.');
   else await limitHi(c, `vparty:${org.id}:${partyId}`, 3, 86400);
   const txk = uid(), now = nowIso(), last = kisht[kisht.length - 1].d, changes = old && !shop ? (old.changes || 0) + 1 : 0;
   const st = [];
@@ -2182,7 +2237,7 @@ async function makePromise(c, { org, partyId, partyName, book, docId, by, body }
     .bind(org.id, shop ? c.user.id : null, now, `vaada by ${by}`, `${partyName} ${amount / 100} ${kind} ${last}`.slice(0, 300)));
   let res;
   try { res = await db.batch(st); } catch (e) {
-    if (/UNIQUE constraint failed: vaade\./.test(String(e && e.message))) throw new HttpError(409, 'Vaada abhi save ho chuka hai. Page refresh karein.');
+    if (/UNIQUE constraint failed: vaade\./.test(String(e && e.message))) throw new HttpError(409, 'The promise was just saved. Please refresh the page.');
     throw e;
   }
   let id = ((res[old ? 1 : 0].results || [])[0] || {}).id;
@@ -2198,7 +2253,7 @@ function shopWhatsapp(org, r, who, lang = 'hl') {
   const a = inrW(r.amount), d = fd(r.last), text = {
     en: `Hello, I have promised to pay ${a} to ${org.name} by ${d}. – ${who}`,
     hi: `नमस्ते, मैंने ${org.name} को ${d} तक ${a} देने का वादा किया है। – ${who}`,
-  }[lang] || `Namaste, maine ${org.name} ko ${d} tak ${a} dene ka vaada kiya hai. – ${who}`;
+  }[lang === 'hi' ? 'hi' : 'en'];
   return `https://wa.me/${phone.length === 10 ? '91' + phone : phone}?text=${encodeURIComponent(text)}`;
 }
 router.add('POST', '/api/public/khata/:token/vaada', async (c) => {
@@ -2214,7 +2269,7 @@ router.add('POST', '/api/public/doc/:token/vaada', async (c) => {
   const row = /^[0-9a-f]{24}$/.test(t) ? await c.db.prepare(`SELECT d.id AS doc_id, d.type, d.status, d.party_id, d.org_id, p.name AS party,
       o.name AS org_name, o.phone AS org_phone, o.vaada, o.plan, o.plan_until FROM docs d JOIN parties p ON p.id = d.party_id JOIN orgs o ON o.id = d.org_id
       WHERE d.share_token = ?`).bind(t).first() : null;
-  if (!row || row.type !== 'INV' || row.status === 'cancelled') throw notFound('Ye link sahi nahi hai.');
+  if (!row || row.type !== 'INV' || row.status === 'cancelled') throw notFound('This link is not valid.');
   const org = khataOrg(row);
   const r = await makePromise(c, { org, partyId: row.party_id, partyName: row.party, book: 'inv', docId: row.doc_id, by: 'customer', body: c.body });
   return json({ ok: true, vaada: r.vaada, shop_whatsapp_url: shopWhatsapp(org, r, str(c.body.name, 60) || row.party, cleanLang(c.body.lang)) });
@@ -2309,7 +2364,7 @@ router.add('POST', '/api/vaade', async (c) => {
   let docId = null;
   if (book === 'inv') {
     const d = await c.db.prepare(`SELECT id FROM docs WHERE org_id = ? AND party_id = ? AND type = 'INV' AND status IN ('unpaid','partial') ORDER BY due_date, id LIMIT 1`).bind(c.org.id, p.id).first();
-    if (!d) throw bad('Koi baaki nahi hai.');
+    if (!d) throw bad('Nothing is due.');
     docId = d.id;
   }
   const r = await makePromise(c, { org: c.org, partyId: p.id, partyName: p.name, book, docId, by: 'shop', body: b });
@@ -2331,7 +2386,7 @@ router.add('POST', '/api/vaade/:id/cancel', async (c) => {
       .bind(c.org.id, c.user.id, nowIso(), id, c.org.id, reason)]);
   if (!u.meta.changes) {
     if (!(await c.db.prepare(`SELECT 1 AS x FROM vaade WHERE id = ? AND org_id = ?`).bind(id, c.org.id).first())) throw notFound('Vaada nahi mila.');
-    throw bad('Ye vaada khula nahi hai.');
+    throw bad('This promise is not open.');
   }
   return json({ ok: true });
 });
@@ -2361,7 +2416,7 @@ router.add('GET', '/api/vaade/cash', async (c) => {
   requireFeature(c.org, 'cash');
   if (limitedView(c.user) && !canView(c.user, 'finance') && !canView(c.user, 'reports')) throw forbidden('Your role cannot see this. Ask the owner.');
   const t = today(), o = c.org.id, db = c.db;
-  if (c.url.searchParams.get('fresh') === '1') await limitHi(c, 'vcash:' + o, 10, 3600, 'Bahut baar dobara banaya. Thodi der baad try karein.');
+  if (c.url.searchParams.get('fresh') === '1') await limitHi(c, 'vcash:' + o, 10, 3600, 'Made again too many times. Please try again in a little while.');
   else {
     const hit = await db.prepare(`SELECT d, data FROM vaada_cache WHERE org_id = ?`).bind(o).first();
     if (hit && hit.d === t) { try { return json({ ...JSON.parse(hit.data), cached: true }); } catch (e) { /* rebuild */ } }
@@ -2653,7 +2708,7 @@ async function sharePage(request, env, kind, token) {
   if (!migrated) { await migrate(env.DB); migrated = true; }
   const url = new URL(request.url);
   // the link carries the language the shop picked (?l=en / ?l=hi); no mark = Hinglish, as links always were
-  const lang = cleanLang(url.searchParams.get('l')), T = PREVIEW[lang], sfx = lang === 'hl' ? '' : '-' + lang;
+  const lang = cleanLang(url.searchParams.get('l')), T = PREVIEW[lang], sfx = '-' + (lang === 'hi' ? 'hi' : 'en');
   let title = 'SmartTrader ERP', desc = 'Billing, stock, GST, accounts and khata for Indian businesses.', image = `/og-invoice${sfx}.png`;
   if (kind === 'k') {
     const p = await env.DB.prepare(`SELECT p.id, p.name, o.name AS org, o.upi_id FROM parties p JOIN orgs o ON o.id = p.org_id WHERE p.khata_token = ?`).bind(token).first();
@@ -2670,7 +2725,7 @@ async function sharePage(request, env, kind, token) {
     const pk = String(url.searchParams.get('p') || '').slice(0, 120);
     if (o && pk && shopOf(o).on) {
       const ph = await env.DB.prepare(`SELECT v FROM shop_photos WHERE org_id = ? AND gkey = ?`).bind(o.id, pk).first();
-      title = `${pk} · ${o.name}`; desc = 'Rang aur size chuniye, aur order kijiye.';
+      title = `${pk} · ${o.name}`; desc = 'Choose colour and size, and place your order.';
       if (ph) image = `/api/public/shop/${token}/photo/${encodeURIComponent(pk)}?v=${ph.v}`;
     }
   } else if (kind === 'kd') {
@@ -2694,7 +2749,7 @@ async function sharePage(request, env, kind, token) {
 <meta name="description" content="${attr(desc)}">
 <meta property="og:type" content="website"><meta property="og:site_name" content="SmartTrader ERP">
 <meta property="og:title" content="${attr(title)}"><meta property="og:description" content="${attr(desc)}">
-<meta property="og:url" content="${attr(url.origin + url.pathname + (lang === 'hl' ? '' : '?l=' + lang))}">
+<meta property="og:url" content="${attr(url.origin + url.pathname + (lang === 'hi' ? '?l=hi' : ''))}">
 <meta property="og:image" content="${attr(url.origin + image)}">${image.startsWith('/og-') ? '<meta property="og:image:width" content="1200"><meta property="og:image:height" content="630">' : ''}
 <meta name="twitter:card" content="summary_large_image"><meta name="robots" content="noindex">`;
   html = html.replace(/<title>[\s\S]*?<\/title>/, '').replace(/<meta (name|property)="(description|robots|og:[^"]*|twitter:[^"]*)"[^>]*>/g, '')
@@ -2759,6 +2814,8 @@ export default {
       const half = new Date(Date.now() - 183 * 864e5).toISOString();
       await env.DB.batch([env.DB.prepare(`DELETE FROM wa_messages WHERE id IN (SELECT id FROM wa_messages WHERE at < ? LIMIT 2000)`).bind(half),
         env.DB.prepare(`DELETE FROM wa_contacts WHERE updated_at < ?`).bind(half)]);
+      const tm = await runTrialMails(env);
+      if (tm.due) console.log('trial mails', tm.due);
       const w = await runAutoReminders(env);
       if (w.due) console.log('auto whatsapp', JSON.stringify(w));
       // sign-in history is kept 180 days; businesses whose 7 days to close are over are deleted

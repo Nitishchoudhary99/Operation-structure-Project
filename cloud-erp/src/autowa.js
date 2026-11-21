@@ -72,7 +72,7 @@ async function linkFor(env, org, partyId, base, lang) {
     await env.DB.prepare(`UPDATE docs SET share_token = ? WHERE id = ? AND share_token IS NULL`).bind(randomHex(12), d.id).run();
     tok = (await env.DB.prepare(`SELECT share_token FROM docs WHERE id = ?`).bind(d.id).first()).share_token;
   }
-  return `${base}/i/${tok}${lang === 'hl' || !lang ? '' : '?l=' + lang}`;
+  return `${base}/i/${tok}${lang === 'hi' ? '?l=hi' : ''}`;
 }
 
 /* send today's reminders for one business; returns { sent, failed, skipped } */
@@ -90,11 +90,11 @@ export async function remindOrg(env, org, budget = PER_ORG) {
     if (r.status !== 'due' || already.has(r.party_id)) continue;
     const to = waNumber(r.phone);
     if (!to || stopped.has(r.party_id)) { out.skipped++; continue; }
-    const lang = r.lang || org.msg_lang || 'hl';
+    const lang = (r.lang || org.msg_lang) === 'hi' ? 'hi' : 'en';   // no Hinglish
     try {
       const link = await linkFor(env, org, r.party_id, base, lang);
       // a customer who wrote to us in the last 24 hours gets it as a free text; the others get the (paid) approved template
-      const free = await windowOpen(env.DB, to), body = (REMIND_TEXT[lang] || REMIND_TEXT.hl)(r.name, org.name, inr(r.due * 100), link);
+      const free = await windowOpen(env.DB, to), body = (REMIND_TEXT[lang] || REMIND_TEXT.en)(r.name, org.name, inr(r.due * 100), link);
       if (free) await sendText(env, to, body); else await sendReminder(env, to, lang, [r.name, org.name, inr(r.due * 100), link]);
       const now = nowIso();
       await env.DB.batch([

@@ -1,0 +1,28 @@
+/* Free trial, Free-plan limit and the first-year offer (no server needed): node test/trial.mjs */
+import { planOf, trialInfo, TRIAL_DAYS, FREE_SMALL_FROM, trialUntil } from '../src/saas.js';
+import { payPaise, grossPaise } from '../src/billing.js';
+import { trialMailHtml } from '../src/worker.js';
+import { today, addDays } from '../src/lib.js';
+let pass = 0, fail = 0;
+const check = (name, ok, info = '') => { if (ok) { pass++; console.log('PASS  ' + name); } else { fail++; console.log('FAIL  ' + name + (info ? '  ' + info : '')); } };
+const t = today();
+check('the trial is 30 days', TRIAL_DAYS === 30 && trialUntil() === addDays(t, 30));
+const onTrial = { plan: 'growth', plan_until: addDays(t, 3), trial_end: addDays(t, 3), created_at: '2026-12-01T00:00:00Z' };
+check('a business on its trial is marked as on trial', planOf(onTrial).trial === true && planOf(onTrial).key === 'growth');
+check('no offer while the trial runs', !trialInfo(onTrial).offer_until && payPaise('growth', onTrial) === grossPaise('growth'));
+const after = { plan: 'growth', plan_until: addDays(t, -2), trial_end: addDays(t, -2), created_at: '2026-12-01T00:00:00Z' };
+check('after the trial: Free plan, not on trial', planOf(after).key === 'free' && planOf(after).trial === false);
+check('after the trial: 20% off for 7 days', trialInfo(after).offer_pct === 20 && trialInfo(after).offer_until === addDays(t, 5));
+check('the offer price is 20% off before GST', payPaise('growth', after) === Math.round(2499 * 0.8 * 1.18) * 100, String(payPaise('growth', after)));
+const late = { ...after, plan_until: addDays(t, -9), trial_end: addDays(t, -9) };
+check('no offer after the 7 days', !trialInfo(late).offer_until && payPaise('growth', late) === grossPaise('growth'));
+const paid = { plan: 'growth', plan_until: addDays(t, 300), trial_end: '', created_at: '2026-12-01T00:00:00Z' };
+check('a paying business has no trial and no offer', !planOf(paid).trial && !trialInfo(paid).offer_until && payPaise('growth', paid) === grossPaise('growth'));
+check('new businesses get 25 bills a month on Free', planOf({ plan: 'free', created_at: FREE_SMALL_FROM + 'T10:00:00Z' }).invoices_per_month === 25);
+check('older businesses keep 50 on Free', planOf({ plan: 'free', created_at: '2026-10-01T10:00:00Z' }).invoices_per_month === 50);
+const m3 = trialMailHtml({ stage: 'd3', org: 'Shop <b>x</b>', name: 'Ravi', days: 3, end_text: '24 Nov 2026', free_bills: 25, link: 'https://erp.docbrisk.com/#/plan', full_pay: 2949, offer_pay: 2359, offer_pct: 20, offer_until_text: '1 Dec 2026' });
+check('3-day mail: subject, what stops, the price, no raw HTML from the name', /ends in 3 days/.test(m3.subject) && /Tally export/.test(m3.html) && /2,949/.test(m3.html) && !/<b>x<\/b>/.test(m3.html));
+const mo = trialMailHtml({ stage: 'offer', org: 'Shop', name: 'Ravi', days: 3, end_text: '', free_bills: 25, link: 'x', full_pay: 2949, offer_pay: 2359, offer_pct: 20, offer_until_text: '1 Dec 2026' });
+check('offer mail: 20% off, the offer price and its last day', /20% off/.test(mo.subject) && /2,359/.test(mo.html) && /1 Dec 2026/.test(mo.html));
+console.log(`\n${pass} passed, ${fail} failed`);
+process.exit(fail ? 1 : 0);

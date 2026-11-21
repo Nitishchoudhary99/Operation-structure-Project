@@ -53,6 +53,8 @@ jobs:
         run: node test/keys.mjs
       - name: Bolkar bill reads spoken orders (Hindi, Hinglish, English) as phones send them
         run: node test/voice.mjs
+      - name: Free trial, Free limit and first-year offer
+        run: node test/trial.mjs
       - name: No secrets in the repository
         working-directory: .
         run: node tools/secret-scan.mjs
