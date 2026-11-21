@@ -36,7 +36,7 @@ import { pickState, pickScan, pickUndo, pickReset, pickSet } from './picking.js'
 import { findItem, codeKey } from './codes.js';
 import { reservedStatement, withReserved } from './engine.js';
 import * as rep from './reports.js';
-import { PLANS, planOut, planOf, usage, checkCount, countError, seatBlocked, seatError, requireFeature, extendPlan, adminKey, trialUntil, hasFeature, freeInvoices, trialInfo } from './saas.js';
+import { PLANS, planOut, planOf, usage, checkCount, countError, seatBlocked, seatError, requireFeature, extendPlan, adminKey, trialUntil, hasFeature, freeInvoices, trialInfo, cleanRef, REF_EXTRA_DAYS, REF_REWARD_DAYS } from './saas.js';
 import { secure } from './headers.js';
 import { createRecurring, listRecurring, getRecurring, updateRecurring, copyRecurring, skipRecurring, markSent, stopRecurring, resumeRecurring, runDue } from './recurring.js';
 import { buildBackup, driveRoutes, runDriveBackups, listDriveBackups, readDriveBackup, driveConfigured } from './gdrive.js';
@@ -73,11 +73,14 @@ let migrated = false;
 /* ======================================================================= auth */
 /* A new business: the business, its owner, the chart of accounts, a godown and a walk-in customer, in one transaction.
    `hash` and `salt` come from hashPassword(). Returns the owner row. */
-async function createBusiness(c, { business, name, email, hash, salt, gstin, state, phone, address }) {
+async function createBusiness(c, { business, name, email, hash, salt, gstin, state, phone, address, ref }) {
   const now = nowIso(), otx = crypto.randomUUID(), db = c.db;
+  // invited by another business (its code from the invite link): a longer free trial, and the inviter is remembered
+  const inviter = cleanRef(ref) ? await db.prepare(`SELECT id FROM orgs WHERE ref_code = ?`).bind(cleanRef(ref)).first() : null;
+  const trialEnd = inviter ? addDays(trialUntil(), REF_EXTRA_DAYS) : trialUntil();
   const st = [
-    db.prepare(`INSERT INTO orgs (name, gstin, state, phone, address, email, plan, plan_until, trial_end, created_at) VALUES (?, ?, ?, ?, ?, ?, 'growth', ?, ?, ?)`)
-      .bind(business, str(gstin, 15).toUpperCase(), str(state, 60), str(phone, 20), str(address, 300), email, trialUntil(), trialUntil(), otx),
+    db.prepare(`INSERT INTO orgs (name, gstin, state, phone, address, email, plan, plan_until, trial_end, ref_code, referred_by, created_at) VALUES (?, ?, ?, ?, ?, ?, 'growth', ?, ?, ?, ?, ?)`)
+      .bind(business, str(gstin, 15).toUpperCase(), str(state, 60), str(phone, 20), str(address, 300), email, trialEnd, trialEnd, randomHex(4), inviter ? inviter.id : null, otx),
     db.prepare(`INSERT INTO users (org_id, email, name, role, pw_hash, salt, pw_changed_at, created_at)
                 VALUES ((SELECT id FROM orgs WHERE created_at = ?), ?, ?, 'owner', ?, ?, ?, ?)`).bind(otx, email, name, hash, salt, Date.now(), now),
     ...DEFAULT_ACCOUNTS.map(([code, nm, type, sys, isCash]) => db.prepare(`INSERT INTO accounts (org_id, code, name, type, sys, is_cash)
@@ -110,7 +113,7 @@ router.add('POST', '/api/auth/signup', async (c) => {
   if (prob) throw bad(prob);
   const salt = randomHex(16), hash = await hashPassword(b.password, salt);       // hashed in every case, so timing does not tell either
   const taken = !!(await c.db.prepare(`SELECT 1 FROM users WHERE email = ?`).bind(email).first());
-  const fields = { business, name, email, hash, salt, gstin: b.gstin, state: b.state, phone: b.phone, address: b.address };
+  const fields = { business, name, email, hash, salt, gstin: b.gstin, state: b.state, phone: b.phone, address: b.address, ref: cleanRef(b.ref) };
   if (verifyOn(c.env)) {
     await rateLimit(c.env, 'signup-mail:' + email, 3, 3600);
     const origin = mailOrigin(c.env, c.request.url);
@@ -121,7 +124,7 @@ router.add('POST', '/api/auth/signup', async (c) => {
     const token = randomHex(32), now = Date.now();
     await c.db.batch([c.db.prepare(`DELETE FROM signups WHERE email = ? OR expires_at < ?`).bind(email, now),
       c.db.prepare(`INSERT INTO signups (token_hash, email, data, expires_at) VALUES (?, ?, ?, ?)`)
-        .bind(await sha256Hex(token), email, JSON.stringify({ business, name, hash, salt, gstin: str(b.gstin, 15), state: str(b.state, 60), phone: str(b.phone, 20), address: str(b.address, 300) }), now + SIGNUP_HOURS * 3600e3)]);
+        .bind(await sha256Hex(token), email, JSON.stringify({ business, name, hash, salt, gstin: str(b.gstin, 15), state: str(b.state, 60), phone: str(b.phone, 20), address: str(b.address, 300), ref: cleanRef(b.ref) }), now + SIGNUP_HOURS * 3600e3)]);
     if (await sendMail(c, 'verify', { to: email, name, token, origin })) return json({ ok: true, verify: true });
     await c.db.prepare(`DELETE FROM signups WHERE email = ?`).bind(email).run();       // mail is down: carry on without the check rather than lock the owner out
   }
@@ -1594,7 +1597,7 @@ router.add('GET', '/api/public/doc/:token', async (c) => {
     inter_state: d.inter_state, taxable: d.taxable, cgst: d.cgst, sgst: d.sgst, igst: d.igst, round_off: d.round_off, total: d.total, paid: d.paid, balance: d.balance,
     notes: d.notes, print_fields: d.print_fields, irn: d.irn, ack_no: d.ack_no, ack_date: d.ack_date, ewb_no: d.ewb_no, ewb_date: d.ewb_date, warehouse: '',
     parent: d.parent && ['SRET', 'CNOTE'].includes(d.type) ? { number: d.parent.number, date: d.parent.date } : null,
-    org: { name: o.name, gstin: o.gstin, state: o.state, address: o.address, phone: o.phone, upi_id: o.upi_id, email: o.email, print: o.print },
+    org: { name: o.name, gstin: o.gstin, state: o.state, address: o.address, phone: o.phone, upi_id: o.upi_id, email: o.email, print: o.print, ref: c.org.ref_code || '' },
     ...fileUrls(o.print, `/api/public/doc/${t}/file`),
     party: { name: p.name, gstin: p.gstin, address: p.address, phone: p.phone, state: p.state },
     lines: d.lines.map((l) => ({ item: l.item, description: l.description, hsn: l.hsn, unit: l.unit, qty: l.qty, rate: l.rate, discount_pct: l.discount_pct,
@@ -1658,6 +1661,22 @@ router.add('GET', '/api/plan', async (c) => json({
   billing: billingMode(c.env), razorpay: razorpayMode(c.env), history: canView(c.user, 'settings') ? await billingHistory(c) : [], support_whatsapp: c.env.SUPPORT_WHATSAPP || '',
   test_pay: testPayOk(c.env, c.user.email),
 }));
+/* Refer & earn: the business's invite link and how it is doing */
+router.add('GET', '/api/referral', async (c) => {
+  requireCan(c.user, 'settings');
+  let code = c.org.ref_code;
+  if (!code) { code = randomHex(4); await c.db.prepare(`UPDATE orgs SET ref_code = ? WHERE id = ? AND ref_code IS NULL`).bind(code, c.org.id).run(); code = (await c.db.prepare(`SELECT ref_code FROM orgs WHERE id = ?`).bind(c.org.id).first()).ref_code; }
+  const r = await c.db.prepare(`SELECT COUNT(*) AS joined, COALESCE(SUM(ref_rewarded), 0) AS paid FROM orgs WHERE referred_by = ?`).bind(c.org.id).first();
+  const origin = mailOrigin(c.env, c.request.url);
+  return json({ code, link: `${origin}/?ref=${code}`, joined: r.joined, paid: r.paid, days_earned: r.paid * REF_REWARD_DAYS, extra_days: REF_EXTRA_DAYS, reward_days: REF_REWARD_DAYS });
+});
+/* the inviting business's name for the sign-up page ("Invited by …"); a code tells nothing else */
+router.add('GET', '/api/public/ref/:code', async (c) => {
+  await rateLimit(c.env, 'refview:' + clientIp(c), 60, 600);
+  const code = cleanRef(c.params.code);
+  const o = code ? await c.db.prepare(`SELECT name FROM orgs WHERE ref_code = ?`).bind(code).first() : null;
+  return json(o ? { ok: true, name: o.name, extra_days: REF_EXTRA_DAYS } : { ok: false });
+}, { public: true });
 /* Online payment (DocBrisk Pay UPI; Razorpay optional): see src/billing.js */
 router.add('POST', '/api/billing/start', async (c) => { requireCan(c.user, 'settings'); await rateLimit(c.env, 'pay:' + c.org.id, 20, 3600); return json(await billingStart(c)); });
 router.add('POST', '/api/billing/verify', async (c) => json(await billingVerify(c)));
@@ -2108,7 +2127,7 @@ async function khataByToken(c) {
   const t = String(c.params.token || '');
   if (!/^[0-9a-f]{24}$/.test(t)) throw notFound('This khata link is not valid.');
   const p = await c.db.prepare(`SELECT p.id, p.name, p.org_id, o.name AS org_name, o.phone AS org_phone, o.upi_id, o.address AS org_address,
-        o.vaada, o.plan, o.plan_until FROM parties p JOIN orgs o ON o.id = p.org_id WHERE p.khata_token = ?`).bind(t).first();
+        o.vaada, o.plan, o.plan_until, o.ref_code FROM parties p JOIN orgs o ON o.id = p.org_id WHERE p.khata_token = ?`).bind(t).first();
   if (!p) throw notFound('This khata link is not valid.');
   return p;
 }
@@ -2120,7 +2139,7 @@ router.add('GET', '/api/public/khata/:token', async (c) => {
   let bal = 0;
   const rows = results.map((r) => ({ ...r, amount: R(r.amount), balance: R(bal += r.kind === 'gave' ? r.amount : -r.amount) })).reverse();
   const vaada = await publicVaada(c, khataOrg(p), p.id, 'khata');
-  return json({ shop: { name: p.org_name, phone: p.org_phone, upi_id: p.upi_id, address: p.org_address }, customer: p.name, balance: R(bal), rows, vaada });
+  return json({ shop: { name: p.org_name, phone: p.org_phone, upi_id: p.upi_id, address: p.org_address, ref: p.ref_code || '' }, customer: p.name, balance: R(bal), rows, vaada });
 }, { public: true });
 router.add('POST', '/api/public/khata/:token/ack', async (c) => {
   await rateLimit(c.env, 'kack:' + (clientIp(c)), 60, 600);

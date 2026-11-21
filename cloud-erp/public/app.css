@@ -1382,3 +1382,14 @@ table th { color: var(--muted); font-weight: 600; }
 .closing .btn.sm { margin-left: 6px; }
 .offerline { margin: 4px 0; font-size: 14px; } .offerline s { color: var(--muted); } .offerline b { color: var(--ok); font-size: 17px; }
 .trialpill { font-size: 12px; vertical-align: middle; background: var(--brand-soft); color: var(--brand); padding: 3px 9px; border-radius: 20px; font-weight: 600; }
+/* refer & earn, and the invite line on customer pages */
+.refer { border: 1px solid color-mix(in srgb, var(--brand) 35%, var(--line)); background: linear-gradient(135deg, var(--brand-soft), var(--panel) 70%); }
+.refer-h { display: flex; gap: 14px; align-items: flex-start; } .refer-h h2 { margin: 0 0 4px; font-size: 18px; } .refer-ico { font-size: 30px; line-height: 1; }
+.refer-link { display: flex; gap: 8px; margin: 14px 0; flex-wrap: wrap; } .refer-link input { flex: 1 1 220px; min-width: 0; }
+.refer-stats { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; text-align: center; }
+.refer-stats div { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 10px; }
+.refer-stats b { display: block; font-size: 22px; } .refer-stats span { font-size: 12px; color: var(--muted); }
+.side .refer-link-side { margin: 8px 0; font-weight: 600; color: var(--brand); }
+.invited { background: var(--ok-soft); border-color: var(--ok); margin-bottom: 12px; }
+.madewith { display: block; text-align: center; margin: 18px auto 8px; padding: 10px 14px; border-radius: 999px; border: 1px solid var(--line); background: var(--panel); color: var(--brand); font-weight: 600; font-size: 14px; max-width: 420px; text-decoration: none; }
+.madewith:hover { text-decoration: none; border-color: var(--brand); }

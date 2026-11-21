@@ -3,7 +3,7 @@
    Every business table carries org_id: one database serves many businesses (multi-tenant).
    migrate() runs on the first request after each deploy, so no manual migration step is needed. */
 
-export const SCHEMA_VERSION = 55;
+export const SCHEMA_VERSION = 56;
 
 // document types whose monthly totals doc_month keeps (sales and purchase money documents)
 const MONTH_TYPES = `('INV','SRET','CNOTE','BILL','PRET','DNOTE')`;
@@ -817,6 +817,15 @@ export const MIGRATIONS = {
     `UPDATE orgs SET msg_lang = 'en' WHERE msg_lang = 'hl'`,
     `UPDATE parties SET lang = 'en' WHERE lang = 'hl'`,
     `UPDATE orgs SET trial_end = plan_until WHERE plan = 'growth' AND plan_until != '' AND id NOT IN (SELECT org_id FROM billing_orders WHERE status = 'paid' AND plan != 'test')`,
+  ],
+  // refer & earn: each business has an invite code; a business that joined by one remembers who invited it,
+  // and the inviter's free month is given once, when the invited business first pays
+  56: [
+    `ALTER TABLE orgs ADD COLUMN ref_code TEXT`,
+    `ALTER TABLE orgs ADD COLUMN referred_by INTEGER`,
+    `ALTER TABLE orgs ADD COLUMN ref_rewarded INTEGER NOT NULL DEFAULT 0`,
+    `UPDATE orgs SET ref_code = lower(hex(randomblob(4))) WHERE ref_code IS NULL`,
+    `CREATE UNIQUE INDEX IF NOT EXISTS ix_orgs_ref ON orgs (ref_code)`,
   ],
 };
 

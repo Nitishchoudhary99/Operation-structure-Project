@@ -19,8 +19,8 @@
      Every payment carries notes.product = 'smarttrader-erp'; payments for other products are ignored.
 
    Every way ends in activate(): it claims the billing_orders row first, so a plan is extended exactly once per checkout. */
-import { HttpError, bad, notFound, nowIso } from './lib.js';
-import { PLANS, extendPlan, trialInfo } from './saas.js';
+import { HttpError, bad, notFound, nowIso, today, addDays } from './lib.js';
+import { PLANS, extendPlan, trialInfo, REF_REWARD_DAYS } from './saas.js';
 export const PRODUCT = 'smarttrader-erp';
 const PUBLIC_KEY_ID = 'rzp_live_Tbn7nsYH0g4Q8e';   // docbrisk.com's public Razorpay key id (public by design)
 const GST = 0.18;
@@ -69,6 +69,21 @@ export function same(a, b) {
 const sha256hex = async (text) => Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256', enc.encode(text))), (b) => b.toString(16).padStart(2, '0')).join('');
 const randomRef = () => Array.from(crypto.getRandomValues(new Uint8Array(16)), (b) => b.toString(16).padStart(2, '0')).join('');
 
+/* Refer & earn: the business that invited this one gets REF_REWARD_DAYS free, once, on the invited business's first
+   payment: added to its current plan (and trial) if it has one running, else Growth from today. */
+export async function rewardInviter(db, org) {
+  const claim = await db.prepare(`UPDATE orgs SET ref_rewarded = 1 WHERE id = ? AND ref_rewarded = 0`).bind(org.id).run();
+  if (!claim.meta.changes) return;
+  const inv = await db.prepare(`SELECT * FROM orgs WHERE id = ?`).bind(org.referred_by).first();
+  if (!inv) return;
+  const t = today(), running = inv.plan !== 'free' && inv.plan_until && inv.plan_until >= t;
+  const until = addDays(running ? inv.plan_until : t, REF_REWARD_DAYS), onTrial = running && inv.trial_end && inv.trial_end === inv.plan_until;
+  await db.batch([
+    db.prepare(`UPDATE orgs SET plan = ?, plan_until = ?, trial_end = ? WHERE id = ?`).bind(running ? inv.plan : 'growth', until, onTrial ? until : (inv.trial_end || ''), inv.id),
+    db.prepare(`INSERT INTO audit (org_id, user_id, at, action, detail) VALUES (?, NULL, ?, 'referral reward', ?)`).bind(inv.id, nowIso(), `${REF_REWARD_DAYS} days free: ${org.name} joined by your invite and paid`),
+  ]);
+}
+
 /* Switches the plan on for a paid record, once. Returns the record as it is now. */
 async function activate(db, rec, paymentId, paidPaise) {
   if (rec.status === 'paid') return rec;
@@ -84,6 +99,7 @@ async function activate(db, rec, paymentId, paidPaise) {
   // a test payment proves the whole way to here; it leaves the plan as it is
   const until = rec.plan === 'test' ? (org.plan_until || '') : await extendPlan(db, org, rec.plan, rec.months);
   if (rec.plan !== 'test') await db.prepare(`UPDATE orgs SET trial_end = '' WHERE id = ?`).bind(rec.org_id).run();   // a paying business: no trial, no offer
+  if (rec.plan !== 'test' && org.referred_by) await rewardInviter(db, org);
   await db.prepare(`UPDATE billing_orders SET plan_until = ? WHERE id = ?`).bind(until, rec.id).run();
   await db.prepare(`INSERT INTO audit (org_id, user_id, at, action, detail) VALUES (?, ?, ?, 'plan paid', ?)`)
     .bind(rec.org_id, rec.user_id, nowIso(), `${rec.plan} ${rec.months} months, ${rec.paise / 100} INR, ${paymentId}`).run();

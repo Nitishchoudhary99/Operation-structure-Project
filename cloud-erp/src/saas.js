@@ -19,6 +19,11 @@ export const FREE_SMALL = 25;
 export const freeInvoices = (org) => (String((org && org.created_at) || '') >= FREE_SMALL_FROM ? FREE_SMALL : PLANS.free.invoices_per_month);
 /* Right after a free trial ends without a purchase: 20% off the first year, for this many days. */
 export const OFFER_DAYS = 7;
+/* Refer & earn: a business invited by another gets this many extra trial days; the inviter gets REF_REWARD_DAYS of
+   Growth (or that much more on its current plan) once, when the invited business first pays. */
+export const REF_EXTRA_DAYS = 15;
+export const REF_REWARD_DAYS = 30;
+export const cleanRef = (v) => (/^[0-9a-f]{8}$/.test(String(v || '').trim().toLowerCase()) ? String(v).trim().toLowerCase() : '');
 export const OFFER_PCT = 20;
 /* trial: on the free trial now. offer_until: the last day of the first-year offer (after the trial), else ''. */
 export function trialInfo(org) {
