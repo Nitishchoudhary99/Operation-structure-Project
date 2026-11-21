@@ -442,6 +442,7 @@ function renderAuth(mode = /^#\/?signup/.test(location.hash) ? 'signup' : 'login
         <li>Khata with WhatsApp &amp; UPI payment reminders</li>
         <li>Staff logins with roles, full audit trail</li>
       </ul>
+      <p><a class="btn big demobtn" href="#demo">${LANG === 'hi' ? '▶ डेमो देखें, बिना साइन-अप' : '▶ Try the demo, no sign-up'}</a></p>
       <p class="seo-links"><a href="/gst-billing-software/">GST billing</a> · <a href="/khata-book-app/">Khata book</a> · <a href="/inventory-management-software/">Inventory</a> · <a href="/pricing/">Pricing: free plan</a></p>
     </div>
     <div class="box"><form id="auth-form">
@@ -451,7 +452,7 @@ function renderAuth(mode = /^#\/?signup/.test(location.hash) ? 'signup' : 'login
       <div class="err" hidden></div>
       ${/drive=signin/.test(location.hash) && mode === 'login' ? '<p class="panel warnbox">You were signed out while Google was open. Sign in, then tap <b>Connect Google Drive</b> in Settings again.</p>' : ''}
       ${mode === 'forgot' ? '<p class="muted">Enter the email you sign in with. We will e-mail you a link to set a new password.</p>' : ''}
-      ${mode === 'signup' ? `
+      ${mode === 'signup' ? `<p class="panel invited" id="invited" hidden></p>
         <label class="f">Business name<input name="business" required></label>
         <label class="f">Your name<input name="name" required></label>
         <div class="row"><label class="f grow">State<input name="state" list="states" autocomplete="off" placeholder="e.g. Rajasthan" required></label>
@@ -464,9 +465,17 @@ function renderAuth(mode = /^#\/?signup/.test(location.hash) ? 'signup' : 'login
     </form></div></div>`;
   $$('[data-m]').forEach((a) => a.onclick = (e) => { e.preventDefault(); renderAuth(e.target.dataset.m); });
   $('#authlang').onclick = (e) => { e.preventDefault(); switchLang(); };
+  // joined by an invite link: say who invited them and the longer trial; the code goes with the sign-up
+  const ref = storeGet('st:ref') || '';
+  if (mode === 'signup' && /^[0-9a-f]{8}$/.test(ref)) GET('/api/public/ref/' + ref).then((r) => {
+    const box = $('#invited'); if (!r.ok || !box) return;
+    box.innerHTML = LANG === 'hi' ? `<b>${esc(r.name)}</b> ने आपको बुलाया है: <b>${30 + r.extra_days} दिन</b> का फ़्री ट्रायल।` : `Invited by <b>${esc(r.name)}</b>: your free trial is <b>${30 + r.extra_days} days</b>.`;
+    box.hidden = false;
+  }).catch(() => {});
   $('#auth-form').onsubmit = async (e) => {
     e.preventDefault();
     const body = Object.fromEntries(new FormData(e.target));
+    if (mode === 'signup' && /^[0-9a-f]{8}$/.test(ref)) body.ref = ref;
     const btn = $('button', e.target); btn.disabled = true;
     try {
       if (mode === 'forgot') {
@@ -634,9 +643,21 @@ const myUi = () => {
 };
 /* the owner sees, in the last 7 days of a trial or paid plan, that it ends and what stops (staff logins above the free
    plan's limit are paused), with the way to keep it */
+/* Try the demo: a sample shop, no sign-up, gone after a day */
+async function startDemo() {
+  $('#app').innerHTML = `<div class="boot"><h2>${LANG === 'hi' ? 'डेमो दुकान तैयार हो रही है…' : 'Opening a demo shop…'}</h2><p class="muted">${LANG === 'hi' ? 'एक महीने की बिक्री, स्टॉक और खाते के साथ।' : 'With a month of sales, stock and khata in it.'}</p></div>`;
+  try { await POST('/api/demo', {}); storeSet('st:in', '1'); location.replace('/#/'); location.reload(); }
+  catch (e) { $('#app').innerHTML = `<div class="boot"><h2>${esc(e.message)}</h2><p><a href="/#signup">Create your free account</a></p></div>`; }
+}
+function demoBar() {
+  if (!ME.org.demo) return '';
+  return LANG === 'hi'
+    ? `<div class="demobar">यह <b>डेमो दुकान</b> है: सैंपल डेटा, 24 घंटे में मिट जाएगा। आज़माइए, कुछ भी बिगड़ेगा नहीं। <button class="btn sm primary" type="button" id="demosignup">अपना फ़्री खाता बनाएँ</button></div>`
+    : `<div class="demobar">This is a <b>demo shop</b> with sample data, deleted in 24 hours. Try anything, nothing can break. <button class="btn sm primary" type="button" id="demosignup">Create your free account</button></div>`;
+}
 function planWarn() {
   const p = ME.plan || {}, hi = LANG === 'hi';
-  if (ME.user.role_key !== 'owner') return '';
+  if (ME.user.role_key !== 'owner' || ME.org.demo) return '';
   // just after an unbought trial: the first-year offer, with its last day (written whole in each language)
   if (p.offer_until) return hi
     ? `<div class="closing offer">आपका फ़्री ट्रायल ख़त्म हो गया। <b>पहले साल पर ${p.offer_pct}% छूट</b>, <b>${fdate(p.offer_until)}</b> तक: ई-इनवॉइस, WhatsApp रिमाइंडर, Tally, कल का कैश और स्टाफ़ लॉगिन तुरंत वापस। <a class="btn sm primary" href="#/plan">${p.offer_pct}% छूट लें</a></div>`
@@ -782,6 +803,7 @@ function shell() {
       <div class="brand"><i>&#x2197;</i><span>SmartTrader<small>${esc(ME.org.name)}</small></span></div>
       ${navHtml()}
       <div class="side-foot"><div class="muted">${esc(ME.user.name)} &middot; ${esc(ME.user.role)}${onMenu('settings') ? '' : ' &middot; <a href="#/settings">My account</a>'}</div>
+        ${ME.can.settings ? '<a class="refer-link-side" href="#/refer">🎁 Refer &amp; earn</a>' : ''}
         <button class="btn sm" id="install" hidden>Install app</button><a class="btn sm" href="https://wa.me/919068446139?text=${encodeURIComponent('Hi, I need help with SmartTrader ERP')}" target="_blank" rel="noopener" title="WhatsApp support: +91 90684 46139">Help</a><button class="btn sm" id="logout">Sign out</button></div>
     </nav>
     <div class="main">
@@ -800,12 +822,13 @@ function shell() {
         ${news.length ? `<div class="newmenu"><button class="btn primary" id="newbtn" aria-haspopup="true" aria-expanded="false">+ <span>New</span></button>
           <div class="menu qmenu" id="newmenu" hidden>${news.map(([h, t, , , ic]) => `<a href="#/${h}">${icon(ic)}<span>${t}</span></a>`).join('')}</div></div>` : ''}
       </header>
-      ${planWarn()}${ME.org.close_after && ME.user.role_key === 'owner' ? `<div class="closing">This business will be deleted on <b>${fdate(ME.org.close_after.slice(0, 10))}</b>. <a href="#/settings/security">Keep it (cancel)</a> · <a href="#/settings?backup=1">Download a backup</a></div>` : ''}
+      ${demoBar()}${planWarn()}${ME.org.close_after && ME.user.role_key === 'owner' && !ME.org.demo ? `<div class="closing">This business will be deleted on <b>${fdate(ME.org.close_after.slice(0, 10))}</b>. <a href="#/settings/security">Keep it (cancel)</a> · <a href="#/settings?backup=1">Download a backup</a></div>` : ''}
       <main class="page" id="page"></main>
     </div></div><div class="scrim" id="scrim"></div>
     <nav class="bnav" id="bnav" aria-label="Main">${bnavItems().map(([h, t, ic, act]) => `<a href="${h ? '#/' + h : '#'}" ${act ? `data-bn="${act}"` : `data-h="${h}"`}>${icon(ic)}<span>${t}</span></a>`).join('')}</nav>`;
   hideAmounts(storeGet('st:hideamt') === '1');
   $('#langbtn').onclick = switchLang;
+  if ($('#demosignup')) $('#demosignup').onclick = async () => { await POST('/api/auth/logout').catch(() => {}); await offClear(); ME = null; remember(false); location.hash = '#signup'; renderAuth('signup'); };
   $('#themebtn').onclick = toggleTheme;
   $('#hideamt').onclick = () => { const on = !document.body.classList.contains('hide-amt'); hideAmounts(on); storeSet('st:hideamt', on ? '1' : '0'); };
   $('#burger').onclick = () => menu(!$('#side').classList.contains('open'));
@@ -3725,6 +3748,10 @@ const PT = {
     plans: null },
 };
 let PUBL = 'en';
+/* Customer pages (bill, khata, balance check) end with a small invite: many customers run a shop too. The link carries
+   the shop's invite code, so the shop earns its free month if they join and pay. */
+const madeWith = (ref) => `<a class="madewith no-print" href="/${ref && /^[0-9a-f]{8}$/.test(ref) ? '?ref=' + ref : ''}#signup">${PUBL === 'hi'
+  ? 'SmartTrader से बना · अपनी दुकान के लिए फ़्री GST बिलिंग →' : 'Made with SmartTrader · Free GST billing for your shop →'}</a>`;
 const PT_DOC_HI = { INV: 'बिल', SRET: 'बिक्री वापसी', CNOTE: 'क्रेडिट नोट', QUOTE: 'कोटेशन', SO: 'सेल्स ऑर्डर', DN: 'डिलीवरी चालान' };
 const pubLang = () => { const l = new URLSearchParams(location.search).get('l'); PUBL = l === 'hi' ? 'hi' : 'en'; document.documentElement.lang = PUBL === 'hi' ? 'hi' : 'en'; return PUBL; };
 const pt = (k, ...a) => { const v = PT[PUBL][k] ?? PT.en[k]; return typeof v === 'function' ? v(...a) : v; };
@@ -3743,7 +3770,7 @@ async function publicDoc(token) {
         <button class="btn primary" id="pdfdl">${pt('dl')}</button></div>
       ${due ? `<div class="panel no-print">${pt('balDue', inr(d.balance), d.due_date ? fdate(d.due_date) : '')}${payBox(d.org, d.balance, d.number)}</div>` : ''}
       ${vaadaPub(d.vaada, d.org)}
-      ${docPaper(d)}<p class="muted no-print">${pt('sharedBy', d.org.name)}</p></main>`;
+      ${docPaper(d)}<p class="muted no-print">${pt('sharedBy', d.org.name)}</p>${madeWith(d.org.ref)}</main>`;
     fitPapers(app);
     // a real PDF file; if this browser cannot make one, its own print dialog ("Save as PDF") still works
     $('#pdfdl').onclick = async (e) => {
@@ -3793,7 +3820,7 @@ async function publicKhata(token) {
             : `<span class="muted">${pt('isOk')}</span> <button class="btn sm got" data-ok="${r.id}">${pt('yes')}</button> <button class="btn sm danger" data-no="${r.id}">${pt('no')}</button>`}</div></div>
         <div class="kl-r"><div class="${r.kind === 'gave' ? 'neg' : 'pos'} ka">${pt(r.kind === 'gave' ? 'udhaar' : 'paidK')}${inr(r.amount)}</div><div class="muted">${pt('bal')} ${inr(r.balance)}</div></div></div>`).join('')
         : `<div class="empty">${pt('noEntries')}</div>`}</div>
-      <p class="muted">${pt('khFoot')}</p></main>`;
+      <p class="muted">${pt('khFoot')}</p>${madeWith(d.shop && d.shop.ref)}</main>`;
     const ack = async (id, a, note = '') => {
       const r = await fetch(`/api/public/khata/${token}/ack`, { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Requested-With': 'SmartTrader' }, body: JSON.stringify({ entry_id: +id, ack: a, note }) });
       if (!r.ok) alert((await r.json().catch(() => ({}))).error || pt('notSaved')); else load();
@@ -3828,7 +3855,7 @@ async function publicConfirm(token) {
       <div class="kpi" style="margin-bottom:14px"><div class="l">${pt('cfDue', d.party, fdate(d.as_of))}</div><div class="v neg">${inr(d.balance)}</div></div>
       <div class="panel flush">${table([{ h: C[0], k: 'number' }, { h: C[1], f: (b) => fdate(b.date) }, { h: C[2], f: (b) => fdate(b.due_date || b.date) }, { h: C[3], num: 1, f: (b) => inr(b.bal) }], d.bills)}</div>
       ${answer}${d.balance > 0 ? `<div class="panel">${payBox(d.org, d.balance, 'Balance ' + d.as_of)}</div>` : ''}
-      <p class="muted small">Powered by SmartTrader.</p></main>`;
+      ${madeWith('')}</main>`;
     if (d.balance > 0) wirePayBox(app, d.org, d.balance, 'Balance ' + d.as_of);
     if (d.status !== 'sent') return;
     const send = async (body, btn) => {
@@ -8162,6 +8189,28 @@ route(/^tally$/, async (el) => {
 });
 
 /* ======================================================================= plan & billing */
+/* Refer & earn: the owner shares an invite link; the invited shop gets a longer trial, the owner a free month when it pays */
+async function referBox() {
+  let r; try { r = await GET('/api/referral'); } catch (e) { return ''; }
+  const hi = LANG === 'hi';
+  const text = hi ? `मैं अपनी दुकान का बिल, स्टॉक और खाता SmartTrader पर चलाता हूँ। आप भी ${30 + r.extra_days} दिन फ़्री आज़माएँ: ${r.link}`
+    : `I run my shop's billing, stock and khata on SmartTrader. Try it free for ${30 + r.extra_days} days: ${r.link}`;
+  return `<div class="panel refer"><div class="refer-h"><span class="refer-ico" aria-hidden="true">🎁</span><div>
+      <h2>${hi ? 'दुकानदार दोस्त को बुलाएँ, 1 महीना फ़्री पाएँ' : 'Invite a shop, get a month free'}</h2>
+      <p class="muted">${hi ? `उन्हें ${30 + r.extra_days} दिन का फ़्री ट्रायल मिलेगा। जब वे पहला प्लान लेंगे, आपको ${r.reward_days} दिन फ़्री मिलेंगे।`
+        : `They get a ${30 + r.extra_days}-day free trial. When they buy their first plan, you get ${r.reward_days} days free.`}</p></div></div>
+    <div class="refer-link"><input readonly value="${esc(r.link)}" id="reflink" aria-label="Invite link"><button class="btn" type="button" id="refcopy">${hi ? 'कॉपी' : 'Copy'}</button>
+      <a class="btn primary" target="_blank" rel="noopener" href="https://wa.me/?text=${encodeURIComponent(text)}">${hi ? 'WhatsApp पर भेजें' : 'Share on WhatsApp'}</a></div>
+    <div class="refer-stats"><div><b>${r.joined}</b><span>${hi ? 'जुड़े' : 'joined'}</span></div><div><b>${r.paid}</b><span>${hi ? 'प्लान लिया' : 'paid'}</span></div><div><b>${r.days_earned}</b><span>${hi ? 'फ़्री दिन मिले' : 'free days earned'}</span></div></div></div>`;
+}
+function wireRefer(el) {
+  const b = $('#refcopy', el); if (!b) return;
+  b.onclick = async () => { try { await navigator.clipboard.writeText($('#reflink', el).value); toast(LANG === 'hi' ? 'लिंक कॉपी हुआ' : 'Link copied'); } catch (e) { $('#reflink', el).select(); } };
+}
+route(/^refer$/, async (el) => {
+  el.innerHTML = head(LANG === 'hi' ? 'बुलाएँ और कमाएँ' : 'Refer & earn') + ((ME.can.settings && await referBox()) || '<div class="empty">Only the owner can invite shops.</div>');
+  wireRefer(el);
+});
 route(/^plan$/, async (el, m, q) => {
   const P = await GET('/api/plan'), cur = P.plan, u = P.usage;
   const lim = (n) => n === null ? 'Unlimited' : n;
@@ -8195,6 +8244,7 @@ route(/^plan$/, async (el, m, q) => {
     ${P.history.length ? `<div class="panel flush"><div style="padding:14px 16px 0"><h3>Payments</h3></div>${table([{ h: 'Date', f: (r) => fdate((r.paid_at || r.created_at).slice(0, 10)) },
       { h: 'Plan', f: (r) => planCell(r.plan) }, { h: 'Amount', num: 1, f: (r) => inr(r.amount) }, { h: 'Status', f: (r) => badge(r.status === 'paid' ? 'paid' : 'unpaid') + (r.status === 'amount_mismatch' ? ' <span class="muted">amount mismatch</span>' : '') },
       { h: 'Payment ID', k: 'payment_id', cls: 'hide-sm' }], P.history)}</div>` : ''}`;
+  if (ME.can.settings) { el.insertAdjacentHTML('beforeend', await referBox()); wireRefer(el); }
   const state = (html) => { $('#paystate').innerHTML = html; $('#paystate').scrollIntoView({ behavior: 'smooth', block: 'center' }); };
   const done = async (s) => {
     ME = await GET('/api/me');
@@ -8514,6 +8564,7 @@ async function boot() {
   if (rt) return renderReset(rt[1]);
   const vt = location.hash.match(/^#\/verify\/([0-9a-f]{64})$/);  // link from the sign-up e-mail
   if (vt) return renderVerify(vt[1]);
+  if (/^#\/?demo$/.test(location.hash)) return startDemo();
   if (/^(#\/?(dashboard)?(\?.*)?)?$/.test(location.hash)) {
     let w = ''; try { w = localStorage.getItem('st:dashq') || ''; } catch (e) { w = ''; }
     prefetch(['/api/dashboards', '/api/today', ...(/^\/api\/dash\/widgets\?ids=[\w,]+&range=[\w-]+$/.test(w) ? [w] : [])]);
@@ -8545,6 +8596,7 @@ window.addEventListener('hashchange', () => {
   // not signed in: the home page's Sign in / Start free links open the forms, and Back returns to the home page
   if (!ME && !/^#\/(admin|reset|verify|k\/)/.test(location.hash)) {
     if (/^#\/?(login|signup)/.test(location.hash)) return renderAuth();
+    if (/^#\/?demo$/.test(location.hash)) return startDemo();
     if (bareHome() && LANDING) { $('#app').innerHTML = LANDING; return; }
   }
   $('#modal-root').innerHTML = '';

@@ -294,7 +294,7 @@ export const HI = {
   // scan picking and orders by scan
   'To pick': 'पिक करना है', 'Picked': 'पिक हो गया', 'Pick & pack (scan)': 'पिक और पैक (स्कैन)', 'Pack ✓ (save Delivery Note)': 'पैक ✓ (डिलीवरी नोट सेव करें)', 'Pick all together (scan)': 'सब एक साथ पिक करें (स्कैन)', 'Combined pick list': 'संयुक्त पिक लिस्ट', 'Start again': 'फिर से शुरू करें', 'Label PDF': 'लेबल PDF', 'Which item is this label?': 'यह लेबल किस आइटम का है?', 'Use this item': 'यही आइटम लें', 'Orders': 'ऑर्डर', 'Scan': 'स्कैन', 'Pick by scan': 'स्कैन से पिक करें', 'Print list': 'लिस्ट प्रिंट करें', 'How orders are picked': 'ऑर्डर कैसे पिक होते हैं', 'Point the camera at the QR label': 'कैमरा QR लेबल की ओर करें',
   // dashboard, help text and Hinglish labels (2026-11)
-  "Collections": "वसूली", "Customer picks a pay date (promise)": "ग्राहक खुद तारीख चुने (वादा)",
+  "Collections": "वसूली", "🎁 Refer & earn": "🎁 बुलाएँ और कमाएँ", "Only the owner can invite shops.": "सिर्फ़ मालिक दुकानें बुला सकते हैं।", "Customer picks a pay date (promise)": "ग्राहक खुद तारीख चुने (वादा)",
   "Promises": "वादे",
   "Payment promises": "भुगतान के वादे",
   "Cash Forecast": "कल का कैश",

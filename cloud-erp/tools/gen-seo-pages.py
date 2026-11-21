@@ -87,7 +87,7 @@ def render(p):
     body = ''.join(f'<section><h2>{html.escape(t)}</h2>{c}</section>' for t, c in p['sections'])
     faq = ''.join(f'<details><summary>{html.escape(q)}</summary><p>{html.escape(a)}</p></details>' for q, a in p['faqs'])
     faq_h = 'अक्सर पूछे जाने वाले सवाल' if hi else 'Frequently asked questions'
-    cta = (('आज ही शुरू करें', 'फ़्री प्लान में हर महीने 50 बिल और अनलिमिटेड खाता। कार्ड की ज़रूरत नहीं।', 'मुफ़्त अकाउंट बनाएं') if hi else
+    cta = (('आज ही शुरू करें', 'फ़्री प्लान में हर महीने 25 बिल और अनलिमिटेड खाता। कार्ड की ज़रूरत नहीं।', 'मुफ़्त अकाउंट बनाएं') if hi else
            ('Start today', 'Free plan with 25 invoices a month and unlimited khata. No card needed.', 'Create your free account'))
     hero_btn = (('मुफ़्त शुरू करें, कार्ड नहीं चाहिए', 'कीमत देखें', 'मोबाइल, टैबलेट और कंप्यूटर पर चलता है · ऐप की तरह इंस्टॉल करें · भारत के कारोबार के लिए') if hi else
                 ('Start free, no card needed', 'See pricing', 'Works on mobile, tablet and computer · Install as an app · Made for Indian businesses'))
@@ -115,7 +115,7 @@ def render(p):
 <main>
 <nav class="crumb" aria-label="Breadcrumb"><a href="/">SmartTrader ERP</a> › <span>{html.escape(p['short'])}</span></nav>
 <section class="hero"><h1>{html.escape(p['h1'])}</h1><p class="lead">{p['lead']}</p>
-<p><a class="btn primary big" href="/#signup">{hero_btn[0]}</a> <a class="btn big" href="/pricing/">{hero_btn[1]}</a></p>
+<p><a class="btn primary big" href="/#signup">{hero_btn[0]}</a> <a class="btn big" href="/#demo">{'▶ डेमो देखें, बिना साइन-अप' if hi else '▶ Try the demo, no sign-up'}</a></p>
 <p class="small">{hero_btn[2]}</p></section>
 {body}
 {f'<section><h2>{faq_h}</h2>{faq}</section>' if faq else ''}
@@ -564,7 +564,7 @@ landing = f'''<div class="landing">
 <main>
 <section class="hero"><h1>Free GST billing, khata and stock software for Indian businesses</h1>
 <p class="lead">SmartTrader ERP: GST bills with UPI QR, a digital khata your customers confirm, stock across godowns, purchase and full accounts. One app on mobile and computer; bills and reminders reach your customers in English or Hindi.</p>
-<p><a class="btn primary big" href="/#signup">Start free, no card needed</a> <a class="btn big" href="/#login">Sign in</a></p>
+<p><a class="btn primary big" href="/#signup">Start free, no card needed</a> <a class="btn big" href="/#demo">▶ Try the demo, no sign-up</a></p>
 {ul(['Free plan forever: 25 bills a month, unlimited khata', 'Works on Android, iPhone and computer, even offline', 'Bills and reminders on WhatsApp with UPI', 'Bring your items and customers from Excel, Vyapar, myBillBook or Tally in one go', 'Your data is yours: full backup any time'])}
 </section>
 <section><h2>Everything your business runs on</h2>{cards('core')}{cards('feature')}</section>
