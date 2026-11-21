@@ -814,6 +814,8 @@ export const MIGRATIONS = {
   55: [
     `ALTER TABLE orgs ADD COLUMN trial_end TEXT NOT NULL DEFAULT ''`,
     `ALTER TABLE orgs ADD COLUMN trial_mail TEXT NOT NULL DEFAULT ''`,
+    `UPDATE orgs SET msg_lang = 'en' WHERE msg_lang = 'hl'`,
+    `UPDATE parties SET lang = 'en' WHERE lang = 'hl'`,
     `UPDATE orgs SET trial_end = plan_until WHERE plan = 'growth' AND plan_until != '' AND id NOT IN (SELECT org_id FROM billing_orders WHERE status = 'paid' AND plan != 'test')`,
   ],
 };

@@ -2,9 +2,9 @@
    One table of phrases, so every WhatsApp / SMS message (bills, reminders, khata, promises, receipts, balance
    confirmations) and the link preview speak the same language. The choice is remembered per contact
    (parties.lang); the business default is orgs.msg_lang. */
-export const LANGS = ['en', 'hi', 'hl'];
-export const LANG_NAMES = { en: 'English', hi: 'हिंदी', hl: 'Hinglish' };
-export const cleanLang = (v, def = 'hl') => (LANGS.includes(v) ? v : def);
+export const LANGS = ['en', 'hi'];   // 'hl' (Hinglish) was dropped: cleanLang turns it into English
+export const LANG_NAMES = { en: 'English', hi: 'हिंदी' };
+export const cleanLang = (v, def = 'en') => (v === 'hl' ? 'en' : LANGS.includes(v) ? v : def);
 
 const DOC_HI = { INV: 'बिल', SRET: 'बिक्री वापसी', CNOTE: 'क्रेडिट नोट', QUOTE: 'कोटेशन', SO: 'सेल्स ऑर्डर', DN: 'डिलीवरी चालान' };
 
@@ -100,6 +100,8 @@ const P = {
     sentVia: (b) => `_Sent via ${b}_`,
   },
 };
+/* No Hinglish: 'hl' (the old third choice, and the old default) reads English. */
+P.hl = P.en;
 export const phrases = (lang) => P[cleanLang(lang)];
 
 /* The link preview (WhatsApp's card under the link) for /i/, /k/ and /c/ links */
@@ -110,13 +112,11 @@ export const PREVIEW = {
   hi: { doc: (l, n, o) => `${l} ${n} · ${o}`, docDesc: (a, due) => `राशि ${a}${due === null ? '' : due ? ` · बकाया ${due}` : ' · भुगतान हो गया'}। देखें, डाउनलोड करें${due ? ' और भुगतान करें' : ''}।`,
     kh: (n, o) => `${n} का खाता · ${o}`, khDue: (b, upi) => `बकाया: ${b}। एंट्री देखें, पुष्टि करें${upi ? ' और UPI से भुगतान करें' : ''}।`, khAdv: (b) => `एडवांस: ${b}। पूरा खाता देखें।`,
     khClear: 'खाता साफ़ है। पूरा हिसाब देखें।', cf: (o) => `बकाया पुष्टि · ${o}`, cfDesc: (a) => `बकाया ${a}। जाँचें और एक टैप में पुष्टि करें।` },
-  hl: { doc: (l, n, o) => `${l} ${n} · ${o}`, docDesc: (a, due) => `Amount ${a}${due === null ? '' : due ? ` · Due ${due}` : ' · Paid'}. Dekhein, download karein${due ? ' aur pay karein' : ''}.`,
-    kh: (n, o) => `${n} ka khata · ${o}`, khDue: (b, upi) => `Baaki: ${b}. Entries dekhein, confirm karein${upi ? ' aur UPI se pay karein' : ''}.`, khAdv: (b) => `Advance: ${b}. Poora khata dekhein.`,
-    khClear: 'Khata clear hai. Poora hisaab dekhein.', cf: (o) => `Balance confirmation · ${o}`, cfDesc: (a) => `Baaki ${a}. Check karke ek tap mein confirm karein.` },
 };
+PREVIEW.hl = PREVIEW.en;
 
-/* a customer link that opens (and previews) in the chosen language; Hinglish is the original, unmarked link */
-export const withLang = (url, lang) => (url && lang && lang !== 'hl' ? `${url}?l=${lang}` : url);
+/* a customer link that opens (and previews) in the chosen language */
+export const withLang = (url, lang) => (url && lang === 'hi' ? `${url}?l=hi` : url);   // plain link = English
 
 /* WhatsApp gets a formatted message (bold, sections, the link on its own line so WhatsApp shows the banner card);
    SMS gets one short plain line. Both are signed with the ERP's name. */

@@ -571,11 +571,11 @@ const DISP = new Set(['sales/SO', 'sales/DN', 'pending', 'wave', 'dispatch']);
 /* Settings → Business type & menu: each module of the app on or off for the whole business (orgs.setup.modules). A module
    left unset follows Simple / Advanced mode; one the owner set wins over it. Opt-in modules (job cards) show only when on. */
 const MODULES = [
-  ['pos', 'Quick Bill counter (POS)', 'Fast billing with barcode, camera and Bolkar (voice)', ['pos']],
+  ['pos', 'Quick Bill counter (POS)', 'Fast billing with barcode, camera and voice', ['pos']],
   ['orders', 'Sales orders, delivery & dispatch', 'Order first, pack and deliver later: delivery notes, pick lists, Dispatch Desk', ['sales/SO', 'sales/DN', 'dispatch', 'pending', 'wave']],
   ['quotes', 'Quotations / estimates', 'Send a price first; turn it into an order or bill in one tap', ['sales/QUOTE']],
   ['procure', 'Purchase orders, goods receipt & gate', 'PO → GRN → bill, receive goods by scan, gate entry, transit claims', ['purchase/PO', 'purchase/GRN', 'gate/in', 'gate/out', 'receive', 'claims']],
-  ['khata', 'Khata, vasooli & vaade', 'Udhaar book, WhatsApp reminders, payment promises', ['khata', 'reminders', 'vaade']],
+  ['khata', 'Ledger, collections & promises', 'Credit book, WhatsApp reminders, payment promises', ['khata', 'reminders', 'vaade']],
   ['loyalty', 'Loyalty points', 'Customers earn points on bills and use them later', ['loyalty']],
   ['shop', 'Online catalogue', 'Your rate list on a link; orders come on WhatsApp', ['shop']],
   ['channels', 'Amazon / Flipkart / web store orders', 'Import marketplace orders, settlements and returns', ['channels']],
@@ -676,9 +676,9 @@ const NAV = [
   ['Sales', [['pos', 'Quick Bill (POS)'], ['tables', 'Tables (Restaurant)'], ['kitchen', 'Kitchen screen'], ['sales/INV', 'Invoices'], ['shop', 'Online Catalogue'], ['loyalty', 'Loyalty Points'], ['channels', 'Online Orders (Amazon…)'], ['recurring', 'Recurring Bills'], ['jobs', 'Repair / Job Cards'], ['sales/SO', 'Sales Orders'], ['dispatch', 'Dispatch Desk'], ['sales/DN', 'Delivery Notes'], ['sales/QUOTE', 'Quotations'], ['sales/SRET', 'Sales Returns'], ['sales/CNOTE', 'Credit Notes (rate diff)'], ['receipts', 'Receipts']]],
   ['Purchase', [['receive', 'Receive Goods (scan)'], ['purchase/PO', 'Purchase Orders'], ['gate/in', 'Gate Entry (inward)'], ['purchase/GRN', 'Goods Receipts (GRN)'], ['purchase/BILL', 'Purchase Bills'], ['purchase/PRET', 'Purchase Returns'], ['purchase/DNOTE', 'Debit Notes (rate diff)'], ['claims', 'Transit Claims'], ['payments', 'Payments']]],
   ['Inventory', [['items', 'Items'], ['stock', 'Stock & Godowns'], ['stock-ageing', 'Stock Ageing'], ['bins', 'Bins & Racks'], ['expiry', 'Batch & Expiry'], ['serials', 'Serial / IMEI'], ['production', 'Production (BOM)'], ['wave', 'Wave Pick List'], ['stockcount', 'Stock Count'], ['gate/out', 'Gate Pass (outward)'], ['pending', 'Pending Orders']]],
-  ['Contacts', [['parties', 'Customers & Suppliers'], ['khata', 'Khata Book'], ['reminders', 'Vasooli (Collections)'], ['vaade', 'Vaade (Promises)'], ['wa-inbox', 'WhatsApp Inbox']]],
+  ['Contacts', [['parties', 'Customers & Suppliers'], ['khata', 'Khata Book'], ['reminders', 'Collections'], ['vaade', 'Promises'], ['wa-inbox', 'WhatsApp Inbox']]],
   ['Accounts', [['staff', 'Staff & Salary'], ['statutory', 'PF / ESI Return'], ['expenses', 'Expenses'], ['bankrec', 'Bank Reconciliation'], ['assets', 'Fixed Assets'], ['tds', 'TDS'], ['accounts', 'Chart of Accounts'], ['journal', 'Journal Voucher'], ['daybook', 'Day Book']]],
-  ['Reports', [['reports/pnl', 'Profit & Loss'], ['reports/balance-sheet', 'Balance Sheet'], ['reports/trial-balance', 'Trial Balance'], ['reports/gst', 'GST Summary'], ['gstr', 'GST Returns (GSTR-1, 2B)'], ['ewaybills', 'E-way Bills'], ['reports/ageing', 'Outstanding (Ageing)'], ['reports/register', 'Registers'], ['cash', 'Kal ka Cash'], ['tally', 'Tally Export']]],
+  ['Reports', [['reports/pnl', 'Profit & Loss'], ['reports/balance-sheet', 'Balance Sheet'], ['reports/trial-balance', 'Trial Balance'], ['reports/gst', 'GST Summary'], ['gstr', 'GST Returns (GSTR-1, 2B)'], ['ewaybills', 'E-way Bills'], ['reports/ageing', 'Outstanding (Ageing)'], ['reports/register', 'Registers'], ['cash', 'Cash Forecast'], ['tally', 'Tally Export']]],
   ['Settings', [['settings', 'Settings'], ['plan', 'Plan & Billing']]],
 ];
 
@@ -860,7 +860,7 @@ async function refreshBell() {
   $('#bellmenu').innerHTML = `<div class="bellh"><b>What needs doing</b><a href="#/dashboard">Dashboard</a></div>` + (rows.length ? rows.map((r) => {
     let [tone, text, href, cta] = TODAY[r.key]; if (LANG === 'hi' && TODAY_HI[r.key]) [text, cta] = TODAY_HI[r.key];
     return `<a class="t-${tone}" href="${href}"><i></i><span>${esc(text(r.n, r))}${r.value ? ` <b>${inr0(r.value)}</b>` : ''}</span><em>${cta} ›</em></a>`;
-  }).join('') : '<p class="muted small" style="padding:8px 12px">Nothing pending. Sab theek hai ✓</p>');
+  }).join('') : '<p class="muted small" style="padding:8px 12px">Nothing pending. All good ✓</p>');
   bellAt = Date.now();
 }
 /* A dropdown hangs from its button's right edge; on a phone the bell and "More" sit far from the right, so a
@@ -979,7 +979,7 @@ const INTENTS = [
   [/\b(low stock|reorder|kam stock|khatam|out of stock)/, 'new/PO?reorder=1', 'Order what is running low'],
   [/\b(gst|gstr|return|2b|itc)/, 'gstr', 'GST returns'],
   [/\b(profit|loss|p&l|pnl|munafa|nuksan)/, 'reports/pnl', 'Profit & Loss'],
-  [/\b(cash|bank|balance|paisa)/, 'cash', 'Cash and bank (Kal ka Cash)'],
+  [/\b(cash|bank|balance|paisa)/, 'cash', 'Cash and bank (Cash Forecast)'],
   [/\b(backup|drive|restore)/, 'settings?backup=1', 'Backup'],
   [/\b(staff|salary|attendance|hajri)/, 'staff', 'Staff & Salary'],
   [/\b(expir|batch)/, 'expiry', 'Batch & Expiry'],
@@ -1100,31 +1100,31 @@ const DASH_TEMPLATES = {
    one. Each pack switches modules on (the rest off), picks the dashboard and what a new item starts with. Everything stays
    changeable, module by module, and each role / user can still get its own menu. */
 const PACKS = [
-  { k: 'kirana', t: 'Kirana / general store', hi: 'किराना / जनरल स्टोर', ico: '🛒', about: 'Fast counter billing, udhaar khata, loyalty, WhatsApp rate list',
-    on: ['pos', 'khata', 'loyalty', 'shop', 'staff'], dash: 'retail', defs: { unit: 'Pcs' }, tips: [['pos', 'Quick Bill with barcode and Bolkar'], ['reminders', 'Vasooli (collections)'], ['shop', 'Online catalogue on WhatsApp']] },
+  { k: 'kirana', t: 'Kirana / general store', hi: 'किराना / जनरल स्टोर', ico: '🛒', about: 'Fast counter billing, credit ledger, loyalty, WhatsApp rate list',
+    on: ['pos', 'khata', 'loyalty', 'shop', 'staff'], dash: 'retail', defs: { unit: 'Pcs' }, tips: [['pos', 'Quick Bill with barcode and voice'], ['reminders', 'Collections'], ['shop', 'Online catalogue on WhatsApp']] },
   { k: 'wholesale', t: 'Wholesale / distributor', hi: 'होलसेल / डिस्ट्रीब्यूटर', ico: '🚚', about: 'Orders → delivery → bill, party rates, collections, godown bins',
-    on: ['orders', 'quotes', 'procure', 'khata', 'wms', 'staff'], dash: 'wholesale', defs: {}, tips: [['parties', 'Wholesale price lists for customers'], ['reminders', 'Vasooli (collections)'], ['dispatch', 'Dispatch Desk']] },
+    on: ['orders', 'quotes', 'procure', 'khata', 'wms', 'staff'], dash: 'wholesale', defs: {}, tips: [['parties', 'Wholesale price lists for customers'], ['reminders', 'Collections'], ['dispatch', 'Dispatch Desk']] },
   { k: 'clothing', t: 'Clothing / footwear / boutique', hi: 'कपड़ा / जूते / बुटीक', ico: '👗', about: 'Sizes & colours with QR labels, counter billing, loyalty, exchanges',
     on: ['pos', 'khata', 'loyalty', 'shop', 'staff'], dash: 'retail', defs: { unit: 'Pcs', gst_rate: 5 }, tips: [['items?variants=1', 'Add sizes & colours'], ['pos', 'Quick Bill with scan'], ['loyalty', 'Loyalty points']] },
   { k: 'online', t: 'Online seller (Instagram / WhatsApp)', hi: 'ऑनलाइन सेलर', ico: '📦', about: 'Orders, COD confirm, scan-to-pack, courier label, tracking, RTO',
     on: ['orders', 'khata', 'shop', 'channels'], dash: 'retail', defs: { unit: 'Pcs' }, workflow: { dispatch: true, confirm_cod: true, default_pay: 'cod' },
     tips: [['settings/workflow', 'Set up orders & dispatch'], ['items?variants=1', 'Add sizes & colours'], ['dispatch', 'Dispatch Desk']] },
   { k: 'pharmacy', t: 'Medical / pharmacy', hi: 'मेडिकल / फार्मेसी', ico: '💊', about: 'Batch & expiry (first to expire goes first), strips & boxes, counter billing',
-    on: ['pos', 'khata', 'batch', 'procure', 'staff'], dash: 'inventory', defs: { track_batch: true }, tips: [['expiry', 'Batch and expiry'], ['pos', 'Quick Bill'], ['reminders', 'Vasooli (collections)']] },
+    on: ['pos', 'khata', 'batch', 'procure', 'staff'], dash: 'inventory', defs: { track_batch: true }, tips: [['expiry', 'Batch and expiry'], ['pos', 'Quick Bill'], ['reminders', 'Collections']] },
   { k: 'electronics', t: 'Mobile / electronics shop', hi: 'मोबाइल / इलेक्ट्रॉनिक्स', ico: '📱', about: 'IMEI / serial with warranty lookup, repair job cards, EMI-style khata',
     on: ['pos', 'khata', 'serial', 'jobs', 'loyalty'], dash: 'retail', defs: { track_serial: true, gst_rate: 18 }, tips: [['serials', 'Serial / IMEI lookup'], ['jobs', 'Repair job cards'], ['pos', 'Quick Bill']] },
   { k: 'repair', t: 'Repair & service centre', hi: 'रिपेयर / सर्विस सेंटर', ico: '🔧', about: 'Job cards for phones, AC, bikes, computers: status, WhatsApp updates, bill',
-    on: ['jobs', 'pos', 'khata', 'serial'], dash: 'retail', defs: {}, tips: [['jobs?new=1', 'Open a job card'], ['jobs', 'Job board'], ['reminders', 'Vasooli (collections)']] },
+    on: ['jobs', 'pos', 'khata', 'serial'], dash: 'retail', defs: {}, tips: [['jobs?new=1', 'Open a job card'], ['jobs', 'Job board'], ['reminders', 'Collections']] },
   { k: 'hardware', t: 'Hardware / building material / sanitary', hi: 'हार्डवेयर / बिल्डिंग मटेरियल', ico: '🧱', about: 'Box / bag / piece units, quotations, site deliveries, contractor khata',
-    on: ['orders', 'quotes', 'khata', 'procure'], dash: 'wholesale', defs: {}, tips: [['items', 'Give items a second unit (Box / Bag)'], ['sales/QUOTE', 'Quotations'], ['vaade', 'Vaade (payment promises)']] },
+    on: ['orders', 'quotes', 'khata', 'procure'], dash: 'wholesale', defs: {}, tips: [['items', 'Give items a second unit (Box / Bag)'], ['sales/QUOTE', 'Quotations'], ['vaade', 'Payment promises']] },
   { k: 'restaurant', t: 'Restaurant / cafe / dhaba', hi: 'रेस्टोरेंट / कैफ़े / ढाबा', ico: '🍽️', about: 'Tables, KOT to kitchen, quick bills, staff salary',
     on: ['restaurant', 'pos', 'khata', 'staff', 'loyalty'], dash: 'retail', defs: { unit: 'Plate', gst_rate: 5 }, tips: [['tables', 'Tables and KOT'], ['pos', 'Quick Bill'], ['loyalty', 'Loyalty points']] },
   { k: 'maker', t: 'Manufacturer / workshop', hi: 'मैन्युफैक्चरर / वर्कशॉप', ico: '🏭', about: 'Recipe / BOM production, purchase orders, orders → dispatch, stock bins',
     on: ['mfg', 'procure', 'orders', 'quotes', 'wms', 'staff', 'books'], dash: 'inventory', defs: {}, tips: [['production', 'Production (recipe / BOM)'], ['purchase/PO', 'Purchase orders'], ['stock-ageing', 'Stock ageing']] },
   { k: 'services', t: 'Services / agency / professional', hi: 'सर्विस / एजेंसी', ico: '💼', about: 'Quotations, recurring bills (AMC, retainers), receipts, TDS',
-    on: ['quotes', 'recurring', 'khata', 'books'], dash: 'finance', defs: {}, tips: [['sales/QUOTE', 'Quotations'], ['recurring', 'Recurring bills'], ['reminders', 'Vasooli (collections)']] },
+    on: ['quotes', 'recurring', 'khata', 'books'], dash: 'finance', defs: {}, tips: [['sales/QUOTE', 'Quotations'], ['recurring', 'Recurring bills'], ['reminders', 'Collections']] },
   { k: 'export', t: 'Exporter', hi: 'एक्सपोर्टर', ico: '🌍', about: 'Foreign-currency invoices, LUT, shipping bills, orders and purchase',
-    on: ['quotes', 'orders', 'procure', 'books'], dash: 'finance', defs: {}, tips: [['parties', 'Customers abroad: state "Other Country"'], ['gstr', 'GST returns'], ['cash', 'Kal ka Cash']] },
+    on: ['quotes', 'orders', 'procure', 'books'], dash: 'finance', defs: {}, tips: [['parties', 'Customers abroad: state "Other Country"'], ['gstr', 'GST returns'], ['cash', 'Cash Forecast']] },
 ];
 const packModules = (p) => Object.fromEntries(MODULES.map(([k]) => [k, p.on.includes(k)]));
 const BIZ = PACKS.map((p) => [p.k, p.t, p.dash, p.tips]);
@@ -1415,8 +1415,8 @@ const TODAY_HI = {
 function todayCard(t) {
   if (!t) return '';
   const rows = t.rows.filter((r) => TODAY[r.key]);
-  if (!rows.length) return `<div class="panel today ok"><b>Aaj ke kaam</b> <span class="muted">· Nothing pending today. Sab theek hai ✓</span></div>`;
-  return `<div class="panel today"><div class="row"><h3 style="margin:0">Aaj ke kaam <span class="muted">· Today</span></h3><span class="spacer"></span><span class="muted">${rows.length} ${LANG === 'hi' ? 'काम' : 'to do'}</span></div>
+  if (!rows.length) return `<div class="panel today ok"><b>Today's tasks</b> <span class="muted">· Nothing pending today. All good ✓</span></div>`;
+  return `<div class="panel today"><div class="row"><h3 style="margin:0">Today's tasks <span class="muted">· Today</span></h3><span class="spacer"></span><span class="muted">${rows.length} ${LANG === 'hi' ? 'काम' : 'to do'}</span></div>
     <div class="todo">${rows.map((r) => { let [tone, text, href, cta] = TODAY[r.key]; if (LANG === 'hi' && TODAY_HI[r.key]) [text, cta] = TODAY_HI[r.key];
       if (r.key === 'to_deliver' && dispatchOn()) href = '#/dispatch';
       return `<a class="t-${tone}" href="${href}"><i></i><span>${esc(text(r.n, r))}${r.value ? ` <b>${inr0(r.value)}</b>` : ''}</span><em>${cta} &rsaquo;</em></a>`; }).join('')}</div></div>`;
@@ -1567,7 +1567,7 @@ route(/^new\/([A-Z]+)$/, async (el, m, q) => {
   const canScan = T.side === 'purchase' && !fromDoc && !isNoteType(type);
   el.innerHTML = head(`New ${esc(T.label)}${fromDoc ? ` <span class="muted">from ${esc(draft.ref_number)}</span>` : ''}`,
     (canScan ? '<button type="button" class="btn primary" id="scanbill">&#128247; Scan supplier bill</button><input type="file" id="scanfile" accept="image/*,application/pdf" hidden>' : '')
-    + (!fromDoc && !isNoteType(type) ? '<button type="button" class="btn" id="voicebill" title="Speak the items">&#127908; Bolkar bill</button>' : '')) + `
+    + (!fromDoc && !isNoteType(type) ? '<button type="button" class="btn" id="voicebill" title="Speak the items">&#127908; Speak a bill</button>' : '')) + `
     ${q.get('scan') && draft.scan_note ? `<div class="panel ${draft.scan_ok ? '' : 'warnbox'}">${draft.scan_note}</div>` : ''}
     <form id="docf"><div class="err" hidden></div>
     ${ge ? `<div class="panel warnbox">Receiving against gate entry <b>${esc(ge.number)}</b>: vehicle ${esc(ge.vehicle_no)}${ge.challan_no ? `, challan ${esc(ge.challan_no)}` : ''}${ge.packages ? `, ${ge.packages} packages` : ''}.</div>` : ''}
@@ -1995,7 +1995,7 @@ route(/^new\/([A-Z]+)$/, async (el, m, q) => {
     // a walk-in sale left unpaid becomes a due nobody can be asked for: offer to take it as paid (the default account, cash)
     const pSel = f.party_id && f.party_id.selectedOptions && f.party_id.selectedOptions[0];
     if (type === 'INV' && !body.payment && f.pay_account && pSel && pSel.textContent.trim().startsWith('Walk-in Customer')
-      && confirm('Walk-in Customer ka bill bina payment ke save ho raha hai: ye udhaar me dikhega, jo kisi se vasool nahi hoga.\n\nOK = poora paid maan kar save karein (' + (f.pay_account.selectedOptions[0] || {}).textContent + ')\nCancel = unpaid hi save karein'))
+      && confirm('This Walk-in Customer bill is being saved without payment: it will show as credit that nobody can be asked to pay.\n\nOK = save it as fully paid (' + (f.pay_account.selectedOptions[0] || {}).textContent + ')\nCancel = save it unpaid'))
       body.payment = { amount: 1e9, account_id: +f.pay_account.value };      // the server takes what the bill comes to
     if (ptsValue() > 0) body.redeem_points = Math.min(ptsUse(), ptsMost());
     if (isExp()) {
@@ -2374,7 +2374,7 @@ function partyForm(p = {}, after) {
     { k: 'price_level', label: 'Price list', type: 'select', value: p.price_level || '', more: true, help: 'Their bills start from this price of each item.',
       options: [{ v: '', t: 'Retail (selling price)' }, { v: 'wholesale', t: 'Wholesale price' }] },
     { k: 'lang', label: 'Message language', type: 'select', value: p.lang || '', more: true, help: 'Bills, reminders and receipts go to them in this language.',
-      options: [{ v: '', t: `Business default (${(LANGS.find((x) => x[0] === (ME.org.msg_lang || 'hl')) || LANGS[2])[1]})` }, ...LANGS.map(([v, t]) => ({ v, t }))] },
+      options: [{ v: '', t: `Business default (${(LANGS.find((x) => x[0] === (ME.org.msg_lang === 'hi' ? 'hi' : 'en')) || LANGS[0])[1]})` }, ...LANGS.map(([v, t]) => ({ v, t }))] },
     { k: 'vip', label: 'VIP buyer: only gentle reminders, never the firm 30-day or final wording', type: 'checkbox', value: !!p.vip, more: true },
     { k: 'address', label: 'Address', type: 'textarea', value: p.address, wide: true, more: true }, ...cfModal('party', p.extra),
   ], async (v) => {
@@ -3037,7 +3037,7 @@ route(/^staff$/, async (el, m, q) => {
   const live = d.rows.filter((s) => s.active), isNow = month === ME.today.slice(0, 7);
   const markBtns = (s) => `<div class="marks" role="group" aria-label="Attendance today for ${esc(s.name)}">${MARKS.map(([k, t]) => `<button type="button" class="mk mk-${k} ${s.today === k ? 'on' : ''}" data-mk="${k}" data-s="${s.id}" title="${t}" aria-pressed="${s.today === k}">${k === 'H' ? '½' : k}</button>`).join('')}</div>`;
   el.innerHTML = head('Staff & Salary', '<a class="btn" href="#/statutory">PF / ESI return</a><button class="btn primary" id="add">+ Add staff</button>') + `
-    ${live.length ? `<div class="panel"><div class="row"><h3 style="margin:0">Aaj ki haazri <span class="muted">· ${fdate(d.today)}</span></h3><span class="spacer"></span><button class="btn sm" id="allp">Mark all present</button></div>
+    ${live.length ? `<div class="panel"><div class="row"><h3 style="margin:0">Today's attendance <span class="muted">· ${fdate(d.today)}</span></h3><span class="spacer"></span><button class="btn sm" id="allp">Mark all present</button></div>
       <div class="att">${live.map((s) => `<div class="att-row"><span><b>${esc(s.name)}</b>${s.title ? ` <span class="muted">${esc(s.title)}</span>` : ''}</span>${markBtns(s)}</div>`).join('')}</div>
       <p class="muted small" style="margin:8px 0 0">P present · A absent · ½ half day · L paid leave · O week off. Tap again to change.</p></div>` : ''}
     <div class="row" style="margin:6px 0 10px"><a class="btn sm" href="#/staff?month=${shiftMonth(month, -1)}">&lsaquo; ${esc(monthName(shiftMonth(month, -1)))}</a><b style="margin:0 8px">${esc(monthName(month))}</b>
@@ -3438,12 +3438,12 @@ ${ME.org.upi_id ? '' : '<div class="panel warnbox">Add your <b>UPI ID</b> in <a 
   const cols = [{ h: 'Name', f: (r) => `<b>${esc(r.name)}</b><div class="muted">${esc(r.phone || '')}</div>${r.pending ? ` <span class="badge b-partial">${r.pending} not sent</span>` : ''}${r.disputed ? ` <span class="badge b-unpaid">${r.disputed} disputed</span>` : ''}` },
     { h: 'Last entry', f: (r) => fdate(r.last_date), cls: 'hide-sm' },
     { h: 'Balance', num: 1, f: (r) => r.balance === 0 ? '<span class="muted">settled</span>' : `<span class="${r.balance > 0 ? 'pos' : 'neg'}">${inr(Math.abs(r.balance))}</span><div class="muted">${r.balance > 0 ? "you'll get" : "you'll give"}</div>` }];
-  const draw = (f) => { const r = k.rows.filter((x) => !f || (x.name + ' ' + x.phone).toLowerCase().includes(f)); $('#list').innerHTML = table(cols, r, { onRow: true, empty: f ? 'No match.' : emptyCta('Write down udhaar here. Each entry goes to the customer on WhatsApp, so both sides agree.', '<button class="btn primary" data-nk>+ Add first entry</button>') });
+  const draw = (f) => { const r = k.rows.filter((x) => !f || (x.name + ' ' + x.phone).toLowerCase().includes(f)); $('#list').innerHTML = table(cols, r, { onRow: true, empty: f ? 'No match.' : emptyCta('Write down credit here. Each entry goes to the customer on WhatsApp, so both sides agree.', '<button class="btn primary" data-nk>+ Add first entry</button>') });
     if ($('[data-nk]', el)) $('[data-nk]', el).onclick = () => $('#new').click(); bindRows($('#list'), r, (x) => go('khata/' + x.id)); };
   draw('');
   $('#search').oninput = (e) => draw(e.target.value.toLowerCase());
   $('#new').onclick = () => modal('New khata entry', [{ k: 'name', label: 'Name', required: true }, { k: 'phone', label: 'Mobile (to send the entry)', type: 'tel' },
-    { k: 'kind', label: 'Entry', type: 'select', options: [{ v: 'gave', t: 'You gave (udhaar diya)' }, { v: 'got', t: 'You got (paise mile)' }] },
+    { k: 'kind', label: 'Entry', type: 'select', options: [{ v: 'gave', t: 'You gave (credit)' }, { v: 'got', t: 'You got (paise mile)' }] },
     { k: 'amount', label: 'Amount (₹)', type: 'number' }, { k: 'note', label: 'Note', wide: true }, { k: 'date', label: 'Date', type: 'date', value: ME.today }],
   async (v) => { const r = await POST('/api/khata', v); dirty('parties'); setTimeout(() => sendEntry(r, () => go('khata/' + r.party_id)), 0); }, { submit: 'Next: send to customer' });
   if (takeNew(q)) $('#new').click();
@@ -3455,7 +3455,7 @@ ${ME.org.upi_id ? '' : '<div class="panel warnbox">Add your <b>UPI ID</b> in <a 
    Every message (bill, reminder, khata entry, receipt, balance statement) goes from the shop's own WhatsApp with one
    tap, so nothing here needs a paid WhatsApp API. Before it goes, the shop picks the customer's language (English,
    हिंदी or Hinglish; remembered per customer), and a bill goes as a real PDF file through the phone's share sheet. */
-const LANGS = [['en', 'English'], ['hi', 'हिंदी'], ['hl', 'Hinglish']];
+const LANGS = [['en', 'English'], ['hi', 'हिंदी']];   // the old 'hl' (Hinglish) reads English
 const langChips = (cur) => `<div class="chips langs" role="radiogroup" aria-label="Message language">${LANGS.map(([k, t]) =>
   `<button type="button" class="chip${k === cur ? ' on' : ''}" role="radio" aria-checked="${k === cur}" data-lang="${k}">${t}</button>`).join('')}</div>`;
 const canShareFiles = () => { try { return !!(navigator.canShare && navigator.canShare({ files: [new File(['%PDF'], 'x.pdf', { type: 'application/pdf' })] })); } catch (e) { return false; } };
@@ -3473,7 +3473,7 @@ function sendDialog(o) {
   // '' = not chosen here: the server uses the customer's saved language (or the business default) and says which
   let lang = o.lang || '', msg = null, file = null, seq = 0, shut = false;
   root.innerHTML = `<div class="modal-bg"><div class="modal send-modal" role="dialog" aria-modal="true"><h2>${esc(o.title)}</h2>${o.intro || ''}
-    <div class="sd-lang"><span class="muted small">Customer's language</span>${langChips(lang || ME.org.msg_lang || 'hl')}</div>
+    <div class="sd-lang"><span class="muted small">Customer's language</span>${langChips(lang === 'hi' || (!lang && ME.org.msg_lang === 'hi') ? 'hi' : 'en')}</div>
     <div class="wa-prev"><div class="wa-bubble" id="sd-msg"><span class="muted">Loading…</span></div></div>
     <p class="muted small" id="sd-nophone" hidden>No mobile number saved for this contact. WhatsApp will ask you to pick the chat.</p>
     <details class="muted"><summary>SMS text</summary><pre class="msg" id="sd-smst"></pre></details>
@@ -3503,7 +3503,7 @@ function sendDialog(o) {
     ready();
   };
   $$('[data-lang]', root).forEach((b) => b.onclick = () => {
-    if (b.dataset.lang === (lang || ME.org.msg_lang || 'hl')) return;
+    if (b.dataset.lang === (lang === 'hi' || (!lang && ME.org.msg_lang === 'hi') ? 'hi' : 'en')) return;
     lang = b.dataset.lang;
     $$('[data-lang]', root).forEach((x) => { x.classList.toggle('on', x === b); x.setAttribute('aria-checked', String(x === b)); });
     load();
@@ -3662,7 +3662,7 @@ const PT = {
     howPay: 'How to pay', cashOrUpi: (n) => `Pay ${esc(n)} in cash or ask for their UPI ID.`, opens: 'Opens Google Pay, PhonePe, Paytm or any UPI app.', copy: 'Copy', copied: 'UPI ID copied',
     callShop: 'Call shop', waShop: 'WhatsApp shop', waShopText: (n, a) => `Hello, I want to pay ${a} to ${n}.`, scanOther: 'Paying from another phone? Scan this',
     khFrom: 'Khata statement from', khNone: 'Khata not found', offKh: 'Connect to the internet to see your khata.', youPay: 'you have to pay', yourAdv: 'your advance', khIs: 'your khata is',
-    settled: 'Settled ✓', youOk: '✓ you confirmed', youNo: 'you said this is wrong', isOk: 'Is this correct?', yes: 'Yes', no: 'No', udhaar: 'Credit ', paidK: 'Paid ', bal: 'Bal',
+    settled: 'Settled ✓', youOk: '✓ you confirmed', youNo: 'you said this is wrong', isOk: 'Is this correct?', yes: 'Yes', no: 'No', credit: 'Credit ', paidK: 'Paid ', bal: 'Bal',
     noEntries: 'No entries yet.', khFoot: 'Entries cannot be deleted by the shop. Any correction appears here as a new entry. Powered by SmartTrader.',
     whatWrong: 'What is wrong with this entry? (the shop will see this)', notSaved: 'Could not save',
     cfFrom: 'Balance confirmation from', cfDue: (p, d) => `${esc(p)}, your balance due as on ${d}`, cfCols: ['Bill', 'Date', 'Due by', 'Amount due'], cfAsk: 'Is this balance correct?',
@@ -3684,7 +3684,7 @@ const PT = {
     howPay: 'भुगतान कैसे करें', cashOrUpi: (n) => `${esc(n)} को नकद दें या उनका UPI ID माँगें।`, opens: 'Google Pay, PhonePe, Paytm या कोई भी UPI ऐप खुलेगा।', copy: 'कॉपी', copied: 'UPI ID कॉपी हो गया',
     callShop: 'दुकान को कॉल करें', waShop: 'दुकान को WhatsApp करें', waShopText: (n, a) => `नमस्ते, मुझे ${n} को ${a} का भुगतान करना है।`, scanOther: 'दूसरे फ़ोन से भुगतान? इसे स्कैन करें',
     khFrom: 'खाता विवरण', khNone: 'खाता नहीं मिला', offKh: 'अपना खाता देखने के लिए इंटरनेट चालू करें।', youPay: 'आपको देना है', yourAdv: 'आपका एडवांस', khIs: 'आपका खाता',
-    settled: 'साफ़ ✓', youOk: '✓ आपने पुष्टि की', youNo: 'आपने इसे गलत बताया', isOk: 'क्या यह सही है?', yes: 'हाँ', no: 'नहीं', udhaar: 'उधार ', paidK: 'भुगतान ', bal: 'बकाया',
+    settled: 'साफ़ ✓', youOk: '✓ आपने पुष्टि की', youNo: 'आपने इसे गलत बताया', isOk: 'क्या यह सही है?', yes: 'हाँ', no: 'नहीं', credit: 'उधार ', paidK: 'भुगतान ', bal: 'बकाया',
     noEntries: 'अभी कोई एंट्री नहीं।', khFoot: 'दुकानदार एंट्री मिटा नहीं सकता। हर सुधार यहाँ नई एंट्री के रूप में दिखेगा। SmartTrader द्वारा।',
     whatWrong: 'इस एंट्री में क्या गलत है? (दुकानदार इसे देखेगा)', notSaved: 'सेव नहीं हुआ',
     cfFrom: 'बकाया पुष्टि', cfDue: (p, d) => `${esc(p)}, ${d} तक आपका बकाया`, cfCols: ['बिल', 'तारीख', 'देय तिथि', 'बकाया राशि'], cfAsk: 'क्या यह बकाया सही है?',
@@ -3706,7 +3706,7 @@ const PT = {
     howPay: 'Pay kaise karein', cashOrUpi: (n) => `${esc(n)} ko cash dein ya unka UPI ID maangein.`, opens: 'Google Pay, PhonePe, Paytm ya koi bhi UPI app khulega.', copy: 'Copy', copied: 'UPI ID copy ho gaya',
     callShop: 'Shop ko call karein', waShop: 'Shop ko WhatsApp karein', waShopText: (n, a) => `Namaste, maine ${n} ka ${a} ka payment karna hai.`, scanOther: 'Doosre phone se pay? Ise scan karein',
     khFrom: 'Khata statement', khNone: 'Khata nahi mila', offKh: 'Khata dekhne ke liye internet chalu karein.', youPay: 'aapko dena hai', yourAdv: 'aapka advance', khIs: 'aapka khata',
-    settled: 'Clear ✓', youOk: '✓ aapne confirm kiya', youNo: 'aapne galat bataya', isOk: 'Kya ye sahi hai?', yes: 'Haan', no: 'Nahi', udhaar: 'Udhaar ', paidK: 'Paid ', bal: 'Bal',
+    settled: 'Clear ✓', youOk: '✓ aapne confirm kiya', youNo: 'aapne galat bataya', isOk: 'Kya ye sahi hai?', yes: 'Haan', no: 'Nahi', credit: 'Udhaar ', paidK: 'Paid ', bal: 'Bal',
     noEntries: 'Abhi koi entry nahi.', khFoot: 'Shop entries delete nahi kar sakta. Har sudhaar yahan nayi entry ki tarah dikhega. Powered by SmartTrader.',
     whatWrong: 'Is entry mein kya galat hai? (shop ise dekhega)', notSaved: 'Save nahi hua',
     cfFrom: 'Balance confirmation', cfDue: (p, d) => `${esc(p)}, ${d} tak aapka baaki`, cfCols: ['Bill', 'Date', 'Due date', 'Baaki'], cfAsk: 'Kya ye baaki sahi hai?',
@@ -3724,9 +3724,9 @@ const PT = {
     vDone: '✅ <b>Vaada pakka!</b>', vByAmt: (d, a) => `${d} tak <b>${a}</b>`, vTell: 'Shop ko WhatsApp par batayein', vAuto: 'Paisa dene par ye vaada apne aap poora ho jayega.', vOk: 'Theek hai',
     plans: null },
 };
-let PUBL = 'hl';
+let PUBL = 'en';
 const PT_DOC_HI = { INV: 'बिल', SRET: 'बिक्री वापसी', CNOTE: 'क्रेडिट नोट', QUOTE: 'कोटेशन', SO: 'सेल्स ऑर्डर', DN: 'डिलीवरी चालान' };
-const pubLang = () => { const l = new URLSearchParams(location.search).get('l'); PUBL = PT[l] ? l : 'hl'; document.documentElement.lang = PUBL === 'hi' ? 'hi' : 'en'; return PUBL; };
+const pubLang = () => { const l = new URLSearchParams(location.search).get('l'); PUBL = l === 'hi' ? 'hi' : 'en'; document.documentElement.lang = PUBL === 'hi' ? 'hi' : 'en'; return PUBL; };
 const pt = (k, ...a) => { const v = PT[PUBL][k] ?? PT.en[k]; return typeof v === 'function' ? v(...a) : v; };
 
 /* The customer's view of an invoice / quotation (/i/<token>): print or save as PDF, pay by UPI. */
@@ -3865,7 +3865,7 @@ const KSTATE = { kept: ['b-paid', '✓ Samay par mila'], broken: ['b-unpaid', '�
 const kBadge = (k, pub) => (KSTATE[k.state] ? `<span class="badge ${KSTATE[k.state][0]}">${pub ? pt({ kept: 'kKept', broken: 'kBroken', due: 'kDue' }[k.state]) : KSTATE[k.state][1]}</span>`
   : `<span class="badge">${pub ? pt('kOpen', dmy(k.due)) : `Baaki · ${dmy(k.due)}`}</span>`);
 /* a date chip's name on the customer's page: "Ravi 27 Okt" in Hinglish, the browser's own words in English / Hindi */
-const pubDay = (d) => (PUBL === 'hl' ? hiDay(d) : new Date(d + 'T00:00:00Z').toLocaleDateString(PUBL === 'hi' ? 'hi-IN' : 'en-IN', { weekday: 'short', day: 'numeric', month: 'short', timeZone: 'UTC' }));
+const pubDay = (d) => ( new Date(d + 'T00:00:00Z').toLocaleDateString(PUBL === 'hi' ? 'hi-IN' : 'en-IN', { weekday: 'short', day: 'numeric', month: 'short', timeZone: 'UTC' }));
 
 /* Bottom sheet on phones (the modal pattern), centred dialog on wide screens */
 function sheet(html, onClose) {
@@ -3976,10 +3976,10 @@ async function vSubmit(S, body, ctx, ok) {
 /* Screen B: dashboard card */
 function vaadaCard(vs) {
   if (!vs || vs.today_n + vs.broken_n <= 0) return '';
-  return `<a class="panel vcard" href="#/vaade"><div class="vcard-h"><h3>Aaj ke Vaade</h3><span aria-hidden="true">›</span></div>
-    <div class="vcard-k"><b>${vs.today_n}</b> aane hain · <b>${inr0(vs.today_amount)}</b></div>
-    ${vs.broken_n > 0 ? `<div class="neg">${vs.broken_n} vaade toote, yaad dilayein</div>` : ''}
-    ${vs.free_cap ? '<div class="muted small">10 se zyada vaade ke liye Starter plan lein</div>' : ''}</a>`;
+  return `<a class="panel vcard" href="#/vaade"><div class="vcard-h"><h3>Today's promises</h3><span aria-hidden="true">›</span></div>
+    <div class="vcard-k"><b>${vs.today_n}</b> due · <b>${inr0(vs.today_amount)}</b></div>
+    ${vs.broken_n > 0 ? `<div class="neg">${vs.broken_n} promise${vs.broken_n === 1 ? '' : 's'} broken, send a reminder</div>` : ''}
+    ${vs.free_cap ? '<div class="muted small">For more than 10 promises, take the Starter plan</div>' : ''}</a>`;
 }
 
 /* WhatsApp reminder through the existing reminder routes (they now carry the promise) */
@@ -3991,44 +3991,44 @@ async function remindParty(pid, book) {
   } catch (e) { if (w) w.close(); toast(e.message, 'err'); }
 }
 async function cancelVaada(id, after) {
-  const reason = prompt('Vaada kyun radd kar rahe hain?');
+  const reason = prompt('Why are you cancelling this promise?');
   if (reason === null) return;
-  try { await POST(`/api/vaade/${id}/cancel`, { reason }); toast('Vaada radd hua'); after(); } catch (e) { toast(e.message, 'err'); }
+  try { await POST(`/api/vaade/${id}/cancel`, { reason }); toast('Promise cancelled'); after(); } catch (e) { toast(e.message, 'err'); }
 }
 
 /* Screen C: #/vaade */
 const vRecord = (r) => (r.kept + r.broken
-  ? `<span class="badge ${r.pct >= 80 ? 'b-paid' : r.pct >= 50 ? 'b-partial' : 'b-unpaid'}">Vaade nibhaye: ${r.kept}/${r.kept + r.broken}</span>` : '<span class="badge">Pehla vaada</span>');
+  ? `<span class="badge ${r.pct >= 80 ? 'b-paid' : r.pct >= 50 ? 'b-partial' : 'b-unpaid'}">Promises kept: ${r.kept}/${r.kept + r.broken}</span>` : '<span class="badge">First promise</span>');
 function vRow(r, i) {
-  const when = r.state === 'done' ? 'Poora hua' : r.due === ME.today ? 'Aaj' : `${dm(r.due)} tak`;
+  const when = r.state === 'done' ? 'Kept' : r.due === ME.today ? 'Today' : `by ${dm(r.due)}`;
   const amt = r.due_amount > 0 ? r.due_amount : r.kamount;
   return `<div class="vrow" data-i="${i}">
     <div class="vr1"><a href="#/${r.book === 'khata' ? 'khata' : 'party'}/${r.party_id}"><b>${esc(r.name)}</b></a><b class="num">${inr0(amt)}</b></div>
-    <div class="vr2 muted">${when} · ${r.of > 1 ? `kisht ${r.n}/${r.of}` : 'poora'} <span class="chip-s">${r.made_by === 'customer' ? 'Link se' : 'Phone par'}</span><span class="chip-s">${r.book === 'khata' ? 'Khata' : 'Bill'}</span>${r.state === 'broken' ? '<span class="badge b-unpaid">Toota</span>' : ''}</div>
+    <div class="vr2 muted">${when} · ${r.of > 1 ? `instalment ${r.n}/${r.of}` : 'full'} <span class="chip-s">${r.made_by === 'customer' ? 'By link' : 'By phone'}</span><span class="chip-s">${r.book === 'khata' ? 'Khata' : 'Bill'}</span>${r.state === 'broken' ? '<span class="badge b-unpaid">Broken</span>' : ''}</div>
     <div class="vr3">${vRecord(r)}</div>
-    <div class="vr4">${r.status === 'done' && r.state !== 'broken' ? '' : '<button class="btn sm got" data-rem>Yaad dilayein</button>'}
-      ${r.status === 'done' ? '' : '<button class="btn sm" data-paid>Paisa mila</button>'}
-      ${r.status === 'open' && ME.can.khata ? '<details class="more-menu"><summary class="btn sm" aria-label="Aur">⋯</summary><div class="menu"><button class="btn danger" data-cancel>Vaada radd karein</button></div></details>' : ''}</div></div>`;
+    <div class="vr4">${r.status === 'done' && r.state !== 'broken' ? '' : '<button class="btn sm got" data-rem>Remind</button>'}
+      ${r.status === 'done' ? '' : '<button class="btn sm" data-paid>Payment received</button>'}
+      ${r.status === 'open' && ME.can.khata ? '<details class="more-menu"><summary class="btn sm" aria-label="More">⋯</summary><div class="menu"><button class="btn danger" data-cancel>Cancel promise</button></div></details>' : ''}</div></div>`;
 }
 route(/^vaade$/, async (el, m, q) => {
   const view = ['today', 'upcoming', 'broken', 'all'].includes(q.get('v')) ? q.get('v') : 'today';
   const d = await GET('/api/vaade?view=' + view);
-  const tabs = [['today', 'Aaj'], ['upcoming', 'Aane wale'], ['broken', 'Toote'], ['all', 'Sab']];
-  el.innerHTML = head('Vaade <span class="muted h-sub">(Payment promises)</span>', '<a class="btn" href="#/reminders">Reminders</a>') + `
+  const tabs = [['today', 'Today'], ['upcoming', 'Coming up'], ['broken', 'Broken'], ['all', 'All']];
+  el.innerHTML = head('Payment promises', '<a class="btn" href="#/reminders">Reminders</a>') + `
     <div class="seg s4 vtabs" role="tablist">${tabs.map(([k, t]) => `<button type="button" role="tab" aria-selected="${k === view}" data-v="${k}" class="${k === view ? 'on' : ''}">${t}${d.counts[k] ? ` <span class="cnt">${d.counts[k]}</span>` : ''}</button>`).join('')}</div>
-    ${d.summary.free_cap ? '<div class="panel warnbox">10 se zyada khule vaade ke liye <a href="#/plan">Starter plan</a> lein. Tab tak grahak naya vaada nahi bana sakte.</div>' : ''}
+    ${d.summary.free_cap ? '<div class="panel warnbox">For more than 10 open promises, take the <a href="#/plan">Starter plan</a>. Until then customers cannot make new promises.</div>' : ''}
     <div class="vlist">${d.rows.length ? d.rows.map(vRow).join('') : view === 'today'
-    ? emptyCta('Aaj koi vaada nahi. Reminder bhejte hi grahak link par khud tareekh chun sakta hai.', '<a class="btn primary" href="#/reminders">Reminders kholein</a>')
-    : '<div class="empty">Koi vaada nahi.</div>'}</div>
-    <p class="muted small">Vaada record sirf aapki dukaan ko dikhta hai, kisi aur ko nahi.</p>`;
+    ? emptyCta('No promises due today. Once you send a reminder, the customer can pick a date on the link.', '<a class="btn primary" href="#/reminders">Open reminders</a>')
+    : '<div class="empty">No promises.</div>'}</div>
+    <p class="muted small">The promise record is seen only by your business, nobody else.</p>`;
   $$('[data-v]', el).forEach((b) => b.onclick = () => go('vaade?v=' + b.dataset.v));
   $$('.vrow', el).forEach((row) => {
     const r = d.rows[+row.dataset.i], amt = r.due_amount > 0 ? r.due_amount : r.kamount;
     row.addEventListener('click', (e) => {
       if (e.target.closest('[data-rem]')) remindParty(r.party_id, r.book);
       else if (e.target.closest('[data-paid]')) {
-        if (r.book === 'khata') { if (!ME.can.khata) return toast('Khata entry ki permission nahi hai.', 'err'); go(`khata/${r.party_id}?got=${amt}`); }
-        else { if (!ME.can.finance) return toast('Receipt banane ki permission nahi hai.', 'err'); go(`receipts?new=1&party_id=${r.party_id}&amount=${amt}`); }
+        if (r.book === 'khata') { if (!ME.can.khata) return toast('You do not have permission for ledger entries.', 'err'); go(`khata/${r.party_id}?got=${amt}`); }
+        else { if (!ME.can.finance) return toast('You do not have permission to make receipts.', 'err'); go(`receipts?new=1&party_id=${r.party_id}&amount=${amt}`); }
       } else if (e.target.closest('[data-cancel]')) cancelVaada(r.id, render);
     });
   });
@@ -4045,9 +4045,9 @@ async function vaadaParty(box, pid, book) {
   const s = d.stats, tot = s.kept + s.broken;
   if (!tot && !opens.length && !dueBooks.length) { box.innerHTML = ''; return; }
   box.innerHTML = `<div class="panel vparty">
-    <div class="vstrip"><b>Vaada record:</b> ${tot ? `${s.kept} nibhaye · ${s.broken} toota (${s.pct}%) · pichhle 90 din mein ${s.broken90} toota` : 'abhi koi record nahi'}</div>
-    ${opens.map((o) => `<div class="vopen" data-vid="${o.id}">${vaadaOpenCard(o)}${ME.can.khata ? '<button class="btn sm danger" type="button" data-vcancel>Radd karein</button>' : ''}</div>`).join('')}
-    ${ME.can.khata && dueBooks.length ? '<button class="btn" type="button" data-vnew>✍ Phone par vaada likhein</button>' : ''}</div>`;
+    <div class="vstrip"><b>Promise record:</b> ${tot ? `${s.kept} kept · ${s.broken} broken (${s.pct}%) · ${s.broken90} broken in the last 90 days` : 'no record yet'}</div>
+    ${opens.map((o) => `<div class="vopen" data-vid="${o.id}">${vaadaOpenCard(o)}${ME.can.khata ? '<button class="btn sm danger" type="button" data-vcancel>Cancel</button>' : ''}</div>`).join('')}
+    ${ME.can.khata && dueBooks.length ? '<button class="btn" type="button" data-vnew>✍ Note a promise from a call</button>' : ''}</div>`;
   const again = () => vaadaParty(box, pid, book);
   $$('[data-vcancel]', box).forEach((b) => b.onclick = () => cancelVaada(b.closest('[data-vid]').dataset.vid, again));
   const nb = $('[data-vnew]', box);
@@ -4056,22 +4056,22 @@ async function vaadaParty(box, pid, book) {
 function shopVaadaSheet(d, books, after) {
   let book = books[0], saved = false;
   const def = addD(d.today, 7) <= d.max_date ? addD(d.today, 7) : d.max_date;
-  const S = sheet(`<h2>Phone par vaada likhein</h2><p class="muted">${esc(d.party.name)}</p>
+  const S = sheet(`<h2>Note a promise from a call</h2><p class="muted">${esc(d.party.name)}</p>
     ${books.length > 1 ? `<div class="seg" id="vbook">${books.map((b) => `<button type="button" data-b="${b}" class="${b === book ? 'on' : ''}">${b === 'inv' ? 'Bill' : 'Khata'} · ${inr0(d.due[b])}</button>`).join('')}</div>` : ''}
     <div class="form">
       <label class="f" data-date>Kab tak?<input type="date" id="vd" min="${d.today}" max="${d.max_date}" value="${def}"></label>
-      <label class="f" data-date>Kitna? (₹)<input type="number" id="va" step="any" min="0" inputmode="decimal"></label>
+      <label class="f" data-date>How much? (₹)<input type="number" id="va" step="any" min="0" inputmode="decimal"></label>
       <div class="f wide" id="vkw"></div>
       <div class="vplans f wide" id="vplans" hidden></div>
       <label class="f wide">Note<input id="vn" maxlength="200" placeholder="Jaise: phone par baat hui"></label>
     </div><div class="err" hidden></div>
-    <div class="actions"><button type="button" class="btn" data-x>Cancel</button><button type="button" class="btn primary" id="vgo">Vaada save karein</button></div>`, () => { if (saved) after(); });
+    <div class="actions"><button type="button" class="btn" data-x>Cancel</button><button type="button" class="btn primary" id="vgo">Save promise</button></div>`, () => { if (saved) after(); });
   const el = S.el;
   const draw = () => {
     $('#va', el).value = d.due[book];
     const plans = d.plans[book] || [];
-    $('#vkw', el).innerHTML = !d.can_plan ? '<span class="muted small">Kisht: Starter plan mein</span>'
-      : plans.length ? '<label class="check"><input type="checkbox" id="vk"> <span>Kisht mein</span></label>' : '<span class="muted small">Is rakam par kisht nahi ban sakti.</span>';
+    $('#vkw', el).innerHTML = !d.can_plan ? '<span class="muted small">Instalments: in the Starter plan</span>'
+      : plans.length ? '<label class="check"><input type="checkbox" id="vk"> <span>In instalments</span></label>' : '<span class="muted small">Instalments are not possible for this amount.</span>';
     $('#vplans', el).innerHTML = plans.map((p, i) => `<label class="vplan"><input type="radio" name="vplan" value="${esc(p.key)}" ${i ? '' : 'checked'}>
       <span><b>${esc(p.label)}</b><br>${inr0(p.amounts[0])} × ${p.amounts.length} · aakhri ${dmy(p.last)}</span></label>`).join('');
     $('#vplans', el).hidden = true; $$('[data-date]', el).forEach((x) => { x.hidden = false; });
@@ -4088,11 +4088,11 @@ function shopVaadaSheet(d, books, after) {
     const btn = $('#vgo', el); btn.disabled = true; $('.err', el).hidden = true;
     try {
       const r = await POST('/api/vaade', body);
-      saved = true; toast('Vaada save hua');
-      el.innerHTML = `<div class="vok"><div class="vok-h">✅ <b>Vaada save hua</b></div><p class="muted">Grahak ko WhatsApp par bhej dein, taaki unhe tareekh yaad rahe.</p>
+      saved = true; toast('Promise saved');
+      el.innerHTML = `<div class="vok"><div class="vok-h">✅ <b>Promise saved</b></div><p class="muted">Send it to the customer on WhatsApp so they remember the date.</p>
         <div class="wa-prev"><div class="wa-bubble">${waFormat(r.text)}</div></div>
-        <a class="btn got big" href="${esc(r.whatsapp_url)}" target="_blank" rel="noopener" data-x>Grahak ko bhejein</a></div>
-        <div class="actions"><button type="button" class="btn" data-x>Baad mein</button></div>`;
+        <a class="btn got big" href="${esc(r.whatsapp_url)}" target="_blank" rel="noopener" data-x>Send to customer</a></div>
+        <div class="actions"><button type="button" class="btn" data-x>Later</button></div>`;
     } catch (e) { sheetErr(S, e.message); btn.disabled = false; }
   };
 }
@@ -4103,47 +4103,47 @@ async function creditCheck(pid) {
   if (!pid || !creditOn()) return null;
   try { return await GET('/api/vaade/check?party_id=' + pid); } catch (e) { return null; }
 }
-const creditText = (r) => `⚠ <b>${esc(r.name || '')}</b>: ${esc(r.reasons.join(', '))}. <b>Phir bhi udhaar?</b>`;
+const creditText = (r) => `⚠ <b>${esc(r.name || '')}</b>: ${esc(r.reasons.join(', '))}. <b>Give credit anyway?</b>`;
 /* An item on a sale at ₹0 (its sale price was never saved): type the rate, or save it as a free item. */
 function zeroSheet(list, { yes, fix }) {
   const S = sheet(`<h2>Rate is ₹0</h2><p>${list.length === 1 ? 'This item has' : 'These items have'} no rate on the bill${list.length === 1 ? '' : 's'}, so ${list.length === 1 ? 'it would be' : 'they would be'} billed at ₹0:</p>
     <ul class="vreasons">${list.map((z) => `<li>Line ${z.line}: ${esc(z.name)}</li>`).join('')}</ul>
-    <p class="muted small">Tip: save a sale price on the item (Items → edit) and it is filled in by itself next time. Rate nahi bhara hai: rate likhein, ya free item ki tarah save karein.</p>
+    <p class="muted small">Tip: save a sale price on the item (Items → edit) and it is filled in by itself next time.</p>
     <div class="actions"><button type="button" class="btn primary" id="zfix">Type the rate</button><button type="button" class="btn" id="zyes">Save as free item</button></div>`);
   $('#zfix', S.el).onclick = () => { S.close(); fix(list[0]); };
   $('#zyes', S.el).onclick = () => { S.close(); yes(); };
   if (matchMedia('(pointer: fine)').matches) $('#zfix', S.el).focus();
 }
 function creditSheet(cw, { yes, cash }) {
-  const S = sheet(`<h2>Udhaar dena hai?</h2><ul class="vreasons">${(cw.reasons || []).map((x) => `<li>${esc(x)}</li>`).join('')}</ul>
-    ${cw.can_override ? '' : '<p class="err">Is grahak ka udhaar abhi band hai. Owner ya admin se approve karayein.</p>'}
-    <div class="actions"><button type="button" class="btn" id="ccash">Cash / UPI lein</button>${cw.can_override ? '<button type="button" class="btn primary" id="cyes">Haan, udhaar dein</button>' : ''}</div>`);
+  const S = sheet(`<h2>Give credit?</h2><ul class="vreasons">${(cw.reasons || []).map((x) => `<li>${esc(x)}</li>`).join('')}</ul>
+    ${cw.can_override ? '' : '<p class="err">Credit is blocked for this customer. Ask the owner or an admin to approve.</p>'}
+    <div class="actions"><button type="button" class="btn" id="ccash">Take cash / UPI</button>${cw.can_override ? '<button type="button" class="btn primary" id="cyes">Yes, give credit</button>' : ''}</div>`);
   $('#ccash', S.el).onclick = () => { S.close(); cash(); };
   const y = $('#cyes', S.el);
   if (y) { y.onclick = () => { S.close(); yes(); }; if (matchMedia('(pointer: fine)').matches) y.focus(); }
 }
 
 /* Screen F: Settings → Vaade aur udhaar */
-const VPLANS = [['2f', '2 kisht · har 15 din'], ['4w', '4 kisht · har hafte'], ['3m', '3 kisht · har mahine'], ['6w', '6 kisht · har hafte'], ['6m', '6 kisht · har mahine']];
+const VPLANS = [['2f', '2 instalments · every 15 days'], ['4w', '4 instalments · weekly'], ['3m', '3 instalments · monthly'], ['6w', '6 instalments · weekly'], ['6m', '6 instalments · monthly']];
 function vaadaSettings() {
   const v = ME.org.vaada || {}, starter = ME.plan.features.includes('vaada'), num = (n, lo, hi, val) => `<input type="number" name="${n}" min="${lo}" max="${hi}" value="${esc(val)}" inputmode="numeric">`;
-  return `<form class="panel" id="vset"><h2>Vaade aur udhaar</h2>
-    <p class="muted">Grahak apne khata ya bill ke link par khud tareekh ya kisht chunta hai. Paisa aate hi vaada apne aap poora ho jata hai.</p><div class="err" hidden></div>
+  return `<form class="panel" id="vset"><h2>Promises and credit</h2>
+    <p class="muted">The customer picks a date or instalments on their ledger or bill link. The promise closes by itself when the money comes in.</p><div class="err" hidden></div>
     <label class="check vline"><input type="checkbox" name="on" ${v.on ? 'checked' : ''}> <span>Link par "Kab tak denge?" dikhayein</span></label>
     <div class="form">
-      <label class="f">Grahak kitne din aage tak ki tareekh chun sake${num('max_days', 1, 60, v.max_days)}</label>
-      <label class="f">Kam se kam hissa %${num('min_part_pct', 10, 100, v.min_part_pct)}</label>
-      <label class="check f wide"><input type="checkbox" name="part" ${v.part ? 'checked' : ''}> <span>Hissa (part) payment ka vaada</span></label>
-      <fieldset class="f wide vfs" ${starter ? '' : 'disabled'}><legend>Kisht ke plan${starter ? '' : ' <span class="badge">Starter plan mein</span>'}</legend>
+      <label class="f">How many days ahead the customer can pick${num('max_days', 1, 60, v.max_days)}</label>
+      <label class="f">Minimum part payment %${num('min_part_pct', 10, 100, v.min_part_pct)}</label>
+      <label class="check f wide"><input type="checkbox" name="part" ${v.part ? 'checked' : ''}> <span>Allow a promise of part payment</span></label>
+      <fieldset class="f wide vfs" ${starter ? '' : 'disabled'}><legend>Instalment plans${starter ? '' : ' <span class="badge">In the Starter plan</span>'}</legend>
         ${VPLANS.map(([k, t]) => `<label class="check"><input type="checkbox" name="plans" value="${k}" ${(v.plans || []).includes(k) ? 'checked' : ''}> ${t}</label>`).join('')}</fieldset>
-      <label class="f">Kam se kam kisht ₹${num('min_kisht', 1, 10000000, v.min_kisht)}</label>
-      <label class="f">Chhoot (grace) ke din${num('grace', 0, 3, v.grace)}</label>
-      <fieldset class="f wide vfs"><legend>Naya udhaar dete waqt check${starter ? '' : ' <span class="badge">Starter plan mein</span>'}</legend>
-        ${[['off', 'Band'], ['warn', 'Sirf chetavni (koi bhi aage badh sake)'], ['stop', 'Rokein (sirf owner/admin de sake)']].map(([k, t]) => `<label class="check"><input type="radio" name="credit_check" value="${k}" ${v.credit_check === k ? 'checked' : ''}> ${t}</label>`).join('')}</fieldset>
-      <label class="f">Kitne din purana baaki ho to chetavni${num('overdue_days', 7, 180, v.overdue_days)}</label>
-      <label class="f">90 din mein kitne vaade toote to chetavni${num('broken_max', 1, 10, v.broken_max)}</label>
+      <label class="f">Minimum instalment ₹${num('min_kisht', 1, 10000000, v.min_kisht)}</label>
+      <label class="f">Grace days${num('grace', 0, 3, v.grace)}</label>
+      <fieldset class="f wide vfs"><legend>Check before giving new credit${starter ? '' : ' <span class="badge">In the Starter plan</span>'}</legend>
+        ${[['off', 'Off'], ['warn', 'Warn only (anyone can go ahead)'], ['stop', 'Block (only owner/admin can allow)']].map(([k, t]) => `<label class="check"><input type="radio" name="credit_check" value="${k}" ${v.credit_check === k ? 'checked' : ''}> ${t}</label>`).join('')}</fieldset>
+      <label class="f">Warn when a balance is this many days old${num('overdue_days', 7, 180, v.overdue_days)}</label>
+      <label class="f">Warn after this many broken promises in 90 days${num('broken_max', 1, 10, v.broken_max)}</label>
     </div>
-    <div class="row" style="margin-top:12px"><span class="spacer"></span><button class="btn primary" ${ME.can.settings ? '' : 'disabled'}>Save karein</button></div></form>`;
+    <div class="row" style="margin-top:12px"><span class="spacer"></span><button class="btn primary" ${ME.can.settings ? '' : 'disabled'}>Save</button></div></form>`;
 }
 function wireVaadaSettings(el) {
   const f = $('#vset', el);
@@ -4154,7 +4154,7 @@ function wireVaadaSettings(el) {
     const body = { on: E.on.checked, max_days: +E.max_days.value, part: E.part.checked, min_part_pct: +E.min_part_pct.value, min_kisht: +E.min_kisht.value,
       grace: +E.grace.value, credit_check: ($('[name=credit_check]:checked', f) || {}).value || 'warn', overdue_days: +E.overdue_days.value, broken_max: +E.broken_max.value };
     if (ME.plan.features.includes('vaada')) body.plans = $$('[name=plans]:checked', f).map((x) => x.value);
-    try { const r = await api('PUT', '/api/settings/vaada', body); ME.org.vaada = r.vaada; toast('Vaada settings save hui'); } catch (err) { b.hidden = false; b.textContent = err.message; }
+    try { const r = await api('PUT', '/api/settings/vaada', body); ME.org.vaada = r.vaada; toast('Promise settings saved'); } catch (err) { b.hidden = false; b.textContent = err.message; }
   };
 }
 
@@ -4163,25 +4163,25 @@ route(/^cash$/, async (el, m, q) => {
   let d;
   try { d = await GET('/api/vaade/cash' + (q.get('fresh') ? '?fresh=1' : '')); } catch (e) {
     if (e.status !== 402) throw e;
-    el.innerHTML = head('Agle 4 hafte ka cash') + `<div class="panel">${emptyCta('Kal ka Cash Growth plan mein hai: kis hafte paisa kam padega aur aaj kisko yaad dilana hai, ek nazar mein.', '<a class="btn primary" href="#/plan">Plan dekhein</a>')}</div>`;
+    el.innerHTML = head('Cash for the next 4 weeks') + `<div class="panel">${emptyCta('Cash Forecast is in the Growth plan: which week money will run short and whom to remind today, at a glance.', '<a class="btn primary" href="#/plan">See plans</a>')}</div>`;
     return;
   }
   if (q.get('fresh')) history.replaceState(null, '', '#/cash');
   const max = Math.max(1, ...d.weeks.map((w) => Math.abs(w.close_exp))), sw = d.short_week ? d.weeks[d.short_week - 1] : null;
-  el.innerHTML = head('Agle 4 hafte ka cash', d.low_data ? '<span class="badge b-partial">Kam data: anumaan kachcha hai</span>' : '') + `
-    <div class="panel ctop">Aaj haath mein: <b>${inr0(d.opening)}</b> <span class="muted">(Cash + Bank + UPI)</span></div>
-    ${sw ? `<div class="panel cshort" role="alert">⚠ <b>${dm(sw.from)} – ${dm(sw.to)}</b> wale hafte mein ~${inr0(d.short_amount)} kam pad sakta hai.</div>` : ''}
+  el.innerHTML = head('Cash for the next 4 weeks', d.low_data ? '<span class="badge b-partial">Little data: the forecast is rough</span>' : '') + `
+    <div class="panel ctop">In hand today: <b>${inr0(d.opening)}</b> <span class="muted">(Cash + Bank + UPI)</span></div>
+    ${sw ? `<div class="panel cshort" role="alert">⚠ <b>${dm(sw.from)} – ${dm(sw.to)}</b>: the week may fall ~${inr0(d.short_amount)} short.</div>` : ''}
     <div class="cweeks">${d.weeks.map((w) => `<div class="cweek${w.close_exp < 0 ? ' short' : ''}"><div class="cw-t">${dm(w.from)} – ${dm(w.to)}</div>
-      <div>Aayega ~${inr0(w.in_exp)} <span class="muted">(zyada se zyada ${inr0(w.in_full)})</span></div><div>Jayega ${inr0(w.out)}</div>
-      <div class="cw-c">Hafte ke ant mein ~<b class="${w.close_exp < 0 ? 'neg' : ''}">${inr0(w.close_exp)}</b></div>
+      <div>Coming in ~${inr0(w.in_exp)} <span class="muted">(at most ${inr0(w.in_full)})</span></div><div>Going out ${inr0(w.out)}</div>
+      <div class="cw-c">End of week ~<b class="${w.close_exp < 0 ? 'neg' : ''}">${inr0(w.close_exp)}</b></div>
       <div class="cbar"><i class="${w.close_exp < 0 ? 'r' : 'g'}" style="width:${Math.max(4, Math.round(Math.abs(w.close_exp) / max * 100))}%"></i></div></div>`).join('')}</div>
-    ${d.remind.length ? `<div class="panel"><h3>Aaj in ${d.remind.length} logon ko yaad dilayein <span class="muted">(~${inr0(d.remind_total)} aa sakta hai)</span></h3>
+    ${d.remind.length ? `<div class="panel"><h3>Remind these ${d.remind.length} today <span class="muted">(~${inr0(d.remind_total)} could come in)</span></h3>
       ${d.remind.map((r) => `<div class="crow"><span><a href="#/${r.book === 'khata' ? 'khata' : 'party'}/${r.party_id}"><b>${esc(r.name)}</b></a> <span class="muted">~${inr0(r.amount)}</span></span>
-        <button class="btn sm got" data-rem="${r.party_id}" data-book="${r.book}">Yaad dilayein</button></div>`).join('')}</div>` : ''}
-    ${d.bills_wait.length ? `<div class="panel"><h3>Ye bills thoda ruk sakte hain <span class="muted">(abhi terms ke andar)</span></h3>
+        <button class="btn sm got" data-rem="${r.party_id}" data-book="${r.book}">Remind</button></div>`).join('')}</div>` : ''}
+    ${d.bills_wait.length ? `<div class="panel"><h3>These bills can wait a little <span class="muted">(still within terms)</span></h3>
       ${d.bills_wait.map((b) => `<div class="crow"><a href="#/doc/${b.id}">${esc(b.party || b.number)}</a><span class="muted">${inr0(b.amount)} · due ${dm(b.due)}</span></div>`).join('')}</div>` : ''}
-    ${d.stuck > 0 ? `<p class="muted">Atka hua ${inr0(d.stuck)} (90 din se purana), gina nahi.</p>` : ''}
-    <p class="muted small">Anumaan kaise: vaade × grahak ka vaada-record, baaki bills × 60% unki aam deri ke hisaab se, supplier bills due date par, GST 20 tareekh ko, kharche pichhle 3 mahine ke beech ke hisaab se. Aaj ${esc(d.at)} par bana. <button class="linkbtn" type="button" id="cfresh">Dobara banayein</button></p>`;
+    ${d.stuck > 0 ? `<p class="muted">${inr0(d.stuck)} stuck (older than 90 days), not counted.</p>` : ''}
+    <p class="muted small">How it is worked out: promises × the customer's promise record, other bills × 60% by their usual delay, supplier bills on their due date, GST on the 20th, expenses from the average of the last 3 months. Made today at ${esc(d.at)}. <button class="linkbtn" type="button" id="cfresh">Make again</button></p>`;
   $$('[data-rem]', el).forEach((b) => b.onclick = () => remindParty(b.dataset.rem, b.dataset.book));
   $('#cfresh').onclick = () => go('cash?fresh=1');
 });
@@ -4817,11 +4817,11 @@ const AREA_LABEL = { sales: 'Sales & POS', purchase: 'Purchase', items: 'Items &
   khata: 'Khata book', reports: 'Reports, profit & costs', settings: 'Settings', gate: 'Gate register (vehicles in / out)', kitchen: 'Kitchen screen (KOTs only, no prices)' };
 /* Settings → Roles: every role made to measure. What it may see and change, limits it works under, and the menu its
    users get (a user's own menu, set in Settings → Users, still wins). The server enforces the rights and limits. */
-const LIMIT_TEXT = [['no_cancel', 'Cannot cancel bills, payments or entries'], ['no_credit', 'No udhaar: every sale is paid in full'],
+const LIMIT_TEXT = [['no_cancel', 'Cannot cancel bills, payments or entries'], ['no_credit', 'No credit: every sale is paid in full'],
   ['hide_costs', 'Cannot see purchase rates, cost or profit'],
   ['no_dispatch', 'Cannot save Delivery Notes (godown staff without the selling right)'],
   ['must_scan', 'Must scan every item before dispatch (Pack & check)']];
-const limitSummary = (r) => [r.no_cancel && 'no cancelling', r.no_credit && 'no udhaar', r.hide_costs && 'no costs', r.no_dispatch && 'no dispatch', r.must_scan && 'scan to dispatch',
+const limitSummary = (r) => [r.no_cancel && 'no cancelling', r.no_credit && 'no credit', r.hide_costs && 'no costs', r.no_dispatch && 'no dispatch', r.must_scan && 'scan to dispatch',
   r.max_discount !== null && r.max_discount !== undefined && `max ${r.max_discount}% off`,
   r.backdate_days === 0 ? 'today\'s date only' : r.backdate_days ? `${r.backdate_days} days back at most` : ''].filter(Boolean).join(' · ') || '—';
 const uiSummary = (ui) => (ui.screens ? `${ui.screens.length} screens` : ui.job ? JOBS[ui.job].t.split(':')[0] : '—') + (ui.home ? ` → opens on ${(NAV.flatMap(([, x]) => x).find(([h]) => h === ui.home) || ['', ui.home])[1]}` : '');
@@ -4899,7 +4899,7 @@ route(/^settings\/roles$/, async (el) => {
     };
   };
   el.innerHTML = head('Roles', `<button class="btn primary" id="newrole">+ New role</button>`) + setTabs('settings/roles') + `
-    <p class="muted">Every role can be made to fit your shop: what it can see and change, limits (no cancelling, no udhaar, a discount cap, no old dates) and the menu its people get. Give a role to a user in <a href="#/settings">Business &amp; users</a>.</p>
+    <p class="muted">Every role can be made to fit your shop: what it can see and change, limits (no cancelling, no credit, a discount cap, no old dates) and the menu its people get. Give a role to a user in <a href="#/settings">Business &amp; users</a>.</p>
     <div class="panel flush"><h2 class="ph">Built-in roles</h2>${table([{ h: 'Role', f: (r) => `<b>${esc(r.name)}</b>${r.changed ? ' <span class="badge b-partial">changed</span>' : ''}` },
       { h: 'Can change', cls: 'hide-sm', f: (r) => esc(r.perms.edit.map((a) => AREA_LABEL[a] || a).join(', ') || '—') },
       { h: 'Limits', f: (r) => esc(limitSummary(r.rules)) }, { h: 'Menu', cls: 'hide-sm', f: (r) => esc(uiSummary(r.ui)) }, { h: 'Users', k: 'users', num: 1 },
@@ -5041,7 +5041,7 @@ route(/^settings$/, async (el, m, q) => {
       <label class="f">Business email<input name="email" type="email" value="${esc(o.email || '')}"></label><label class="f">Phone<input name="phone" value="${esc(o.phone)}"></label>
       <label class="f">UPI ID<input name="upi_id" value="${esc(o.upi_id)}" placeholder="shop@okhdfcbank"><small class="help">Customers pay you here. Shown as a QR on bills.</small></label>
       <label class="f">Financial year starts (MM-DD)<input name="fy_start" value="${esc(o.fy_start)}"></label>
-      <label class="f">Customer message language<select name="msg_lang">${LANGS.map(([v, t]) => `<option value="${v}" ${(o.msg_lang || 'hl') === v ? 'selected' : ''}>${t}</option>`).join('')}</select>
+      <label class="f">Customer message language<select name="msg_lang">${LANGS.map(([v, t]) => `<option value="${v}" ${(o.msg_lang === 'hi' ? 'hi' : 'en') === v ? 'selected' : ''}>${t}</option>`).join('')}</select>
         <small class="help">The default for bills, reminders and receipts. Set it per customer too, or change it before each send.</small></label>
       <label class="f">Udyam registration no.<input name="udyam" value="${esc(o.udyam || '')}" maxlength="19" placeholder="UDYAM-RJ-17-0012345"><small class="help">For interest on late payments under the MSMED Act (Vasooli → Recovery file).</small></label>
       <label class="f">LUT ARN (exports without IGST)<input name="lut" value="${esc(o.lut || '')}" maxlength="60" placeholder="AD080424012345X (2026-27)"><small class="help">Printed on export invoices made under LUT / bond.</small></label>
@@ -5052,7 +5052,7 @@ route(/^settings$/, async (el, m, q) => {
         <small class="help">A purchase order above this amount made by staff waits until the owner or an admin approves it. Yours go through straight away.</small></label></div>
       <div class="row" style="margin-top:12px"><span class="spacer"></span><button class="btn primary">Save</button></div></form>` : ''}
     ${ME.can.settings && ME.wa_auto ? `<div class="panel" id="autowa"><h2>Automatic WhatsApp reminders</h2>
-      <p class="muted">Every morning, customers who are due a reminder on the Vasooli schedule get a WhatsApp message by themselves, from SmartTrader's WhatsApp Business number: their name, your business, the amount due and a link to the bills with your UPI. Nobody gets two in a day; VIP and promised customers follow the same rules as on the Vasooli screen.</p>
+      <p class="muted">Every morning, customers who are due a reminder on the collections schedule get a WhatsApp message by themselves, from SmartTrader's WhatsApp Business number: their name, your business, the amount due and a link to the bills with your UPI. Nobody gets two in a day; VIP and promised customers follow the same rules as on the Vasooli screen.</p>
       ${(ME.plan.features || []).includes('autowa') ? `<label class="mode-opt"><input type="checkbox" id="awon" ${o.auto_wa ? 'checked' : ''}> <span><b>Send reminders automatically</b><br><span class="muted">10 am to 1 pm, every day.</span></span></label>
         ${o.auto_wa_note ? `<p class="muted small">Last run: ${esc(o.auto_wa_note.replace(/^more /, ''))}</p>` : ''}
         <div class="row" style="margin-top:8px"><span class="spacer"></span><button type="button" class="btn" id="awrun" ${o.auto_wa ? '' : 'disabled'}>Send today's now</button></div>`
@@ -5650,7 +5650,7 @@ route(/^claims$/, async (el, m, q) => {
       { h: 'Still due', num: 1, f: (c) => (c.due > 0 ? `<b>${inr(c.due)}</b>` : '—') + (c.received ? `<div class="muted">got ${inr(c.received)}</div>` : '') },
       { h: 'Follow up', f: (c) => (c.due > 0 ? (c.follow_up ? `<span class="${c.late ? 'neg' : ''}">${fdate(c.follow_up)}${c.late ? ' · due' : ''}</span>` : '<span class="muted">not set</span>') : '') },
       { h: '', f: (c) => claimBadge(c) }], rows,
-    { empty: status === 'open' ? 'No claim is waiting. Sab theek hai ✓' : 'No claims here.', onRow: true })}</div>`;
+    { empty: status === 'open' ? 'No claim is waiting. All good ✓' : 'No claims here.', onRow: true })}</div>`;
   bindRows(el, rows, (x) => go('claim/' + x.id));
 });
 
@@ -5717,7 +5717,7 @@ route(/^wa-inbox$/, async (el, m, q) => {
       { h: 'Last message', f: (r) => r.last ? `<span class="muted">${r.last.dir === 'in' ? '' : (WA_KIND[r.last.kind] || 'Shop') + ': '}</span>${esc(r.last.body.replace(/^\*[^*\n]+\*\n/, '').replace(/\*/g, '').slice(0, 90))}` : '' },
       { h: 'When', cls: 'hide-sm', f: (r) => (r.last ? waWhen(r.last.at) : '') },
       { h: '', f: (r) => (r.waiting ? `<span class="badge b-unpaid">waiting</span>` : '') + (r.window_open ? ' <span class="badge b-paid" title="The customer wrote in the last 24 hours: your reply is free">can reply</span>' : '') }], list,
-    { empty: tab === 'waiting' ? (rows.length ? 'Nobody is waiting. Sab theek hai ✓' : `No message yet. Share your shop's WhatsApp link or QR (Settings → WhatsApp bot) on bills, the counter and your status.`) : 'No chats yet.', onRow: true })}</div>`;
+    { empty: tab === 'waiting' ? (rows.length ? 'Nobody is waiting. All good ✓' : `No message yet. Share your shop's WhatsApp link or QR (Settings → WhatsApp bot) on bills, the counter and your status.`) : 'No chats yet.', onRow: true })}</div>`;
   $('#warf').onclick = () => render();
   bindRows(el, list, (r) => go('wa-inbox/' + r.phone));
 });
@@ -5848,7 +5848,7 @@ route(/^loyalty$/, async (el, m, q) => {
       ${table([{ h: 'Customer', f: (r) => `<a href="#/party/${r.id}"><b>${esc(r.name)}</b></a>${r.phone ? `<div class="muted small">${esc(r.phone)}</div>` : ''}` },
         { h: 'Points', num: 1, f: (r) => `<b>${r.balance}</b><div class="muted small">${inr(r2(Math.max(0, r.balance) * s.point_value))}</div>` },
         { h: 'Earned', num: 1, cls: 'hide-sm', k: 'earned' }, { h: 'Used', num: 1, cls: 'hide-sm', k: 'used' }, { h: 'Last bill', cls: 'hide-sm', f: (r) => fdate(r.last) },
-        { h: '', f: (r) => `<button class="btn sm" data-hist="${r.id}">History</button>${r.phone && r.balance > 0 ? ` <a class="btn sm" target="_blank" rel="noopener" href="https://wa.me/${esc(waNum(r.phone))}?text=${encodeURIComponent(`Namaste ${r.name} ji, ${ME.org.name} mein aapke ${r.balance} loyalty points hain (${inr(r2(r.balance * s.point_value))}). Agli khareed par inka fayda uthaiye!`)}">WhatsApp</a>` : ''}` }],
+        { h: '', f: (r) => `<button class="btn sm" data-hist="${r.id}">History</button>${r.phone && r.balance > 0 ? ` <a class="btn sm" target="_blank" rel="noopener" href="https://wa.me/${esc(waNum(r.phone))}?text=${encodeURIComponent(`Hello ${r.name}, you have ${r.balance} loyalty points at ${ME.org.name} (${inr(r2(r.balance * s.point_value))}). Use them on your next purchase!`)}">WhatsApp</a>` : ''}` }],
       x.members, { empty: s.on ? 'No points yet: they start with the next bill to a named customer.' : 'Turn loyalty points on above.' })}</div>`;
   $('#lyf').onsubmit = async (e) => {
     e.preventDefault(); const f = e.target;
@@ -5904,7 +5904,7 @@ const SWATCH = { red: '#dc2626', blue: '#2563eb', black: '#111827', green: '#16a
   grey: '#6b7280', gray: '#6b7280', orange: '#f97316', purple: '#7c3aed', brown: '#78350f', beige: '#e7d8b8', cream: '#fdf6e3', gold: '#d4a017', silver: '#c0c0c0', peach: '#fbbf9a',
   mustard: '#c9a227', teal: '#0d9488', olive: '#6b7c2e', magenta: '#c026d3', sky: '#38bdf8', 'sky blue': '#38bdf8', wine: '#5b1a2e', rust: '#b7410e', lavender: '#b9a7e8', mint: '#a7f3d0' };
 async function publicShop(token) {
-  const app = $('#app'), sp = new URLSearchParams(location.search), L = SHOP_T[sp.get('l')] || (LANG === 'hi' ? SHOP_T.hi : SHOP_T.hl);
+  const app = $('#app'), sp = new URLSearchParams(location.search), L = sp.get('l') === 'hi' || (!sp.get('l') && LANG === 'hi') ? SHOP_T.hi : SHOP_T.en;
   document.documentElement.lang = L === SHOP_T.hi ? 'hi' : 'en';
   const res = await fetch('/api/public/shop/' + token).catch(() => null), d = res ? await res.json().catch(() => ({})) : {};
   if (!res || !res.ok) { app.innerHTML = `<div class="boot"><h2>${L.none}</h2><p class="muted">${esc(d.error || '')}</p></div>`; return; }
@@ -6264,7 +6264,7 @@ route(/^reminders$/, async (el) => {
       : f.status === 'disputed' ? `<span class="badge b-unpaid">disputed</span><div class="neg">“${esc(f.note)}”${f.disputed_bill ? ` (${esc(f.disputed_bill)})` : ''}</div><div class="muted">${when}</div>`
       : `<span class="muted">sent ${when}, no answer yet</span>`;
   };
-  el.innerHTML = head('Vasooli <span class="muted h-sub">(collections)</span>', `${s ? '<button class="btn" id="week">Share week report</button>' : ''}<a class="btn" href="#/vaade">Vaade (promises)</a>`)
+  el.innerHTML = head('Collections <span class="muted h-sub">(collections)</span>', `${s ? '<button class="btn" id="week">Share week report</button>' : ''}<a class="btn" href="#/vaade">Vaade (promises)</a>`)
     + `${ME.org.upi_id ? '' : '<div class="panel warnbox">Add your <b>UPI ID</b> in <a href="#/settings">Business &amp; Users</a> so customers get a Pay by UPI button and QR in every message.</div>'}
     ${s ? `<div class="kpis">
       <div class="kpi"><div class="l">Received, last 7 days</div><div class="v pos">${inr(s.received)}</div><div class="s">from ${s.payers} customer${s.payers === 1 ? '' : 's'}${s.top_payer ? ` · top: ${esc(s.top_payer.name)}` : ''}</div></div>
@@ -6320,7 +6320,7 @@ route(/^recovery\/(\d+)$/, async (el, m) => {
     const addr = (x) => [x.address, x.city, x.state, x.pincode].filter(Boolean).map(esc).join(', ');
     const agreed = f.confirmations.filter((c) => c.status === 'agreed'), broken = f.promises.filter((k) => k.outcome === 'broken');
     const kind = (s) => ({ '-3': 'before due', 0: 'due day', 7: '7 days late', 15: '15 days late', 30: '30 days late', 45: '45+ days' })[s] || '';
-    el.innerHTML = head(`Recovery file: ${esc(P.name)}`, `<a class="btn" href="#/reminders">Vasooli</a><button class="btn primary" data-act="print">Print / PDF</button>`) + `
+    el.innerHTML = head(`Recovery file: ${esc(P.name)}`, `<a class="btn" href="#/reminders">Collections</a><button class="btn primary" data-act="print">Print / PDF</button>`) + `
       <div class="panel no-print"><div class="row">
         <label class="f inline-f">RBI Bank Rate (%)<input id="rate" type="number" step="0.01" min="0" max="30" value="${esc(rate)}" style="width:100px"></label>
         <button class="btn" id="apply">Work out interest</button><span class="muted small">Check today's Bank Rate on <a href="https://www.rbi.org.in" target="_blank" rel="noopener">rbi.org.in</a>. MSMED interest is 3 × that, compounded monthly.</span></div>
@@ -6336,7 +6336,7 @@ route(/^recovery\/(\d+)$/, async (el, m) => {
         <p class="claim">Amount claimed: <b>${inr(f.totals.bal)}</b>${withInt ? ` + interest <b>${inr(f.totals.interest)}</b> (MSMED Act, Section 16, at ${3 * f.bank_rate}% a year, monthly rests) = <b>${inr(claim)}</b>` : ''}</p>
         <h3>Evidence</h3>
         <h4>Balance confirmations</h4>${f.confirmations.length ? `<table><tr><th>Sent</th><th class="num">Balance</th><th>Answer</th></tr>${f.confirmations.map((c) => `<tr><td>${fdate(c.as_of)}</td><td class="num">${inr(c.balance)}</td>
-          <td>${c.status === 'agreed' ? `Confirmed on ${fdate((c.answered_at || '').slice(0, 10))}` : c.status === 'disputed' ? `Disputed on ${fdate((c.answered_at || '').slice(0, 10))}: “${esc(c.note)}”` : 'No answer'}</td></tr>`).join('')}</table>` : '<p class="muted">None sent yet. Send one from Vasooli.</p>'}
+          <td>${c.status === 'agreed' ? `Confirmed on ${fdate((c.answered_at || '').slice(0, 10))}` : c.status === 'disputed' ? `Disputed on ${fdate((c.answered_at || '').slice(0, 10))}: “${esc(c.note)}”` : 'No answer'}</td></tr>`).join('')}</table>` : '<p class="muted">None sent yet. Send one from Collections.</p>'}
         <h4>Payment promises</h4>${f.promises.length ? `<table><tr><th>Made on</th><th>By</th><th>Due</th><th class="num">Amount</th><th>Result</th></tr>${f.promises.map((k) => `<tr><td>${fdate(k.made_on)}</td><td>${k.made_by === 'customer' ? 'customer (on their link)' : 'noted by shop'}</td>
           <td>${fdate(k.due)}</td><td class="num">${inr(k.kamount)}</td><td>${k.outcome === 'kept' ? 'Paid' : k.outcome === 'broken' ? '<b>Not paid</b>' : 'Open'}</td></tr>`).join('')}</table>` : '<p class="muted">No promises.</p>'}
         <h4>Reminders sent</h4>${f.reminders.length ? `<table><tr><th>When</th><th>How</th><th>Stage</th><th>By</th></tr>${f.reminders.map((r) => `<tr><td>${new Date(r.sent_at).toLocaleString('en-IN', { day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' })}</td>
@@ -7460,7 +7460,7 @@ route(/^table\/(\d+)$/, async (el, m) => {
       const walk = customers.find((p) => p.name === 'Walk-in Customer') || customers[0] || {};
       const acc = (sys) => (accts.find((a) => a.sys === sys) || accts.find((a) => a.is_cash) || {}).id;
       modal(`Bill table ${x.table.name}: ${inr(x.order.amount)}`, [
-        { k: 'method', label: 'Paid by', type: 'select', value: 'cash', options: [{ v: 'cash', t: 'Cash' }, { v: 'upi', t: 'UPI' }, { v: 'bank', t: 'Card / Bank' }, ...(limits().no_credit ? [] : [{ v: 'credit', t: 'Credit (udhaar)' }])] },
+        { k: 'method', label: 'Paid by', type: 'select', value: 'cash', options: [{ v: 'cash', t: 'Cash' }, { v: 'upi', t: 'UPI' }, { v: 'bank', t: 'Card / Bank' }, ...(limits().no_credit ? [] : [{ v: 'credit', t: 'Credit' }])] },
         { k: 'party_id', label: 'Customer', type: 'select', value: walk.id, options: customers.map((p) => ({ v: p.id, t: p.name })) },
         { k: 'discount_pct', label: 'Discount %', type: 'number', value: 0 }],
       async (v) => {
@@ -7828,7 +7828,7 @@ async function voiceOrder(items, onAdd) {
   let root = $('#voice-root');
   if (!root) { root = document.createElement('div'); root.id = 'voice-root'; document.body.appendChild(root); }
   const lang = storeGet('st:voice') || (LANG === 'hi' ? 'hi-IN' : 'hi-IN');
-  root.innerHTML = `<div class="modal-bg"><div class="modal voice" role="dialog" aria-label="Speak the order"><h2>&#127908; Bolkar bill</h2>
+  root.innerHTML = `<div class="modal-bg"><div class="modal voice" role="dialog" aria-label="Speak the order"><h2>&#127908; Speak a bill</h2>
     <p class="muted small">Say the items one after another: <b>"do kilo cheeni, ek litre tel, paanch sabun"</b>. Rupees work too: <b>"50 rupaye ki mirchi"</b>.</p>
     <p class="muted small" lang="hi">बोलिए: "दो किलो चीनी, एक लीटर तेल, पांच साबुन"। थोड़ा रुककर अगला सामान बोलें।</p>
     ${SpeechRec ? `<div class="row vmicrow"><button type="button" class="btn primary big" id="vmic">&#127908; Tap and speak</button>
@@ -7905,7 +7905,7 @@ route(/^pos$/, async (el) => {
       </div>
       <div class="panel pos-pay">
         <div class="totals" id="ptot" style="width:100%"></div>
-        <div class="seg" id="method">${[['cash', 'Cash'], ['upi', 'UPI'], ['bank', 'Card / Bank'], ...(limits().no_credit ? [] : [['credit', 'Credit (udhaar)']])].map(([k, t]) => `<button type="button" data-m="${k}" class="${k === method ? 'on' : ''}">${t}</button>`).join('')}</div>
+        <div class="seg" id="method">${[['cash', 'Cash'], ['upi', 'UPI'], ['bank', 'Card / Bank'], ...(limits().no_credit ? [] : [['credit', 'Credit']])].map(([k, t]) => `<button type="button" data-m="${k}" class="${k === method ? 'on' : ''}">${t}</button>`).join('')}</div>
         <div class="pts" id="pospts" hidden></div>
         <label class="f" id="recvw">Amount received (₹)<input id="recv" type="number" step="any" min="0"></label>
         <div id="change" class="muted"></div><div id="posqr"></div>${cfDefs('doc', 'sales').length ? `<div class="form">${cfInputs('doc', {}, 'sales')}</div>` : ''}
@@ -8186,7 +8186,7 @@ route(/^plan$/, async (el, m, q) => {
       ${p.price ? `<div class="muted small">≈ ₹${Math.round(p.price / 12)} a month · pay ₹${p.pay.toLocaleString('en-IN')} incl. GST</div>` : ''}
       <ul class="ticks"><li>${lim(p.invoices_per_month)} invoices / month</li><li>${lim(p.users)} user${p.users === 1 ? '' : 's'}</li><li>${lim(p.warehouses)} godown${p.warehouses === 1 ? '' : 's'}</li>
       <li>Billing, stock, khata, POS, accounts</li>${p.features.includes('tally') ? '<li>Tally export</li>' : ''}${p.features.includes('einvoice') ? '<li>E-invoice & e-way bill</li>' : ''}${p.features.includes('priority') ? '<li>Priority support</li>' : ''}
-      <li>Grahak khud tareekh chune (vaada)${p.features.includes('vaada') ? '' : ': 10 khule vaade tak'}</li>${p.features.includes('vaada') ? '<li>Kisht + udhaar check</li>' : ''}${p.features.includes('cash') ? '<li>Kal ka Cash (4 hafte ka cash)</li>' : ''}</ul>
+      <li>Customer picks a pay date (promise)${p.features.includes('vaada') ? '' : ': up to 10 open promises'}</li>${p.features.includes('vaada') ? '<li>Instalments + credit check</li>' : ''}${p.features.includes('cash') ? '<li>Cash Forecast (4 weeks)</li>' : ''}</ul>
       ${!p.price ? (p.key === cur.key ? '<div class="muted">Your plan</div>' : '') : !ME.can.settings ? '<div class="muted">Ask the owner to upgrade</div>'
         : online ? `<button class="btn primary big" data-buy="${p.key}">${p.key === cur.key ? (P.history.some((h) => h.status === 'paid' && h.plan !== 'test') ? 'Renew 1 year' : 'Buy 1 year') : 'Upgrade'} · Pay ₹${p.pay.toLocaleString('en-IN')}${upiOn ? ' by UPI' : ''}</button>`
           : wa ? `<a class="btn primary" target="_blank" rel="noopener" href="${wa}">Upgrade on WhatsApp</a>` : '<div class="muted">Online payment coming soon</div>'}</div>`).join('')}</div>
