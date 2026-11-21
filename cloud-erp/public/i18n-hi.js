@@ -294,7 +294,7 @@ export const HI = {
   // scan picking and orders by scan
   'To pick': 'पिक करना है', 'Picked': 'पिक हो गया', 'Pick & pack (scan)': 'पिक और पैक (स्कैन)', 'Pack ✓ (save Delivery Note)': 'पैक ✓ (डिलीवरी नोट सेव करें)', 'Pick all together (scan)': 'सब एक साथ पिक करें (स्कैन)', 'Combined pick list': 'संयुक्त पिक लिस्ट', 'Start again': 'फिर से शुरू करें', 'Label PDF': 'लेबल PDF', 'Which item is this label?': 'यह लेबल किस आइटम का है?', 'Use this item': 'यही आइटम लें', 'Orders': 'ऑर्डर', 'Scan': 'स्कैन', 'Pick by scan': 'स्कैन से पिक करें', 'Print list': 'लिस्ट प्रिंट करें', 'How orders are picked': 'ऑर्डर कैसे पिक होते हैं', 'Point the camera at the QR label': 'कैमरा QR लेबल की ओर करें',
   // dashboard, help text and Hinglish labels (2026-11)
-  'OPEN': 'खुला', 'Dark mode': 'डार्क मोड', 'Light mode': 'लाइट मोड', 'ABC': 'ABC', 'Accounts Receivable (Debtors)': 'लेनदारी (देनदार)', 'Cost of Goods Sold': 'बेचे गए माल की लागत', 'Inventory (Stock in Hand)': 'स्टॉक (हाथ में)', 'Opening Balance Equity': 'शुरुआती बैलेंस पूँजी', 'Round Off': 'राउंड ऑफ़',
+  'OPEN': 'खुला', 'Free trial': 'फ़्री ट्रायल', 'Keep my plan': 'मेरा प्लान जारी रखें', 'Your free trial has ended.': 'आपका फ़्री ट्रायल ख़त्म हो गया।', 'Dark mode': 'डार्क मोड', 'Light mode': 'लाइट मोड', 'ABC': 'ABC', 'Accounts Receivable (Debtors)': 'लेनदारी (देनदार)', 'Cost of Goods Sold': 'बेचे गए माल की लागत', 'Inventory (Stock in Hand)': 'स्टॉक (हाथ में)', 'Opening Balance Equity': 'शुरुआती बैलेंस पूँजी', 'Round Off': 'राउंड ऑफ़',
   "Kitchen screen": "किचन स्क्रीन",
   "E-way Bills": "ई-वे बिल",
   "Period": "अवधि",

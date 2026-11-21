@@ -635,11 +635,21 @@ const myUi = () => {
 /* the owner sees, in the last 7 days of a trial or paid plan, that it ends and what stops (staff logins above the free
    plan's limit are paused), with the way to keep it */
 function planWarn() {
-  const p = ME.plan || {};
-  if (ME.user.role_key !== 'owner' || !p.until || p.key === 'free') return '';
+  const p = ME.plan || {}, hi = LANG === 'hi';
+  if (ME.user.role_key !== 'owner') return '';
+  // just after an unbought trial: the first-year offer, with its last day (written whole in each language)
+  if (p.offer_until) return hi
+    ? `<div class="closing offer">आपका फ़्री ट्रायल ख़त्म हो गया। <b>पहले साल पर ${p.offer_pct}% छूट</b>, <b>${fdate(p.offer_until)}</b> तक: ई-इनवॉइस, WhatsApp रिमाइंडर, Tally, कल का कैश और स्टाफ़ लॉगिन तुरंत वापस। <a class="btn sm primary" href="#/plan">${p.offer_pct}% छूट लें</a></div>`
+    : `<div class="closing offer">Your free trial has ended. <b>${p.offer_pct}% off your first year</b> till <b>${fdate(p.offer_until)}</b>: e-invoice, WhatsApp reminders, Tally, Cash Forecast and staff logins come back at once. <a class="btn sm primary" href="#/plan">Get ${p.offer_pct}% off</a></div>`;
+  if (!p.until || p.key === 'free') return '';
   const left = Math.round((new Date(p.until + 'T00:00:00') - new Date(ME.today + 'T00:00:00')) / 864e5);
   if (left > 7 || left < 0) return '';
-  return `<div class="closing">Your <b>${esc(p.label)}</b> plan ends ${left === 0 ? '<b>today</b>' : `in <b>${left} day${left === 1 ? '' : 's'}</b> (${fdate(p.until)})`}. After that the Free plan allows 1 user, so staff logins are paused. <a href="#/plan">Keep the plan</a></div>`;
+  const bills = p.free_bills || 25;
+  if (p.trial) return hi
+    ? `<div class="closing">आपका <b>फ़्री ट्रायल</b> ${left === 0 ? '<b>आज</b>' : `<b>${left} दिन</b> में (${fdate(p.until)})`} ख़त्म होगा। उसके बाद ई-इनवॉइस और ई-वे बिल, अपने-आप WhatsApp रिमाइंडर, Tally एक्सपोर्ट, कल का कैश और स्टाफ़ लॉगिन बंद हो जाएँगे, और फ़्री प्लान में महीने के ${bills} बिल ही बनेंगे। आपका डेटा सुरक्षित रहेगा। <a class="btn sm primary" href="#/plan">मेरा प्लान जारी रखें</a></div>`
+    : `<div class="closing">Your <b>free trial</b> ends ${left === 0 ? '<b>today</b>' : `in <b>${left} day${left === 1 ? '' : 's'}</b> (${fdate(p.until)})`}. After that, e-invoice and e-way bill, automatic WhatsApp reminders, Tally export, Cash Forecast and staff logins stop, and the Free plan allows ${bills} bills a month. Your data stays safe. <a class="btn sm primary" href="#/plan">Keep my plan</a></div>`;
+  const when = left === 0 ? '<b>today</b>' : `in <b>${left} day${left === 1 ? '' : 's'}</b> (${fdate(p.until)})`;
+  return `<div class="closing">Your <b>${esc(p.label)}</b> plan ends ${when}. After that the Free plan allows 1 user, so staff logins are paused. <a href="#/plan">Keep the plan</a></div>`;
 }
 const jobOf = (ui = myUi()) => (JOBS[ui.job] ? ui.job : ROLE_JOB[ME.user.role_key] || 'all');
 /* is this menu entry on the user's menu? (whether the role may open it is seen()) */
@@ -8160,7 +8170,7 @@ route(/^plan$/, async (el, m, q) => {
   const wa = P.support_whatsapp ? `https://api.whatsapp.com/send?phone=${encodeURIComponent(P.support_whatsapp.replace(/\D/g, ''))}&text=${encodeURIComponent(`Hi, I want to upgrade SmartTrader ERP. Business: ${ME.org.name}, login: ${ME.user.email}`)}` : '';
   const online = P.billing !== 'off', upiOn = P.billing === 'upi', cardOn = !!P.razorpay && P.razorpay !== 'off';
   el.innerHTML = head('Plan & Billing') + `
-    <div class="panel planbar"><div><div class="muted">Your plan</div><div class="big">${esc(cur.label)}</div>
+    <div class="panel planbar"><div><div class="muted">Your plan</div><div class="big">${esc(cur.label)}${cur.trial ? ' <span class="pill trialpill">Free trial</span>' : ''}</div>
       <div class="muted">${cur.until ? `Valid till <b>${fdate(cur.until)}</b>${daysLeft !== null && daysLeft <= 15 ? ` · <span class="neg">${daysLeft} days left</span>` : ''}` : 'Free forever'}</div></div>
       <div class="usage"><div><span>Invoices this month</span><b>${u.invoices_this_month} / ${lim(cur.invoices_per_month)}</b>${bar(u.invoices_this_month, cur.invoices_per_month)}</div>
       <div><span>Users</span><b>${u.users} / ${lim(cur.users)}</b>${bar(u.users, cur.users)}</div>
@@ -8172,6 +8182,7 @@ route(/^plan$/, async (el, m, q) => {
     <div class="plans">${P.plans.map((p) => `<div class="plan ${p.key === cur.key ? 'cur' : ''} ${p.key === 'growth' ? 'pop' : ''}">
       ${p.key === 'growth' ? '<div class="badge b-open">Most popular</div>' : ''}<h2>${esc(p.label)}</h2>
       <div class="price">${p.price ? '₹' + p.price.toLocaleString('en-IN') + '<span>/year + GST</span>' : '₹0<span>forever</span>'}</div>
+      ${p.pay_full && p.pay < p.pay_full ? `<div class="offerline"><s>₹${p.pay_full.toLocaleString('en-IN')}</s> <b>₹${p.pay.toLocaleString('en-IN')}</b> first year · ${cur.offer_pct}% off till ${fdate(cur.offer_until)}</div>` : ''}
       ${p.price ? `<div class="muted small">≈ ₹${Math.round(p.price / 12)} a month · pay ₹${p.pay.toLocaleString('en-IN')} incl. GST</div>` : ''}
       <ul class="ticks"><li>${lim(p.invoices_per_month)} invoices / month</li><li>${lim(p.users)} user${p.users === 1 ? '' : 's'}</li><li>${lim(p.warehouses)} godown${p.warehouses === 1 ? '' : 's'}</li>
       <li>Billing, stock, khata, POS, accounts</li>${p.features.includes('tally') ? '<li>Tally export</li>' : ''}${p.features.includes('einvoice') ? '<li>E-invoice & e-way bill</li>' : ''}${p.features.includes('priority') ? '<li>Priority support</li>' : ''}

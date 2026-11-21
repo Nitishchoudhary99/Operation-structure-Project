@@ -12,12 +12,27 @@ export const PLANS = {
 export const FEATURE_LABEL = { tally: 'Tally export', einvoice: 'E-invoice & e-way bill JSON', priority: 'Priority WhatsApp support',
   vaada: 'Kisht plans & udhaar check', cash: 'Kal ka Cash (4-week cash view)', autowa: 'Automatic WhatsApp reminders' };
 export const hasFeature = (org, f) => planOf(org).features.includes(f);
-export const TRIAL_DAYS = 14;
+export const TRIAL_DAYS = 30;
+/* Businesses that sign up from this day get 25 invoices a month on Free (earlier ones keep 50). */
+export const FREE_SMALL_FROM = '2026-11-22';
+export const FREE_SMALL = 25;
+export const freeInvoices = (org) => (String((org && org.created_at) || '') >= FREE_SMALL_FROM ? FREE_SMALL : PLANS.free.invoices_per_month);
+/* Right after a free trial ends without a purchase: 20% off the first year, for this many days. */
+export const OFFER_DAYS = 7;
+export const OFFER_PCT = 20;
+/* trial: on the free trial now. offer_until: the last day of the first-year offer (after the trial), else ''. */
+export function trialInfo(org) {
+  const end = org.trial_end || '', t = today();
+  const trial = !!end && org.plan_until === end && end >= t && org.plan !== 'free';
+  const offerUntil = end && end < t && addDays(end, OFFER_DAYS) >= t ? addDays(end, OFFER_DAYS) : '';
+  return { trial, trial_end: end, offer_until: offerUntil, offer_pct: offerUntil ? OFFER_PCT : 0 };
+}
 
 /* The plan in force today: a paid plan whose end date has passed drops back to Free. */
 export function planOf(org) {
   const key = org.plan && own(PLANS, org.plan) && (org.plan === 'free' || (org.plan_until && org.plan_until >= today())) ? org.plan : 'free';
-  return { key, ...PLANS[key], until: key === 'free' ? '' : org.plan_until };
+  const lim = key === 'free' ? { invoices_per_month: freeInvoices(org) } : {};
+  return { key, ...PLANS[key], ...lim, until: key === 'free' ? '' : org.plan_until, free_bills: freeInvoices(org), ...trialInfo(org) };
 }
 const fmtLimit = (n) => (n === Infinity ? null : n);
 export function planOut(org) {

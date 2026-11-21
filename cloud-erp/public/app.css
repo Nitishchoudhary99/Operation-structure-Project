@@ -1378,3 +1378,7 @@ table th { color: var(--muted); font-weight: 600; }
   .bnav a.on { color: var(--shop); }
   .bnav a[data-bn="new"] .ico { background: var(--fab); color: #fff; border-radius: 16px; width: 44px; height: 44px; padding: 10px; box-shadow: 0 6px 16px rgba(249,115,22,.4); margin-top: -18px; }
 }
+.closing.offer { background: var(--ok-soft); color: var(--ink); border-color: var(--ok); display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+.closing .btn.sm { margin-left: 6px; }
+.offerline { margin: 4px 0; font-size: 14px; } .offerline s { color: var(--muted); } .offerline b { color: var(--ok); font-size: 17px; }
+.trialpill { font-size: 12px; vertical-align: middle; background: var(--brand-soft); color: var(--brand); padding: 3px 9px; border-radius: 20px; font-weight: 600; }

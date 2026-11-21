@@ -36,7 +36,7 @@ import { pickState, pickScan, pickUndo, pickReset, pickSet } from './picking.js'
 import { findItem, codeKey } from './codes.js';
 import { reservedStatement, withReserved } from './engine.js';
 import * as rep from './reports.js';
-import { PLANS, planOut, planOf, usage, checkCount, countError, seatBlocked, seatError, requireFeature, extendPlan, adminKey, trialUntil, hasFeature } from './saas.js';
+import { PLANS, planOut, planOf, usage, checkCount, countError, seatBlocked, seatError, requireFeature, extendPlan, adminKey, trialUntil, hasFeature, freeInvoices, trialInfo } from './saas.js';
 import { secure } from './headers.js';
 import { createRecurring, listRecurring, getRecurring, updateRecurring, copyRecurring, skipRecurring, markSent, stopRecurring, resumeRecurring, runDue } from './recurring.js';
 import { buildBackup, driveRoutes, runDriveBackups, listDriveBackups, readDriveBackup, driveConfigured } from './gdrive.js';
@@ -63,7 +63,7 @@ import { secondStep, twoStepStart, twoStepEnable, twoStepDisable, newBackupCodes
 import { workbook } from './xlsx.js';
 import { printOf, cleanPrint, imageFromDataUrl, shortHash, imageResponse, FILE_KINDS, seriesOf, numberSpec, formatNumber, cleanSeries, fyParts,
   fieldsOf, extraOf, cleanField, cleanExtra, extraFilter, printExtra, LAYOUTS } from './custom.js';
-import { billingMode, razorpayMode, grossPaise, testPayOk, billingStart, billingVerify, billingWebhook, billingStatus, billingHistory, hubFetch, hubOn,
+import { billingMode, razorpayMode, grossPaise, payPaise, testPayOk, billingStart, billingVerify, billingWebhook, billingStatus, billingHistory, hubFetch, hubOn,
   billingUpiCallback, billingUpiClaim, billingUpiCancel } from './billing.js';
 
 const R = (p) => Math.round(p) / 100;
@@ -76,8 +76,8 @@ let migrated = false;
 async function createBusiness(c, { business, name, email, hash, salt, gstin, state, phone, address }) {
   const now = nowIso(), otx = crypto.randomUUID(), db = c.db;
   const st = [
-    db.prepare(`INSERT INTO orgs (name, gstin, state, phone, address, email, plan, plan_until, created_at) VALUES (?, ?, ?, ?, ?, ?, 'growth', ?, ?)`)
-      .bind(business, str(gstin, 15).toUpperCase(), str(state, 60), str(phone, 20), str(address, 300), email, trialUntil(), otx),
+    db.prepare(`INSERT INTO orgs (name, gstin, state, phone, address, email, plan, plan_until, trial_end, created_at) VALUES (?, ?, ?, ?, ?, ?, 'growth', ?, ?, ?)`)
+      .bind(business, str(gstin, 15).toUpperCase(), str(state, 60), str(phone, 20), str(address, 300), email, trialUntil(), trialUntil(), otx),
     db.prepare(`INSERT INTO users (org_id, email, name, role, pw_hash, salt, pw_changed_at, created_at)
                 VALUES ((SELECT id FROM orgs WHERE created_at = ?), ?, ?, 'owner', ?, ?, ?, ?)`).bind(otx, email, name, hash, salt, Date.now(), now),
     ...DEFAULT_ACCOUNTS.map(([code, nm, type, sys, isCash]) => db.prepare(`INSERT INTO accounts (org_id, code, name, type, sys, is_cash)
@@ -214,6 +214,61 @@ async function sendMail(c, kind, { to, name, token, origin }) {
     });
     return res.ok;
   } catch (e) { return false; }
+}
+/* Free-trial e-mails to the owner: 3 days before the trial ends, the day before, on the day, and the day after (the
+   first-year offer). Each goes once (orgs.trial_mail), only on its own day, never to a business that has paid. */
+export function trialMailHtml(st) {
+  const h = (v) => attr(String(v == null ? '' : v));
+  const inr = (n) => '₹' + Number(n).toLocaleString('en-IN');
+  const btn = (href, label) => `<p><a href="${href}" style="display:inline-block;background:#0f9d58;color:#fff;padding:12px 20px;border-radius:8px;text-decoration:none;font-weight:bold">${label}</a></p>`;
+  const lose = `<ul style="padding-left:18px;color:#374151"><li>E-invoice and e-way bill JSON</li><li>Automatic WhatsApp payment reminders</li><li>Tally export</li><li>Kal ka Cash (4-week cash view)</li><li>Staff logins (Free has 1 user) and more than one godown</li><li>Bills above ${st.free_bills} a month</li></ul>`;
+  const when = st.stage === 'd0' ? 'today' : st.stage === 'd1' ? 'tomorrow' : `in ${st.days} days`;
+  let subject, inner;
+  if (st.stage === 'offer') {
+    subject = `${st.offer_pct}% off your first year of SmartTrader, till ${st.offer_until_text}`;
+    inner = `<p>Your free trial of <b>${h(st.org)}</b> has ended and the account is now on the Free plan. Your data is safe.</p>
+      <p>Keep everything you used in the trial for <b>${inr(st.offer_pay)}</b> for the first year instead of ${inr(st.full_pay)} (Growth, incl. GST, about ${inr(Math.round(st.offer_pay / 12))} a month). This price is open till <b>${h(st.offer_until_text)}</b>.</p>
+      ${btn(st.link, `Get ${st.offer_pct}% off`)}`;
+  } else {
+    subject = `Your SmartTrader free trial ends ${when}`;
+    inner = `<p>The free trial of <b>${h(st.org)}</b> ends <b>${when}</b> (${h(st.end_text)}). After that the account moves to the Free plan; your data stays safe, but these stop:</p>${lose}
+      <p>Keep them for <b>${inr(st.full_pay)} a year</b> (Growth, incl. GST, about ${inr(Math.round(st.full_pay / 12))} a month). Pay by UPI in one tap.</p>${btn(st.link, 'Keep my plan')}`;
+  }
+  const html = `<div style="font-family:Arial,sans-serif;max-width:520px;margin:auto;color:#1f2937"><h2 style="color:#0f9d58">SmartTrader ERP</h2><p>Namaste ${h(st.name)},</p>${inner}
+    <p style="color:#6b7280;font-size:13px">Questions? WhatsApp +91 90684 46139. You get this e-mail once for each step of your trial.</p></div>`;
+  return { subject, html };
+}
+const fmtDay = (d) => new Date(d + 'T00:00:00Z').toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric', timeZone: 'UTC' });
+export async function runTrialMails(env) {
+  if (!env.RESEND_API_KEY && !hubOn(env)) return { due: 0 };
+  const t = today(), stageOf = (end) => (end === addDays(t, 3) ? 'd3' : end === addDays(t, 1) ? 'd1' : end === t ? 'd0' : end === addDays(t, -1) ? 'offer' : '');
+  const rows = (await env.DB.prepare(`SELECT o.id, o.name, o.plan, o.plan_until, o.trial_end, o.trial_mail, o.created_at, u.email, u.name AS uname
+      FROM orgs o JOIN users u ON u.org_id = o.id AND u.role = 'owner' AND u.active = 1
+      WHERE o.trial_end IN (?, ?, ?, ?) AND (o.close_after IS NULL OR o.close_after = '') LIMIT 300`)
+    .bind(addDays(t, 3), addDays(t, 1), t, addDays(t, -1)).all()).results;
+  const origin = (() => { try { return new URL(env.APP_URL).origin; } catch (e) { return 'https://erp.docbrisk.com'; } })();
+  let sent = 0;
+  for (const o of rows) {
+    const stage = stageOf(o.trial_end), done = String(o.trial_mail || '').split(',');
+    if (!stage || done.includes(stage) || !o.email) continue;
+    if (stage === 'offer' && o.plan_until > o.trial_end) continue;   // bought or got a plan by hand meanwhile
+    const info = trialInfo(o);
+    const st = { stage, org: o.name, name: o.uname, days: 3, end_text: fmtDay(o.trial_end), free_bills: freeInvoices(o), link: origin + '/#/plan',
+      full_pay: grossPaise('growth') / 100, offer_pay: payPaise('growth', o) / 100, offer_pct: info.offer_pct || 20,
+      offer_until_text: info.offer_until ? fmtDay(info.offer_until) : fmtDay(addDays(o.trial_end, 7)) };
+    // mark first, so a slow or failed send is not repeated every hour
+    const claim = await env.DB.prepare(`UPDATE orgs SET trial_mail = ? WHERE id = ? AND trial_mail = ?`).bind([...done.filter(Boolean), stage].join(','), o.id, o.trial_mail || '').run();
+    if (!claim.meta.changes) continue;
+    try {
+      if (env.RESEND_API_KEY) {
+        const { subject, html } = trialMailHtml(st);
+        await fetch(env.RESEND_URL || 'https://api.resend.com/emails', { method: 'POST', headers: { Authorization: `Bearer ${env.RESEND_API_KEY}`, 'Content-Type': 'application/json' },
+          body: JSON.stringify({ from: env.MAIL_FROM || 'SmartTrader ERP <no-reply@docbrisk.com>', to: [o.email], subject, html }) });
+      } else await hubFetch(env, 'POST', '/api/pay/svc/erp-trial-mail', { to: o.email, origin, ...st, link: undefined });
+      sent++;
+    } catch (e) { /* the mark stays: one e-mail missed is better than one sent every hour */ }
+  }
+  return { due: sent };
 }
 router.add('POST', '/api/auth/forgot', async (c) => {
   const email = str(c.body.email, 120).toLowerCase();
@@ -1598,8 +1653,8 @@ router.add('POST', '/api/restore/drive', async (c) => {
 /* ======================================================================= plan & billing (SaaS) */
 router.add('GET', '/api/plan', async (c) => json({
   plan: planOut(c.org), usage: await usage(c.db, c.org),
-  plans: Object.entries(PLANS).map(([k, p]) => ({ key: k, ...p, invoices_per_month: p.invoices_per_month === Infinity ? null : p.invoices_per_month,
-    users: p.users === Infinity ? null : p.users, warehouses: p.warehouses === Infinity ? null : p.warehouses, pay: p.price ? grossPaise(k) / 100 : 0 })),
+  plans: Object.entries(PLANS).map(([k, p]) => ({ key: k, ...p, invoices_per_month: k === 'free' ? freeInvoices(c.org) : p.invoices_per_month === Infinity ? null : p.invoices_per_month,
+    users: p.users === Infinity ? null : p.users, warehouses: p.warehouses === Infinity ? null : p.warehouses, pay: p.price ? payPaise(k, c.org) / 100 : 0, pay_full: p.price ? grossPaise(k) / 100 : 0 })),
   billing: billingMode(c.env), razorpay: razorpayMode(c.env), history: canView(c.user, 'settings') ? await billingHistory(c) : [], support_whatsapp: c.env.SUPPORT_WHATSAPP || '',
   test_pay: testPayOk(c.env, c.user.email),
 }));
@@ -2759,6 +2814,8 @@ export default {
       const half = new Date(Date.now() - 183 * 864e5).toISOString();
       await env.DB.batch([env.DB.prepare(`DELETE FROM wa_messages WHERE id IN (SELECT id FROM wa_messages WHERE at < ? LIMIT 2000)`).bind(half),
         env.DB.prepare(`DELETE FROM wa_contacts WHERE updated_at < ?`).bind(half)]);
+      const tm = await runTrialMails(env);
+      if (tm.due) console.log('trial mails', tm.due);
       const w = await runAutoReminders(env);
       if (w.due) console.log('auto whatsapp', JSON.stringify(w));
       // sign-in history is kept 180 days; businesses whose 7 days to close are over are deleted
