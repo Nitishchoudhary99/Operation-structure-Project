@@ -717,12 +717,19 @@ const storeSet = (k, v) => { try { localStorage.setItem(k, v); } catch (e) { /* 
 /* Hindi screens (public/i18n-hi.js): whole English labels are swapped for Hindi as they are drawn, by one observer on the page.
    Names, numbers and what people type never match a label, so they stay as they are; printed bills and codes are left alone. */
 const LANG = storeGet('st:lang') === 'hi' ? 'hi' : 'en';
-let HI = null;
+let HI = null, HI_RX = [];
 const KEEP_SEL = 'script,style,textarea,.doc-paper,.labels,.codes,.mono,[data-keep]';
+// a whole label from the word list, else a line with numbers or names in it from the patterns ($1… keep those parts)
+function tr(k) {
+  if (Object.hasOwn(HI, k)) return HI[k];
+  for (const [rx, to] of HI_RX) if (rx.test(k)) return k.replace(rx, to);
+  return null;
+}
 function swapText(n) {
   const t = n.nodeValue, k = t.trim();
-  if (!k || !Object.hasOwn(HI, k) || !n.parentElement || n.parentElement.closest(KEEP_SEL)) return;
-  n.nodeValue = t.replace(k, HI[k]);
+  if (!k || !n.parentElement || n.parentElement.closest(KEEP_SEL)) return;
+  const v = tr(k);
+  if (v !== null && v !== k) n.nodeValue = t.replace(k, v);
 }
 function hindi(root) {
   if (!HI || !root) return;
@@ -731,17 +738,30 @@ function hindi(root) {
   const w = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
   for (let n; (n = w.nextNode());) swapText(n);
   for (const el of [root, ...root.querySelectorAll('[placeholder],[title],[aria-label]')]) {
-    for (const a of ['placeholder', 'title', 'aria-label']) { const v = (el.getAttribute(a) || '').trim(); if (v && Object.hasOwn(HI, v)) el.setAttribute(a, HI[v]); }
+    for (const a of ['placeholder', 'title', 'aria-label']) { const v = (el.getAttribute(a) || '').trim(); const t = v && tr(v); if (t && t !== v) el.setAttribute(a, t); }
   }
 }
 let hindiOn = false;
+/* One language on a screen: Hindi screens swap English labels for Hindi (i18n-hi.js); English screens swap the few
+   Hinglish labels for English (i18n-en.js). Text swapped in also changes text that appears later (the observer). */
 async function startHindi() {
-  if (LANG !== 'hi' || hindiOn) return;
+  if (hindiOn) return;
   hindiOn = true;
-  try { ({ HI } = await import('/i18n-hi.js')); } catch (e) { return; }
-  document.documentElement.lang = 'hi';
+  try {
+    if (LANG === 'hi') { const m = await import('/i18n-hi.js'); HI = m.HI; HI_RX = m.HI_RX || []; document.documentElement.lang = 'hi'; }
+    else { const m = await import('/i18n-en.js'); HI = m.EN; HI_RX = m.EN_RX || []; }
+  } catch (e) { return; }
   hindi(document.body);
-  new MutationObserver((ms) => { for (const m of ms) for (const n of m.addedNodes) hindi(n); }).observe(document.body, { childList: true, subtree: true });
+  new MutationObserver((ms) => { for (const m of ms) { if (m.type === 'characterData') swapText(m.target); else for (const n of m.addedNodes) hindi(n); } })
+    .observe(document.body, { childList: true, subtree: true, characterData: true });
+}
+/* Dark mode: the moon in the top bar; until it is pressed, the phone's or computer's own setting decides */
+const isDark = () => document.documentElement.dataset.theme === 'dark' || (!document.documentElement.dataset.theme && matchMedia('(prefers-color-scheme: dark)').matches);
+{ const t = storeGet('st:theme'); if (t === 'dark' || t === 'light') document.documentElement.dataset.theme = t; }
+function toggleTheme() {
+  const t = isDark() ? 'light' : 'dark';
+  document.documentElement.dataset.theme = t; storeSet('st:theme', t);
+  const b = $('#themebtn'); if (b) { b.textContent = t === 'dark' ? '☀' : '☾'; b.title = t === 'dark' ? 'Light mode' : 'Dark mode'; hindi(b); }
 }
 const switchLang = () => { storeSet('st:lang', LANG === 'hi' ? 'en' : 'hi'); location.reload(); };
 function shell() {
@@ -760,6 +780,7 @@ function shell() {
         <strong class="orgname">${esc(ME.org.name)}</strong>
         <a class="btn sm outbox" id="outbox" href="#/outbox" hidden title="Saved without internet, waiting to be sent"></a>
         <button class="btn sm hideamt" id="hideamt" type="button" title="Hide amounts on screen (for when customers can see it)" aria-pressed="false">₹<span>Hide</span></button>
+        <button class="btn sm themebtn" id="themebtn" type="button" title="${isDark() ? 'Light mode' : 'Dark mode'}">${isDark() ? '☀' : '☾'}</button>
         <button class="btn sm" id="langbtn" type="button" title="${LANG === 'hi' ? 'Show the app in English' : 'ऐप हिंदी में देखें'}" lang="${LANG === 'hi' ? 'en' : 'hi'}">${LANG === 'hi' ? 'EN' : 'हिं'}</button>
         <div class="gsearch"><input id="gq" type="search" placeholder="Search items, customers, bills…" autocomplete="off" aria-label="Search" enterkeyhint="search">
           <div class="gres" id="gres" hidden></div></div>
@@ -775,6 +796,7 @@ function shell() {
     <nav class="bnav" id="bnav" aria-label="Main">${bnavItems().map(([h, t, ic, act]) => `<a href="${h ? '#/' + h : '#'}" ${act ? `data-bn="${act}"` : `data-h="${h}"`}>${icon(ic)}<span>${t}</span></a>`).join('')}</nav>`;
   hideAmounts(storeGet('st:hideamt') === '1');
   $('#langbtn').onclick = switchLang;
+  $('#themebtn').onclick = toggleTheme;
   $('#hideamt').onclick = () => { const on = !document.body.classList.contains('hide-amt'); hideAmounts(on); storeSet('st:hideamt', on ? '1' : '0'); };
   $('#burger').onclick = () => menu(!$('#side').classList.contains('open'));
   if ($('#navmore')) $('#navmore').addEventListener('toggle', (e) => { try { localStorage.setItem('st:navmore', e.target.open ? '1' : '0'); } catch (err) { /* storage off */ } });

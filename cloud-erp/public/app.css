@@ -1307,3 +1307,74 @@ tr.scan-hit td{animation:scanhit 1.2s ease-out}
 }
 /* phone: a long customer name wraps onto two lines instead of pushing the amount and status off the screen */
 @media (max-width: 860px) { .tbl-wrap .t td.wrap { white-space: normal; min-width: 110px; max-width: 42vw; } }
+
+/* ======================================================================= 2026-11 refresh
+   One look in two shapes. Computer: a clean, light workspace (white menu, indigo accent, roomy cards with big numbers).
+   Phone (860 px and less): a shop app (green header, big two-up number cards, orange + button in the bottom bar).
+   Dark mode (top-bar moon, or the phone's setting) keeps the same layout. Only colours, sizes and corners change here. */
+:root {
+  --bg: #f6f7fb; --panel: #fff; --ink: #111827; --muted: #6b7280; --line: #e5e7eb; --soft: #f3f4f6;
+  --brand: #4f46e5; --brand-ink: #fff; --brand-soft: #eef2ff; --side: #fff; --side-ink: #4b5563;
+  --ok: #059669; --ok-soft: #d1fae5; --danger: #dc2626; --danger-soft: #fee2e2;
+  --radius: 14px; --shadow: 0 1px 2px rgba(17,24,39,.04), 0 2px 8px rgba(17,24,39,.05);
+  --shop: #0f9d58; --shop2: #0b7a43; --fab: #f97316;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #0b0f19; --panel: #121826; --ink: #e5e7eb; --muted: #9ca3af; --line: #1f2637; --soft: #18202f;
+    --brand: #818cf8; --brand-ink: #0b0f19; --brand-soft: #1e1b4b; --side: #0f1422; --side-ink: #9ca3af;
+    --ok: #34d399; --ok-soft: #064e3b; --danger: #f87171; --danger-soft: #4c1d1d; --shop: #12804a; --shop2: #0b5d35;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #0b0f19; --panel: #121826; --ink: #e5e7eb; --muted: #9ca3af; --line: #1f2637; --soft: #18202f;
+  --brand: #818cf8; --brand-ink: #0b0f19; --brand-soft: #1e1b4b; --side: #0f1422; --side-ink: #9ca3af;
+  --ok: #34d399; --ok-soft: #064e3b; --danger: #f87171; --danger-soft: #4c1d1d; --shop: #12804a; --shop2: #0b5d35;
+}
+body { color: var(--ink); }
+/* menu: white (dark: deep navy), the open page in a soft accent pill */
+.side { border-right: 1px solid var(--line); }
+.brand { color: var(--ink); }
+.brand i, .brandline i { background: var(--brand); color: var(--brand-ink); border-radius: 9px; }
+.brand small { color: var(--muted); }
+.nav-group { color: var(--muted); opacity: .8; }
+.side a { border-radius: 10px; font-weight: 500; }
+.side a:hover { background: var(--soft); color: var(--ink); }
+.side a.on { background: var(--brand-soft); color: var(--brand); font-weight: 600; }
+.side .side-foot .muted { color: var(--muted); }
+/* top bar and page */
+.top { background: color-mix(in srgb, var(--panel) 92%, transparent); backdrop-filter: blur(10px); }
+.page-head h1, .page > h1 { font-size: 24px; letter-spacing: -.01em; }
+.btn { border-radius: 10px; }
+.btn.primary { box-shadow: 0 1px 2px rgba(79,70,229,.25), 0 4px 12px rgba(79,70,229,.18); }
+/* cards: rounder, softer, numbers bigger */
+.panel, .kpi { border-radius: var(--radius); box-shadow: var(--shadow); }
+.kpis { gap: 16px; }
+.kpi { padding: 18px; }
+.kpi .l { font-size: 13px; }
+.kpi .v { font-size: 26px; letter-spacing: -.01em; margin-top: 6px; }
+h3 { letter-spacing: .03em; }
+table th { color: var(--muted); font-weight: 600; }
+.themebtn .ico, .themebtn svg { width: 16px; height: 16px; }
+
+/* ---------- phone: the shop app ---------- */
+@media (max-width: 860px) {
+  :root:not([data-theme="dark"]) { --brand: var(--shop); --brand-soft: #e7f6ee; }
+  .top { background: linear-gradient(135deg, var(--shop), var(--shop2)); border-bottom: 0; color: #fff; backdrop-filter: none; }
+  .top .orgname { color: #fff; }
+  .top .btn { background: rgba(255,255,255,.16); border-color: rgba(255,255,255,.22); color: #fff; }
+  .top .btn:hover { background: rgba(255,255,255,.26); }
+  .top .btn.primary { background: #fff; color: var(--shop2); border-color: #fff; box-shadow: none; }
+  .top .gsearch input { background: rgba(255,255,255,.95); border-color: transparent; color: #111827; }
+  .page { padding-top: 16px; }
+  .page-head h1, .page > h1 { font-size: 21px; }
+  .kpis { grid-template-columns: 1fr 1fr; gap: 10px; }
+  .kpi { padding: 14px; border-radius: 16px; }
+  .kpi .v { font-size: 21px; }
+  .panel { border-radius: 16px; }
+  .bnav { border-top: 0; box-shadow: 0 -4px 20px rgba(0,0,0,.08); }
+  .btn.primary { box-shadow: 0 4px 12px rgba(15,157,88,.22); }
+  .top .themebtn { display: none; }   /* phone: dark mode follows the phone's own setting; room for search */
+  .bnav a.on { color: var(--shop); }
+  .bnav a[data-bn="new"] .ico { background: var(--fab); color: #fff; border-radius: 16px; width: 44px; height: 44px; padding: 10px; box-shadow: 0 6px 16px rgba(249,115,22,.4); margin-top: -18px; }
+}
