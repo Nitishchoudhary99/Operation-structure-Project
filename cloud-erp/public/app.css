@@ -1429,3 +1429,12 @@ table th { color: var(--muted); font-weight: 600; }
   .possearch .acwrap { flex-basis: 100%; }
 }
 .painpick .chip.on, .painpick .chip[aria-pressed="true"] { background: var(--brand-soft); border-color: var(--brand); color: var(--brand-ink); font-weight: 600; }
+
+/* Dukaan Doctor: the shop's problems in rupees, one tap each */
+.doctor h2 { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; margin: 0 0 8px; }
+.doctor ul { list-style: none; margin: 0; padding: 0; }
+.doctor .dx { display: flex; justify-content: space-between; align-items: center; gap: 12px; padding: 10px 0 10px 12px; border-top: 1px solid var(--line); border-left: 3px solid var(--warn); }
+.doctor .dx.high { border-left-color: var(--danger); }
+.doctor .dx div { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.doctor .dx .btn { flex: none; }
+@media (max-width: 600px) { .doctor .dx { flex-direction: column; align-items: flex-start; } }

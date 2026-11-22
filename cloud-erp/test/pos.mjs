@@ -53,5 +53,7 @@ await rq('POST', '/api/usage', { screens: { pos: 2 } });
 const ur = (await rq('GET', '/api/usage')).data.rows || [];
 check('usage: only screen-like names with real counts are kept', u1.data.kept === 2, JSON.stringify(u1.data));
 check('usage: counts add up per screen', (ur.find((r) => r.screen === 'pos') || {}).n === 5 && !ur.some((r) => r.screen === 'items'), JSON.stringify(ur));
+const dr = await rq('GET', '/api/doctor');
+check('Dukaan Doctor answers on the real database (a new shop: nothing to report)', dr.status === 200 && Array.isArray(dr.data.rows), JSON.stringify(dr));
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);
