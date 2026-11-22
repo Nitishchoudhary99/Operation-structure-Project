@@ -1437,10 +1437,12 @@ else {
   const cu = (await F.post('/api/parties', { name: 'Cap Customer', kind: 'customer' })).data;
   const mk = (date) => F.post('/api/docs', { type: 'INV', party_id: cu.id, date, lines: [{ description: 'x', qty: 1, rate: 1 }] });
   const oldDate = '2026-01-15';
+  // the free cap: 50 for shops made before 2026-11-22, 25 after (src/saas.js), so read it rather than assume it
+  const CAP = (await F.get('/api/me')).data.plan.free_bills || 50;
   let made = 0, stop;
-  for (let i = 0; i < 52 && !stop; i++) { const r = await mk(oldDate); if (r.status === 200) made++; else stop = r; }
-  check('back-dated invoices count toward the free cap (50, then 402)', made === 50 && stop && stop.status === 402 && stop.data.upgrade === true, `${made} ${stop && stop.status}`);
-  check('the plan page shows them', (await F.get('/api/plan')).data.usage.invoices_this_month === 50);
+  for (let i = 0; i < CAP + 2 && !stop; i++) { const r = await mk(oldDate); if (r.status === 200) made++; else stop = r; }
+  check('back-dated invoices count toward the free cap (then 402)', made === CAP && stop && stop.status === 402 && stop.data.upgrade === true, `${made} ${stop && stop.status}`);
+  check('the plan page shows them', (await F.get('/api/plan')).data.usage.invoices_this_month === CAP);
   const first = (await F.get('/api/docs?type=INV&limit=1')).data.rows[0];
   await F.post(`/api/docs/${first.id}/cancel`);
   check('cancelling an invoice does not free its place', (await mk(oldDate)).status === 402);
@@ -1451,11 +1453,11 @@ else {
   await setPlan('Parallel Co', 'free');
   const gc = (await G.post('/api/parties', { name: 'P Customer', kind: 'customer' })).data;
   const mk2 = () => G.post('/api/docs', { type: 'INV', party_id: gc.id, lines: [{ description: 'x', qty: 1, rate: 1 }] });
-  for (let i = 0; i < 46; i++) await mk2();
+  for (let i = 0; i < CAP - 4; i++) await mk2();
   const burst = await Promise.all(Array.from({ length: 10 }, mk2));
   const okN = burst.filter((r) => r.status === 200).length;
-  check('ten parallel invoices at 46 of 50 create exactly four', okN === 4 && burst.filter((r) => r.status === 402).length === 6, `${okN} ok: ${burst.map((r) => r.status).join(',')}`);
-  check('...and never a half-saved document', (await G.get('/api/reports/trial-balance')).data.balanced === true && (await G.get('/api/plan')).data.usage.invoices_this_month === 50);
+  check('ten parallel invoices at 4 under the cap create exactly four', okN === 4 && burst.filter((r) => r.status === 402).length === 6, `${okN} ok: ${burst.map((r) => r.status).join(',')}`);
+  check('...and never a half-saved document', (await G.get('/api/reports/trial-balance')).data.balanced === true && (await G.get('/api/plan')).data.usage.invoices_this_month === CAP);
 
   // users and godowns when a plan lapses
   const U = await tenant('Lapse', '203.0.113.19');

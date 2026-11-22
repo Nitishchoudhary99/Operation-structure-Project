@@ -1395,3 +1395,36 @@ table th { color: var(--muted); font-weight: 600; }
 .madewith:hover { text-decoration: none; border-color: var(--brand); }
 .demobar { background: linear-gradient(90deg, #fff7ed, #fef3c7); color: #7c2d12; padding: 10px 22px; display: flex; gap: 12px; align-items: center; flex-wrap: wrap; border-bottom: 1px solid #fed7aa; font-size: 14px; }
 .demobtn { background: var(--panel); border-color: var(--brand); color: var(--brand); width: 100%; justify-content: center; }
+
+/* ---- Quick Bill 2026-11: forgiving search list, scan feedback, steppers, often-sold chips, sticky total on phones */
+.possearch { align-items: stretch; }
+.acwrap { position: relative; display: flex; }
+.acwrap .scan { width: 100%; }
+.acl { position: absolute; z-index: 30; left: 0; right: 0; top: 100%; margin-top: 4px; background: var(--panel); border: 1px solid var(--line); border-radius: 10px; box-shadow: 0 10px 28px rgba(15, 23, 42, .16); max-height: 360px; overflow: auto; }
+.aci { display: flex; justify-content: space-between; gap: 12px; padding: 10px 12px; cursor: pointer; border-bottom: 1px solid var(--line); }
+.aci:last-child { border-bottom: 0; }
+.aci.on, .aci:hover { background: var(--brand-soft); }
+.scan-ok { animation: scanok .5s; }
+.scan-bad { animation: scanbad .5s; }
+@keyframes scanok { 0% { box-shadow: 0 0 0 3px var(--ok); } 100% { box-shadow: 0 0 0 0 transparent; } }
+@keyframes scanbad { 0%, 50% { box-shadow: 0 0 0 3px var(--danger); } 100% { box-shadow: 0 0 0 0 transparent; } }
+.posfav { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin-top: 10px; }
+.posfav:empty { display: none; }
+.chip { border: 1px solid var(--line); background: var(--panel); color: inherit; border-radius: 999px; padding: 7px 12px; font: inherit; font-size: 14px; cursor: pointer; min-height: 36px; }
+.chip:hover { border-color: var(--brand); }
+.qstep { display: inline-flex; align-items: center; gap: 4px; }
+.qstep input { width: 64px; text-align: center; }
+.qstep .btn { min-width: 34px; min-height: 34px; padding: 0; }
+.poslines tr.justadded td { background: var(--brand-soft); }
+.pos-pay #clearbill { margin-top: 8px; align-self: flex-start; }
+.posbar { display: none; }
+@media (max-width: 760px) {
+  .posbar { display: flex; position: sticky; bottom: calc(64px + env(safe-area-inset-bottom, 0px)); z-index: 20; justify-content: space-between; align-items: center; gap: 12px;
+    padding: 10px 14px; margin: 10px -4px 0; background: var(--panel); border: 1px solid var(--line); border-radius: 12px; box-shadow: 0 -4px 18px rgba(15, 23, 42, .12); }
+  .posbar[hidden] { display: none; }
+  .posbar b { font-size: 20px; }
+  .posbar .btn { min-height: 44px; padding: 0 22px; }
+  .poslines th:nth-child(4), .poslines td:nth-child(4) { display: none; }
+  .possearch { flex-wrap: wrap; }
+  .possearch .acwrap { flex-basis: 100%; }
+}
