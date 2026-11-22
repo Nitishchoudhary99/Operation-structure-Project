@@ -7920,160 +7920,319 @@ async function voiceOrder(items, onAdd) {
     try { rec.start(); on = true; label(); } catch (e) { toast('The microphone could not start: ' + e.message, 'err'); }
   };
 }
+/* item search that forgives: every word typed must match a word of the name, code, barcode or category, by its start,
+   inside it, or with one letter wrong (for words of 4+ letters): "surf exel" finds "Surf Excel 1kg" */
+const near1 = (a, b) => {
+  if (Math.abs(a.length - b.length) > 1) return false;
+  let i = 0, j = 0, miss = 0;
+  while (i < a.length && j < b.length) {
+    if (a[i] === b[j]) { i++; j++; continue; }
+    if (++miss > 1) return false;
+    if (a.length > b.length) i++; else if (b.length > a.length) j++; else { i++; j++; }
+  }
+  return miss + (a.length - i) + (b.length - j) <= 1;
+};
+function itemScore(it, words) {
+  const toks = `${it.name} ${it.sku || ''} ${it.barcode || ''} ${it.category || ''}`.toLowerCase().split(/[\s/,.()-]+/).filter(Boolean);
+  let s = 0;
+  for (const w of words) {
+    let b = 0;
+    for (const t of toks) {
+      const v = t.startsWith(w) ? 3 : t.includes(w) ? 2 : w.length >= 4 && near1(w, t.slice(0, w.length + 1)) ? 1 : w.length >= 4 && near1(w, t) ? 1 : 0;
+      if (v > b) b = v;
+    }
+    if (!b) return 0;
+    s += b;
+  }
+  return s;
+}
+function searchItems(items, q, n = 8) {
+  const words = q.toLowerCase().split(/\s+/).filter(Boolean);
+  if (!words.length) return [];
+  return items.map((i) => [i, itemScore(i, words)]).filter((x) => x[1] > 0).sort((a, b) => b[1] - a[1] || a[0].name.length - b[0].name.length).slice(0, n).map((x) => x[0]);
+}
 route(/^pos$/, async (el) => {
   dirty('items', 'accounts');
   const [items, parties, whs, accts] = await Promise.all([master('items'), master('parties'), master('warehouses'), master('accounts')]);
   const customers = parties.filter((p) => p.kind !== 'supplier');
   const walkin = customers.find((p) => p.name === 'Walk-in Customer') || customers[0];
   const acc = (sys) => (accts.find((a) => a.sys === sys) || accts.find((a) => a.is_cash) || {}).id;
-  const cart = [];
-  let method = 'cash';
+  const byId = new Map(items.map((i) => [i.id, i]));
+  // the bill being made stays on this device until it is saved: a refresh, a closed tab or a phone call does not lose it
+  const draftKey = `st:posdraft:${ME.org.id}:${ME.user.id}`, freqKey = `st:posfreq:${ME.org.id}`;
+  let saved = {}; try { saved = JSON.parse(storeGet(draftKey) || '{}') || {}; } catch (e) { saved = {}; }
+  const cart = (saved.cart || []).filter((l) => byId.has(l.item_id));
+  let method = saved.method || 'cash', custId = customers.some((p) => p.id === saved.cust) ? saved.cust : walkin && walkin.id;
+  const keep = () => storeSet(draftKey, JSON.stringify({ cart, method, cust: custId }));
+  let freq = {}; try { freq = JSON.parse(storeGet(freqKey) || '{}') || {}; } catch (e) { freq = {}; }
+  const quick = () => Object.entries(freq).sort((a, b) => b[1] - a[1]).map(([id]) => byId.get(+id)).filter(Boolean).slice(0, 10);
+  const custLabel = (p) => p.name + (p.phone ? ' · ' + p.phone : '');
+  const methods = [['cash', 'Cash'], ['upi', 'UPI'], ['bank', 'Card / Bank'], ['split', 'Split'], ...(limits().no_credit ? [] : [['credit', 'Credit (Khata)']])];
+  if (!methods.some(([k]) => k === method)) method = 'cash';
   el.innerHTML = head('Quick Bill', `<a class="btn" href="#/sales/INV">All invoices</a>`) + `
     <div class="posgrid">
       <div>
         <div class="panel"><div class="row">
-          <label class="f grow">Customer<select id="cust">${customers.map((p) => `<option value="${p.id}" ${p.id === (walkin && walkin.id) ? 'selected' : ''}>${esc(p.name)}</option>`).join('')}</select></label>
-          <label class="f">Godown<select id="wh">${whs.map((w) => `<option value="${w.id}">${esc(w.name)}</option>`).join('')}</select></label></div>
-          <div class="row" style="margin-top:10px"><input id="scan" class="grow scan" list="pos-items" placeholder="Scan barcode or type item name, then Enter" autocomplete="off" autofocus>
+          <label class="f grow">Customer (name or phone)<input id="custq" list="pos-cust" autocomplete="off" value="${esc(custLabel(customers.find((p) => p.id === custId) || { name: '' }))}"></label>
+          <button type="button" class="btn" id="newcust" style="align-self:flex-end">+ New customer</button>
+          ${whs.length > 1 ? `<label class="f">Godown<select id="wh">${whs.map((w) => `<option value="${w.id}">${esc(w.name)}</option>`).join('')}</select></label>` : `<input type="hidden" id="wh" value="${whs[0] ? whs[0].id : ''}">`}</div>
+          <datalist id="pos-cust">${customers.map((p) => `<option value="${esc(custLabel(p))}"></option>`).join('')}</datalist>
+          <div class="row possearch" style="margin-top:10px"><div class="grow acwrap"><input id="scan" class="scan" placeholder="Scan a barcode, or type an item name or code" autocomplete="off" autofocus
+              role="combobox" aria-autocomplete="list" aria-expanded="false" aria-controls="posac" aria-label="Scan or search item"><div class="acl" id="posac" role="listbox" hidden></div></div>
             ${canCamera() ? '<button class="btn" id="cam" title="Scan with camera">📷 Camera</button>' : ''}<button class="btn" id="voice" title="Speak the order">&#127908; Bolkar</button></div>
-          <datalist id="pos-items">${items.map((i) => `<option value="${esc(i.name)}">${esc(labelCode(i))} · ${inr(shownPrice(i))}</option>`).join('')}</datalist></div>
-        <div class="panel flush" id="cart"></div>
+          <div class="posfav" id="posfav"></div></div>
+        <div class="panel flush" id="cart" aria-live="polite"></div>
       </div>
       <div class="panel pos-pay">
         <div class="totals" id="ptot" style="width:100%"></div>
-        <div class="seg" id="method">${[['cash', 'Cash'], ['upi', 'UPI'], ['bank', 'Card / Bank'], ...(limits().no_credit ? [] : [['credit', 'Credit']])].map(([k, t]) => `<button type="button" data-m="${k}" class="${k === method ? 'on' : ''}">${t}</button>`).join('')}</div>
+        <div class="seg" id="method" role="group" aria-label="Payment">${methods.map(([k, t]) => `<button type="button" data-m="${k}" class="${k === method ? 'on' : ''}" aria-pressed="${k === method}">${t}</button>`).join('')}</div>
         <div class="pts" id="pospts" hidden></div>
-        <label class="f" id="recvw">Amount received (₹)<input id="recv" type="number" step="any" min="0"></label>
-        <div id="change" class="muted"></div><div id="posqr"></div>${cfDefs('doc', 'sales').length ? `<div class="form">${cfInputs('doc', {}, 'sales')}</div>` : ''}
+        <label class="f" id="recvw">Amount received (₹)<input id="recv" type="number" step="any" min="0" inputmode="decimal"></label>
+        <div class="form" id="splitw" hidden>
+          <label class="f">Cash (₹)<input id="sp_cash" type="number" step="any" min="0" inputmode="decimal"></label>
+          <label class="f">UPI (₹)<input id="sp_upi" type="number" step="any" min="0" inputmode="decimal"></label>
+          <label class="f">Card / Bank (₹)<input id="sp_bank" type="number" step="any" min="0" inputmode="decimal"></label></div>
+        <div id="change" class="muted" role="status"></div><div id="posqr"></div>${cfDefs('doc', 'sales').length ? `<div class="form">${cfInputs('doc', {}, 'sales')}</div>` : ''}
         <div class="warnbox cwarn" id="cwarn" role="status" hidden></div>
         <button class="btn primary big" id="done">Complete sale <span class="hide-sm">(F9)</span></button>
-        <div class="err" id="perr" hidden></div>
+        <button type="button" class="btn small" id="clearbill">Clear bill</button>
+        <div class="err" id="perr" role="alert" hidden></div>
       </div>
     </div>
+    <div class="posbar" id="posbar"><span id="pbtot"></span><button class="btn primary" id="pbgo">Pay</button></div>
 `;
+  const scan = $('#scan'), ac = $('#posac');
+  const lineGross = (l) => r2(l.qty * l.rate * (1 - (l.disc || 0) / 100));
   const totals = () => {
     let taxable = 0, tax = 0;
     // an MRP item's rate has its GST in it: the line costs qty x rate, and the tax is taken out of that
-    for (const l of cart) { const g = r2(l.qty * l.rate), t = l.incl ? r2(g * 100 / (100 + l.gst_rate)) : g; taxable += t; tax += l.incl ? r2(g - t) : r2(t * l.gst_rate / 100); }
+    for (const l of cart) { const g = lineGross(l), t = l.incl ? r2(g * 100 / (100 + l.gst_rate)) : g; taxable += t; tax += l.incl ? r2(g - t) : r2(t * l.gst_rate / 100); }
     return { taxable, tax, total: Math.round(taxable + tax) };
   };
+  const lineTotal = (l) => { const g = lineGross(l); return l.incl ? g : r2(g * (1 + l.gst_rate / 100)); };
   // loyalty points: a named customer's balance; one tick uses as many as this bill allows
   const LOY = ME.org.loyalty || {};
   let pts = null, usePts = false;
   const ptsMost = (total) => (usePts && pts && pts.can_use ? Math.max(0, Math.min(pts.balance, Math.floor(total * LOY.max_pct / 100 / LOY.point_value + 1e-9))) : 0);
   const loadPts = async () => {
     pts = null; usePts = false;
-    const pid = +$('#cust').value || 0;
+    const pid = custId || 0;
     if (LOY.on && pid) { try { pts = await GET('/api/loyalty/' + pid); } catch (e) { pts = null; } }
-    if (pid === (+$('#cust').value || 0)) draw();
+    if (pid === custId) draw();
+  };
+  const toPayNow = () => { const t = totals(); return r2(t.total - ptsMost(t.total) * (LOY.point_value || 0)); };
+  const splitSum = () => r2(['cash', 'upi', 'bank'].reduce((s, k) => s + (+$('#sp_' + k).value || 0), 0));
+  const drawFav = () => {
+    const q = quick();
+    $('#posfav').innerHTML = q.length ? `<span class="muted small">Often sold:</span>${q.map((i) => `<button type="button" class="chip" data-fav="${i.id}">${esc(i.name)}</button>`).join('')}` : '';
   };
   const draw = () => {
-    $('#cart').innerHTML = cart.length ? `<table class="t lines"><thead><tr><th>Item</th><th>Qty</th><th class="num">Rate</th><th class="num">Amount</th><th></th></tr></thead><tbody>${cart.map((l, i) => `<tr>
-        <td><b>${esc(l.name)}</b><div class="muted">${esc(l.code)} · GST ${l.gst_rate}% · stock ${qtyf(l.stock)}</div></td>
-        <td class="c-n"><input type="number" step="any" min="0" value="${l.qty}" data-q="${i}"></td>
-        <td class="num"><input type="number" step="any" min="0" value="${l.rate}" data-r="${i}" style="width:90px"></td>
-        <td class="num">${inr(r2(l.qty * l.rate * (1 + l.gst_rate / 100)))}</td><td><button class="btn sm danger" data-x="${i}">&times;</button></td></tr>`).join('')}</tbody></table>`
-      : '<div class="empty">Scan an item to start the bill.</div>';
+    $('#cart').innerHTML = cart.length ? `<div class="tbl-wrap"><table class="t lines poslines"><thead><tr><th>Item</th><th>Qty</th><th class="num">Rate</th><th class="num">Disc %</th><th class="num">Amount</th><th></th></tr></thead><tbody>${cart.map((l, i) => {
+        const it = byId.get(l.item_id) || {}, low = !it.is_service && l.qty > (it.qty_on_hand || 0);
+        return `<tr${i === cart.length - 1 ? ' class="justadded"' : ''}>
+        <td><b>${esc(l.name)}</b><div class="muted small">${esc(l.code)} · GST ${l.gst_rate}%${l.incl ? ' incl.' : ''}${it.is_service ? '' : ` · <span class="${low ? 'neg' : ''}">stock ${qtyf(it.qty_on_hand || 0)} ${esc(l.unit || '')}${low ? ' (short)' : ''}</span>`}</div></td>
+        <td class="c-n"><div class="qstep"><button type="button" class="btn sm" data-dec="${i}" aria-label="One less">&minus;</button><input type="number" step="any" min="0" inputmode="decimal" value="${l.qty}" data-q="${i}" aria-label="Quantity of ${esc(l.name)}"><button type="button" class="btn sm" data-inc="${i}" aria-label="One more">+</button></div></td>
+        <td class="num"><input type="number" step="any" min="0" inputmode="decimal" value="${l.rate}" data-r="${i}" style="width:90px" aria-label="Rate"></td>
+        <td class="num"><input type="number" step="any" min="0" max="100" inputmode="decimal" value="${l.disc || ''}" data-d="${i}" style="width:64px" aria-label="Discount %" placeholder="0"></td>
+        <td class="num" data-amt="${i}">${inr(lineTotal(l))}</td><td><button class="btn sm danger" data-x="${i}" aria-label="Remove ${esc(l.name)}">&times;</button></td></tr>`;
+      }).join('')}</tbody></table></div>`
+      : '<div class="empty"><b>Start the bill.</b><br>Scan a barcode, type an item name above, or tap an item under “Often sold”.</div>';
+    drawTotals();
+    drawFav();
+    keep();
+  };
+  const drawTotals = () => {
     const t = totals(), used = ptsMost(t.total), pv = r2(used * (LOY.point_value || 0)), toPay = r2(t.total - pv);
-    $('#ptot').innerHTML = `<div><span>Items</span><span>${cart.reduce((s, l) => s + l.qty, 0)}</span></div><div><span>Taxable</span><span>${inr(t.taxable)}</span></div>
+    const disc = r2(cart.reduce((s, l) => s + r2(l.qty * l.rate) - lineGross(l), 0));
+    $('#ptot').innerHTML = `<div><span>Items</span><span>${cart.length} (${qtyf(cart.reduce((s, l) => s + l.qty, 0))} qty)</span></div>${disc > 0 ? `<div><span>Discount</span><span>&minus;${inr(disc)}</span></div>` : ''}<div><span>Taxable</span><span>${inr(t.taxable)}</span></div>
       <div><span>GST</span><span>${inr(t.tax)}</span></div><div class="grand"><span>Total</span><span>${inr(t.total)}</span></div>
       ${pv > 0 ? `<div><span>&#11088; ${used} points</span><span>&minus;${inr(pv)}</span></div><div class="grand"><span>To pay</span><span>${inr(toPay)}</span></div>` : ''}`;
+    $('#posbar').hidden = !cart.length;
+    $('#pbtot').innerHTML = `<b>${inr(toPay)}</b> <span class="muted small">${cart.length} item${cart.length === 1 ? '' : 's'}</span>`;
     const pbox = $('#pospts');
     pbox.hidden = !(pts && pts.on && pts.earns);
     if (!pbox.hidden) pbox.innerHTML = pts.can_use
       ? `<label class="check"><input type="checkbox" id="useps" ${usePts ? 'checked' : ''}> <span>&#11088; Use points: <b>${pts.balance}</b> (worth ${inr(pts.value)})<small class="help">Up to ${LOY.max_pct}% of a bill.</small></span></label>`
       : `<p class="muted small">&#11088; ${pts.balance} loyalty point${pts.balance === 1 ? '' : 's'}${pts.balance > 0 && LOY.min_points ? ` (usable from ${LOY.min_points})` : ''}</p>`;
     const recv = $('#recv');
-    if (document.activeElement !== recv) recv.value = method === 'credit' ? '' : toPay || '';
-    $('#recvw').hidden = method === 'credit';
-    const ch = (+recv.value || 0) - toPay;
-    $('#change').textContent = method === 'cash' && ch > 0 ? `Return change: ${inr(ch)}` : method === 'credit' ? 'The full amount goes to the customer’s account.' : '';
-    if (method === 'upi' && toPay) upiQr($('#posqr'), ME.org, toPay, 'Bill', 'Customer scans to pay'); else $('#posqr').innerHTML = method === 'upi' ? '<p class="muted">Add your UPI ID in Settings to show a QR here.</p>' : '';
-    if (method === 'upi' && !ME.org.upi_id) $('#posqr').innerHTML = '<p class="muted">Add your UPI ID in Settings to show a QR here.</p>';
+    if (document.activeElement !== recv) recv.value = ['credit', 'split'].includes(method) ? '' : toPay || '';
+    $('#recvw').hidden = ['credit', 'split'].includes(method);
+    $('#splitw').hidden = method !== 'split';
+    const ch = (+recv.value || 0) - toPay, left = r2(toPay - splitSum());
+    $('#change').innerHTML = method === 'cash' && ch > 0 ? `Return change: <b>${inr(ch)}</b>`
+      : method === 'credit' ? 'The full amount goes to the customer’s Khata.'
+      : method === 'split' ? (left > 0 ? `${inr(left)} still to enter${custId === (walkin && walkin.id) ? '' : ' (or it goes to the Khata)'}` : left < 0 ? `<span class="neg">${inr(-left)} more than the bill</span>` : '✓ Parts add up to the bill')
+      : method !== 'cash' && toPay && recv.value && +recv.value < toPay ? `${inr(r2(toPay - +recv.value))} goes to the Khata` : '';
+    if (method === 'upi' && toPay && ME.org.upi_id) upiQr($('#posqr'), ME.org, toPay, 'Bill', 'Customer scans to pay');
+    else $('#posqr').innerHTML = method === 'upi' ? '<p class="muted">Add your UPI ID in Settings to show a QR here.</p>' : '';
   };
+  const lineOf = (it, qty) => ({ item_id: it.id, name: it.name, code: labelCode(it), qty, rate: it.price_incl ? it.sale_price_incl : it.sale_price, incl: !!it.price_incl, gst_rate: it.gst_rate, unit: it.unit, disc: 0 });
+  const put = (it, n) => {
+    const line = cart.find((l) => l.item_id === it.id);
+    if (line) { line.qty = Math.round((line.qty + n) * 1000) / 1000; cart.splice(cart.indexOf(line), 1); cart.push(line); }   // a repeat scan adds to its line, shown last
+    else cart.push(lineOf(it, n));
+    freq[it.id] = (freq[it.id] || 0) + 1; storeSet(freqKey, JSON.stringify(freq));
+  };
+  const flash = (ok, t) => { scan.classList.remove('scan-ok', 'scan-bad'); void scan.offsetWidth; scan.classList.add(ok ? 'scan-ok' : 'scan-bad'); if (t) toast(t, ok ? undefined : 'err'); beep(ok); };
+  // a code: the app's own list first (barcode, code, exact name), then the server (learnt codes, carton codes, QR text);
+  // a code nobody knows: choose its item once (it is then known everywhere) or make the item
   const add = async (code) => {
     code = code.trim();
-    if (!code) return;
+    if (!code) return false;
     const lc = code.toLowerCase();
-    let it = items.find((i) => i.name.toLowerCase() === lc || (i.barcode && i.barcode === code) || (i.sku && i.sku.toLowerCase() === lc) || ('st' + i.id) === lc);
-    if (!it) { try { it = await GET('/api/items/lookup?code=' + encodeURIComponent(code)); } catch (e) { toast(e.message); beep(false); return; } }
-    const line = cart.find((l) => l.item_id === it.id), n = it.pack_qty || 1;     // a carton code counts its pieces
-    if (line) line.qty = r2(line.qty + n);
-    else cart.push({ item_id: it.id, name: it.name, code: labelCode(it), qty: n, rate: it.price_incl ? it.sale_price_incl : it.sale_price, incl: !!it.price_incl, gst_rate: it.gst_rate, stock: it.qty_on_hand, unit: it.unit });
-    beep(true); draw();
+    let it = items.find((i) => (i.barcode && i.barcode === code) || (i.sku && i.sku.toLowerCase() === lc) || ('st' + i.id) === lc || i.name.toLowerCase() === lc), n = 1;
+    if (it) n = 1;
+    else {
+      try { it = await GET('/api/items/lookup?code=' + encodeURIComponent(code)); n = it.pack_qty || 1; it = byId.get(it.id) || it; }   // a carton code counts its pieces
+      catch (e) {
+        if (e.status !== 404) { flash(false, e.message); return false; }
+        const hits = searchItems(items, code, 1);
+        if (hits.length && !/^\d{6,}$/.test(code)) { put(hits[0], 1); flash(true); draw(); return true; }   // typed words, not a barcode
+        flash(false);
+        const cand = ((e.data && e.data.candidates) || []).map((c) => byId.get(c.id) || c);
+        if (!ME.can.items) { toast(`No item has the code “${code.slice(0, 40)}”. Ask the owner to add it.`, 'err'); return false; }
+        it = await teachCode(code, cand, items);
+        if (!it) return false;
+        it = byId.get(it.id) || it;
+      }
+    }
+    put(it, n); flash(true); draw(); return true;
   };
-  const scan = $('#scan');
-  scan.addEventListener('keydown', async (e) => { if (e.key === 'Enter') { e.preventDefault(); const v = scan.value; scan.value = ''; await add(v); scan.focus(); } });
-  scan.addEventListener('change', async () => { if (items.some((i) => i.name === scan.value)) { const v = scan.value; scan.value = ''; await add(v); } });
+  // the suggestion list under the box: arrows move, Enter adds the marked item; a scanner's fast Enter adds by code
+  let hits = [], sel = -1, lastKey = 0, fast = 0;
+  const closeAc = () => { ac.hidden = true; scan.setAttribute('aria-expanded', 'false'); hits = []; sel = -1; };
+  const drawAc = () => {
+    const q = scan.value.trim();
+    hits = q.length >= 2 && !/^\d{8,}$/.test(q) ? searchItems(items, q) : [];
+    if (!hits.length) { ac.hidden = true; scan.setAttribute('aria-expanded', 'false'); ac.innerHTML = q.length >= 2 && !/^\d{8,}$/.test(q) ? '' : ''; return; }
+    sel = Math.min(Math.max(sel, 0), hits.length - 1);
+    ac.innerHTML = hits.map((i, k) => `<div class="aci${k === sel ? ' on' : ''}" role="option" id="aci${k}" aria-selected="${k === sel}" data-k="${k}"><span><b>${esc(i.name)}</b><span class="muted small"> ${esc(labelCode(i))}${i.category ? ' · ' + esc(i.category) : ''}</span></span>
+      <span class="small">${inr(shownPrice(i))}${i.is_service ? '' : ` · <span class="${(i.qty_on_hand || 0) > 0 ? 'muted' : 'neg'}">${qtyf(i.qty_on_hand || 0)} ${esc(i.unit || '')}</span>`}</span></div>`).join('');
+    ac.hidden = false; scan.setAttribute('aria-expanded', 'true'); scan.setAttribute('aria-activedescendant', 'aci' + sel);
+  };
+  scan.addEventListener('input', () => { const now = Date.now(); fast = now - lastKey < 35 ? fast + 1 : 0; lastKey = now; sel = 0; drawAc(); });
+  scan.addEventListener('keydown', async (e) => {
+    if (e.key === 'ArrowDown' && hits.length) { e.preventDefault(); sel = (sel + 1) % hits.length; drawAc(); return; }
+    if (e.key === 'ArrowUp' && hits.length) { e.preventDefault(); sel = (sel - 1 + hits.length) % hits.length; drawAc(); return; }
+    if (e.key === 'Escape') { closeAc(); return; }
+    if (e.key !== 'Enter') return;
+    e.preventDefault();
+    const v = scan.value, pick = fast < 4 && hits[sel];     // keys typed by a scanner come in a burst: that is a code, not a pick
+    scan.value = ''; closeAc();
+    if (pick) { put(pick, 1); flash(true); draw(); } else await add(v);
+    scan.focus();
+  });
+  ac.addEventListener('mousedown', (e) => { const o = e.target.closest('[data-k]'); if (!o) return; e.preventDefault(); put(hits[+o.dataset.k], 1); scan.value = ''; closeAc(); flash(true); draw(); scan.focus(); });
+  scan.addEventListener('blur', () => setTimeout(closeAc, 150));
+  $('#posfav').addEventListener('click', (e) => { const b = e.target.closest('[data-fav]'); if (b) { put(byId.get(+b.dataset.fav), 1); flash(true); draw(); scan.focus(); } });
   $('#cart').addEventListener('input', (e) => {
-    const q = e.target.dataset.q, r = e.target.dataset.r;
-    if (q !== undefined) cart[+q].qty = +e.target.value || 0;
-    if (r !== undefined) cart[+r].rate = +e.target.value || 0;
-    const t = totals(); $('#ptot .grand span:last-child').textContent = inr(t.total);
+    const d = e.target.dataset, i = +(d.q ?? d.r ?? d.d);
+    if (Number.isNaN(i) || !cart[i]) return;
+    if (d.q !== undefined) cart[i].qty = +e.target.value || 0;
+    if (d.r !== undefined) cart[i].rate = +e.target.value || 0;
+    if (d.d !== undefined) cart[i].disc = Math.min(100, Math.max(0, +e.target.value || 0));
+    const a = $(`[data-amt="${i}"]`); if (a) a.textContent = inr(lineTotal(cart[i]));
+    drawTotals(); keep();
   });
   $('#cart').addEventListener('change', draw);
-  $('#cart').addEventListener('click', (e) => { if (e.target.dataset.x !== undefined) { cart.splice(+e.target.dataset.x, 1); draw(); } });
-  const setMethod = (m) => { method = m; $$('#method button').forEach((b) => b.classList.toggle('on', b.dataset.m === m)); draw(); posRisk(); };
+  $('#cart').addEventListener('click', (e) => {
+    const b = e.target.closest('button'); if (!b) return;
+    const d = b.dataset;
+    if (d.x !== undefined) cart.splice(+d.x, 1);
+    else if (d.inc !== undefined) cart[+d.inc].qty = Math.round((cart[+d.inc].qty + 1) * 1000) / 1000;
+    else if (d.dec !== undefined) { const l = cart[+d.dec]; l.qty = Math.max(0, Math.round((l.qty - 1) * 1000) / 1000); if (!l.qty) cart.splice(+d.dec, 1); }
+    else return;
+    draw();
+  });
+  const setMethod = (m) => { method = m; $$('#method button').forEach((b) => { b.classList.toggle('on', b.dataset.m === m); b.setAttribute('aria-pressed', b.dataset.m === m); }); draw(); posRisk(); };
   $('#method').onclick = (e) => { const m = e.target.dataset.m; if (m) setMethod(m); };
-  $('#recv').oninput = draw;
+  $('#recv').oninput = drawTotals;
+  $('#splitw').addEventListener('input', drawTotals);
+  // the customer: typed by name or phone; the list fills the box
+  const setCust = (id) => { custId = id; keep(); posRisk(); loadPts(); };
+  $('#custq').addEventListener('change', () => {
+    const v = $('#custq').value.trim(), lc = v.toLowerCase();
+    const p = customers.find((x) => custLabel(x).toLowerCase() === lc) || customers.find((x) => x.phone && v.replace(/\D/g, '').length >= 6 && x.phone.replace(/\D/g, '').endsWith(v.replace(/\D/g, ''))) || customers.find((x) => x.name.toLowerCase() === lc);
+    if (p) { $('#custq').value = custLabel(p); setCust(p.id); }
+    else if (!v && walkin) { $('#custq').value = custLabel(walkin); setCust(walkin.id); }
+    else toast('No customer with that name or phone. Tap “+ New customer” to add them.', 'err');
+  });
+  $('#newcust').onclick = () => modal('New customer', [{ k: 'name', label: 'Name', required: true }, { k: 'phone', label: 'Mobile number', type: 'tel' }], async (v) => {
+    if (!String(v.name || '').trim()) throw new Error('Write the customer’s name.');
+    const p = await POST('/api/parties', { name: v.name.trim(), phone: v.phone || '', kind: 'customer' });
+    dirty('parties'); customers.push(p); $('#pos-cust').insertAdjacentHTML('beforeend', `<option value="${esc(custLabel(p))}"></option>`);
+    $('#custq').value = custLabel(p); setCust(p.id); toast(`${p.name} added`); scan.focus();
+  }, { submit: 'Add customer' });
   // udhaar check (Vaada Pakka): banner when a risky customer buys on credit
   let risk = null, riskFor = 0;
   const posRisk = async () => {
-    const pid = +$('#cust').value || 0, box = $('#cwarn');
-    if (method !== 'credit') { box.hidden = true; return; }
+    const pid = custId || 0, box = $('#cwarn');
+    if (!['credit', 'split'].includes(method)) { box.hidden = true; return; }
     if (pid !== riskFor) { riskFor = pid; risk = await creditCheck(pid); }
-    box.hidden = !(risk && risk.risky && method === 'credit' && riskFor === +$('#cust').value);
+    box.hidden = !(risk && risk.risky && riskFor === custId);
     if (!box.hidden) box.innerHTML = creditText(risk);
   };
-  $('#cust').addEventListener('change', posRisk);
-  $('#cust').addEventListener('change', loadPts);
   $('#pospts').addEventListener('change', (e) => { if (e.target.id === 'useps') { usePts = e.target.checked; draw(); } });
   if ($('#cam')) $('#cam').onclick = () => cameraScan(add);
+  $('#clearbill').onclick = () => { if (cart.length && !confirm(`Remove all ${cart.length} items from this bill?`)) return; cart.length = 0; draw(); scan.focus(); };
+  $('#pbgo').onclick = () => { $('.pos-pay').scrollIntoView({ behavior: 'smooth' }); };
   // bolkar bill: each line found goes on the cart with the quantity said
   $('#voice').onclick = () => voiceOrder(items, (got) => {
-    for (const g of got) {
-      const it = items.find((i) => i.id === g.item_id); if (!it) continue;
-      const line = cart.find((l) => l.item_id === it.id);
-      if (line) line.qty = Math.round((line.qty + g.qty) * 1000) / 1000;   // 3 decimals, as the bill keeps them (250 g + 125 g = 0.375 kg)
-      else cart.push({ item_id: it.id, name: it.name, code: labelCode(it), qty: g.qty, rate: it.price_incl ? it.sale_price_incl : it.sale_price, incl: !!it.price_incl, gst_rate: it.gst_rate, stock: it.qty_on_hand, unit: it.unit });
-    }
+    for (const g of got) { const it = byId.get(g.item_id); if (it) put(it, g.qty); }
     if (got.length) { beep(true); toast(`${got.length} item${got.length === 1 ? '' : 's'} added`); }
     draw(); scan.focus();
   });
   // one Idempotency-Key per bill: a double tap on Done, or a save sent again after a lost answer, makes one bill
-  let billKey = newKey();
+  let billKey = newKey(), busy = false;
   const complete = async () => {
+    if (busy) return;
     const lines = cart.filter((l) => l.qty > 0);
-    if (!lines.length) return toast('The bill is empty.');
-    const t = totals(), btn = $('#done'); btn.disabled = true; $('#perr').hidden = true;
-    const body = { type: 'INV', party_id: +$('#cust').value, warehouse_id: +$('#wh').value, date: ME.today, notes: 'POS sale', extra: cfRead($('.pos-pay')),
-      lines: lines.map((l) => ({ item_id: l.item_id, qty: l.qty, rate: l.rate, gst_rate: l.gst_rate, incl: l.incl || undefined })) };
-    const used = ptsMost(t.total), toPay = r2(t.total - used * (LOY.point_value || 0));
+    if (!lines.length) { toast('The bill is empty. Scan or add an item first.'); scan.focus(); return; }
+    if (!custId) { toast('Choose the customer.', 'err'); $('#custq').focus(); return; }
+    const t = totals(), toPay = toPayNow(), btn = $('#done');
+    const body = { type: 'INV', party_id: custId, warehouse_id: +$('#wh').value, date: ME.today, notes: 'POS sale', extra: cfRead($('.pos-pay')),
+      lines: lines.map((l) => ({ item_id: l.item_id, qty: l.qty, rate: l.rate, discount_pct: l.disc || 0, gst_rate: l.gst_rate, incl: l.incl || undefined })) };
+    const used = ptsMost(t.total);
     if (used) body.redeem_points = used;
-    if (method !== 'credit' && toPay > 0) body.payment = { amount: Math.min(+$('#recv').value || toPay, toPay), account_id: acc(method === 'upi' ? 'upi' : method === 'bank' ? 'bank' : 'cash') };
+    let received = +$('#recv').value || 0;
+    if (method === 'split') {
+      const parts = [['cash', 'cash'], ['upi', 'upi'], ['bank', 'bank']].map(([k, s]) => ({ amount: r2(+$('#sp_' + k).value || 0), account_id: acc(s), reference: k === 'cash' ? '' : k.toUpperCase() })).filter((p) => p.amount > 0);
+      if (!parts.length) { toast('Write how much came in cash, UPI and card.', 'err'); $('#sp_cash').focus(); return; }
+      if (splitSum() > toPay + 0.001) { toast('The parts add up to more than the bill.', 'err'); return; }
+      if (splitSum() < toPay - 0.001 && walkin && custId === walkin.id) { toast(`${inr(r2(toPay - splitSum()))} is still to come. A walk-in customer has no Khata: take the full amount, or choose the customer by name.`, 'err'); return; }
+      body.payments = parts; received = splitSum();
+    } else if (method !== 'credit' && toPay > 0) body.payment = { amount: Math.min(received || toPay, toPay), account_id: acc(method === 'upi' ? 'upi' : method === 'bank' ? 'bank' : 'cash') };
     body.credit_ok = false; body.zero_ok = false;
+    busy = true; btn.disabled = true; $('#perr').hidden = true; btn.firstChild.textContent = 'Saving… ';
     const save = async () => {
       try {
         const d = await POST('/api/docs', body, { key: billKey });
         billKey = newKey();                         // the next bill is a new one
-        if (d.queued) { cart.length = 0; draw(); scan.focus(); toast('No internet: bill saved on this device, sent when online (Outbox).', 'info'); return; }
+        if (d.queued) { cart.length = 0; draw(); scan.focus(); toast('No internet: this bill is kept on this device and is sent when you are online (see Outbox). It is not final until then.', 'info'); return; }
         dirty('items', 'accounts', 'parties');
-        printReceipt(d, method, +$('#recv').value || 0);
-        cart.length = 0; draw(); scan.focus(); toast(`${d.number} saved${d.points && d.points.earned ? ` · ${d.points.earned} points earned` : ''}`);
+        for (const l of lines) { const it = byId.get(l.item_id); if (it && !it.is_service) it.qty_on_hand = r2((it.qty_on_hand || 0) - l.qty); }
+        printReceipt(d, method, received);
+        cart.length = 0; method = methods[0][0] === 'cash' ? 'cash' : method; ['cash', 'upi', 'bank'].forEach((k) => { $('#sp_' + k).value = ''; });
+        setMethod('cash'); scan.focus();
+        toast(`${d.number} saved · ${inr(d.total)}${d.balance > 0 ? ` · ${inr(d.balance)} on Khata` : ''}${d.points && d.points.earned ? ` · ${d.points.earned} points earned` : ''}`);
         if (pts) loadPts();
       } catch (err) {
         if (err.status === 409 && err.data.credit_warning) return creditSheet(err.data.credit_warning, { yes: () => { body.credit_ok = true; save(); }, cash: () => setMethod('cash') });
         if (err.status === 409 && err.data.zero_rate) return zeroSheet(err.data.zero_rate, { yes: () => { body.zero_ok = true; save(); }, fix: () => scan.focus() });
-        $('#perr').hidden = false; $('#perr').textContent = err.message;
+        $('#perr').hidden = false; $('#perr').textContent = err.message + ' The bill is still here; fix it and try again.';
       }
     };
-    try { await save(); } finally { btn.disabled = false; }
+    try { await save(); } finally { busy = false; btn.disabled = false; btn.firstChild.textContent = 'Complete sale '; }
   };
   $('#done').onclick = complete;
-  const keys = (e) => { if (e.key === 'F9') { e.preventDefault(); complete(); } };
+  const keys = (e) => {
+    if (e.key === 'F9') { e.preventDefault(); complete(); }
+    // a scanner types into the page wherever the focus is: send stray keys back to the scan box
+    else if (e.key.length === 1 && !e.ctrlKey && !e.metaKey && !e.altKey && document.activeElement === document.body) scan.focus();
+  };
   document.addEventListener('keydown', keys);
   window.addEventListener('hashchange', () => document.removeEventListener('keydown', keys), { once: true });
-  draw(); scan.focus(); loadPts();
+  draw(); scan.focus(); loadPts(); if (cart.length) toast(`Your unsaved bill is back (${cart.length} item${cart.length === 1 ? '' : 's'}).`, 'info');
 });
 function beep(ok) {
   try {

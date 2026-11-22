@@ -27,6 +27,8 @@ jobs:
         run: node test/courier.mjs http://localhost:8787
       - name: Refer & earn (invite trial, inviter's free month)
         run: node test/referral.mjs http://localhost:8787
+      - name: Quick Bill money rules
+        run: node test/pos.mjs http://localhost:8787
       - name: Reverse logic (two taps at once, wrong order, wrong source, silly numbers and dates, other businesses)
         run: node test/chaos.mjs http://localhost:8787
       - name: Table bills paid online against a stand-in Razorpay (payment link, signed webhook, mismatches, replays)

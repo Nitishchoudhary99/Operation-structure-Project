@@ -528,14 +528,17 @@ export async function createDoc(ctx, body) {
   if (pts) st.push(...invoicePointStatements(ctx, party, txk, d, pts));
   if (type === 'SRET') { const r = returnPointStatement(ctx, src, txk, d, total); if (r) st.push(r); }
 
-  // cash sale / cash purchase: settle immediately
-  if (['INV', 'BILL'].includes(type) && body.payment && +body.payment.amount > 0) {
-    const acct = await cashAccount(db, orgId, +body.payment.account_id);
-    const amt = Math.min(toPaise(body.payment.amount), total - paidNow);
+  // cash sale / cash purchase: settle immediately; a split payment (part cash, part UPI...) is several parts,
+  // all in this same write as the bill, so the bill and its money are kept together or not at all
+  const parts = ['INV', 'BILL'].includes(type) ? (Array.isArray(body.payments) ? body.payments.slice(0, 5) : body.payment ? [body.payment] : []) : [];
+  for (const pay of parts) {
+    if (!pay || !(+pay.amount > 0)) continue;
+    const acct = await cashAccount(db, orgId, +pay.account_id);
+    const amt = Math.min(toPaise(pay.amount), total - paidNow);
     paidNow += amt;
     if (amt > 0) st.push(...paymentStatements(ctx, {
       kind: type === 'INV' ? 'receipt' : 'payment', party, account: acct.id, date: d, amount: amt,
-      reference: str(body.payment.reference, 80), allocs: [{ txk, amount: amt, total }],
+      reference: str(pay.reference, 80), allocs: [{ txk, amount: amt, total }],
     }));
   }
 
