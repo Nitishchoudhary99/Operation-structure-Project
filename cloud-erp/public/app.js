@@ -735,19 +735,58 @@ const icon = (k) => `<svg class="ico" viewBox="0 0 24 24" aria-hidden="true" fil
    one tap away and remembered open. Advanced mode, or a menu the owner made for a user, shows its screens as they are. */
 const EXTRA = new Set(['channels', 'recurring', 'sales/CNOTE', 'purchase/DNOTE', 'claims', 'receive', 'stock-ageing', 'bins', 'expiry', 'serials', 'production', 'putaway',
   'vaade', 'wa-inbox', 'staff', 'statutory', 'bankrec', 'assets', 'tds', 'accounts', 'journal', 'daybook', 'reports/balance-sheet', 'reports/trial-balance', 'reports/register', 'cash', 'tally']);
+/* "What hurts most?": the owner picks up to 3; each brings the screens that fix it to the top of everyone's menu.
+   Nothing is removed: every other screen stays where it was. */
+const PAINS = [
+  ['udhaar', 'Money stuck with customers (udhaar)', ['khata', 'reminders', 'vaade', 'reports/ageing'], ['khata']],
+  ['stock', 'Stock runs out, or too much unsold stock', ['stock', 'items', 'stock-ageing', 'stockcount'], []],
+  ['speed', 'Billing is slow when the shop is busy', ['pos', 'sales/INV', 'receipts'], ['pos']],
+  ['profit', 'I don’t know if I’m making a profit', ['reports/pnl', 'expenses', 'cash', 'dashboard'], []],
+  ['gst', 'GST and accounts are a headache', ['reports/gst', 'gstr', 'ewaybills', 'daybook'], []],
+  ['staff', 'Mistakes or cheating by staff', ['staff', 'settings', 'reports/register', 'stockcount'], []],
+];
+const myPains = () => (((ME && ME.org && ME.org.setup) || {}).pains || []);
+/* screen use, counted on this device and sent now and then (screen names only): your most-used screens come first */
+const useKey = () => `st:use:${ME ? ME.org.id + ':' + ME.user.id : 0}`;
+let usePending = {};
+const useLocal = () => { try { return JSON.parse(storeGet(useKey()) || '{}') || {}; } catch (e) { return {}; } };
+function countScreen() {
+  if (!ME) return;
+  const h = location.hash.replace(/^#\/?/, '').split('?')[0].replace(/\/\d+.*$/, '');
+  if (!h || !/^[a-z][a-z0-9/_-]{0,39}$/.test(h)) return;
+  const u = useLocal(); u[h] = (u[h] || 0) + 1; storeSet(useKey(), JSON.stringify(u));
+  usePending[h] = (usePending[h] || 0) + 1;
+}
+function flushUse() {
+  if (!ME || !Object.keys(usePending).length || !navigator.onLine) return;
+  const body = { screens: usePending }; usePending = {};
+  POST('/api/usage', body).catch(() => { /* a lost count does not matter */ });
+}
+window.addEventListener('hashchange', countScreen);
+setInterval(flushUse, 120000);
+document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'hidden') flushUse(); });
+function forYou() {
+  const label = new Map(NAV.flatMap(([, x]) => x));
+  const ok = (h) => label.has(h) && onMenu(h) && seen(h);
+  const fromPains = myPains().flatMap((k) => (PAINS.find((p) => p[0] === k) || [0, 0, []])[2]);
+  const used = Object.entries(useLocal()).filter(([h, n]) => n >= 3 && h !== 'dashboard').sort((a, b) => b[1] - a[1]).map(([h]) => h);
+  return [...new Set([...fromPains, ...used])].filter(ok).slice(0, 6).map((h) => [h, label.get(h)]);
+}
 function navHtml() {
   const groups = NAV.map(([g, all]) => [g, all.filter(([h]) => onMenu(h) && seen(h))]);
   const fold = simple() && !myUi().screens && jobOf() === 'all';
   const block = (list) => list.filter(([, it]) => it.length).map(([g, it]) => `${g ? `<div class="nav-group">${g}</div>` : ''}${it.map(([h, t]) => `<a href="#/${h}" data-h="${h}">${t}</a>`).join('')}`).join('');
-  if (!fold) return block(groups);
+  const withTop = (html) => { const i = html.indexOf('<div class="nav-group">'); return i < 0 ? html + top : html.slice(0, i) + top + html.slice(i); };
+  const fy = forYou(), top = fy.length >= 2 ? `<div class="nav-group">For you</div>${fy.map(([h, t]) => `<a href="#/${h}" data-h="${h}">${t}</a>`).join('')}` : '';
+  if (!fold) return withTop(block(groups));
   const extra = (h) => EXTRA.has(h) && modState(h) !== true;      // a module the owner switched on stays in the main menu
   const main = groups.map(([g, it]) => [g, it.filter(([h]) => !extra(h))]), more = groups.map(([g, it]) => [g, it.filter(([h]) => extra(h))]);
   const n = more.reduce((k, [, it]) => k + it.length, 0);
-  if (!n) return block(groups);
+  if (!n) return withTop(block(groups));
   const here = location.hash.replace(/^#\/?/, '').split('?')[0];
   let open = EXTRA.has(here);
   try { open = open || localStorage.getItem('st:navmore') === '1'; } catch (e) { /* storage off */ }
-  return block(main) + `<details class="nav-more" id="navmore" ${open ? 'open' : ''}><summary>More features <span>${n}</span></summary>${block(more)}</details>`;
+  return withTop(block(main)) + `<details class="nav-more" id="navmore" ${open ? 'open' : ''}><summary>More features <span>${n}</span></summary>${block(more)}</details>`;
 }
 /* Hide amounts: blurs totals and money columns on this device, for a counter screen customers can see */
 function hideAmounts(on) {
@@ -1246,9 +1285,14 @@ route(/^dashboard$/, async (el, m, q) => {
   let range = q.get('range') || cur.layout.range || 'month', editing = false, draft = null, hist = [], fut = [], data = {}, extra = {};
   const canEdit = () => cur.id === 0 || cur.mine || L.can_share;
   const bizKey = `st:biz:${ME.org.id}`;
+  const painCard = () => (ME.can.settings && (ME.org.setup || {}).pains == null && storeGet(bizKey + ':pains') !== 'skip'
+    ? `<div class="panel bizpick painpick"><div><h2>What slows your business down most?</h2><p class="muted">Pick up to 3. The screens that fix them move to the top of the menu for everyone. Nothing else is taken away. Change it any time in Settings → Business type &amp; menu.</p></div>
+      <div class="bizchips">${PAINS.map(([k, t]) => `<button type="button" class="chip" data-pain="${k}" aria-pressed="false">${esc(t)}</button>`).join('')}</div>
+      <div class="row" style="gap:8px;margin-top:10px"><button type="button" class="btn primary" data-pain-save disabled>Set my menu</button><button type="button" class="btn" data-pain-skip>Not now</button></div></div>` : '');
   const bizCard = () => {
     const got = BIZ.find((b) => b[0] === ((ME.org.setup || {}).biz || storeGet(bizKey)));
     if (got) {
+      const pc = painCard(); if (pc) return pc;
       const tips = got[3].filter(([h]) => onMenu(h.split('?')[0]) && seen(h.split('?')[0]));
       return storeGet(bizKey + ':tips') === 'off' || !tips.length ? '' : `<div class="panel biztips"><b>For your ${esc(got[1].split(' / ')[0].toLowerCase())}:</b>
         ${tips.map(([h, t]) => `<a class="btn sm" href="#/${h}">${esc(t)}</a>`).join('')}<span class="spacer"></span><button type="button" class="btn sm" data-biz-off aria-label="Hide these suggestions">×</button></div>`;
@@ -1258,6 +1302,22 @@ route(/^dashboard$/, async (el, m, q) => {
       <div class="bizchips">${PACKS.map((p) => `<button type="button" class="chip" data-biz="${p.k}">${p.ico} ${esc(p.t)}</button>`).join('')}<button type="button" class="chip ghost" data-biz="skip">Skip</button></div></div>`;
   };
   el.onclick = async (e) => {          // page handlers are cleared on each screen change, so this never doubles up
+    const pb = e.target.closest('[data-pain]');
+    if (pb) {
+      const on = pb.getAttribute('aria-pressed') !== 'true', n = $$('[data-pain][aria-pressed="true"]', el).length;
+      if (on && n >= 3) { toast('Pick up to 3.'); return; }
+      pb.setAttribute('aria-pressed', String(on)); pb.classList.toggle('on', on);
+      $('[data-pain-save]', el).disabled = !$$('[data-pain][aria-pressed="true"]', el).length; return;
+    }
+    if (e.target.closest('[data-pain-skip]')) { storeSet(bizKey + ':pains', 'skip'); const c = e.target.closest('.painpick'); c.hidden = true; return; }
+    if (e.target.closest('[data-pain-save]')) {
+      const pains = $$('[data-pain][aria-pressed="true"]', el).map((b) => b.dataset.pain);
+      const mods = { ...((ME.org.setup || {}).modules || {}) };
+      for (const k of pains) for (const m of (PAINS.find((p) => p[0] === k) || [0, 0, 0, []])[3]) mods[m] = true;   // a module a pain needs is switched on
+      try { const r = await api('PUT', '/api/settings/setup', { pains, modules: mods }); ME.org.setup = r.setup; toast('Your menu is set: the screens for these are now at the top.'); location.reload(); }
+      catch (er) { toast(er.message, 'err'); }
+      return;
+    }
     const b = e.target.closest('[data-biz]');
     if (b) {
       const k = b.dataset.biz; storeSet(bizKey, k);
@@ -6645,8 +6705,30 @@ route(/^settings\/business$/, async (el, m, q) => {
       <label class="check" id="dashrow" hidden><input type="checkbox" name="dash" checked> Also set my dashboard for this kind of business</label>
       <div class="row sticky-act"><span class="muted small" id="bfsum"></span><span class="spacer"></span><button class="btn primary" ${can2 ? '' : 'disabled'}>Save</button></div>
     </form>
+    <form class="panel" id="painf"><h2>4. What slows your business down most?</h2><p class="muted">Up to 3. Their screens are shown first in everyone's menu, under “For you”. Nothing else is taken away.</p>
+      <div class="bizchips">${PAINS.map(([k, t]) => `<label class="check"><input type="checkbox" name="${k}" ${(S.pains || []).includes(k) ? 'checked' : ''}> <span>${esc(t)}</span></label>`).join('')}</div>
+      <div class="actions"><button class="btn primary">Save</button></div>
+      <details id="usebox" style="margin-top:12px"><summary>Which screens your business really uses (last 30 days)</summary><div class="muted small">Loading…</div></details></form>
     <div class="panel"><h2>Always on</h2><p class="muted">Sales &amp; purchase bills, returns, items &amp; stock, customers &amp; suppliers, receipts &amp; payments, expenses, GST returns, reports, backup.</p>
       <p>Staff menus and rights: <a href="#/settings/roles">Roles</a> · <a href="#/settings">Users</a>. Orders flow: <a href="#/settings/workflow">Orders &amp; dispatch</a>.</p></div>`;
+  $('#painf').onsubmit = async (e) => {
+    e.preventDefault();
+    const pains = PAINS.map(([k]) => k).filter((k) => e.target.elements[k].checked);
+    if (pains.length > 3) { toast('Pick up to 3.', 'err'); return; }
+    try { const r = await api('PUT', '/api/settings/setup', { pains }); ME.org.setup = r.setup; toast('Saved: your menu shows these first.'); location.reload(); } catch (er) { toast(er.message, 'err'); }
+  };
+  $('#usebox').addEventListener('toggle', async (e) => {
+    if (!e.target.open || e.target.dataset.done) return;
+    e.target.dataset.done = '1';
+    const label = new Map(NAV.flatMap(([, x]) => x));
+    try {
+      const { rows } = await GET('/api/usage');
+      const used = new Set(rows.map((r) => r.screen)), unused = [...label.keys()].filter((h) => onMenu(h) && !used.has(h));
+      $('div', e.target).innerHTML = rows.length ? `<table class="t"><thead><tr><th>Screen</th><th class="num">Opened</th><th class="num">Days</th><th class="num">People</th></tr></thead><tbody>${rows.slice(0, 25).map((r) => `<tr><td>${esc(label.get(r.screen) || r.screen)}</td><td class="num">${r.n}</td><td class="num">${r.days}</td><td class="num">${r.people}</td></tr>`).join('')}</tbody></table>
+        ${unused.length ? `<p class="muted small" style="margin-top:8px">Not opened in 30 days: ${unused.slice(0, 20).map((h) => esc(label.get(h))).join(', ')}. You can switch these off above to keep the menu short.</p>` : ''}`
+        : 'Nothing counted yet. Come back after a few days of use.';
+    } catch (er) { $('div', e.target).textContent = er.message; }
+  });
   const f = $('#bf');
   const sum = () => { const n = MODULES.filter(([k]) => f.elements['m_' + k].checked).length; $('#bfsum').textContent = `${n} of ${MODULES.length} tools on`; };
   f.addEventListener('change', sum); sum();

@@ -1715,6 +1715,21 @@ router.add('POST', '/api/demo', async (c) => {
   return json({ ok: true, user: publicUser(user), demo: true }, 200, { 'Set-Cookie': sessionCookie(token, c.request) });
 }, { public: true });
 /* Refer & earn: the business's invite link and how it is doing */
+/* screen use: the app sends counts now and then ({ "pos": 3, "khata": 1 }); only known-looking screen names are kept */
+router.add('POST', '/api/usage', async (c) => {
+  const day = today(), body = c.body && typeof c.body.screens === 'object' && c.body.screens ? c.body.screens : {};
+  const rows = Object.entries(body).filter(([k, v]) => /^[a-z][a-z0-9/_-]{0,39}$/.test(k) && Number.isFinite(+v) && +v > 0).slice(0, 30);
+  if (rows.length) await c.db.batch(rows.map(([k, v]) => c.db.prepare(`INSERT INTO usage_daily (org_id, user_id, screen, day, n) VALUES (?, ?, ?, ?, ?)
+      ON CONFLICT (org_id, user_id, screen, day) DO UPDATE SET n = n + excluded.n`).bind(c.org.id, c.user.id, k, day, Math.min(200, Math.round(+v)))));
+  return json({ ok: true, kept: rows.length });
+});
+// the business's use of each screen over the last 30 days (owner and admins: settings)
+router.add('GET', '/api/usage', async (c) => {
+  requireCan(c.user, 'settings');
+  const { results } = await c.db.prepare(`SELECT screen, SUM(n) AS n, COUNT(DISTINCT day) AS days, COUNT(DISTINCT user_id) AS people FROM usage_daily
+      WHERE org_id = ? AND day >= ? GROUP BY screen ORDER BY n DESC`).bind(c.org.id, addDays(today(), -30)).all();
+  return json({ rows: results });
+});
 router.add('GET', '/api/referral', async (c) => {
   requireCan(c.user, 'settings');
   let code = c.org.ref_code;
@@ -2886,6 +2901,7 @@ export default {
       const half = new Date(Date.now() - 183 * 864e5).toISOString();
       await env.DB.batch([env.DB.prepare(`DELETE FROM wa_messages WHERE id IN (SELECT id FROM wa_messages WHERE at < ? LIMIT 2000)`).bind(half),
         env.DB.prepare(`DELETE FROM wa_contacts WHERE updated_at < ?`).bind(half)]);
+      await env.DB.prepare(`DELETE FROM usage_daily WHERE day < ?`).bind(addDays(today(), -120)).run();
       const tm = await runTrialMails(env);
       if (tm.due) console.log('trial mails', tm.due);
       const w = await runAutoReminders(env);

@@ -13,6 +13,8 @@ export function setupOf(org) {
   try { s = JSON.parse((org && org.setup) || '{}') || {}; } catch (e) { s = {}; }
   return cleanSetup(s);
 }
+/* what hurts the business most, chosen by the owner: each brings its screens to the top of the menu (public/app.js PAINS) */
+export const PAIN_KEYS = ['udhaar', 'stock', 'staff', 'profit', 'gst', 'speed'];
 export function cleanSetup(b) {
   b = b && typeof b === 'object' ? b : {};
   const modules = {};
@@ -40,5 +42,7 @@ export function cleanSetup(b) {
       wholesale_order_min: d.wholesale_order_min === undefined || d.wholesale_order_min === null || d.wholesale_order_min === '' ? 0
         : Math.round(num(d.wholesale_order_min, 'Wholesale from pieces in one order', { min: 0, max: 100000 })) },
     payroll,
+    // null = never asked; [] = asked and skipped
+    pains: Array.isArray(b.pains) ? [...new Set(b.pains.filter((k) => PAIN_KEYS.includes(k)))].slice(0, 3) : null,
   };
 }

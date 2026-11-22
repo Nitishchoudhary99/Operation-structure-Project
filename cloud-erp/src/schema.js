@@ -3,7 +3,7 @@
    Every business table carries org_id: one database serves many businesses (multi-tenant).
    migrate() runs on the first request after each deploy, so no manual migration step is needed. */
 
-export const SCHEMA_VERSION = 57;
+export const SCHEMA_VERSION = 58;
 
 // document types whose monthly totals doc_month keeps (sales and purchase money documents)
 const MONTH_TYPES = `('INV','SRET','CNOTE','BILL','PRET','DNOTE')`;
@@ -830,6 +830,13 @@ export const MIGRATIONS = {
   // the try-without-sign-up demo: a throwaway business (no trial e-mails, no invite rewards, no plans to buy), deleted after a day
   57: [
     `ALTER TABLE orgs ADD COLUMN demo INTEGER NOT NULL DEFAULT 0`,
+  ],
+  /* which screens each person opens, counted per day (screen names only, nothing typed): the menu puts a person's
+     own most-used screens first, and the owner sees which parts of the app the shop really uses. Kept 120 days. */
+  58: [
+    `CREATE TABLE IF NOT EXISTS usage_daily (org_id INTEGER NOT NULL, user_id INTEGER NOT NULL, screen TEXT NOT NULL, day TEXT NOT NULL, n INTEGER NOT NULL DEFAULT 0,
+       PRIMARY KEY (org_id, user_id, screen, day))`,
+    `CREATE INDEX IF NOT EXISTS ix_usage_day ON usage_daily (day)`,
   ],
 };
 
