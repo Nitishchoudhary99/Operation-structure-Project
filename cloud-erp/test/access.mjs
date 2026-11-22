@@ -243,8 +243,9 @@ const hasA = (r) => /ZZA/.test(r.text);
     const res = await rq(r.method, path, r.method === 'GET' ? undefined : { name: 'ZZG', notes: 'ZZG' }, guard);
     const gate = /^\/api\/gate/.test(r.pattern);
     if (r.method === 'GET' && ok2(res) && !gate && /ZZA secret/.test(res.text)) leaks.push(`${r.method} ${path} -> ${res.status}`);
-    // a user's own saved dashboard layouts are theirs (scoped to user_id, checked below that no figures leak)
-    const personal = /^\/api\/dashboards/.test(r.pattern);
+    // a user's own saved dashboard layouts are theirs (scoped to user_id, checked below that no figures leak); so are the
+    // counts of which screens they opened (usage_daily rows under their own user_id: no business data is changed)
+    const personal = /^\/api\/(dashboards|usage$)/.test(r.pattern);
     if (r.method !== 'GET' && ok2(res) && !gate && !personal) writes.push(`${r.method} ${path} -> ${res.status}`);
   }
   {
