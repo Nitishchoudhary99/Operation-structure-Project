@@ -1428,3 +1428,4 @@ table th { color: var(--muted); font-weight: 600; }
   .possearch { flex-wrap: wrap; }
   .possearch .acwrap { flex-basis: 100%; }
 }
+.painpick .chip.on, .painpick .chip[aria-pressed="true"] { background: var(--brand-soft); border-color: var(--brand); color: var(--brand-ink); font-weight: 600; }

@@ -44,5 +44,14 @@ const over = await rq('POST', '/api/docs', { ...body, payments: [{ amount: 900, 
 check('a part bigger than the bill is capped at the bill', over.status === 200 && over.data.paid === 632 && over.data.balance === 0, JSON.stringify([over.status, over.data.paid]));
 const short = await rq('POST', '/api/docs', { ...body, lines: [{ item_id: soap.id, qty: 500, rate: 50, gst_rate: 18 }], payments: [] }, key + 'c');
 check('selling more than the stock is refused and nothing is saved', short.status >= 400 && (await rq('GET', '/api/items')).data.rows.find((i) => i.id === soap.id).qty_on_hand === 12, JSON.stringify([short.status, short.data.error]));
+// "What hurts most?" and screen use
+const st = (await rq('PUT', '/api/settings/setup', { pains: ['udhaar', 'speed', 'nonsense', 'udhaar', 'gst', 'stock'] })).data.setup;
+check('pains: unknown and repeated ones dropped, at most 3 kept', JSON.stringify(st.pains) === JSON.stringify(['udhaar', 'speed', 'gst']), JSON.stringify(st.pains));
+check('pains: other settings are kept', (await rq('PUT', '/api/settings/setup', { item_defaults: { unit: 'Kg' } })).data.setup.pains.length === 3);
+const u1 = await rq('POST', '/api/usage', { screens: { pos: 3, khata: 1, 'BAD NAME': 5, 'x/../y': 2, items: -4 } });
+await rq('POST', '/api/usage', { screens: { pos: 2 } });
+const ur = (await rq('GET', '/api/usage')).data.rows || [];
+check('usage: only screen-like names with real counts are kept', u1.data.kept === 2, JSON.stringify(u1.data));
+check('usage: counts add up per screen', (ur.find((r) => r.screen === 'pos') || {}).n === 5 && !ur.some((r) => r.screen === 'items'), JSON.stringify(ur));
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

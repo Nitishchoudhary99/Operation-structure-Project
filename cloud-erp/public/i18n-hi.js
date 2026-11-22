@@ -2,6 +2,25 @@
    screen is drawn; names, numbers, amounts and whatever people type stay exactly as they are. Words a shopkeeper already
    says in English (GST, HSN, UPI, POS, GSTIN, Excel, WhatsApp) stay in English. Add a line to translate one more label. */
 export const HI = {
+  // "What hurts most?", For you, Quick Bill 2026-11
+  'For you': 'आपके लिए', 'What slows your business down most?': 'आपके बिज़नेस में सबसे ज़्यादा दिक्कत कहाँ है?',
+  'Pick up to 3. The screens that fix them move to the top of the menu for everyone. Nothing else is taken away. Change it any time in Settings → Business type & menu.': 'ज़्यादा से ज़्यादा 3 चुनें। इन्हें ठीक करने वाली स्क्रीन सबके मेन्यू में सबसे ऊपर आ जाएँगी। बाक़ी कुछ नहीं हटेगा। कभी भी बदलें: सेटिंग → बिज़नेस का प्रकार और मेन्यू।',
+  'Money stuck with customers (udhaar)': 'ग्राहकों के पास पैसा फँसा है (उधार)', 'Stock runs out, or too much unsold stock': 'स्टॉक ख़त्म हो जाता है, या बहुत सारा माल बिकता नहीं',
+  'Billing is slow when the shop is busy': 'भीड़ में बिल बनाने में देर लगती है', 'I don’t know if I’m making a profit': 'पता नहीं चलता कि मुनाफ़ा हो रहा है या नहीं',
+  'GST and accounts are a headache': 'GST और हिसाब-किताब में परेशानी', 'Mistakes or cheating by staff': 'स्टाफ़ की ग़लतियाँ या धोखा',
+  'Set my menu': 'मेरा मेन्यू सेट करें', 'Not now': 'अभी नहीं', 'Pick up to 3.': 'ज़्यादा से ज़्यादा 3 चुनें।',
+  'Your menu is set: the screens for these are now at the top.': 'मेन्यू सेट हो गया: इनकी स्क्रीन अब सबसे ऊपर हैं।',
+  '4. What slows your business down most?': '4. आपके बिज़नेस में सबसे ज़्यादा दिक्कत कहाँ है?',
+  'Up to 3. Their screens are shown first in everyone\'s menu, under “For you”. Nothing else is taken away.': 'ज़्यादा से ज़्यादा 3। इनकी स्क्रीन सबके मेन्यू में “आपके लिए” में सबसे पहले दिखेंगी। बाक़ी कुछ नहीं हटेगा।',
+  'Which screens your business really uses (last 30 days)': 'आपका बिज़नेस असल में कौन-सी स्क्रीन इस्तेमाल करता है (पिछले 30 दिन)',
+  'Nothing counted yet. Come back after a few days of use.': 'अभी कुछ गिना नहीं गया। कुछ दिन इस्तेमाल के बाद देखें।',
+  'Saved: your menu shows these first.': 'सेव हुआ: मेन्यू में ये सबसे पहले दिखेंगे।',
+  'Screen': 'स्क्रीन', 'Opened': 'खोली गई', 'Days': 'दिन', 'People': 'लोग',
+  'Customer (name or phone)': 'ग्राहक (नाम या फ़ोन)', '+ New customer': '+ नया ग्राहक', 'Often sold:': 'अक्सर बिकने वाले:',
+  'Split': 'बाँटकर', 'Credit (Khata)': 'उधार (खाता)', 'Clear bill': 'बिल ख़ाली करें', 'Pay': 'पेमेंट', 'Disc %': 'छूट %',
+  'Cash (₹)': 'नकद (₹)', 'UPI (₹)': 'UPI (₹)', 'Card / Bank (₹)': 'कार्ड / बैंक (₹)', 'Start the bill.': 'बिल शुरू करें।',
+  'Scan a barcode, type an item name above, or tap an item under “Often sold”.': 'बारकोड स्कैन करें, ऊपर सामान का नाम लिखें, या “अक्सर बिकने वाले” में से टैप करें।',
+  '✓ Parts add up to the bill': '✓ हिस्से बिल के बराबर हैं', 'Add customer': 'ग्राहक जोड़ें', 'Mobile number': 'मोबाइल नंबर',
   // menu
   'Dashboard': 'डैशबोर्ड', 'Sales': 'बिक्री', 'Purchase': 'खरीद', 'Inventory': 'स्टॉक', 'Contacts': 'ग्राहक-सप्लायर', 'Accounts': 'हिसाब-किताब',
   'Reports': 'रिपोर्ट', 'Settings': 'सेटिंग्स', 'Quick Bill (POS)': 'जल्दी बिल (POS)', 'Invoices': 'बिल', 'Online Orders (Amazon…)': 'ऑनलाइन ऑर्डर (Amazon…)',
