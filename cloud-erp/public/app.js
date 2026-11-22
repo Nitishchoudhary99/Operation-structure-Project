@@ -206,7 +206,9 @@ function enhanceSelects(root) {
     const draw = () => {
       const q = typed ? inp.value.trim().toLowerCase().split(/\s+/).filter(Boolean) : [];
       const all = opts().filter((o) => o.value !== '' || !q.length);
-      const hit = q.length ? all.filter((o) => q.every((w) => o.text.toLowerCase().includes(w))) : all;
+      let hit = q.length ? all.filter((o) => q.every((w) => o.text.toLowerCase().includes(w))) : all;
+      // nothing exact: forgive one wrong letter per word ("surf exel"), best matches first, as Quick Bill does
+      if (q.length && !hit.length) hit = all.map((o) => [o, itemScore({ name: o.text }, q)]).filter((x) => x[1] > 0).sort((a, b) => b[1] - a[1]).map((x) => x[0]);
       items = hit.slice(0, 60); at = Math.min(at, Math.max(0, items.length - 1));
       list.innerHTML = items.length ? items.map((o, i) => `<div role="option" class="combo-opt${i === at ? ' on' : ''}${o.value === sel.value ? ' sel' : ''}" data-i="${i}" aria-selected="${i === at}">${esc(o.text)}</div>`).join('')
         + (hit.length > items.length ? `<div class="combo-more">${hit.length - items.length} more: keep typing</div>` : '') : '<div class="combo-more">Nothing matches</div>';
