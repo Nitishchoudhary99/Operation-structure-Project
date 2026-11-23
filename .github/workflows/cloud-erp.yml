@@ -59,6 +59,8 @@ jobs:
         run: node test/voice.mjs
       - name: Free trial, Free limit and first-year offer
         run: node test/trial.mjs
+      - name: Dukaan Doctor checks
+        run: node test/doctor.mjs
       - name: No secrets in the repository
         working-directory: .
         run: node tools/secret-scan.mjs

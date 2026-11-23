@@ -2,6 +2,8 @@
    screen is drawn; names, numbers, amounts and whatever people type stay exactly as they are. Words a shopkeeper already
    says in English (GST, HSN, UPI, POS, GSTIN, Excel, WhatsApp) stay in English. Add a line to translate one more label. */
 export const HI = {
+  'Dukaan Doctor': 'दुकान डॉक्टर', 'Send reminders': 'रिमाइंडर भेजें', 'Make a purchase order': 'ख़रीद ऑर्डर बनाएँ', 'See slow stock': 'धीमा माल देखें',
+  'Check prices': 'रेट जाँचें', 'Set role limits': 'रोल की सीमा तय करें',
   // "What hurts most?", For you, Quick Bill 2026-11
   'For you': 'आपके लिए', 'What slows your business down most?': 'आपके बिज़नेस में सबसे ज़्यादा दिक्कत कहाँ है?',
   'Pick up to 3. The screens that fix them move to the top of the menu for everyone. Nothing else is taken away. Change it any time in Settings → Business type & menu.': 'ज़्यादा से ज़्यादा 3 चुनें। इन्हें ठीक करने वाली स्क्रीन सबके मेन्यू में सबसे ऊपर आ जाएँगी। बाक़ी कुछ नहीं हटेगा। कभी भी बदलें: सेटिंग → बिज़नेस का प्रकार और मेन्यू।',
@@ -761,6 +763,16 @@ export const HI = {
 // lines with numbers in the promises and cash screens
 const MONTHS = { Jan: 'जनवरी', Feb: 'फ़रवरी', Mar: 'मार्च', Apr: 'अप्रैल', May: 'मई', Jun: 'जून', Jul: 'जुलाई', Aug: 'अगस्त', Sep: 'सितंबर', Oct: 'अक्टूबर', Nov: 'नवंबर', Dec: 'दिसंबर' };
 export const HI_RX = [
+  // Dukaan Doctor (src/doctor.js)
+  [/^(₹[\d,]+) stuck with (\d+) customers? for over 60 days$/, '$2 ग्राहकों के पास $1, 60 दिन से ज़्यादा समय से अटका है'],
+  [/^(\d+) unpaid bills?\. The longer it waits, the harder it comes back\.$/, '$1 बिल बाक़ी। जितनी देर होगी, पैसा वापस आना उतना मुश्किल।'],
+  [/^(\d+) fast-selling items? will run out within a week$/, 'जल्दी बिकने वाले $1 सामान एक हफ़्ते में ख़त्म हो जाएँगे'],
+  [/^(₹[\d,]+) of stock has not sold in 90 days$/, '$1 का माल 90 दिन से नहीं बिका'],
+  [/^(\d+) items? sitting on the shelf\. A small discount or a return to the supplier frees this money\.$/, '$1 सामान शेल्फ़ पर पड़े हैं। थोड़ी छूट देकर या सप्लायर को लौटाकर यह पैसा निकल सकता है।'],
+  [/^(₹[\d,]+) lost selling below cost this month$/, 'इस महीने लागत से कम में बेचकर $1 का नुक़सान'],
+  [/^(\d+) bill lines? sold for less than the item cost you\. Check the sale prices\.$/, '$1 बिल लाइनों में सामान आपकी लागत से कम में बिका। बिक्री के रेट जाँचें।'],
+  [/^(.+) gave ([\d.]+)% discount; others gave ([\d.]+)%$/, '$1 ने $2% छूट दी; बाक़ियों ने $3%'],
+  [/^(\d+) things? to look at$/, '$1 बातें देखनी हैं'],
   [/^Customer picks a pay date \(promise\): up to (\d+) open promises$/, 'ग्राहक खुद तारीख चुने (वादा): $1 खुले वादों तक'],
   [/^(\d+) promises? broken, send a reminder$/, '$1 वादे टूटे, याद दिलाएँ'],
   [/^by (.+)$/, 'तक $1'],

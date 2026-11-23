@@ -1301,6 +1301,20 @@ route(/^dashboard$/, async (el, m, q) => {
     return `<div class="panel bizpick"><div><h2>What kind of business do you run?</h2><p class="muted">Your menu, tools, dashboard and new-item settings are set for it. Change anything later in Settings → Business type &amp; menu.</p></div>
       <div class="bizchips">${PACKS.map((p) => `<button type="button" class="chip" data-biz="${p.k}">${p.ico} ${esc(p.t)}</button>`).join('')}<button type="button" class="chip ghost" data-biz="skip">Skip</button></div></div>`;
   };
+  // Dukaan Doctor: asked once per visit to the dashboard; the dashboard redraws often, the answer is reused
+  let doctor = null;
+  const doctorDraw = () => {
+    const box = $('#doctor'); if (!box || !doctor) return;
+    if (!doctor.length) { box.innerHTML = ''; return; }
+    box.innerHTML = `<section class="panel doctor" aria-label="Dukaan Doctor"><h2>&#129658; Dukaan Doctor <span class="muted small">${doctor.length} thing${doctor.length === 1 ? '' : 's'} to look at</span></h2>
+      <ul>${doctor.map((f) => `<li class="dx ${f.level}"><div><b>${esc(f.title)}</b><small class="muted">${esc(f.detail)}</small></div><a class="btn sm ${f.level === 'high' ? 'primary' : ''}" href="#/${esc(f.href)}">${esc(f.action)}</a></li>`).join('')}</ul></section>`;
+  };
+  const doctorFill = () => {
+    if (doctor) return doctorDraw();
+    if (doctorFill.busy) return;
+    doctorFill.busy = true;
+    GET('/api/doctor').then((r) => { doctor = r.rows || []; doctorDraw(); }).catch(() => { doctor = []; });
+  };
   el.onclick = async (e) => {          // page handlers are cleared on each screen change, so this never doubles up
     const pb = e.target.closest('[data-pain]');
     if (pb) {
@@ -1374,9 +1388,9 @@ route(/^dashboard$/, async (el, m, q) => {
           <label class="check"><input type="checkbox" id="ddef" ${draft.is_default ? 'checked' : ''}> Open this dashboard first</label>
           ${L.can_share ? `<label class="check"><input type="checkbox" id="dshare" ${draft.shared ? 'checked' : ''}> Share with everyone in the business <small class="muted">(each person sees only what their role allows)</small></label>` : ''}
           ${cur.id && cur.mine ? '<span class="spacer"></span><button type="button" class="btn sm" id="ddup">Duplicate</button><button type="button" class="btn sm danger" id="ddel">Delete</button>' : ''}</div>`
-        : `${bizCard()}${getStarted(L.setup)}<nav class="qacts" aria-label="Quick actions">${acts.map(([h, t, , , ic]) => `<a href="#/${h}">${icon(ic)}<span>${t}</span></a>`).join('')}</nav>`}
+        : `<div id="doctor"></div>${bizCard()}${getStarted(L.setup)}<nav class="qacts" aria-label="Quick actions">${acts.map(([h, t, , , ic]) => `<a href="#/${h}">${icon(ic)}<span>${t}</span></a>`).join('')}</nav>`}
       <div class="dgrid ${editing ? 'editing' : ''}" id="dgrid">${widgets().map(card).join('') || `<div class="wempty big">${editing ? 'Add widgets from the library, or start from a template.' : 'This dashboard is empty. Press Customize to add widgets.'}</div>`}</div>`;
-    wire();
+    wire(); doctorFill();
   };
   const snap = () => { hist.push(JSON.stringify(draft)); if (hist.length > 50) hist.shift(); fut = []; };
   const change = async (fn, reload) => { snap(); fn(); if (reload) { draw(); await load(); } draw(); };

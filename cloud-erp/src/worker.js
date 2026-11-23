@@ -27,6 +27,7 @@ import { receivePending, matchBill, learnCode, autoBins, writeOff, cancelWriteOf
 import { listClaims, claimDetail, saveClaim, claimReceipt, closeClaim, cancelClaimEntry } from './claims.js';
 import { dispatchBoard, dispatchStep, workflowOf, cleanWorkflow } from './dispatch.js';
 import { setupOf, cleanSetup } from './setup.js';
+import { diagnose } from './doctor.js';
 import { listJobs, jobDetail, createJob, updateJob } from './jobs.js';
 import { courierStatus, courierConnect, courierPickup, courierPickups, courierDisconnect, courierRates, courierBook, courierTrack, courierSync, courierNdr, courierNdrAction, courierReturn } from './courier.js';
 import { botReady, botLink, verifyWebhook, receiveWebhook, setBot, inbox, thread, reply as waReply, markDone } from './wabot.js';
@@ -1715,6 +1716,11 @@ router.add('POST', '/api/demo', async (c) => {
   return json({ ok: true, user: publicUser(user), demo: true }, 200, { 'Set-Cookie': sessionCookie(token, c.request) });
 }, { public: true });
 /* Refer & earn: the business's invite link and how it is doing */
+/* Dukaan Doctor (src/doctor.js): the shop's problems in rupees, each with the screen that fixes it */
+router.add('GET', '/api/doctor', async (c) => {
+  const found = await diagnose(c, { costs: seesCosts(c.user), sales: can(c.user, 'sales'), stock: can(c.user, 'items') || can(c.user, 'stock') });
+  return json({ rows: found.map((f) => ({ ...f, amount: R(f.amount) })) });
+});
 /* screen use: the app sends counts now and then ({ "pos": 3, "khata": 1 }); only known-looking screen names are kept */
 router.add('POST', '/api/usage', async (c) => {
   const day = today(), body = c.body && typeof c.body.screens === 'object' && c.body.screens ? c.body.screens : {};
