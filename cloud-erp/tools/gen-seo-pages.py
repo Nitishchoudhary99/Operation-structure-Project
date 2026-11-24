@@ -12,7 +12,7 @@ PRICES = [('Free', '₹0', 'forever', ['25 invoices / month', '1 user, 1 godown'
           ('Starter', '₹999', '/year + GST', ['Unlimited invoices', '2 users, 1 godown', 'Everything in Free', 'Tally export']),
           ('Growth', '₹2,499', '/year + GST', ['Unlimited invoices', '5 users, 3 godowns', 'E-invoice & e-way bill JSON', 'Orders, GRN, gate entry']),
           ('Business', '₹4,499', '/year + GST', ['Unlimited invoices', '15 users, unlimited godowns', 'Everything in Growth', 'Priority WhatsApp support (+91 90684 46139)'])]
-GROUPS = [('core', 'Software'), ('industry', 'By business'), ('feature', 'Features'), ('hi', 'हिंदी में')]
+GROUPS = [('core', 'Software'), ('industry', 'By business'), ('feature', 'Features'), ('compare', 'Switching'), ('hi', 'हिंदी में')]
 PAGES = []
 
 
@@ -153,7 +153,7 @@ page('/gst-billing-software/', 'Free GST Billing Software for Small Business | S
       ('Bill designs and languages', ul(['Several invoice designs with a live preview; pick one per bill',
                                           'Messages to customers in English or Hindi',
                                           'Your logo, UPI ID, bank details and terms on every bill']))],
-     [('Is SmartTrader GST billing software free?', 'Yes. The Free plan includes 50 GST invoices a month, unlimited khata entries, POS billing and all reports. Paid plans start at Rs 999 a year.'),
+     [('Is SmartTrader GST billing software free?', 'Yes. The Free plan includes 25 GST invoices a month, unlimited khata entries, POS billing and all reports. Paid plans start at Rs 999 a year.'),
       ('Does it calculate CGST, SGST and IGST automatically?', 'Yes. It compares the state of your business and your customer (from the GSTIN or state name) and applies CGST + SGST or IGST on every line.'),
       ('Can I send GST bills on WhatsApp?', 'Yes. Each bill has a WhatsApp button that sends a link with the amount, a preview card and a page where the customer can download the PDF and pay by UPI.'),
       ('Does it support e-invoice and e-way bill?', 'It creates the e-invoice and e-way bill JSON files in the government format for upload on the portals, and stores the IRN and e-way bill number on the invoice.'),
@@ -246,7 +246,7 @@ page('/kirana-store-billing-software/', 'Kirana Store Billing Software with Khat
      [('Can I use a barcode scanner?', 'Yes. Any USB or Bluetooth scanner works like a keyboard, and the phone camera can scan too. A code the app has not seen is taught once and works from then on.'),
       ('Does it work without internet?', 'Yes. Bills and receipts made offline are kept on the device and sent to the cloud automatically when you are back online.'),
       ('Is the khata part of the billing app?', 'Yes. Credit from a bill goes to the same customer’s khata, so billing and khata always match.'),
-      ('Is it free for a small kirana shop?', 'The Free plan gives 50 GST invoices a month and unlimited khata. Unlimited bills start at Rs 999 a year.'),
+      ('Is it free for a small kirana shop?', 'The Free plan gives 25 GST invoices a month and unlimited khata. Unlimited bills start at Rs 999 a year.'),
       ('Can I print a receipt?', 'Yes. Print an 80 mm thermal receipt or an A4 bill, or send the bill on WhatsApp.')],
      'kirana store billing software, grocery billing software, general store billing app, kirana shop software, retail billing software with khata',
      group='industry', short='Kirana store billing')
@@ -499,6 +499,42 @@ page('/purchase-management-software/', 'Purchase Order & Purchase Bill Software 
      group='feature', short='Purchase management')
 
 # ============================================================ Hindi
+def switch_page(slug, other, title, desc, angle):
+    page(f'/{slug}/', title, desc,
+         f'Looking for a {other} alternative? Try SmartTrader',
+         f'If you are comparing billing apps, here is what SmartTrader ERP does and how to move your items, customers and balances from {other} in one go. Start free, no card needed.',
+         [('What you get in SmartTrader', grid([
+             ('GST bills in seconds', 'CGST/SGST or IGST worked out per line, HSN, a UPI QR for the exact amount, and the bill on WhatsApp.'),
+             ('A khata customers confirm', 'Every credit entry goes to the customer on WhatsApp; they confirm it on their own link, and reminders carry your UPI.'),
+             ('Stock that stays right', 'Stock per godown, barcode and camera scanning, batch and expiry, IMEI, low-stock alerts and purchase orders.'),
+             ('Full accounts, not just bills', 'Double-entry books from your bills: Profit & Loss, Balance Sheet, GSTR-1 and 3B data, and a Tally export for your CA.'),
+             ('Dukaan Doctor', 'Each day it finds money stuck with customers, stock about to run out, slow stock and sales below cost, with one tap to fix each.'),
+             ('Works on any phone', 'Android, iPhone and computer, in English or Hindi, and bills keep working without internet.')])),
+          (f'Moving from {other}', steps([f'Export your items, customers and suppliers from {other} as an Excel or CSV file.',
+                                           f'In SmartTrader, open Items (then Customers & Suppliers) and tap Import from Excel; {other} export columns are recognised, and you check every row before saving.',
+                                           'Add each customer’s opening balance and your stock in hand.',
+                                           'Make your first bill. Keep both apps side by side for a few days if you like; nothing is locked in.'])),
+          ('Why shops switch', ul([angle, 'One app for billing, khata, stock and accounts instead of three',
+                                   'Customers pay faster with UPI QR on every bill and WhatsApp reminders',
+                                   'The owner sees problems in rupees every day, not just reports']))],
+         [(f'Can I import my data from {other}?', f'Yes. Export items, customers and suppliers as Excel or CSV and use Import from Excel on the Items and Customers screens; {other} export columns are recognised, and nothing is saved until you check the rows and tap Import.'),
+          ('Is SmartTrader free?', 'Yes. The Free plan gives 25 GST invoices a month, 1 user, unlimited khata, POS and all reports. Unlimited bills start at Rs 999 a year.'),
+          ('Does it work in Hindi?', 'Yes. Every screen can be in English or Hindi, and bills and reminders go to customers in the language you choose.'),
+          ('Is my data safe?', 'Each business is kept separate, staff get role-based access with an audit trail, and you can download a full backup any time.')],
+         f'{other.lower()} alternative, {other.lower()} app alternative, best {other.lower()} alternative, billing software like {other.lower()}, free billing app india',
+         group='compare', short=f'{other} alternative')
+
+
+switch_page('vyapar-alternative', 'Vyapar', 'Vyapar Alternative: Free GST Billing & Khata | SmartTrader',
+            'Looking for a Vyapar alternative? SmartTrader gives GST billing, khata, stock and accounts in one app, with import from Excel. Free plan, no card.',
+            'Customers confirm every khata entry themselves, so there are fewer disputes')
+switch_page('mybillbook-alternative', 'myBillBook', 'myBillBook Alternative: Free GST Billing | SmartTrader',
+            'Comparing myBillBook alternatives? SmartTrader does GST bills, UPI QR, khata, stock and full accounts in one app. Import your data, start free.',
+            'Full double-entry accounts and a Tally export from the same bills')
+switch_page('khatabook-alternative', 'Khatabook', 'Khatabook Alternative with GST Billing | SmartTrader',
+            'Need more than a khata? SmartTrader adds GST billing, stock and accounts to a khata your customers confirm. Import balances, free to start.',
+            'Billing and khata in the same app, so every credit bill lands in the khata by itself')
+
 page('/hi/gst-billing-software/', 'जीएसटी बिलिंग सॉफ्टवेयर: फ़्री GST बिल ऐप | SmartTrader',
      'सेकंडों में GST बिल बनाएं: CGST/SGST/IGST अपने आप, HSN, बिल पर UPI QR, WhatsApp पर बिल, e-invoice और e-way bill JSON। छोटे कारोबार के लिए फ़्री प्लान।',
      'छोटे कारोबार के लिए जीएसटी बिलिंग सॉफ्टवेयर',
@@ -553,7 +589,7 @@ for p in PAGES:
 # ============================================================ the home page's landing part (public/index.html)
 HOME_FAQ = [
     ('What is SmartTrader ERP?', 'A cloud app for Indian shops, traders and distributors that does GST billing, POS, khata, stock, purchase and double-entry accounts in one place, on mobile and computer.'),
-    ('Is it really free?', 'Yes. The Free plan gives 50 GST invoices a month, 1 user, unlimited khata, POS and all reports, with no card needed. Paid plans start at Rs 999 a year.'),
+    ('Is it really free?', 'Yes. The Free plan gives 25 GST invoices a month, 1 user, unlimited khata, POS and all reports, with no card needed. Paid plans start at Rs 999 a year.'),
     ('Does it work in Hindi?', 'Messages to customers go in English or Hindi, and the help pages are in Hindi too.'),
     ('Does it work without internet?', 'Yes. Bills, receipts and expenses made offline are kept on the device and sent to the cloud when you are back online.'),
     ('Is my data safe?', 'Each business is kept separate, passwords are hashed, staff get role-based access with an audit trail, and you can download a full backup or back up to your own Google Drive.'),
