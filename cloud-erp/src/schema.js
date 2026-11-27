@@ -3,7 +3,7 @@
    Every business table carries org_id: one database serves many businesses (multi-tenant).
    migrate() runs on the first request after each deploy, so no manual migration step is needed. */
 
-export const SCHEMA_VERSION = 58;
+export const SCHEMA_VERSION = 59;
 
 // document types whose monthly totals doc_month keeps (sales and purchase money documents)
 const MONTH_TYPES = `('INV','SRET','CNOTE','BILL','PRET','DNOTE')`;
@@ -837,6 +837,17 @@ export const MIGRATIONS = {
     `CREATE TABLE IF NOT EXISTS usage_daily (org_id INTEGER NOT NULL, user_id INTEGER NOT NULL, screen TEXT NOT NULL, day TEXT NOT NULL, n INTEGER NOT NULL DEFAULT 0,
        PRIMARY KEY (org_id, user_id, screen, day))`,
     `CREATE INDEX IF NOT EXISTS ix_usage_day ON usage_daily (day)`,
+  ],
+  /* messages at the right moment (src/worker.js runLifeMails): an offer window any step can open (offer_until,
+     offer_kind), the steps already mailed (life_mail), the owner's own choice to get offers (mkt_ok, off unless
+     ticked) and the link that stops these e-mails without a login (mail_token) */
+  59: [
+    `ALTER TABLE orgs ADD COLUMN offer_until TEXT NOT NULL DEFAULT ''`,
+    `ALTER TABLE orgs ADD COLUMN offer_kind TEXT NOT NULL DEFAULT ''`,
+    `ALTER TABLE orgs ADD COLUMN life_mail TEXT NOT NULL DEFAULT ''`,
+    `ALTER TABLE users ADD COLUMN mkt_ok INTEGER NOT NULL DEFAULT 0`,
+    `ALTER TABLE users ADD COLUMN mail_token TEXT`,
+    `ALTER TABLE users ADD COLUMN mail_off INTEGER NOT NULL DEFAULT 0`,
   ],
 };
 

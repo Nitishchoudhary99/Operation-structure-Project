@@ -37,7 +37,7 @@ import { pickState, pickScan, pickUndo, pickReset, pickSet } from './picking.js'
 import { findItem, codeKey } from './codes.js';
 import { reservedStatement, withReserved } from './engine.js';
 import * as rep from './reports.js';
-import { PLANS, planOut, planOf, usage, checkCount, countError, seatBlocked, seatError, requireFeature, extendPlan, adminKey, trialUntil, hasFeature, freeInvoices, trialInfo, cleanRef, REF_EXTRA_DAYS, REF_REWARD_DAYS } from './saas.js';
+import { PLANS, planOut, planOf, usage, checkCount, countError, seatBlocked, seatError, requireFeature, extendPlan, adminKey, trialUntil, hasFeature, freeInvoices, trialInfo, cleanRef, OFFER_PCT, REF_EXTRA_DAYS, REF_REWARD_DAYS } from './saas.js';
 import { secure } from './headers.js';
 import { createRecurring, listRecurring, getRecurring, updateRecurring, copyRecurring, skipRecurring, markSent, stopRecurring, resumeRecurring, runDue } from './recurring.js';
 import { buildBackup, driveRoutes, runDriveBackups, listDriveBackups, readDriveBackup, driveConfigured } from './gdrive.js';
@@ -74,7 +74,7 @@ let migrated = false;
 /* ======================================================================= auth */
 /* A new business: the business, its owner, the chart of accounts, a godown and a walk-in customer, in one transaction.
    `hash` and `salt` come from hashPassword(). Returns the owner row. */
-async function createBusiness(c, { business, name, email, hash, salt, gstin, state, phone, address, ref }) {
+async function createBusiness(c, { business, name, email, hash, salt, gstin, state, phone, address, ref, mkt }) {
   const now = nowIso(), otx = crypto.randomUUID(), db = c.db;
   // invited by another business (its code from the invite link): a longer free trial, and the inviter is remembered
   const inviter = cleanRef(ref) ? await db.prepare(`SELECT id FROM orgs WHERE ref_code = ?`).bind(cleanRef(ref)).first() : null;
@@ -82,8 +82,8 @@ async function createBusiness(c, { business, name, email, hash, salt, gstin, sta
   const st = [
     db.prepare(`INSERT INTO orgs (name, gstin, state, phone, address, email, plan, plan_until, trial_end, ref_code, referred_by, created_at) VALUES (?, ?, ?, ?, ?, ?, 'growth', ?, ?, ?, ?, ?)`)
       .bind(business, str(gstin, 15).toUpperCase(), str(state, 60), str(phone, 20), str(address, 300), email, trialEnd, trialEnd, randomHex(4), inviter ? inviter.id : null, otx),
-    db.prepare(`INSERT INTO users (org_id, email, name, role, pw_hash, salt, pw_changed_at, created_at)
-                VALUES ((SELECT id FROM orgs WHERE created_at = ?), ?, ?, 'owner', ?, ?, ?, ?)`).bind(otx, email, name, hash, salt, Date.now(), now),
+    db.prepare(`INSERT INTO users (org_id, email, name, role, pw_hash, salt, pw_changed_at, created_at, mkt_ok, mail_token)
+                VALUES ((SELECT id FROM orgs WHERE created_at = ?), ?, ?, 'owner', ?, ?, ?, ?, ?, ?)`).bind(otx, email, name, hash, salt, Date.now(), now, mkt === true ? 1 : 0, randomHex(16)),
     ...DEFAULT_ACCOUNTS.map(([code, nm, type, sys, isCash]) => db.prepare(`INSERT INTO accounts (org_id, code, name, type, sys, is_cash)
                 VALUES ((SELECT id FROM orgs WHERE created_at = ?), ?, ?, ?, ?, ?)`).bind(otx, code, nm, type, sys, isCash)),
     db.prepare(`INSERT INTO warehouses (org_id, name) VALUES ((SELECT id FROM orgs WHERE created_at = ?), 'Main Store')`).bind(otx),
@@ -114,7 +114,7 @@ router.add('POST', '/api/auth/signup', async (c) => {
   if (prob) throw bad(prob);
   const salt = randomHex(16), hash = await hashPassword(b.password, salt);       // hashed in every case, so timing does not tell either
   const taken = !!(await c.db.prepare(`SELECT 1 FROM users WHERE email = ?`).bind(email).first());
-  const fields = { business, name, email, hash, salt, gstin: b.gstin, state: b.state, phone: b.phone, address: b.address, ref: cleanRef(b.ref) };
+  const fields = { business, name, email, hash, salt, gstin: b.gstin, state: b.state, phone: b.phone, address: b.address, ref: cleanRef(b.ref), mkt: b.mkt_ok === true };
   if (verifyOn(c.env)) {
     await rateLimit(c.env, 'signup-mail:' + email, 3, 3600);
     const origin = mailOrigin(c.env, c.request.url);
@@ -125,7 +125,7 @@ router.add('POST', '/api/auth/signup', async (c) => {
     const token = randomHex(32), now = Date.now();
     await c.db.batch([c.db.prepare(`DELETE FROM signups WHERE email = ? OR expires_at < ?`).bind(email, now),
       c.db.prepare(`INSERT INTO signups (token_hash, email, data, expires_at) VALUES (?, ?, ?, ?)`)
-        .bind(await sha256Hex(token), email, JSON.stringify({ business, name, hash, salt, gstin: str(b.gstin, 15), state: str(b.state, 60), phone: str(b.phone, 20), address: str(b.address, 300), ref: cleanRef(b.ref) }), now + SIGNUP_HOURS * 3600e3)]);
+        .bind(await sha256Hex(token), email, JSON.stringify({ business, name, hash, salt, gstin: str(b.gstin, 15), state: str(b.state, 60), phone: str(b.phone, 20), address: str(b.address, 300), ref: cleanRef(b.ref), mkt: b.mkt_ok === true }), now + SIGNUP_HOURS * 3600e3)]);
     if (await sendMail(c, 'verify', { to: email, name, token, origin })) return json({ ok: true, verify: true });
     await c.db.prepare(`DELETE FROM signups WHERE email = ?`).bind(email).run();       // mail is down: carry on without the check rather than lock the owner out
   }
@@ -274,6 +274,103 @@ export async function runTrialMails(env) {
   }
   return { due: sent };
 }
+/* Messages at the right moment, once each, to the owner of a shop:
+   - nobill: signed up 3-6 days ago and no bill yet: how to make the first one (about their own account)
+   - limit: on the Free plan with 80% of this month's free bills used: a 7-day 20% offer opens
+   - winback: no bill for 30 days, and the owner ticked "send me offers": a 7-day 20% offer opens
+   Every one carries a link that stops them; an owner who used it gets none. Demo shops get none. */
+const LIFE_MAX = 200;
+function lifeMailHtml(st) {
+  const inr = (n) => '&#8377;' + Number(n).toLocaleString('en-IN');
+  const btn = (href, label) => `<p><a href="${href}" style="display:inline-block;background:#0f9d58;color:#fff;padding:12px 20px;border-radius:8px;text-decoration:none;font-weight:bold">${label}</a></p>`;
+  let subject, inner;
+  if (st.stage === 'nobill') {
+    subject = 'Make your first bill in SmartTrader (2 minutes)';
+    inner = `<p>You opened <b>${attr(st.org)}</b> on SmartTrader but have not made a bill yet. Most shops make their first one in about two minutes: add an item, pick the customer (or Walk-in), tap Save and share it on WhatsApp with a UPI QR.</p>${btn(st.origin + '/#/pos', 'Make my first bill')}`;
+  } else if (st.stage === 'limit') {
+    subject = `You have used ${st.used} of your ${st.free_bills} free bills: ${st.offer_pct}% off this week`;
+    inner = `<p><b>${attr(st.org)}</b> has made ${st.used} of the ${st.free_bills} free bills for this month.</p><p>This week only: <b>${inr(st.offer_pay)}</b> for the first year instead of ${inr(st.full_pay)} (Growth, incl. GST), till <b>${attr(st.offer_until_text)}</b>.</p>${btn(st.origin + '/#/plan', `Get ${st.offer_pct}% off`)}`;
+  } else {
+    subject = `We kept your shop ready: ${st.offer_pct}% off SmartTrader till ${st.offer_until_text}`;
+    inner = `<p>It has been a while since anyone used <b>${attr(st.org)}</b>. Your items, customers and khata are all still there.</p><p>Come back this week: <b>${inr(st.offer_pay)}</b> for the first year instead of ${inr(st.full_pay)} (Growth, incl. GST), till <b>${attr(st.offer_until_text)}</b>.</p>${btn(st.origin + '/#/plan', `Get ${st.offer_pct}% off`)}`;
+  }
+  return { subject, html: `<div style="font-family:Arial,sans-serif;max-width:520px;margin:auto;color:#1f2937"><h2 style="color:#0f9d58">SmartTrader ERP</h2><p>Namaste ${attr(st.name)},</p>${inner}
+    <p style="color:#6b7280;font-size:13px">You get this e-mail about your own SmartTrader account. <a href="${st.unsub}" style="color:#6b7280">Stop these e-mails</a>.</p></div>` };
+}
+export async function runLifeMails(env) {
+  if (!env.RESEND_API_KEY && !hubOn(env)) return { due: 0 };
+  const db = env.DB, t = today(), month = t.slice(0, 8) + '01';
+  const origin = (() => { try { return new URL(env.APP_URL).origin; } catch (e) { return 'https://erp.docbrisk.com'; } })();
+  const base = `SELECT o.id, o.name, o.plan, o.plan_until, o.trial_end, o.created_at, o.life_mail, o.offer_until, o.offer_kind, u.id AS uid, u.email, u.name AS uname, u.mail_token, u.mkt_ok
+      FROM orgs o JOIN users u ON u.org_id = o.id AND u.role = 'owner' AND u.active = 1 AND u.mail_off = 0
+      WHERE (o.close_after IS NULL OR o.close_after = '') AND (o.demo IS NULL OR o.demo = 0)`;
+  const free = (o) => planOf(o).key === 'free';
+  const jobs = [];
+  // 1. no bill yet, 3 to 6 days after sign-up
+  for (const o of (await db.prepare(base + ` AND substr(o.created_at, 1, 10) BETWEEN ? AND ? AND NOT EXISTS (SELECT 1 FROM docs d WHERE d.org_id = o.id AND d.type = 'INV') LIMIT ?`)
+    .bind(addDays(t, -6), addDays(t, -3), LIFE_MAX).all()).results) jobs.push([o, 'nobill', 'nobill', {}]);
+  // 2. free bills for this month 80% used
+  for (const o of (await db.prepare(base + ` AND (SELECT COUNT(*) FROM docs d WHERE d.org_id = o.id AND d.type = 'INV' AND d.status != 'cancelled' AND d.created_at >= ?) >= 20 LIMIT ?`)
+    .bind(month, LIFE_MAX).all()).results) {
+    if (!free(o)) continue;
+    const used = (await db.prepare(`SELECT COUNT(*) AS n FROM docs WHERE org_id = ? AND type = 'INV' AND status != 'cancelled' AND created_at >= ?`).bind(o.id, month).first()).n;
+    if (used >= Math.ceil(freeInvoices(o) * 0.8)) jobs.push([o, 'limit', 'limit:' + month.slice(0, 7), { used }]);
+  }
+  // 3. back after a break: only owners who chose to get offers
+  for (const o of (await db.prepare(base + ` AND u.mkt_ok = 1 AND o.created_at < ? AND NOT EXISTS (SELECT 1 FROM docs d WHERE d.org_id = o.id AND d.created_at >= ?) LIMIT ?`)
+    .bind(addDays(t, -30), addDays(t, -30), LIFE_MAX).all()).results) {
+    const last = String(o.life_mail || '').split(',').filter((x) => x.startsWith('wb:')).map((x) => x.slice(3)).sort().pop() || '';
+    if (free(o) && (!last || last < addDays(t, -90))) jobs.push([o, 'winback', 'wb:' + t, {}]);
+  }
+  let sent = 0;
+  for (const [o, stage, mark, extra] of jobs.slice(0, LIFE_MAX)) {
+    const done = String(o.life_mail || '').split(',').filter(Boolean);
+    if (stage !== 'winback' && done.includes(mark)) continue;
+    // mark first (and open the offer), so a slow or failed send is not repeated every hour
+    const offer = stage === 'nobill' ? null : addDays(t, 7);
+    const keepOffer = offer && o.offer_until && o.offer_until >= t;     // an open offer is not stretched
+    const claim = await db.prepare(`UPDATE orgs SET life_mail = ?${offer && !keepOffer ? ', offer_until = ?, offer_kind = ?' : ''} WHERE id = ? AND life_mail = ?`)
+      .bind(...[[...done, mark].join(',')].concat(offer && !keepOffer ? [offer, stage] : [], [o.id, o.life_mail || ''])).run();
+    if (!claim.meta.changes) continue;
+    let token = o.mail_token;
+    if (!token) { token = randomHex(16); await db.prepare(`UPDATE users SET mail_token = ? WHERE id = ?`).bind(token, o.uid).run(); }
+    const org2 = { ...o, offer_until: keepOffer ? o.offer_until : offer || o.offer_until, offer_kind: stage };
+    const info = trialInfo(org2);
+    const st = { stage, org: o.name, name: o.uname, origin, unsub: origin + '/api/public/unsub/' + token, free_bills: freeInvoices(o), used: extra.used || 0,
+      full_pay: grossPaise('growth') / 100, offer_pay: payPaise('growth', org2) / 100, offer_pct: info.offer_pct || OFFER_PCT,
+      offer_until_text: info.offer_until ? fmtDay(info.offer_until) : '' };
+    try {
+      if (env.RESEND_API_KEY) {
+        const { subject, html } = lifeMailHtml(st);
+        await fetch(env.RESEND_URL || 'https://api.resend.com/emails', { method: 'POST', headers: { Authorization: `Bearer ${env.RESEND_API_KEY}`, 'Content-Type': 'application/json' },
+          body: JSON.stringify({ from: env.MAIL_FROM || 'SmartTrader ERP <no-reply@docbrisk.com>', to: [o.email], subject, html, headers: { 'List-Unsubscribe': `<${st.unsub}>` } }) });
+      } else await hubFetch(env, 'POST', '/api/pay/svc/erp-trial-mail', { to: o.email, origin, ...st, days: 0, end_text: '' });
+      sent++;
+    } catch (e) { /* the mark stays: one e-mail missed is better than one sent every hour */ }
+  }
+  return { due: sent };
+}
+/* "Stop these e-mails": no login, the link's own token. Offers and account nudges stop; bills, passwords and payments still come. */
+router.add('GET', '/api/public/unsub/:token', async (c) => {
+  await rateLimit(c.env, 'unsub:' + clientIp(c), 30, 3600);
+  const tk = String(c.params.token || '');
+  const ok = /^[0-9a-f]{32}$/.test(tk) && (await c.db.prepare(`UPDATE users SET mail_off = 1, mkt_ok = 0 WHERE mail_token = ?`).bind(tk).run()).meta.changes > 0;
+  const page = `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="robots" content="noindex"><title>SmartTrader e-mails</title></head>
+    <body style="font-family:Arial,sans-serif;max-width:480px;margin:60px auto;padding:0 16px;color:#1f2937"><h2 style="color:#0f9d58">SmartTrader ERP</h2>
+    <p>${ok ? 'Done. You will not get offers or reminders about your account by e-mail any more. Password and payment e-mails still come when you ask for them.' : 'This link is not valid any more.'}</p>
+    <p>You can turn offers back on any time in Settings.</p></body></html>`;
+  return new Response(page, { status: ok ? 200 : 404, headers: { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store', 'X-Robots-Tag': 'noindex' } });
+}, { public: true });
+/* The signed-in user's own choice about offer e-mails */
+router.add('GET', '/api/me/marketing', async (c) => {
+  const u = await c.db.prepare(`SELECT mkt_ok, mail_off FROM users WHERE id = ?`).bind(c.user.id).first();
+  return json({ mkt_ok: !!(u && u.mkt_ok), mail_off: !!(u && u.mail_off) });
+});
+router.add('PUT', '/api/me/marketing', async (c) => {
+  const on = c.body.mkt_ok === true;
+  await c.db.prepare(`UPDATE users SET mkt_ok = ?, mail_off = CASE WHEN ? = 1 THEN 0 ELSE mail_off END WHERE id = ?`).bind(on ? 1 : 0, on ? 1 : 0, c.user.id).run();
+  return json({ mkt_ok: on });
+});
 router.add('POST', '/api/auth/forgot', async (c) => {
   const email = str(c.body.email, 120).toLowerCase();
   const ip = clientIp(c);
@@ -2908,6 +3005,8 @@ export default {
       await env.DB.batch([env.DB.prepare(`DELETE FROM wa_messages WHERE id IN (SELECT id FROM wa_messages WHERE at < ? LIMIT 2000)`).bind(half),
         env.DB.prepare(`DELETE FROM wa_contacts WHERE updated_at < ?`).bind(half)]);
       await env.DB.prepare(`DELETE FROM usage_daily WHERE day < ?`).bind(addDays(today(), -120)).run();
+      const lm = await runLifeMails(env);
+      if (lm.due) console.log('life mails', JSON.stringify(lm));
       const tm = await runTrialMails(env);
       if (tm.due) console.log('trial mails', tm.due);
       const w = await runAutoReminders(env);
