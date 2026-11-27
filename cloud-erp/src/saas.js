@@ -29,8 +29,12 @@ export const OFFER_PCT = 20;
 export function trialInfo(org) {
   const end = org.trial_end || '', t = today();
   const trial = !!end && org.plan_until === end && end >= t && org.plan !== 'free';
-  const offerUntil = end && end < t && addDays(end, OFFER_DAYS) >= t ? addDays(end, OFFER_DAYS) : '';
-  return { trial, trial_end: end, offer_until: offerUntil, offer_pct: offerUntil ? OFFER_PCT : 0 };
+  const trialOffer = end && end < t && addDays(end, OFFER_DAYS) >= t ? addDays(end, OFFER_DAYS) : '';
+  // an offer a step opened (free bills nearly used, back after a break) counts the same way
+  const stepOffer = org.offer_until && org.offer_until >= t ? org.offer_until : '';
+  const offerUntil = trialOffer > stepOffer ? trialOffer : stepOffer;
+  const kind = !offerUntil ? '' : offerUntil === trialOffer ? 'trial' : (org.offer_kind || 'limit');
+  return { trial, trial_end: end, offer_until: offerUntil, offer_pct: offerUntil ? OFFER_PCT : 0, offer_kind: kind };
 }
 
 /* The plan in force today: a paid plan whose end date has passed drops back to Free. */

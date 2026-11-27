@@ -2,6 +2,10 @@
    screen is drawn; names, numbers, amounts and whatever people type stay exactly as they are. Words a shopkeeper already
    says in English (GST, HSN, UPI, POS, GSTIN, Excel, WhatsApp) stay in English. Add a line to translate one more label. */
 export const HI = {
+  'E-mails from SmartTrader': 'SmartTrader से ई-मेल', 'Send me offers and tips by e-mail': 'मुझे ऑफ़र और सुझाव ई-मेल पर भेजें',
+  'Price offers, new features and tips for your shop. Bills, passwords and payment e-mails always come.': 'दाम पर ऑफ़र, नई सुविधाएँ और दुकान के लिए सुझाव। बिल, पासवर्ड और पेमेंट के ई-मेल हमेशा आते रहेंगे।',
+  'Send me offers and tips by e-mail (you can stop any time)': 'मुझे ऑफ़र और सुझाव ई-मेल पर भेजें (कभी भी बंद कर सकते हैं)',
+  'You will get offers by e-mail': 'अब ऑफ़र ई-मेल पर मिलेंगे', 'No more offer e-mails': 'अब ऑफ़र के ई-मेल नहीं आएँगे',
   'Dukaan Doctor': 'दुकान डॉक्टर', 'Send reminders': 'रिमाइंडर भेजें', 'Make a purchase order': 'ख़रीद ऑर्डर बनाएँ', 'See slow stock': 'धीमा माल देखें',
   'Check prices': 'रेट जाँचें', 'Set role limits': 'रोल की सीमा तय करें',
   // "What hurts most?", For you, Quick Bill 2026-11

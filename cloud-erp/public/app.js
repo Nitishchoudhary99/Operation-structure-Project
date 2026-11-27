@@ -462,6 +462,7 @@ function renderAuth(mode = /^#\/?signup/.test(location.hash) ? 'signup' : 'login
       <label class="f">Email<input name="email" type="email" autocomplete="email" required></label>
       ${mode === 'forgot' ? '' : `<label class="f">Password<input name="password" type="password" autocomplete="${mode === 'login' ? 'current-password' : 'new-password'}" required minlength="8"></label>`}
       ${mode === 'login' ? '<p class="forgot"><a href="#" data-m="forgot">Forgot password?</a></p>' : ''}
+      ${mode === 'signup' ? '<label class="check"><input type="checkbox" name="mkt_ok" value="1"> <span>Send me offers and tips by e-mail (you can stop any time)</span></label>' : ''}
       <button class="btn primary">${mode === 'login' ? 'Sign in' : mode === 'forgot' ? 'Send reset link' : 'Create account'}</button>
       <p class="muted">${mode === 'login' ? `New here? <a href="#" data-m="signup">Create a free account</a>` : mode === 'forgot' ? `Remembered it? <a href="#" data-m="login">Sign in</a>` : `Already have an account? <a href="#" data-m="login">Sign in</a>`}</p>
     </form></div></div>`;
@@ -478,6 +479,7 @@ function renderAuth(mode = /^#\/?signup/.test(location.hash) ? 'signup' : 'login
     e.preventDefault();
     const body = Object.fromEntries(new FormData(e.target));
     if (mode === 'signup' && /^[0-9a-f]{8}$/.test(ref)) body.ref = ref;
+    if (mode === 'signup') body.mkt_ok = body.mkt_ok === '1';
     const btn = $('button', e.target); btn.disabled = true;
     try {
       if (mode === 'forgot') {
@@ -670,6 +672,9 @@ function planWarn() {
   const p = ME.plan || {}, hi = LANG === 'hi';
   if (ME.user.role_key !== 'owner' || ME.org.demo) return '';
   // just after an unbought trial: the first-year offer, with its last day (written whole in each language)
+  if (p.offer_until && p.offer_kind && p.offer_kind !== 'trial') return hi
+    ? `<div class="closing offer">${p.offer_kind === 'limit' ? 'इस महीने के फ़्री बिल लगभग पूरे हो गए।' : 'वापसी पर स्वागत है!'} <b>पहले साल पर ${p.offer_pct}% छूट</b>, <b>${fdate(p.offer_until)}</b> तक: असीमित बिल, स्टाफ़ लॉगिन और WhatsApp रिमाइंडर। <a class="btn sm primary" href="#/plan">${p.offer_pct}% छूट लें</a></div>`
+    : `<div class="closing offer">${p.offer_kind === 'limit' ? 'Your free bills for this month are nearly used up.' : 'Welcome back!'} <b>${p.offer_pct}% off your first year</b> till <b>${fdate(p.offer_until)}</b>: unlimited bills, staff logins and WhatsApp reminders. <a class="btn sm primary" href="#/plan">Get ${p.offer_pct}% off</a></div>`;
   if (p.offer_until) return hi
     ? `<div class="closing offer">आपका फ़्री ट्रायल ख़त्म हो गया। <b>पहले साल पर ${p.offer_pct}% छूट</b>, <b>${fdate(p.offer_until)}</b> तक: ई-इनवॉइस, WhatsApp रिमाइंडर, Tally, कल का कैश और स्टाफ़ लॉगिन तुरंत वापस। <a class="btn sm primary" href="#/plan">${p.offer_pct}% छूट लें</a></div>`
     : `<div class="closing offer">Your free trial has ended. <b>${p.offer_pct}% off your first year</b> till <b>${fdate(p.offer_until)}</b>: e-invoice, WhatsApp reminders, Tally, Cash Forecast and staff logins come back at once. <a class="btn sm primary" href="#/plan">Get ${p.offer_pct}% off</a></div>`;
@@ -5184,6 +5189,8 @@ route(/^settings$/, async (el, m, q) => {
     <form class="panel" id="pw"><h2>Change your password</h2><div class="err" hidden></div><div class="form"><label class="f">Current password<input type="password" name="current" autocomplete="current-password"></label>
       <label class="f">New password<input type="password" name="password" autocomplete="new-password" minlength="8"></label></div><div class="row" style="margin-top:12px"><button type="button" class="btn" id="logoutall">Sign out everywhere</button><span class="spacer"></span><button class="btn">Change password</button></div>
       <p class="muted">Changing your password signs you out on every other device. "Sign out everywhere" does that without changing it.</p></form>
+    <div class="panel" id="mktbox"><h2>E-mails from SmartTrader</h2>
+      <label class="check"><input type="checkbox" id="mktok"> <span>Send me offers and tips by e-mail<br><span class="muted small">Price offers, new features and tips for your shop. Bills, passwords and payment e-mails always come.</span></span></label></div>
     ${ME.can.settings ? `<div class="panel"><h2>Customer links</h2><p class="muted">Invoice and khata links you sent on WhatsApp or SMS work for anyone who has them. If a link went to the wrong person, turn it off on that invoice or khata page. To turn off every link of this business at once:</p>
       <div class="row"><button type="button" class="btn danger" id="revokeall">Turn off all customer links</button></div></div>` : ''}
     ${ME.user.role === 'owner' ? `<div class="panel" id="backup-panel"><h2>Backup</h2><p class="muted">Download every record of your business (invoices, parties, items, stock, khata, payments, accounts) in one file. Keep it safe on your phone, PC or Google Drive. Your data is yours: you can take it with you anytime.<br>अपने पूरे कारोबार का डेटा एक फ़ाइल में डाउनलोड करें।</p>
@@ -5221,6 +5228,8 @@ route(/^settings$/, async (el, m, q) => {
   });
   const sub = (id, fn) => { $(id).onsubmit = async (e) => { e.preventDefault(); const b = $('.err', e.target); b.hidden = true; try { await fn(Object.fromEntries(new FormData(e.target))); } catch (err) { b.hidden = false; b.textContent = err.message; } }; };
   sub('#org', async (v) => { await api('PUT', '/api/org', v); ME = await GET('/api/me'); shell(); wireInstall(); toast('Profile saved'); render(); });
+  { const mk = $('#mktok'); if (mk) { GET('/api/me/marketing').then((r) => { mk.checked = !!r.mkt_ok; }).catch(() => {});
+    mk.onchange = async () => { try { await api('PUT', '/api/me/marketing', { mkt_ok: mk.checked }); toast(mk.checked ? 'You will get offers by e-mail' : 'No more offer e-mails'); } catch (er) { mk.checked = !mk.checked; toast(er.message, 'err'); } }; } }
   sub('#pw', async (v) => { await POST('/api/me/password', v); toast('Password changed'); $('#pw').reset(); });
   if ($('#logoutall')) $('#logoutall').onclick = async () => {
     if (!confirm('Sign out of SmartTrader on every device, including this one?')) return;
