@@ -998,7 +998,10 @@ else {
   const cfgBad = await fetch(BASE + '/api/admin/config', { headers: { 'X-Admin-Key': 'wrong-key-wrong-key' } });
   const cfgRes = await adm('GET', '/api/admin/config'), cfg = await cfgRes.json();
   check('admin config needs the admin key', cfgBad.status === 401 && cfgRes.status === 200, cfgBad.status + ' ' + cfgRes.status);
-  check('admin config says only yes or no for each secret', Object.values(cfg).every((v) => typeof v === 'boolean') && 'session_secret' in cfg && 'database_key' in cfg, JSON.stringify(cfg));
+  // every secret is yes or no; mail_error is the last failed e-mail (kind, time, reason), never a secret's value
+  const { mail_error: mailErr, ...secrets } = cfg;
+  check('admin config says only yes or no for each secret', Object.values(secrets).every((v) => typeof v === 'boolean') && 'session_secret' in cfg && 'database_key' in cfg
+    && (mailErr === null || (typeof mailErr === 'object' && 'why' in mailErr)), JSON.stringify(cfg));
   check('without SESSION_SECRET the admin config says so (the key is in the database)', process.env.SESSION_SECRET ? true : cfg.session_secret === false && cfg.database_key === true, JSON.stringify(cfg));
   // wrong keys: after 10 from one network that network is refused, even with the right key; another network is not affected
   const guess = (k) => fetch(BASE + '/api/admin/orgs', { headers: { 'X-Admin-Key': k, 'CF-Connecting-IP': '203.0.113.77' } });
