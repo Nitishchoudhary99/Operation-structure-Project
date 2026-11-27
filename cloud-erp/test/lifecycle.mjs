@@ -1,7 +1,7 @@
 /* Messages at the right moment (runLifeMails in src/worker.js), on a small in-memory database:
    who gets which e-mail, once, and who gets none. node test/lifecycle.mjs */
 import { DatabaseSync } from 'node:sqlite';
-import { runLifeMails } from '../src/worker.js';
+import { runLifeMails, sendWelcome } from '../src/worker.js';
 import { trialInfo } from '../src/saas.js';
 import { today, addDays } from '../src/lib.js';
 let pass = 0, fail = 0;
@@ -51,5 +51,21 @@ check('every e-mail carries a stop link and a List-Unsubscribe header', sent.len
 const before = sent.length; await runLifeMails(env);
 check('running again the same day sends nothing new', sent.length === before, `${before} -> ${sent.length}`);
 check('the count returned matches', r.due === before);
+// welcome e-mail, right after sign-up: to the owner, with the trial's last day and the stop link
+sq.exec(`CREATE TABLE meta (k TEXT PRIMARY KEY, v TEXT NOT NULL)`);
+sq.prepare(`UPDATE orgs SET trial_end = ? WHERE id = 1`).run(addDays(t, 30));
+sq.prepare(`UPDATE users SET mail_token = ? WHERE id = 1`).run('ab'.repeat(16));
+const c = { env, db: DB, request: new Request('https://erp.docbrisk.com/api/auth/signup') };
+sent.length = 0;
+await sendWelcome(c, { id: 1, name: 'Owner 1', email: 'o1@test.in' });
+const w = sent[0] || {};
+check('welcome: goes to the owner at once, says the shop is ready', sent.length === 1 && w.to === 'o1@test.in' && /New Shop is ready/.test(w.subject), JSON.stringify(sent.map((m) => m.subject)));
+check('welcome: the last day of the trial, the first three steps and the stop link', w.html.includes(new Date(addDays(t, 30) + 'T00:00:00Z').toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric', timeZone: 'UTC' }))
+  && /#\/items/.test(w.html) && /#\/pos/.test(w.html) && /#\/parties/.test(w.html) && /\/api\/public\/unsub\/(ab){16}/.test(w.html) && /unsub/.test(w.unsub || ''));
+// a mail that cannot be sent is remembered with the reason (sign-up goes on without it)
+globalThis.fetch = async () => new Response('{"message":"The docbrisk.com domain is not verified"}', { status: 403 });
+await sendWelcome(c, { id: 1, name: 'Owner 1', email: 'o1@test.in' });
+const me = sq.prepare(`SELECT v FROM meta WHERE k = 'mail_error'`).get();
+check('a failed e-mail is noted with its reason for the admin page', !!me && /welcome/.test(me.v) && /not verified/.test(me.v), me && me.v);
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

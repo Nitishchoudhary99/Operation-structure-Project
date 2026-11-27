@@ -133,6 +133,7 @@ router.add('POST', '/api/auth/signup', async (c) => {
   const user = await createBusiness(c, fields);
   const token = await issueSession(c.env, user);
   await newAccountLog(c, user);
+  await welcomeLater(c, user);
   return json({ ok: true, user: publicUser(user) }, 200, { 'Set-Cookie': sessionCookie(token, c.request) });
 }, { public: true });
 
@@ -153,9 +154,33 @@ router.add('POST', '/api/auth/verify', async (c) => {
   const user = await createBusiness(c, { ...d, email: row.email });
   const session = await issueSession(c.env, user);
   await newAccountLog(c, user);
+  await welcomeLater(c, user);
   return json({ ok: true, user: publicUser(user) }, 200, { 'Set-Cookie': sessionCookie(session, c.request) });
 }, { public: true });
 
+/* Welcome e-mail to the owner of a new business, right after it is made: what to do first and when the trial ends.
+   About their own account, so it goes whether or not they chose offers; it carries the stop link all the same. */
+export async function sendWelcome(c, user) {
+  const env = c.env;
+  if (!env.RESEND_API_KEY && !hubOn(env)) return;
+  const o = await c.db.prepare(`SELECT o.name, o.trial_end, o.created_at, o.plan, o.plan_until, u.mail_token FROM orgs o JOIN users u ON u.org_id = o.id WHERE u.id = ?`).bind(user.id).first();
+  if (!o) return;
+  const origin = mailOrigin(env, c.request.url);
+  const st = { stage: 'welcome', org: o.name, name: user.name, origin, unsub: origin + '/api/public/unsub/' + o.mail_token,
+    end_text: o.trial_end ? fmtDay(o.trial_end) : '', free_bills: freeInvoices(o), full_pay: grossPaise('growth') / 100, offer_pay: grossPaise('growth') / 100, offer_pct: 0 };
+  try {
+    if (env.RESEND_API_KEY) {
+      const { subject, html } = lifeMailHtml(st);
+      const res = await fetch(env.RESEND_URL || 'https://api.resend.com/emails', { method: 'POST', headers: { Authorization: `Bearer ${env.RESEND_API_KEY}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ from: env.MAIL_FROM || 'SmartTrader ERP <no-reply@docbrisk.com>', to: [user.email], subject, html, headers: { 'List-Unsubscribe': `<${st.unsub}>` } }) });
+      if (!res.ok) await noteMailError(env, 'welcome', 'Resend ' + res.status + ': ' + (await res.text().catch(() => '')).slice(0, 160));
+    } else {
+      const r = await hubFetch(env, 'POST', '/api/pay/svc/erp-trial-mail', { to: user.email, ...st, days: 0 });
+      if (!(r.status === 200 && r.data && r.data.ok)) await noteMailError(env, 'welcome', 'docbrisk.com mail ' + r.status + ': ' + ((r.data && (r.data.why || r.data.error)) || 'no answer'));
+    }
+  } catch (e) { await noteMailError(env, 'welcome', e && e.message); }
+}
+const welcomeLater = (c, user) => { const ctx = REQ_CTX.get(c.request), p = sendWelcome(c, user).catch(() => {}); return ctx ? (ctx.waitUntil(p), null) : p; };
 const clientIp = (c) => c.request.headers.get('CF-Connecting-IP') || 'local';
 const newAccountLog = (c, user) => loginStatement(c.db, { org_id: user.org_id, user_id: user.id, email: user.email, ip: clientIp(c),
   ua: c.request.headers.get('User-Agent') || '', ok: 1, how: 'new account' }).run();
@@ -196,11 +221,22 @@ router.add('POST', '/api/auth/login', async (c) => {
 const sha256Hex = async (t) => [...new Uint8Array(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(t)))].map((b) => b.toString(16).padStart(2, '0')).join('');
 const mailOn = (env) => !!env.RESEND_API_KEY || hubOn(env);   // own Resend key, or docbrisk.com's mail account via the hub link
 /* The sign-up e-mails ('verify': the confirm link, 'exists': "you already have an account"). True when the mail was handed over. */
+/* The last e-mail that could not be sent and why (Settings → Admin shows it): sign-up carries on without the e-mail,
+   so without this a broken mail set-up goes unnoticed. */
+async function noteMailError(env, kind, why) {
+  try {
+    await env.DB.prepare(`INSERT INTO meta (k, v) VALUES ('mail_error', ?) ON CONFLICT(k) DO UPDATE SET v = excluded.v`)
+      .bind(JSON.stringify({ at: nowIso(), kind, why: String(why || '').slice(0, 200) })).run();
+  } catch (e) { /* only a note */ }
+  console.log('mail failed', kind, String(why || '').slice(0, 200));
+}
 async function sendMail(c, kind, { to, name, token, origin }) {
   try {
     if (!c.env.RESEND_API_KEY) {      // docbrisk.com's mail account, through the hub link
       const r = await hubFetch(c.env, 'POST', '/api/pay/svc/erp-verify-mail', { kind, to, name, token, origin });
-      return r.status === 200 && !!(r.data && r.data.ok);
+      const ok = r.status === 200 && !!(r.data && r.data.ok);
+      if (!ok) await noteMailError(c.env, kind, 'docbrisk.com mail ' + r.status + ': ' + ((r.data && (r.data.why || r.data.error)) || 'no answer'));
+      return ok;
     }
     const link = `${origin}/#/verify/${token}`;
     const inner = kind === 'verify'
@@ -216,8 +252,9 @@ async function sendMail(c, kind, { to, name, token, origin }) {
       body: JSON.stringify({ from: c.env.MAIL_FROM || 'SmartTrader ERP <no-reply@docbrisk.com>', to: [to],
         subject: kind === 'verify' ? 'Confirm your SmartTrader account' : 'You already have a SmartTrader account', html }),
     });
+    if (!res.ok) await noteMailError(c.env, kind, 'Resend ' + res.status + ': ' + (await res.text().catch(() => '')).slice(0, 160));
     return res.ok;
-  } catch (e) { return false; }
+  } catch (e) { await noteMailError(c.env, kind, e && e.message); return false; }
 }
 /* Free-trial e-mails to the owner: 3 days before the trial ends, the day before, on the day, and the day after (the
    first-year offer). Each goes once (orgs.trial_mail), only on its own day, never to a business that has paid. */
@@ -284,7 +321,13 @@ function lifeMailHtml(st) {
   const inr = (n) => '&#8377;' + Number(n).toLocaleString('en-IN');
   const btn = (href, label) => `<p><a href="${href}" style="display:inline-block;background:#0f9d58;color:#fff;padding:12px 20px;border-radius:8px;text-decoration:none;font-weight:bold">${label}</a></p>`;
   let subject, inner;
-  if (st.stage === 'nobill') {
+  if (st.stage === 'welcome') {
+    subject = `Your shop ${st.org} is ready on SmartTrader`;
+    inner = `<p>Welcome! <b>${attr(st.org)}</b> is set up, with every feature free till <b>${attr(st.end_text)}</b>. After that it stays free on the Free plan (${st.free_bills} bills a month), and nothing you entered is lost.</p>
+      <p>Three things to do first:</p>
+      <ol style="padding-left:18px;color:#374151"><li><a href="${st.origin}/#/items">Add your items</a>, or import them from Excel</li><li><a href="${st.origin}/#/pos">Make your first bill</a> and share it on WhatsApp with a UPI QR</li><li><a href="${st.origin}/#/parties">Add your customers</a> with their old balance (khata)</li></ol>
+      ${btn(st.origin + '/#/pos', 'Open my shop')}<p>Want to see a shop with a month of bills first? <a href="${st.origin}/#demo">Open the demo shop</a>.</p>`;
+  } else if (st.stage === 'nobill') {
     subject = 'Make your first bill in SmartTrader (2 minutes)';
     inner = `<p>You opened <b>${attr(st.org)}</b> on SmartTrader but have not made a bill yet. Most shops make their first one in about two minutes: add an item, pick the customer (or Walk-in), tap Save and share it on WhatsApp with a UPI QR.</p>${btn(st.origin + '/#/pos', 'Make my first bill')}`;
   } else if (st.stage === 'limit') {
@@ -1914,8 +1957,10 @@ router.add('GET', '/api/admin/config', async (c) => {
   await requireAdmin(c);
   const e = c.env;
   const dbKey = !!(await c.db.prepare(`SELECT 1 AS x FROM meta WHERE k = 'session_secret'`).first());
+  const me = await c.db.prepare(`SELECT v FROM meta WHERE k = 'mail_error'`).first();
+  let mailError = null; try { mailError = me ? JSON.parse(me.v) : null; } catch (er) { mailError = null; }
   return json({
-    session_secret: !!e.SESSION_SECRET, database_key: dbKey,
+    session_secret: !!e.SESSION_SECRET, database_key: dbKey, mail_link: hubOn(e), mail_error: mailError,
     email: !!e.RESEND_API_KEY, razorpay: !!(e.RAZORPAY_KEY_ID && e.RAZORPAY_KEY_SECRET), whatsapp: waConfigured(e), google_drive: driveConfigured(e),
   });
 }, { public: true });
